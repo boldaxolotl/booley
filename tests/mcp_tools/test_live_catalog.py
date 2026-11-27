@@ -14,6 +14,7 @@ from mcp.types import TextContent
 
 from booley.mcp import catalog, server
 from booley.runtime.booley_dir import reset_cache
+from tests import mcp_runner_fake
 from tests.time_budget import hang_guard_s, scaled
 
 
@@ -197,14 +198,8 @@ def test_refresh_preserves_job_and_dispatch_state(project, monkeypatch):
     seen, runs = [], []
     entered = asyncio.Event()
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(project / "logs"))
-
-    async def child(*args, **kwargs):
-        kwargs["on_spawn"](os.getpid())
-        entered.set()
-        await asyncio.Event().wait()
-
-    # Replaced so a call parks a job without running a Flow subprocess.
-    monkeypatch.setattr(server, "_run_subprocess", child)
+    # A call parks a job without running a Flow subprocess.
+    mcp_runner_fake.install(monkeypatch, pid=os.getpid(), started=entered, gate=asyncio.Event())
 
     async def dispatch(name, arguments, definition, counts, jobs, **kwargs):
         counts[name] += 1

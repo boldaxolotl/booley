@@ -14,6 +14,8 @@ from booley.harness.endpoint_help import _parse_help, _parser_copy, _ParserSynta
 from booley.mcp.base import McpTool
 from booley.mcp.registry import McpToolInfo
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -24,7 +26,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.chdir(tmp_path)
     for name in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(cli, "_invoke_endpoint", lambda *_a, **_k: pytest.fail("execution"))
     monkeypatch.setattr(
         cli.runtime_context, "ensure_proxy_env", lambda: pytest.fail("proxy restoration")
@@ -257,7 +259,7 @@ def test_help_looking_data_is_parsed_once_in_sandbox(
         return 0
 
     register_custom(monkeypatch, Hinted)
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)
     monkeypatch.setattr(cli, "_invoke_endpoint", invoke)
     monkeypatch.setattr("sys.argv", ["booley", "flow", "custom", "--hint"])
@@ -284,7 +286,7 @@ def test_missing_project_error_precedes_host_venue_error(
     monkeypatch.chdir(tmp_path)
     for name in ("BOOLEY_DIR", "RTL_PROJECT_ROOT", "BOOLEY_CONTAINER"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr("sys.argv", ["booley", "flow"])
     assert cli.main() == 2
     err = capsys.readouterr().err
@@ -403,7 +405,7 @@ def test_extension_help_matches_direct_parser(
 
     endpoint_type = feature_endpoint(feature, nested)
     register_custom(monkeypatch, endpoint_type)
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if inside else RuntimeLocation.HOST)
     options, descriptions = {
         "registered": (["--number", "ff"], []),
         "grouped": ([], ["Custom group:"]),

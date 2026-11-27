@@ -21,8 +21,10 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_simulation_record_characterization import _AdapterAbortExecution, _plan
+from tests.sandbox_venue_fake import place
 from tests.time_budget import hang_guard_s
 
 
@@ -1015,10 +1017,9 @@ def _assert_coverage_fault(fault, result, reports, returned, terminal_phases, mo
 
 def _coverage_uncovered_exit(monkeypatch, capsys, coverage_json: Path) -> int:
     """Exit code of ``booley coverage uncovered`` on a Coverage Record, run as a host terminal."""
-    from booley.harness import booley as cli
     from tests.harness.test_coverage_cli import _booley
 
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     return _booley(monkeypatch, capsys, "coverage", "uncovered", str(coverage_json))[0]
 
 
@@ -1427,7 +1428,6 @@ def _kind_request(tmp_path, monkeypatch, kind):
         if kind == "resume":
             for name in (
                 "booley.flows.sim.flow.git_full_sha",
-                "booley.flows.sim.flow_resume.git_full_sha",
                 "booley.flows.sim.record.resume.git_full_sha",
             ):
                 monkeypatch.setattr(name, lambda *_args: "a" * 40)

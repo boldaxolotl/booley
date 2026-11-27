@@ -188,10 +188,10 @@ def git_init(root: Path) -> None:
     run_bounded_child(["git", "init", "-q", str(root)], check=True)
 
 
-def set_venue(monkeypatch: pytest.MonkeyPatch, inside: bool) -> None:
-    monkeypatch.setattr(
-        runtime_context, "inside_session_runtime", lambda: inside
-    )  # boundary: venue
+def set_venue(
+    monkeypatch: pytest.MonkeyPatch, inside: bool, sandbox=RuntimeLocation.ISSUED_SANDBOX
+) -> None:
+    place(monkeypatch, sandbox if inside else RuntimeLocation.HOST)
     # The suite inherits the shell it runs in, and an agent CLI exports the
     # markers _check_host_agent_session keys off — a run started from Claude
     # Code would otherwise record different events than one from a plain
@@ -216,14 +216,22 @@ def _set_agent_session(monkeypatch, app: str | None) -> None:
 
 
 def runtime_setup(
-    tmp_path, monkeypatch, *, inside, marker=True, app=None, slots="slots", valid=True
+    tmp_path,
+    monkeypatch,
+    *,
+    inside,
+    marker=True,
+    app=None,
+    slots="slots",
+    valid=True,
+    sandbox=RuntimeLocation.ISSUED_SANDBOX,
 ):
     """Set up a Project for a Doctor run in or out of the Sandbox; return its recorded commands."""
     booley_dir = write_project(tmp_path)
     calls = patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     if not valid:
         (booley_dir / "booley.toml").write_text("[project\n", encoding="utf-8")
-    set_venue(monkeypatch, inside)
+    set_venue(monkeypatch, inside, sandbox)
     _set_agent_session(monkeypatch, app)
     if inside:
         monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")  # keeps the egress check off real DNS

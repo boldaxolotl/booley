@@ -17,10 +17,8 @@ from booley.flows.sim.record.codec import (
     canonical_json_bytes,
     decode_simulation_result,
     decode_simulator_bundle,
-    linked_manifest_path,
 )
 from booley.flows.sim.record.coordinator import result_observations
-from booley.flows.sim.record.flow_planning import plan_ordinary_hdl_simulation_record
 from booley.flows.sim.record.inspection import (
     read_durable_results,
 )
@@ -34,50 +32,6 @@ from tests.flows.sim.simulation_record_test_support import (
     _write,
 )
 from tests.flows.sim.test_simulation_record_codec_golden import _simulation_result
-from tests.flows.sim.test_simulation_record_flow_planning import _planning_fixture
-
-
-@pytest.mark.parametrize(
-    ("path", "contained"),
-    [
-        ("targets/x%40baseline-abc/record/manifest.json", True),
-        ("../outside/targets/x/record/manifest.json", False),
-        ("targets/../record/manifest.json", False),
-        ("targets/x/record/manifest.json/extra", False),
-        ("/abs/targets/x/record/manifest.json", False),
-        (None, False),
-    ],
-)
-def test_a_planned_prerequisite_path_is_a_contained_manifest_or_refused(
-    tmp_path: Path, path: str | None, contained: bool
-) -> None:
-    if contained:
-        assert linked_manifest_path(tmp_path, {"path": path}) == tmp_path / str(path)
-    else:
-        with pytest.raises(SimulationRecordIntegrityError):
-            linked_manifest_path(tmp_path, {"path": path})
-
-
-def test_planning_refuses_a_prerequisite_not_planned_as_a_baseline(tmp_path: Path) -> None:
-    """A Cocotb baseline is planned as a candidate, so its link would point nowhere."""
-    _project, handle, inspection, preview = _planning_fixture(tmp_path)
-    prerequisite = {"target": {"selector": "base", "role": "candidate"}}
-
-    with pytest.raises(
-        SimulationRecordIntegrityError, match=r"'base' was not planned as a Cycle Count baseline"
-    ):
-        plan_ordinary_hdl_simulation_record(
-            handle=handle,
-            inspection=inspection,
-            preview=preview,
-            groups=preview.groups,
-            required_suite=("reset", "count"),
-            revision="abc123",
-            invocation_id=1,
-            execution_id="",
-            trace=False,
-            prerequisite_documents=(prerequisite,),
-        )
 
 
 @pytest.mark.parametrize("template", ["../shared", "a/../b", "..\\shared", "a\\..\\b"])

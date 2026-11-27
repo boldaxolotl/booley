@@ -49,12 +49,12 @@ from booley.runtime import (
     doctor_stamp,
     issuance_invalidation,
     project_gitignore,
-    runtime_context,
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
 from booley.targets.catalog import TargetCatalog
 from tests.agent_call_fake import install_agent
@@ -70,7 +70,6 @@ from tests.docker_cli_guard import (
 from tests.docker_host_support import fake_docker_host
 from tests.git_command_fake import REAL_RUN
 from tests.harness import test_session_runtime as resolution_fixtures
-from tests.harness.agent_auth_support import pin_venue
 from tests.harness.doctor_environment_support import answer_image_check, patch_doctor_environment
 from tests.harness.doctor_run_support import (
     finding_messages,
@@ -88,6 +87,7 @@ from tests.runtime.test_sandbox_remedy_workflows import (
     VSCODE_INIT,
     VSCODE_SEED,
 )
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -226,7 +226,7 @@ def test_plain_doctor_lint_dry_run_judges_the_toplevel(
         with monkeypatch.context() as scoped:
             scoped.setenv("BOOLEY_CONTAINER", "1")
             scoped.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
-            scoped.setattr(runtime_context, "inside_session_runtime", lambda: True)
+            place(scoped, RuntimeLocation.ISSUED_SANDBOX)
             outcome = LintFlow().execute_cli(values).outcome
         return subprocess.CompletedProcess(cmd, outcome.exit_code, outcome.report_text, "")
 
@@ -790,6 +790,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
     patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     _healthy_doctor_backend(monkeypatch)
     set_venue(monkeypatch, True)
+    monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
     rss_calls, model_calls = [], []
 
     def measure(root):
@@ -2419,11 +2420,11 @@ class TestWorktreePortability:
         assert not [item for item in findings if item.severity is Severity.WARN]
 
     def test_hand_written_sandbox_notes_unknown_host_capability(
-        self, tmp_path, monkeypatch, git_versions, hand_written_sandbox
+        self, tmp_path, monkeypatch, git_versions
     ):
         git_init(tmp_path)
         git_versions((2, 53, 0))
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+        place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
         findings = self._inspect(self._project(tmp_path), None, True)
         (note,) = [i for i in findings if "host Git capability is unknown" in i.message]
         assert note.severity is Severity.NOTE
@@ -2747,10 +2748,8 @@ def _edit_booley_toml(booley_dir: Path, old: str, new: str) -> None:
         "inside-hand-written-unapplied",
     ],
 )
-def test_sandbox_memory(row, tmp_path, monkeypatch, request):
+def test_sandbox_memory(row, tmp_path, monkeypatch):
     """ADR 0087: ``[sandbox].memory`` sizes the Memory Budget; inside the Sandbox, the live limit does."""
-    if "hand-written" in row:
-        request.getfixturevalue("hand_written_sandbox")
     booley_dir = _setup_sandbox_memory_row(row, tmp_path, monkeypatch)
     if row == "unset":
         _edit_booley_toml(booley_dir, 'memory = "16g"\n', "")
@@ -2791,7 +2790,12 @@ def test_sandbox_memory(row, tmp_path, monkeypatch, request):
 def _setup_sandbox_memory_row(row, tmp_path, monkeypatch):
     """Set up a Project and a fake cgroup limit file; return the Booley Directory."""
     if row.startswith("inside-"):
-        runtime_setup(tmp_path, monkeypatch, inside=True)
+        sandbox = (
+            RuntimeLocation.HAND_WRITTEN_SANDBOX
+            if "hand-written" in row
+            else RuntimeLocation.ISSUED_SANDBOX
+        )
+        runtime_setup(tmp_path, monkeypatch, inside=True, sandbox=sandbox)
         booley_dir = tmp_path / ".booley"
     else:
         booley_dir = write_project(tmp_path)
@@ -2887,11 +2891,9 @@ def _assert_sandbox_swap_row(row, tmp_path, monkeypatch):
         assert expected in warning
 
 
-def test_hand_written_sandbox_doctor_names_no_host_steps(
-    tmp_path, monkeypatch, hand_written_sandbox
-):
+def test_hand_written_sandbox_doctor_names_no_host_steps(tmp_path, monkeypatch):
     """A Sandbox Booley did not create is rebuilt from its own spec: no finding names a host step."""
-    runtime_setup(tmp_path, monkeypatch, inside=True)
+    runtime_setup(tmp_path, monkeypatch, inside=True, sandbox=RuntimeLocation.HAND_WRITTEN_SANDBOX)
     _edit_booley_toml(tmp_path / ".booley", 'memory = "16g"\n', 'memory = "16g"\nswap = "20g"\n')
     meminfo = tmp_path / "meminfo"
     meminfo.write_text("MemTotal: 8388608 kB\nSwapTotal: 0 kB\n", encoding="utf-8")
@@ -2940,7 +2942,7 @@ def test_sandbox_swap_skips_without_memory_or_project(tmp_path, monkeypatch):
 def test_sandbox_swap_reads_the_host_inside_the_sandbox(tmp_path, monkeypatch):
     meminfo = tmp_path / "meminfo"
     meminfo.write_text("MemTotal: 8388608 kB\nSwapTotal: 0 kB\n", encoding="utf-8")
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setattr(doctor, "_PROC_MEMINFO", meminfo)
     host, why = doctor._read_host_memory(None, "img")
     assert why == ""
@@ -2951,7 +2953,7 @@ def test_sandbox_swap_reads_the_host_inside_the_sandbox(tmp_path, monkeypatch):
     assert host is None
     assert "cannot read /proc/meminfo" in why
 
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     assert doctor._read_host_memory(None, "img") == (None, "Docker is not available")
 
 
@@ -2976,10 +2978,14 @@ def _prepare_row(monkeypatch, row):
         )
 
 
-def test_runtime_marker_fix_for_a_hand_written_sandbox(
-    tmp_path, monkeypatch, hand_written_sandbox
-):
-    runtime_setup(tmp_path, monkeypatch, inside=True, marker=False)
+def test_runtime_marker_fix_for_a_hand_written_sandbox(tmp_path, monkeypatch):
+    runtime_setup(
+        tmp_path,
+        monkeypatch,
+        inside=True,
+        marker=False,
+        sandbox=RuntimeLocation.HAND_WRITTEN_SANDBOX,
+    )
 
     (warning,) = finding_messages(
         run_doctor(tmp_path), Severity.WARN, check_id="sandbox.runtime-marker"
@@ -3057,8 +3063,7 @@ def test_runtime_location(row, tmp_path, monkeypatch):
 
 def test_runtime_location_names_the_container_host_override(tmp_path, monkeypatch):
     runtime_setup(tmp_path, monkeypatch, inside=False)
-    monkeypatch.setenv("BOOLEY_CONTAINER", "0")
-    monkeypatch.setattr(runtime_context, "container_marker_file", lambda: True)
+    place(monkeypatch, RuntimeLocation.HOST, container_host=True)
     result = run_doctor(tmp_path)
     assert any("BOOLEY_CONTAINER=0 set" in m for m in finding_messages(result, Severity.PASS))
     assert finding_messages(result, Severity.WARN, check_id="sandbox.runtime-marker") == []
@@ -3716,8 +3721,8 @@ class TestSubscriptionCredsHealth:
         now = datetime(2026, 10, 8, 10, 30, tzinfo=UTC).timestamp()
         monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
         monkeypatch.setattr(doctor, "wall_clock", lambda: now)
+        place(monkeypatch, RuntimeLocation.HOST, container_host=True)
         # Private: these stubs isolate the expiry display from the other credential checks (not yet moved onto the public run).
-        pin_venue(monkeypatch, inside=True)
         monkeypatch.setenv("BOOLEY_AGENT_APP", auth_token.APP_CLAUDE)
         monkeypatch.delenv("BOOLEY_AGENT_CLIS", raising=False)
         monkeypatch.setattr(doctor, "_check_agent_auth_token", lambda *_a, **_k: None)
@@ -4988,8 +4993,8 @@ def test_init_fix_hints_name_where_to_run_init(
         {".booley/.gitignore": None, ".booley/cores/hidden.core": "CAPI=2:\nname: ::hidden:0\n"},
         toml="\n[stealth]\nenabled = true\n",
     )
-    kind = runtime_context.RuntimeLocation[location]
-    monkeypatch.setattr(runtime_context, "runtime_location", lambda: kind)
+    place(monkeypatch, RuntimeLocation[location])
+    monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
 
     result = run_doctor(tmp_path)
 

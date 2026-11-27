@@ -28,7 +28,6 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings, read_durable_results
 from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
-    linked_manifest_path,
 )
 from booley.flows.sim.record.resume import validate_resume_manifest
 from booley.flows.sim.request import SimRequest
@@ -89,7 +88,9 @@ def test_resume_from_a_record_with_an_executable_snapshot_is_refused_before_any_
     def reached(_executor, _request):
         raise AssertionError("resume reached execution")
 
-    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", reached)
+    monkeypatch.setattr(
+        "booley.flows.sim.record.serial_execution.OrdinaryHdlSerialExecutor.execute", reached
+    )
 
     result = SimulateFlow().execute(
         SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports_root)
@@ -185,11 +186,6 @@ def test_coverage_entry_points_refuse_an_older_layout(reports: Path, entry: str)
 def test_the_old_directory_names_are_not_aliases(reports: Path) -> None:
     older = copy_older_invocation("0.4.0", "complete", reports)
     older_manifest = _manifest_of(older, "complete")
-
-    # A prerequisite link names the Record directory exactly.
-    with pytest.raises(SimulationRecordIntegrityError) as linked:
-        linked_manifest_path(older, {"path": "targets/t/campaign/manifest.json"})
-    assert "is not targets/<Target>/record/manifest.json" in str(linked.value)
 
     # Readers of a manifest path refuse the old name as an older Booley's record.
     for read in (

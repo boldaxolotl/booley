@@ -782,9 +782,18 @@ def _terminal_as_under_capture(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
 
 
-def use_terminal_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make ``sys.stdin`` an empty terminal, so ``booley init`` runs interactively."""
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+class _TerminalStdin(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+def use_terminal_stdin(monkeypatch: pytest.MonkeyPatch, *answers: str) -> None:
+    """Make ``sys.stdin`` a terminal, so ``booley init`` runs interactively.
+
+    It holds *answers* as lines: ``input()`` returns each in turn, then raises EOFError.
+    """
+    lines = "".join(f"{answer}\n" for answer in answers)
+    monkeypatch.setattr(sys, "stdin", _TerminalStdin(lines))
 
 
 @pytest.fixture(autouse=True)

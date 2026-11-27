@@ -282,9 +282,6 @@ def test_auth_status_in_claude_session_notes_hidden_gateway(claude_session, monk
 def _deep_probe_failure(project, monkeypatch):
     """Run the developer probe with a provider call that fails on the gateway configuration."""
     from booley.harness import developer_probe
-    from booley.runtime import runtime_context
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
 
     def fail(_root):
         raise developer_probe.ProbeError(
