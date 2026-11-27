@@ -663,7 +663,22 @@ def test_relay_spec_check_accepts_the_container_its_options_run(change: dict) ->
     shipped = flexnet_docker.RELAY_CONTAINER
     spec = dataclasses.replace(shipped, **change)
     user, host = _docker_reports(spec.run_options())
-    state = _relay_state(config_overrides={"User": user}, **host)
+    # Blank the fixture's shipped values first: an option the spec fails to render stays blank.
+    blank = dict.fromkeys(
+        (
+            "ReadonlyRootfs",
+            "Tmpfs",
+            "CapDrop",
+            "SecurityOpt",
+            "PidsLimit",
+            "Memory",
+            "NanoCpus",
+            "Ulimits",
+            "RestartPolicy",
+            "LogConfig",
+        )
+    )
+    state = _relay_state(config_overrides={"User": user}, **(blank | host))
 
     spec.check(state["Config"], state["HostConfig"], state["Mounts"])
 
