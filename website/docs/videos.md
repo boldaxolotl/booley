@@ -49,5 +49,7 @@ document: Video walkthroughs
 
 <section aria-labelledby="s2">
   <h2 class="sec" id="s2"><span class="n">2</span>Try it yourself</h2>
-  <p class="lede">The <a href="../demos/">evaluation designs</a> are open-source projects already set up for Booley. Clone one and give the agent your own task.</p>
+  <p class="lede">Some of the <a href="../docs/setup/#ports">ported designs</a>
+  are published as projects already set up for Booley. Clone one and give the
+  agent your own task.</p>
 </section>
