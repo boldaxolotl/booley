@@ -6538,8 +6538,8 @@ def test_doctor_checks_the_pinned_t3_code_version(
     _runtime_setup(tmp_path, monkeypatch, inside=inside)
     if inside:
         _prepare_row(monkeypatch, "inside-marker")
-        # The socket probe of the Sandbox's own T3 Code port.
-        monkeypatch.setattr(incontainer_setup, "t3_serving", lambda: True)
+        # The probe of the Sandbox's own T3 Code port.
+        monkeypatch.setattr(incontainer_setup, "t3_state", lambda _root: "running")
     pin = _t3_pin()
     asked: list[list[str]] = []
 

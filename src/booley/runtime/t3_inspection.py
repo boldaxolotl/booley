@@ -68,7 +68,11 @@ def inspect_ui(project_root: Path) -> DiagnosticReport:
         _not_applicable(findings, "the Sandbox is not running")
     elif state.vscode:
         _not_applicable(findings, "VS Code owns the Sandbox, which has no T3 Code relay")
-    elif state.t3 == "off" and state.relay is None and state.relay_error is None:
+    elif (
+        state.t3 in ("off", incontainer_setup.T3_PORT_TAKEN)
+        and state.relay is None
+        and state.relay_error is None
+    ):
         # No relay is recorded: `session up` started no UI that is still meant to run.
         _not_applicable(findings, "the UI is off (booley session up --no-ui)")
     else:
@@ -77,18 +81,29 @@ def inspect_ui(project_root: Path) -> DiagnosticReport:
     return findings.report()
 
 
-def inspect_ui_in_sandbox() -> DiagnosticReport:
+def inspect_ui_in_sandbox(project_root: Path | None) -> DiagnosticReport:
     """Inside the Sandbox: whether T3 Code answers. The relay and its record are on the host."""
     findings = Findings()
-    if incontainer_setup.t3_serving():
-        findings.pass_(f"T3 Code answers on {_SERVER}")
+    # The Project holds the runtime record that proves the listener is its own T3 Code.
+    if project_root is None:
+        findings.skip("T3 Code server check skipped - project config invalid")
     else:
-        findings.skip(
-            "T3 Code does not answer in the Sandbox; from inside, Doctor cannot tell a "
-            "--no-ui start from a stopped server - run booley doctor on the host"
-        )
+        _judge_server_in_sandbox(findings, incontainer_setup.t3_state(project_root))
     findings.skip("T3 Code relay check skipped - it runs from the host")
     return findings.report()
+
+
+def _judge_server_in_sandbox(findings: Findings, t3: str) -> None:
+    if t3 == "running":
+        findings.pass_(f"T3 Code answers on {_SERVER}")
+        return
+    what = "T3 Code does not answer in the Sandbox"
+    if t3 == incontainer_setup.T3_PORT_TAKEN:
+        what = f"{_SERVER} is held by another process"
+    findings.skip(
+        f"{what}; from inside, Doctor cannot tell a --no-ui start from a stopped server "
+        "- run booley doctor on the host"
+    )
 
 
 def _not_applicable(findings: Findings, reason: str) -> None:
@@ -103,6 +118,11 @@ def _judge_server(findings: Findings, t3: str) -> None:
         findings.fail(
             f"T3 Code does not answer on {_SERVER}",
             "run `booley session up`, which starts T3 Code",
+        )
+    elif t3 == incontainer_setup.T3_PORT_TAKEN:
+        findings.fail(
+            f"{_SERVER} is held by another process, so T3 Code is off",
+            "stop that process, then run `booley session up`",
         )
     else:
         findings.fail(

@@ -2642,6 +2642,8 @@ def create_pairing_link(container: str, port: int) -> PairingLink:
             f"T3 Code gave no pairing link in {_PAIRING_TIMEOUT_S} seconds"
         ) from None
     if result.returncode:
+        if _last_line(result.stdout) == incontainer_setup.T3_PORT_TAKEN:
+            raise SessionError(f"T3 Code is off: {incontainer_setup.T3_PORT_TAKEN_MESSAGE}")
         raise SessionError(f"t3 auth pairing create failed (exit {result.returncode})")
     try:
         url = require_str(require_dict(json.loads(_last_line(result.stdout))), "pairUrl")
@@ -2672,7 +2674,7 @@ class UiState:
     """What the running Sandbox and the host's relay record say about the UI."""
 
     vscode: bool
-    t3: str  # the Sandbox's "running" or "off"; "unknown" when it gave no answer
+    t3: str  # the Sandbox's "running", "off" or "port-taken"; "unknown" when it gave no answer
     relay: RelayObservation | None
     relay_error: str | None = None
 
@@ -2709,7 +2711,10 @@ def ui_status(workspace: Path) -> str | None:
         relay = f"127.0.0.1:{state.relay.port}"
     if state.t3 == "off" and relay == "off":
         return "UI: off"
-    return f"T3 Code: {state.t3}\nT3 Code relay: {relay}"
+    t3 = state.t3
+    if t3 == incontainer_setup.T3_PORT_TAKEN:
+        t3 = f"off ({incontainer_setup.T3_PORT_TAKEN_MESSAGE})"
+    return f"T3 Code: {t3}\nT3 Code relay: {relay}"
 
 
 def _project_data_alias_capable(image_id: str) -> bool:

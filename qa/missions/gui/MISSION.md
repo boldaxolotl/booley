@@ -11,7 +11,7 @@ mission; to check one PR's GUI change, use `booley-gui-check` instead.
 
 ## Pins and prerequisites
 - Booley: the candidate under test (set by the run skill; not pinned here),
-  installed on the host and built into a local Sandbox Image (runbook step 2).
+  installed in the QA Host and built into its Sandbox Image (runbook step 2).
 - Project: upstream picorv32 at the
   [picorv32 mission](../picorv32/MISSION.md)'s pin, with
   https://github.com/boldaxolotl/booley-prj-picorv32 `main` at run start as
@@ -22,12 +22,12 @@ mission; to check one PR's GUI change, use `booley-gui-check` instead.
   cleanup; this mission names the steps and adds what to hunt. Read it before
   area 1.
 - Host: a T3 session with the `preview_*` tools on the host that runs the
-  Sandbox, and the maintainer's approval to install the candidate as the
-  canonical host install (runbook step 1).
-- Agent: the demo's default Agent CLI (Codex) signed in on the host
-  (`booley auth --status`), and Claude too for area 3's second thread. Area
-  3's Zbb request runs about half an hour of agent time and area 4's reviewer
-  a few minutes. Run at most one such request at a time.
+  QA Host, and the maintainer's approval to start it (runbook step 1).
+  The host's canonical install stays as it is.
+- Agent: the demo's default Agent CLI (Codex) signed in in the QA Host
+  (runbook step 1, `qa$ booley auth --status`), and Claude too for area 3's
+  second thread. Area 3's Zbb request runs about half an hour of agent time
+  and area 4's reviewer a few minutes. Run at most one such request at a time.
 - Budget: 4 h: 230 area minutes plus 10 contingency, not counting the
   candidate build (runbook step 2), which the run logs separately. Areas are
   in priority order. Areas 4 (its warnings item) and 6 need area 3's child or
@@ -44,8 +44,8 @@ mission; to check one PR's GUI change, use `booley-gui-check` instead.
   build, the Project clone and the Sandbox stay on the host, and the
   `qa/<short>` branch stays local. No issues, PR comments or evidence pushes.
 - **Run skill adjustments.** Runbook step 2 replaces the run skill's
-  host-install check (its step 2); record the candidate `<sha>` and the
-  canonical revision it replaced in the `log.md` identity header.
+  host-install check (its step 2); record the candidate `<sha>` and the QA
+  Host image tag in the `log.md` identity header.
 - **Runbook hard rules apply throughout**: the pairing link is a secret, no
   clipboard, only your own tab, Developer Agents only in threads, and keep the
   maintainer's identity (Doctor's `sandbox.gitconfig-identity` line) out of
@@ -246,8 +246,8 @@ Evidence: `docs-site-*` screenshots and the list of links checked.
 
 ### 11. cleanup — Runbook cleanup (~10 min)
 Try: runbook step 10. Then release every `resources.md` row.
-Look for: anything still running after `session down`, a canonical install
-that doesn't come back.
+Look for: anything still running after `session down`, an outer-host row
+outside `qa-host` in the IDs diff.
 
 ## Known traps
 - Area 3's request runs about half an hour. Start it as soon as area 3

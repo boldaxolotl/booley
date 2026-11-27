@@ -2308,6 +2308,34 @@ class TestT3CodeRelay:
         files = (f.read_text(errors="replace") for f in tmp_path.rglob("*") if f.is_file())
         assert TOKEN not in "".join([caplog.text, *runs, *files])
 
+    @linux_only
+    def test_a_foreign_listener_on_the_t3_code_port_gets_no_pairing_link(
+        self,
+        workspace: Path,
+        up_docker: SandboxDocker,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from booley.runtime import session_admission
+
+        monkeypatch.setattr(
+            session_admission, "running_project_sandboxes", real_running_project_sandboxes
+        )
+        up_docker.created = _sandbox_state(workspace)
+        t3 = serve_t3_code(monkeypatch, foreign=True)
+        runs = run_registrar_on_post_start(up_docker, workspace, monkeypatch)
+
+        up, warned = relay_cli.run(["up"], workspace)
+        status, _ = relay_cli.run(["status"], workspace)
+
+        held = "127.0.0.1:3773 in the Sandbox is held by another process"
+        assert "t3:port-taken" in runs[0] and held in runs[0]
+        assert "pair#token" not in up and held in warned
+        assert f"T3 Code: off ({held}" in status
+        with pytest.raises(sr.SessionError, match=held):
+            sr.pairing_link(workspace)
+        assert t3.served == t3.paired == []
+
     def test_session_up_warns_and_succeeds_when_the_pairing_link_fails(
         self, workspace: Path, up_docker: SandboxDocker, relay_cli: SimpleNamespace
     ) -> None:
@@ -2436,6 +2464,11 @@ _SERVER_UNKNOWN = (
     "Doctor cannot tell whether T3 Code answers in the Sandbox",
     "run `booley session up`, then rerun `booley doctor`",
 )
+_SERVER_TAKEN = (
+    "fail",
+    "127.0.0.1:3773 in the Sandbox is held by another process, so T3 Code is off",
+    "stop that process, then run `booley session up`",
+)
 _RELAY_OK = ("pass", "T3 Code relay runs on 127.0.0.1:3780", "")
 _RELAY_DOWN = (
     "fail",
@@ -2486,6 +2519,10 @@ _UI_OFF = _t3_not_applicable("the UI is off (booley session up --no-ui)")
         ),
         pytest.param("headless", "off", None, _UI_OFF, id="no-ui"),
         pytest.param(
+            "headless", "port-taken", "RUNNING", [_SERVER_TAKEN, _RELAY_OK], id="port-taken"
+        ),
+        pytest.param("headless", "port-taken", None, _UI_OFF, id="no-ui-port-taken"),
+        pytest.param(
             "editor",
             "off",
             None,
@@ -2512,6 +2549,28 @@ def test_t3_code_ui_inspection(
         _record_relay(workspace, monkeypatch, relay)
 
     assert _ui_findings(workspace) == expected
+
+
+@pytest.mark.parametrize(
+    ("project", "foreign", "server"),
+    [
+        pytest.param(True, False, "T3 Code does not answer in the Sandbox; ", id="off"),
+        pytest.param(True, True, "127.0.0.1:3773 in the Sandbox is held by", id="port-taken"),
+        pytest.param(False, True, "T3 Code server check skipped - project", id="no-project"),
+    ],
+)
+def test_t3_code_inspection_in_the_sandbox_skips_an_unproven_server(
+    workspace: Path, monkeypatch: pytest.MonkeyPatch, project: bool, foreign: bool, server: str
+) -> None:
+    from booley.runtime import t3_inspection
+
+    serve_t3_code(monkeypatch, foreign=foreign)
+
+    report = t3_inspection.inspect_ui_in_sandbox(workspace if project else None)
+
+    first, relay = report.findings
+    assert (str(first.severity), str(relay.severity)) == ("skip", "skip")
+    assert first.message.startswith(server)
 
 
 def test_t3_code_ui_inspection_skips_when_the_sandbox_cannot_be_listed(

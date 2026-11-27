@@ -1,6 +1,6 @@
 ---
 name: booley-gui-check
-description: Only when the user explicitly asks, check one Booley pull request's GUI change in T3 Code in a host browser, on a Sandbox built locally from the PR head, post screenshot evidence on the PR, and return pass, fail, or blocked per check step.
+description: Only when the user explicitly asks, check one Booley pull request's GUI change in T3 Code in a host browser, on a Sandbox built from the PR head in the QA Host, post screenshot evidence on the PR, and return pass, fail, n/a, or blocked.
 disable-model-invocation: true
 ---
 
@@ -13,12 +13,13 @@ this through `disable-model-invocation` and Codex through
 Before acting, resolve the real path of this loaded `SKILL.md` (following the
 installed link). Its parent is the skill directory, its grandparent is `qa/`,
 and the parent of `qa/` is the source checkout. Require that source to be a
-clean primary checkout, with `.git` as a directory, on `main` unless the caller
-named an unreleased copy (below), which may be on any clean branch; stop with
-restore/re-enable guidance otherwise. The check installs the PR's own build as
-the host's Booley for its duration and restores the one it found. Resolve
-every input below from that source checkout, never from the process working
-directory.
+clean primary checkout, with `.git` as a directory, of the PR's base branch at
+`origin/<base>` (after `git fetch origin <base>`, `HEAD` equals
+`origin/<base>`), unless the caller named an unreleased copy (below), which
+may be on any clean branch. Otherwise return `blocked: source checkout` with
+what to fix. The check runs the PR's build in the QA Host and leaves the
+host's canonical Booley install alone. Resolve every input below from that
+source checkout, never from the process working directory.
 
 The procedure lives in the shared runbook, `qa/shared/t3/RUNBOOK.md`.
 Read it in full before step 2; its hard rules apply throughout. This skill adds
@@ -26,17 +27,33 @@ what to check, how to report it, and what to clean up.
 
 Inputs: a PR number and the issue number it closes. Optional: an artifact root
 (default `~/workplace/qa-runs`). To trial an unreleased copy of this skill, the
-caller names the source checkout to use instead. A pull request into the
-`t3` branch needs this skill's copy from a `t3` checkout until `t3` lands on
-`main`.
+caller names the source checkout to use instead.
+
+## Contract
+
+Callers, including the unattended issue pipeline, rely on this:
+
+- **Source.** Run this skill from a clean primary checkout of the PR's base
+  branch at `origin/<base>`: a `main` checkout for a PR into `main`, a `t3`
+  checkout for a PR into `t3`.
+- **Approval.** The caller's request to run this skill covers starting or
+  reusing the QA Host and its privileged container
+  (Rules in `qa/shared/qa-host/RUNBOOK.md`). It covers nothing
+  else on the outer host.
+- **Return.** The result is exactly one of `pass`, `fail`, `n/a`, or
+  `blocked: <reason>`. `blocked: qa host` means the QA Host is unavailable:
+  it can't be built or started, or outer ports 3890-3894 are taken.
 
 ## Hard rules
 
 - One check at a time per host: never run two of these, or this and the
-  `gui` mission, at once.
-- The check replaces the canonical host install (runbook step 1). Ask the
-  maintainer before step 2 and make sure no other Booley run uses the host;
-  without both, return `blocked: host install`.
+  `gui` mission, at once. There is one QA Host per host, with fixed ports.
+- The check runs in the QA Host (runbook steps 2-4). Starting or reusing it
+  needs no further approval (Contract). Never install the candidate on the
+  outer host or change its `booley-*` resources. If the QA Host can't be
+  built or started, or outer ports 3890-3894 are taken by anything but a
+  reusable `qa-host` container, return exactly `blocked: qa host` with the
+  reason.
 - Write the check steps, with what each expects, before building anything or
   opening a browser tab. Don't change them after seeing the GUI; a step that
   turns out to be wrong is reported as `blocked: step wrong` with the reason,
@@ -74,9 +91,9 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
    return `blocked: fork PR`. For a merged PR, check its base branch instead
    (its change is there; say so in the comment): fix `<sha>` once with
    `gh api repos/boldaxolotl/booley/commits/<base> --jq .sha` and keep it even
-   if the branch moves during the check. Record in `log.md` the canonical
-   revision the check replaced and the build times. A build that fails or
-   takes over two hours is `blocked: image build`.
+   if the branch moves during the check. Record in `log.md` the QA Host image
+   tag, whether the QA Host and its volumes were reused, and the build times.
+   A build that fails or takes over two hours is `blocked: image build`.
 3. **Project and pairing.** Runbook steps 3-5. Record the time from
    `session up` to the Project shown in your tab. Start the Dashboard when a
    check step needs it.
@@ -126,11 +143,15 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
    Link each image as
    `https://raw.githubusercontent.com/boldaxolotl/booley-gui-evidence/<evidence-commit>/pr-<n>/<sha>/<file>`,
    pinned to the evidence commit so later pushes can't change it.
-6. **Clean up.** Runbook step 10, which also restores the canonical host
-   install. If a failed step needs a live repro, follow the runbook's
-   exception instead: leave the Sandbox up and the candidate installed, and
-   name the Project path and the candidate revision in the comment (step 7)
-   and the return. Mark every `resources.md` row released or kept.
+6. **Clean up.** Runbook step 10: tear down the Sandbox, remove the
+   candidate wheel, remove the `qa-host` container (its volumes stay), and
+   diff the outer daemon's IDs. The `before.txt` and `after.txt` snapshots
+   are evidence for `log.md`, not for the comment: they name other Projects.
+   Any difference outside `qa-host` rows is a finding. If a failed step needs
+   a live repro, follow the runbook's exception instead: leave the QA Host and
+   its Sandbox up, and name the Project path in the QA Host and the candidate
+   revision in the comment (step 7) and the return. Mark every
+   `resources.md` row released or kept.
 7. **Comment.** A check that ran its steps posts a comment for every
    verdict, `blocked` included. Draft it in `<run-dir>/comment.md`:
    - a first line with the verdict (`GUI check: pass`, `GUI check: fail`, or
@@ -141,6 +162,8 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
    - the screenshots, each under its step number;
    - the candidate revision, and the build and pairing timings from steps 2
      and 3;
+   - the outer-host check: "outer host unchanged", or the number of rows
+     outside `qa-host` that differ, without their names;
    - what was not checked, and why;
    - any kept resources (step 6).
 
@@ -153,9 +176,11 @@ Create `<artifact-root>/gui-check-pr<n>-<UTC yyyymmddThhmmssZ>-<short>/` with
 
    Record the `GitHub reference:` URL it prints in `log.md`. If the guard
    refuses, fix the draft and post again; never post around it.
-8. **Return.** Tell the caller: the verdict, the per-step results (each
-   `pass`, `fail`, or `blocked`) with what was seen, the criteria not checked,
-   the comment URL, and anything kept or not cleaned up. The verdict is `pass`
-   only if every step passed; any failed step makes it `fail`; with no failed
-   step, any blocked step makes it `blocked`, returned with each blocked
-   step's reason.
+8. **Return.** Start with the result (Contract), then the per-step results
+   (each `pass`, `fail`, or `blocked`) with what was seen, the criteria not
+   checked, the comment URL, any outer-host finding from step 6, and anything
+   kept or not cleaned up. The result is `pass` only if every step passed; any
+   failed step makes it `fail`; with no failed step, any blocked step makes it
+   `blocked: <reason>`, with each blocked step's reason. A stop before the
+   steps ran returns `n/a` or `blocked: <reason>` as the step that stopped
+   says.

@@ -1447,7 +1447,8 @@ def _run_t3_code_checks(
     remedy = functools.partial(_image_stale_remedy, project)
     if runtime_context.inside_session_runtime():
         reporter.diagnostics(t3_inspection.inspect_install(["t3", "--version"], remedy))
-        reporter.diagnostics(t3_inspection.inspect_ui_in_sandbox())
+        root = None if project is None else project.project_root
+        reporter.diagnostics(t3_inspection.inspect_ui_in_sandbox(root))
     elif project is None:
         reporter.skip_("T3 Code checks skipped - project config invalid")
     elif docker_exe is None:
