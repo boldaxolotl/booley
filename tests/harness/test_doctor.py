@@ -15,6 +15,7 @@ import tomllib
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -32,6 +33,7 @@ from booley.audit.diagnostic_results import (
     Severity,
 )
 from booley.core.host_shell import quote_arg
+from booley.core.resources import package_data_dir
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.fusesoc import core_projection, selftest_overlay, target_inspection
@@ -49,9 +51,12 @@ from booley.presentation import colors
 from booley.runtime import (
     auth_token,
     doctor_stamp,
+    incontainer_setup,
     issuance_invalidation,
+    platform_paths,
     project_gitignore,
     runtime_context,
+    sandbox_apply,
     session_issuance,
     session_runtime,
 )
@@ -272,6 +277,11 @@ def _patch_host_environment(monkeypatch, root: Path) -> None:
     _patch_bootstrap_current(monkeypatch)
 
 
+def _t3_pin() -> str:
+    manifest = package_data_dir() / "docker" / "agent-clis-package.json"
+    return json.loads(manifest.read_text(encoding="utf-8"))["t3code"]["version"]
+
+
 def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixture
     monkeypatch,
     root: Path,
@@ -387,6 +397,9 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
             return subprocess.CompletedProcess(cmd, 0, stdout=f"{os.getuid()}\n", stderr="")
         if cmd[1:3] == ["run", "--rm"] and cmd[-2:] == ["git", "--version"]:
             return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
+        if cmd[-2:] == ["t3", "--version"]:
+            # The Sandbox Image the fake stands for is built from the packaged manifest.
+            return subprocess.CompletedProcess(cmd, 0, stdout=f"t3 v{_t3_pin()}\n", stderr="")
         if cmd[1:3] == ["image", "ls"]:
             # No issued Sandbox Image keepers; the strict listing rejects stray output.
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -912,7 +925,7 @@ def _full_run_rows_from(
     rc = doctor.run_doctor(argparse.Namespace(verbose=verbose, deep=False), tmp_path)
     lines = colors.strip_ansi(capsys.readouterr().out).splitlines()
     first = lines.index(start_row)
-    return rc, lines[first : lines.index("Project checks") + 1]
+    return rc, lines[first : lines.index("T3 Code checks") + 1]
 
 
 def test_doctor_mcp_probe_rows_and_exit_are_pinned(tmp_path, monkeypatch, capsys):
@@ -923,13 +936,13 @@ def test_doctor_mcp_probe_rows_and_exit_are_pinned(tmp_path, monkeypatch, capsys
     )
     assert (rc, rows) == (
         0,
-        [_MCP_PASS_ROW, _MCP_ADVISORY_ROW, _MCP_TOOL_LIST_ROW, "", "Project checks"],
+        [_MCP_PASS_ROW, _MCP_ADVISORY_ROW, _MCP_TOOL_LIST_ROW, "", "T3 Code checks"],
     )
     # Not verbose: the tool list is hidden.
     rc, rows = _full_run_rows_from(
         tmp_path / "q", monkeypatch, capsys, _MCP_PASS_ROW, verbose=False
     )
-    assert (rc, rows) == (0, [_MCP_PASS_ROW, _MCP_ADVISORY_ROW, "", "Project checks"])
+    assert (rc, rows) == (0, [_MCP_PASS_ROW, _MCP_ADVISORY_ROW, "", "T3 Code checks"])
     # A failed probe: FAIL row, fix hint and the excerpt (always shown) in that order, exit 1.
     failed_row = "  ✗  MCP server probe failed with exit 3"
     rc, rows = _full_run_rows_from(
@@ -944,7 +957,7 @@ def test_doctor_mcp_probe_rows_and_exit_are_pinned(tmp_path, monkeypatch, capsys
             "      ImportError: cannot import name x",
             "      final line",
             "",
-            "Project checks",
+            "T3 Code checks",
         ],
     )
 
@@ -6511,3 +6524,81 @@ def test_nonstealth_doctor_reports_selectively_ignored_config(tmp_path, monkeypa
     (fix,) = _fixes(result, ".booley/booley.toml (1 path(s))")
     assert "edit the reported" in fix
     assert excludes.read_text() == "# local policy\n.booley/booley.toml\n"
+
+
+@pytest.mark.parametrize(
+    ("inside", "reply", "returncode"),
+    [
+        pytest.param(False, "t3 v{pin}\n", 0, id="host-pinned"),
+        pytest.param(True, "t3 v0.0.1\n", 0, id="inside-other"),
+        pytest.param(False, "", 127, id="host-missing"),
+    ],
+)
+def test_doctor_checks_the_pinned_t3_code_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inside: bool, reply: str, returncode: int
+) -> None:
+    _runtime_setup(tmp_path, monkeypatch, inside=inside)
+    if inside:
+        _prepare_row(monkeypatch, "inside-marker")
+        # The socket probe of the Sandbox's own T3 Code port.
+        monkeypatch.setattr(incontainer_setup, "t3_serving", lambda: True)
+    pin = _t3_pin()
+    asked: list[list[str]] = []
+
+    def version_command(cmd: list[str]) -> bool:
+        if cmd[-2:] != ["t3", "--version"]:
+            return False
+        asked.append(cmd)
+        return True
+
+    _answer_command(
+        monkeypatch, version_command, returncode=returncode, stdout=reply.format(pin=pin)
+    )
+
+    result = _doctor_run(tmp_path)
+
+    ((severity, message, fix),) = [
+        (str(f.severity), f.message, f.fix)
+        for f in result.findings
+        if f.message.startswith("T3 Code") and "installed" in f.message
+    ]
+    (argv,) = asked
+    if inside:
+        assert argv == ["t3", "--version"]
+        assert (severity, message) == (
+            "fail",
+            f"T3 Code {pin} is not installed: t3 --version reported t3 v0.0.1",
+        )
+        assert fix == f"recreate the Sandbox: {sandbox_apply.in_sandbox_steps()}"
+        assert "T3 Code answers on 127.0.0.1:3773 in the Sandbox" in _messages(result)
+        assert "T3 Code relay check skipped - it runs from the host" in _messages(result)
+        return
+    assert argv[1:3] == ["run", "--rm"]
+    assert argv[4:] == ["t3", "--version"]
+    assert "T3 Code relay check not applicable - the Sandbox is not running" in _messages(result)
+    if returncode:
+        assert (severity, message) == (
+            "fail",
+            f"T3 Code {pin} is not installed: t3 --version reported nothing",
+        )
+        assert fix.startswith("recreate the Sandbox: ")
+        assert result.exit_code == 1
+    else:
+        assert (severity, message) == (
+            "pass",
+            f"T3 Code {pin} installed (the version the manifest pins)",
+        )
+
+
+def test_a_missing_t3_binary_fails_the_install_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    from booley.runtime import t3_inspection
+
+    # The process boundary: inside a Sandbox without T3 Code, `t3` cannot start at all.
+    monkeypatch.setattr(
+        platform_paths, "run_captured_bounded", Mock(side_effect=FileNotFoundError("t3"))
+    )
+
+    (finding,) = t3_inspection.inspect_install(["t3", "--version"], lambda: "steps").findings
+
+    assert finding.message.endswith("t3 --version reported nothing")
+    assert finding.fix == "recreate the Sandbox: steps"

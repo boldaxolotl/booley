@@ -16,10 +16,13 @@ from each side:
 - **Host terminal:** the Booley install, Docker, the Sandbox Image, and the
   Project configuration. Doctor starts the Sandbox for its Flow dry-runs. It
   never completes pending Sandbox recovery: it warns and skips the checks that
-  need the Sandbox until `booley session up` completes it.
+  need the Sandbox until `booley session up` completes it. It also checks T3
+  Code's version and, for a running Sandbox, that T3 Code answers and its relay
+  runs; it skips those two when the Sandbox is stopped, owned by VS Code, or
+  started with `--no-ui`.
 - **Sandbox terminal** (a VS Code terminal in the devcontainer, or
   `booley session enter`): the same configuration plus the tools, MCP server,
-  and agent setup inside the Sandbox.
+  T3 Code's version, and agent setup inside the Sandbox.
 
 Run plain `booley doctor` for everyday checks. It checks configuration and
 prepares each Flow without running a simulation, lint, or synthesis.
