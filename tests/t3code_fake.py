@@ -9,6 +9,7 @@ import subprocess
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -23,7 +24,11 @@ ADDED = (0, "Added project 1 (p) at /p.")
 
 @dataclass
 class T3CodeFake:
-    """Record `t3 serve`, `t3 project add` and `t3 auth pairing create`; print the pairing token on stdout as T3 Code does."""
+    """Record `t3 serve`, `t3 project add`/`rename` and `t3 auth pairing create`.
+
+    `projects` maps each registered workspace root to its title, and `serve` prints the
+    pairing token on stdout, as T3 Code does.
+    """
 
     running: bool = False
     add_replies: list[tuple[int, str] | OSError] = field(default_factory=list)
@@ -33,6 +38,9 @@ class T3CodeFake:
     served: list[list[str]] = field(default_factory=list)
     added: list[list[str]] = field(default_factory=list)
     paired: list[list[str]] = field(default_factory=list)
+    projects: dict[str, str] = field(default_factory=dict)
+    renamed: list[list[str]] = field(default_factory=list)
+    rename_reply: tuple[int, str] | OSError | None = None
     sinks: list[str] = field(default_factory=list)
     serve_stdouts: list[object] = field(default_factory=list)
 
@@ -61,14 +69,35 @@ class T3CodeFake:
             if isinstance(self.check_reply, OSError):
                 raise self.check_reply
             return subprocess.CompletedProcess(cmd, self.check_reply[0], "", self.check_reply[1])
+        if cmd[1:3] == ["project", "rename"]:
+            return self._rename(cmd)
         self.added.append(cmd)
         if not self.running:  # `t3 project add` talks to a running server
             return subprocess.CompletedProcess(cmd, 78, "no server", "")
-        reply = self.add_replies.pop(0) if self.add_replies else ADDED
+        reply = self.add_replies.pop(0) if self.add_replies else self._add(cmd)
         if isinstance(reply, OSError):
             raise reply
         code, out = reply
         return subprocess.CompletedProcess(cmd, code, out, "")
+
+    def _add(self, cmd: list[str]) -> tuple[int, str]:
+        root = cmd[-1]
+        if root in self.projects:  # the old title stays, whatever `--title` says
+            return (1, "ProjectAlreadyExistsError")
+        title = cmd[cmd.index("--title") + 1] if "--title" in cmd else Path(root).name
+        self.projects[root] = title
+        return ADDED
+
+    def _rename(self, cmd: list[str]) -> subprocess.CompletedProcess[str]:
+        self.renamed.append(cmd)
+        if isinstance(self.rename_reply, OSError):
+            raise self.rename_reply
+        if self.rename_reply:
+            return subprocess.CompletedProcess(cmd, self.rename_reply[0], self.rename_reply[1], "")
+        root, title = cmd[-2:]
+        out = "already named" if self.projects[root] == title else "Renamed"
+        self.projects[root] = title
+        return subprocess.CompletedProcess(cmd, 0, out, "")
 
 
 def serve_t3_code(
@@ -77,6 +106,8 @@ def serve_t3_code(
     running: bool = False,
     add_replies: list[tuple[int, str] | OSError] | None = None,
     check_reply: tuple[int, str] | OSError = (0, ""),
+    projects: dict[str, str] | None = None,
+    rename_reply: tuple[int, str] | OSError | None = None,
 ) -> T3CodeFake:
     """Route `incontainer_setup`'s port probe and `subprocess` use to a `T3CodeFake`.
 
@@ -84,7 +115,11 @@ def serve_t3_code(
     global `subprocess` module stays untouched.
     """
     fake = T3CodeFake(
-        running=running, add_replies=list(add_replies or []), check_reply=check_reply
+        running=running,
+        add_replies=list(add_replies or []),
+        check_reply=check_reply,
+        projects=dict(projects or {}),
+        rename_reply=rename_reply,
     )
     monkeypatch.setattr(incontainer_setup, "_port_is_serving", fake.serving)
     process = SimpleNamespace(
