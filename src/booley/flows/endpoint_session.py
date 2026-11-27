@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from booley.core.sandbox_layout import canonical_project_alias_path
 from booley.flows.endpoint_cli import runtime_report_root
 from booley.flows.endpoint_reporting import _StdoutWitness, removed_root, report_root_removed
 from booley.flows.run_root_watchdog import RunRootWatchdog
@@ -23,7 +24,6 @@ from booley.runtime.exception_diagnostics import (
     write_exception_diagnostic,
 )
 from booley.runtime.filesystem_utils import run_roots
-from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState

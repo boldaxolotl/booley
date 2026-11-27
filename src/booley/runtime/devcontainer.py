@@ -31,6 +31,7 @@ from booley.config.agent import (
 )
 from booley.config.gateway import VISITOR_AUTH
 from booley.core.project_identity import project_name_id
+from booley.core.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 from booley.runtime import auth_token
 from booley.runtime import vaporview as _vaporview
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
@@ -42,7 +43,6 @@ from booley.runtime.incontainer_git_identity import (
     load_git_identity,
 )
 from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
-from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
 

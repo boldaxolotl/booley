@@ -4274,7 +4274,8 @@ def _with_previous_mount(path: Path, mount: str) -> None:
 def test_reissue_keeps_former_mount_for_unannotated_records(
     issued_preview, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from booley.runtime import job_records, sandbox_layout
+    from booley.core import sandbox_layout
+    from booley.runtime import job_records
 
     project, prepared, path, _stamp = issued_preview
     former = str(tmp_path / "former-mount")

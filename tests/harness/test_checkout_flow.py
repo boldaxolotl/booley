@@ -237,7 +237,7 @@ def make_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Worl
     ``{ctl}`` name the live tree and the control directory) are committed too, and
     ``config`` is appended to the committed and to Main's ``booley.toml``.
     """
-    from booley.runtime import sandbox_layout
+    from booley.core import sandbox_layout
 
     built: list[World] = []
     # The tests' verdict must not depend on the mounts of the host that runs them.
@@ -411,7 +411,7 @@ def refusal_requests(
     world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> dict[str, CheckoutFlowRequest]:
     """One request per refusal rule; each names the path it is refused for."""
-    from booley.runtime import sandbox_layout
+    from booley.core import sandbox_layout
 
     plain_main, env_dir = tmp_path / "main-bd", tmp_path / "env-bd"
     live_checkout = world.live / "exported"
@@ -1118,9 +1118,9 @@ def test_checkout_flow_refuses_live_paths_in_inputs(
 def test_checkout_flow_derives_the_live_tree(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
 ) -> None:
+    from booley.core import sandbox_layout
     from booley.harness import checkout_flow
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
-    from booley.runtime import sandbox_layout
 
     world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
     if case != "git-work":  # that case keeps the world's ``/work``, a Git checkout
@@ -1220,13 +1220,13 @@ def test_checkout_flow_refuses_a_pdk_root_in_a_live_root(
 def test_checkout_flow_in_the_issued_sandbox_trusts_the_work_mount_alone(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
+    from booley.core import sandbox_layout
     from booley.harness import checkout_flow
     from booley.harness.checkout_flow import (
         CheckoutFlowError,
         CheckoutFlowStatus,
         run_checkout_flow,
     )
-    from booley.runtime import sandbox_layout
 
     files = {"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")} if case == "live-path" else {}
     world = make_world(files=files)
@@ -1251,8 +1251,8 @@ def test_checkout_flow_in_the_issued_sandbox_trusts_the_work_mount_alone(
 def test_checkout_flow_runs_when_no_input_reads_the_live_tree(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
 ) -> None:
+    from booley.core import sandbox_layout
     from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
-    from booley.runtime import sandbox_layout
 
     if case == "empty-work-path":
         # The image's ``WORKDIR /work`` exists in a hand-written Sandbox without being the
