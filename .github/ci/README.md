@@ -216,10 +216,11 @@ A test waits on real time in two ways, and both come from
 The factor is `BOOLEY_TEST_TIME_SCALE`. Unset means 1; a value that is not a
 positive finite number fails the pytest session at startup. The Windows legs
 of every pytest job (the test job, flake-stress, and the weekly full matrix)
-set 2 and run `--timeout=120`. Across the 161 tests that both the Windows and
-Linux timing models contain, the Windows to Linux time ratio has
-median 1.06, 90th percentile 1.55, and 95th percentile 2.12, so a factor of 2
-covers the usual Windows tail. Ubuntu legs keep factor 1 and `--timeout=60`.
+set 2 and run `--timeout=120`. Measured on 2026-11-16, when the Windows timing
+model still covered the whole suite, the Windows to Linux time ratio across the
+161 tests both models contained had median 1.06, 90th percentile 1.55, and 95th
+percentile 2.12, so a factor of 2 covers the usual Windows tail. Ubuntu legs
+keep factor 1 and `--timeout=60`.
 
 The per-test limit must stay at least twice the hang guard, and at least 60 s:
 after a guard expires the helper still kills the process tree and drains its

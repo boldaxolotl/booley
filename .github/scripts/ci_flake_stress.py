@@ -17,9 +17,10 @@ Cost cap: one repeat count serves the whole job, sized so the estimated serial
 test time of every changed module stays within ``BUDGET_SECONDS``. The timing
 models record only slow tests, so each test function costs the larger of its
 recorded Windows and Linux times, or the default, floored per module at
-``MODULE_FLOOR_SECONDS``. The count is at most ``MAX_COUNT``. When even ``MIN_COUNT`` repeats of every changed module would
-exceed the budget (a broad refactor), only the added modules are stressed; if
-they still do not fit, nothing is stressed. ``unstressed`` names the modules
+``MODULE_FLOOR_SECONDS``. The count is at most ``MAX_COUNT``. When even
+``MIN_COUNT`` repeats of every changed module would exceed the budget (a broad
+refactor), only the added modules are stressed; if they still do not fit,
+nothing is stressed. ``unstressed`` names the modules
 the cap dropped so the classifier can report them.
 """
 
