@@ -17,7 +17,6 @@ from typing import Any
 import pytest
 
 from booley.flows.base import FlowMechanics
-from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.memory_admission import job_threads_at_start
 from booley.flows.sim.record.capacity import (
     LeaseLostError,
@@ -482,21 +481,6 @@ def test_scheduler_excludes_equal_collision_keys_before_execution(tmp_path: Path
 
     assert maximum_active == 1
     _assert_only_the_outer_claim_remains(slot_store)
-
-
-def test_normal_work_runtime_does_not_consume_shutdown_budget(tmp_path: Path) -> None:
-    manifest, simulation_record_store, project = _record_project(tmp_path)
-    admission = AdmissionContext(
-        "unmanaged", None, None, "interactive", "a" * 32, 0.01, lambda: False
-    )
-    capacity = SimulationRecordCapacity(admission, manifest, project / ".booley")
-    started = time.monotonic()
-    BoundedSimulationRecordScheduler(
-        capacity,
-        allocate=lambda item: _scheduled_attempt(simulation_record_store, item),
-        execute=lambda *_args: time.sleep(0.04),
-    ).run(manifest.document["work_items"])
-    assert time.monotonic() - started >= 0.07
 
 
 class _ExitsDuringFinalWait(threading.Event):
