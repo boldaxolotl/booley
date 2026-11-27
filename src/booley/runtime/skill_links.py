@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+from booley.config.feature_flags import feature_enabled
 from booley.core.boundary import BoundaryError, require_dict, require_int, require_str
 from booley.runtime.platform_paths import IS_WINDOWS
 
@@ -108,6 +109,17 @@ class _Action:
     expected: _Entry
     record_after: _Record | None
     record_on_failure: _Record | None
+
+
+#: Packaged skill name -> the Feature Flag that withholds it (ADR 0095).
+GATED_SKILLS: dict[str, str] = {"booley-reviewed-commit": "reviewed-commits"}
+
+
+def withheld_skills(features: frozenset[str]) -> frozenset[str]:
+    """The gated packaged skills whose Feature Flag *features* leaves off."""
+    return frozenset(
+        name for name, flag in GATED_SKILLS.items() if not feature_enabled(flag, features)
+    )
 
 
 def _name_key(name: str) -> str:
@@ -206,6 +218,7 @@ def _discover_source(
     *,
     manifest_name: str,
     desired_names: frozenset[str] | None,
+    withheld: frozenset[str],
 ) -> tuple[dict[str, _Desired], str | None]:
     try:
         metadata = root.lstat()
@@ -216,6 +229,7 @@ def _discover_source(
             children,
             manifest_name=manifest_name,
             desired_names=desired_names,
+            withheld=withheld,
         )
     except FileNotFoundError:
         return {}, f"packaged skills directory is missing: {root}"
@@ -228,17 +242,19 @@ def _discover_children(
     *,
     manifest_name: str,
     desired_names: frozenset[str] | None,
+    withheld: frozenset[str],
 ) -> tuple[dict[str, _Desired], str | None]:
     desired: dict[str, _Desired] = {}
     reserved = _name_key(manifest_name)
     allowed = None if desired_names is None else {_name_key(name) for name in desired_names}
+    withheld_keys = {_name_key(name) for name in withheld}
     for child in children:
         if not _regular_directory(child) or not _regular_file(child / "SKILL.md"):
             continue
         if _name_key(child.name) == reserved:
             return {}, f"reserved skill name {child.name!r} in packaged source"
         key = _name_key(child.name)
-        if allowed is not None and key not in allowed:
+        if (allowed is not None and key not in allowed) or key in withheld_keys:
             continue
         if key in desired:
             return {}, f"duplicate skill name {child.name!r} in packaged source"
@@ -670,6 +686,7 @@ def _preflight(
     *,
     manifest_name: str,
     desired_names: frozenset[str] | None,
+    withheld: frozenset[str],
 ) -> tuple[
     dict[str, _Desired],
     dict[str, _Record],
@@ -680,6 +697,7 @@ def _preflight(
         packaged_dir,
         manifest_name=manifest_name,
         desired_names=desired_names,
+        withheld=withheld,
     )
     if error:
         return {}, {}, {}, error
@@ -699,11 +717,13 @@ def reconcile_skill_links(
     manifest_name: str = MANIFEST_FILENAME,
     desired_names: frozenset[str] | None = None,
     adopt_unrecorded: bool = True,
+    withheld: frozenset[str] = frozenset(),
 ) -> SkillLinkReport:
     """Converge one agent skills directory while preserving foreign entries.
 
     ``allow_retarget`` is explicit authority to replace a manifest-owned link or
-    a content-equivalent packaged skill link. A fatal report guarantees that no
+    a content-equivalent packaged skill link. A *withheld* name is not desired, so
+    a manifest-owned link to it is removed. A fatal report guarantees that no
     filesystem mutation occurred.
     """
     desired, records, entries, fatal = _preflight(
@@ -711,6 +731,7 @@ def reconcile_skill_links(
         packaged_dir,
         manifest_name=manifest_name,
         desired_names=desired_names,
+        withheld=withheld,
     )
     if fatal:
         return SkillLinkReport(fatal=fatal)
