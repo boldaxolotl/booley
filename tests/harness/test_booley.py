@@ -91,7 +91,7 @@ def test_bare_booley_prints_help_and_the_host_gets_started(inside, monkeypatch, 
     with pytest.raises(SystemExit) as raised:
         _parse_argv(monkeypatch)
     assert raised.value.code == 0
-    out = capsys.readouterr().out
+    out = " ".join(capsys.readouterr().out.split())  # the hint wraps to the terminal width
     assert "usage: booley" in out
     assert ("Getting started" in out) is not inside
     assert ("booley session up" in out and "T3 Code thread" in out) is not inside
