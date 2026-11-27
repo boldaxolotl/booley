@@ -19,7 +19,6 @@ from tests.subprocess_budget import run_bounded_child
 from booley.commit_policy import policy
 from booley.core.booley_dir import own_booley_dir
 from booley.dev_support import validate_commit_msg
-from booley.runtime.project_discovery import _is_configured_booley_dir
 
 _posix_git = pytest.mark.skipif(
     shutil.which("git") is None or os.name == "nt",
@@ -49,9 +48,9 @@ def _git(cwd: Path, *args: str) -> None:
     assert result.returncode == 0, result.stderr
 
 
-def _write(path: Path, text: str) -> None:
+def _write(path: Path, text: str | bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(text.encode("utf-8"))
+    path.write_bytes(text if isinstance(text, bytes) else text.encode("utf-8"))
 
 
 @pytest.fixture
@@ -100,6 +99,8 @@ def test_configuration_readers_use_relocated_booley_dir(
     from booley.config.flow_enablement import flow_enabled
     from booley.core.config_paths import resolve_booley_toml
     from booley.flows.sim.record import flow_planning
+
+    # Reader under test; no public entry takes just a checkout root.
     from booley.harness.booley import _discover_project_mcp_tools
     from booley.runtime import shared_infra
 
@@ -108,16 +109,21 @@ def test_configuration_readers_use_relocated_booley_dir(
     state = root / "state"
 
     assert resolve_booley_toml(root) == state / "booley.toml"
+    # Reader under test; no public entry returns the whole parsed config.
     assert settings._load_booley_toml(root)["project"]["name"] == name
     is_main = checkout == "main"
     assert flow_enabled("lint", root) is not is_main
+    # Reader under test; T3 rewrites this test, so the private call stays until then.
     rtl_config = shared_infra._load_rtl_config(root)
     assert rtl_config is not None and rtl_config["project"]["name"] == name
+    # Only monkeypatch restores the previous settings cache at teardown.
     monkeypatch.setattr(agent, "_agent_settings", None)
     assert agent.load_agent_settings(root).clis == (("claude", "codex") if is_main else ("codex",))
+    # Reader under test; the public planners need a resolved Target first.
     suite = flow_planning._required_suite(root, ["t"], "sim_0")
     assert suite["source_path"] == "state/tests.toml"
     assert policy.stealth_enabled(root) is not is_main
+    # Readers under test; no public entry takes a checkout root.
     assert validate_commit_msg._has_project_config(root)
     assert validate_commit_msg._has_project_config(state)
 
@@ -128,6 +134,7 @@ def test_configuration_readers_use_relocated_booley_dir(
         return []
 
     monkeypatch.setattr("booley.mcp.registry.discover_mcp_tools", fake_discover)
+    # Reader under test; no public entry takes just a checkout root.
     assert _discover_project_mcp_tools(root) == []
     assert discovered == [state / "mcp_tools"]
 
@@ -144,23 +151,17 @@ def test_configuration_readers_use_relocated_booley_dir(
         ("[project\n", ".booley"),
         ("[project]\ndir = 3\n", ".booley"),
         ("[project]\ndir = ''\n", ".booley"),
+        (b"\xff\xfe[project]\n", ".booley"),
     ],
 )
 def test_stdlib_booley_dir_matches_own_booley_dir(
-    tmp_path: Path, toml: str | None, expected: str
+    tmp_path: Path, toml: str | bytes | None, expected: str
 ) -> None:
     if toml is not None:
         _write(tmp_path / "booley.toml", toml)
 
     assert policy.checkout_booley_dir(tmp_path) == own_booley_dir(tmp_path)
     assert policy.checkout_booley_dir(tmp_path) == Path(os.path.normpath(tmp_path / expected))
-
-
-def test_stdlib_booley_dir_tolerates_undecodable_configuration(tmp_path: Path) -> None:
-    (tmp_path / "booley.toml").write_bytes(b"\xff\xfe[project]\n")
-
-    assert policy.checkout_booley_dir(tmp_path) == tmp_path / ".booley"
-    assert own_booley_dir(tmp_path) == tmp_path / ".booley"
 
 
 def test_stdlib_booley_dir_without_tomllib_is_the_default(
@@ -172,30 +173,27 @@ def test_stdlib_booley_dir_without_tomllib_is_the_default(
     assert policy.checkout_booley_dir(tmp_path) == tmp_path / ".booley"
 
 
-def test_booley_dir_repository_matches_project_discovery(tmp_path: Path) -> None:
-    _write(tmp_path / ".git" / "HEAD", "ref: refs/heads/main\n")
+@pytest.mark.parametrize(
+    ("marker", "text", "is_checkout"),
+    [
+        (".git/HEAD", "ref: refs/heads/main\n", True),
+        (".git", "gitdir: /elsewhere\n", True),
+        (".git/not-head", "", False),
+    ],
+    ids=["directory", "gitdir-file", "empty-sentinel"],
+)
+def test_booley_dir_repository_needs_a_selecting_checkout(
+    tmp_path: Path, marker: str, text: str, is_checkout: bool
+) -> None:
+    _write(tmp_path / marker, text)
     _write(tmp_path / "booley.toml", '[project]\ndir = "cfg/state"\n')
     _write(tmp_path / "cfg" / "booley.toml", "[project]\n")
     selected = tmp_path / "cfg" / "state"
-    sibling = tmp_path / "cfg"
     selected.mkdir(parents=True)
 
-    assert policy.is_booley_dir_repository(selected) is True
-    assert policy.is_booley_dir_repository(sibling) is False
-    assert _is_configured_booley_dir(selected) is True
-    assert _is_configured_booley_dir(sibling) is False
+    assert policy.is_booley_dir_repository(selected) is is_checkout
+    assert policy.is_booley_dir_repository(tmp_path / "cfg") is False
     assert policy.is_booley_dir_repository(tmp_path / ".booley") is True
-
-
-def test_git_marker_accepts_a_gitdir_file_and_rejects_empty_sentinels(tmp_path: Path) -> None:
-    linked, empty, unreadable = tmp_path / "linked", tmp_path / "empty", tmp_path / "bare"
-    _write(linked / ".git", "gitdir: /elsewhere\n")
-    (empty / ".git").mkdir(parents=True)
-    unreadable.mkdir()
-
-    assert policy._has_git_marker(linked) is True
-    assert policy._has_git_marker(empty) is False
-    assert policy._has_git_marker(unreadable) is False
 
 
 def test_relocated_versioned_booley_dir_loads_policy_from_its_own_repository(
@@ -218,20 +216,23 @@ def test_project_inventory_discovers_relocated_project(
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
 
     assert root in inventory.discover_projects((tmp_path,))
+    # No public entry reports the status of an unremembered Project.
     assert inventory._status(root) is inventory.ProjectStatus.PRESENT
     assert inventory.remember_project(root) == root.resolve()
 
 
-def test_inventory_ignores_booley_dir_outside_the_checkout(tmp_path: Path) -> None:
+def test_inventory_ignores_booley_dir_outside_the_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from booley.projects import inventory
 
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     for index, value in enumerate((".", (tmp_path / "elsewhere").as_posix())):
         project = tmp_path / f"p{index}"
         _write(project / "booley.toml", f'[project]\ndir = "{value}"\n')
         (project / ".git").mkdir()
 
-        assert inventory._has_booley_dir(project) is False
-        assert inventory._is_initialized_checkout(project) is False
+    assert inventory.discover_projects((tmp_path,)) == ()
 
 
 def test_required_suite_reports_booley_dir_outside_the_checkout(tmp_path: Path) -> None:
@@ -244,4 +245,5 @@ def test_required_suite_reports_booley_dir_outside_the_checkout(tmp_path: Path) 
     _write(project / "booley.toml", f'[project]\ndir = "{elsewhere.as_posix()}"\n')
 
     with pytest.raises(SimulationRecordIntegrityError, match=r"no readable tests\.toml"):
+        # The public planners need a resolved Target and preview before reading the suite.
         flow_planning._required_suite(project, ["t"], "sim_0")
