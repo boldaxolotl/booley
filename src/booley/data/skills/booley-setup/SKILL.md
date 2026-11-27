@@ -98,11 +98,12 @@ where setup stands:
 
 ## Host or container?
 
-Steps 0–1 run on the **host** — the plan is written before the devcontainer
-exists. Greenfield mode's grill and `booley init --scaffold` are host steps
-too. Steps 2–4 run **inside the Sandbox**: the per-folder
-devcontainer entered via **Reopen in Container** in VS Code, or
-`booley session up` headlessly. There, each step edits files in the
+Steps 0–1 run on the **host** — the plan is written before anything runs in
+the Sandbox. Greenfield mode's grill and `booley init --scaffold` are host
+steps too. Steps 2–4 run **inside the Sandbox**, in a T3 Code thread on the
+main checkout: the user runs `booley session up` on the host, opens the
+pairing link it prints in a browser, starts a thread on the main checkout, and
+invokes this skill again there. There, each step edits files in the
 worktree and runs the `booley` CLI in a container terminal; the sandbox
 toolchain ships in the container, so EDA-tool probes and smoke checks run directly
 (`verilator --version`, or `booley flow <name> --quiet …` — runs any Booley Flow, passing
@@ -249,7 +250,8 @@ plain-English reason it matters.
 1. **Step 1 — environment · host.** Only if the plan's row 7 calls for it:
    write `.booley/docker/Dockerfile` and/or set `[sandbox].image` in
    the placeholder `booley.toml`, then re-run `booley init` (idempotent) so it
-   builds/pulls the planned image and re-seeds the devcontainer config. Skip
+   builds/pulls the planned image and re-seeds the issued Sandbox
+   specification. Skip
    entirely when the plan keeps the base image.
 2. **Stealth footprint · host.** Only if row 16 keeps `.booley/` hidden
    (including hybrid) with row 20 `enabled = true`. A fresh `booley init` records no Stealth choice
@@ -265,8 +267,9 @@ plain-English reason it matters.
    `[eda.<kind>]` request, registers the installation, adds the exact Project
    Grant, reseeds the issued specification, and runs host Doctor. Skip when
    every selected EDA tool is image-provisioned.
-4. **Enter the Sandbox** (Reopen in Container, or
-   `booley session up --rebuild`).
+4. **Enter the Sandbox.** Tell the user to run `booley session up --rebuild`
+   on the host, open the pairing link it prints, and invoke this skill again
+   in a T3 Code thread on the main checkout.
 5. **Steps 2 → 4 in order**, per the plan: finish config, AGENTS.md, then the doctor
    gate.
 6. After the Step 4 gate is green, set `status: complete` and write the final

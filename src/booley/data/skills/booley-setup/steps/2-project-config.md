@@ -1,7 +1,7 @@
 # Step 2 — Project config (.core, tests.toml, booley.toml)
 
 > Part of the `booley-setup` skill. Run in order, or invoke this step alone
-> with `booley-setup 2`. Most of this step runs inside the devcontainer. When
+> with `booley-setup 2`. Most of this step runs inside the Sandbox. When
 > the plan selects host-provisioned EDA, the small host-authority bootstrap
 > below runs first, before that Sandbox is created.
 > It **consumes the approved `SETUP-PLAN.md`** (Step 0): every decision-level
@@ -121,8 +121,9 @@ booley eda license register <name> \
 Do not invent those values from Project files. When the approved paid-site
 inputs are unavailable, omit the License Profile and record floating licensing
 as an experimental, unverified limitation. After the authority and host Doctor
-are clean, create the issued Sandbox with VS Code Rebuild/Reopen or
-`booley session up --rebuild`, then continue the rest of this step inside it.
+are clean, create the issued Sandbox with `booley session up --rebuild`, then
+continue the rest of this step inside it, in a T3 Code thread on the main
+checkout opened from the pairing link that command prints.
 
 ## Phase 1 — Gather config-level evidence
 
