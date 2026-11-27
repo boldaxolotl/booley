@@ -340,8 +340,8 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
 def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counters):
     # Private seam: the resume needs a typed execution without destination admission or origin
     # locking, so the test replaces `_simulation_record_policy`,
-    # `_lock_simulation_record_resume_origin`, the ordinary planning and the ordinary
-    # executor.
+    # `_lock_simulation_record_resume_origin`, the ordinary planning (real planning cannot
+    # reproduce this synthetic manifest) and the ordinary executor.
 
     from booley.flows.sim import flow as sim_flow
     from booley.flows.sim.flow import PreparedSimulationEndpoint

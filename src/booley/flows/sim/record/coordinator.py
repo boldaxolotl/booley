@@ -373,10 +373,9 @@ class SimulationRecord:
     ) -> tuple[SimulationRecordStore, SimulationRecordManifest, str | None]:
         if isinstance(request, NewSimulationRecordRunRequest):
             store = _new_store(request)
-            manifest = request.plan.manifest
-            if store.manifest_path.exists():
-                manifest = _stored_manifest(store, manifest)
-            else:
+            manifest = _continued_manifest(store, request)
+            if manifest is None:
+                manifest = request.plan.manifest
                 self._publish_manifest(store, manifest)
             authenticated_manifest_sha256 = None
         else:
@@ -503,8 +502,7 @@ class SimulationRecord:
             manifest,
             cast(tuple[Mapping[str, object], ...], manifest.document["work_items"]),
         )
-        if store.manifest_path.exists():
-            _stored_manifest(store, manifest)
+        if _continued_manifest(store, request) is not None:
             if self._manifest_published is not None:
                 self._manifest_published(store.manifest_path)
             return store.manifest_path
@@ -940,6 +938,18 @@ def _stored_manifest(
     stored = store.load_manifest()
     verify_workload(stored, planned)
     return stored
+
+
+def _continued_manifest(
+    store: SimulationRecordStore, request: NewSimulationRecordRunRequest
+) -> SimulationRecordManifest | None:
+    """The stored manifest this run continues; None when it publishes its own.
+
+    A named ``record_directory`` never gets a new manifest: a missing one is refused.
+    """
+    if request.record_directory is None and not store.manifest_path.exists():
+        return None
+    return _stored_manifest(store, request.plan.manifest)
 
 
 def _new_store(request: NewSimulationRecordRunRequest) -> SimulationRecordStore:

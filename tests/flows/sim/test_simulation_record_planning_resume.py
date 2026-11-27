@@ -313,6 +313,28 @@ def test_a_new_run_request_continues_the_record_it_names(tmp_path: Path) -> None
     assert store.manifest_path.read_bytes() == manifest_bytes
 
 
+@pytest.mark.parametrize("write", [SimulationRecord.publish_new, SimulationRecord.run])
+def test_a_continued_record_without_its_manifest_is_refused(tmp_path: Path, write) -> None:
+    project = tmp_path / "project"
+    (project / ".booley").mkdir(parents=True)
+    store = SimulationRecordStore(tmp_path / "reports/sim/1/targets/sim/record")
+    store.root.mkdir(parents=True)
+    request = NewSimulationRecordRunRequest(
+        create_simulation_record_plan(_manifest_for(("a",))),
+        project,
+        None,
+        SimulationRecordPolicy(),
+        tmp_path / "reports/sim/2",
+        _admission(),
+        record_directory=store.root,
+    )
+
+    with pytest.raises(SimulationRecordIntegrityError):
+        write(SimulationRecord(_NoEdaExecutor()), request)
+
+    assert not store.manifest_path.exists()
+
+
 def test_resume_recovers_interrupted_lanes_before_it_runs_pending_items(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

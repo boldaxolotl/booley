@@ -609,10 +609,11 @@ class SimulateFlow(
     def _shared_baseline_worktree(self, revision: str) -> Path:
         """This invocation's one checkout of *revision*, open until publication ends.
 
-        Only a record with baseline prerequisites names such a revision, and resume
-        refuses that record before opening it. The scratch path depends only on the
-        process and revision, so a second opening while the first is held fails in
-        ``git worktree add`` (#1959); callers share this one. Call from the candidate checkout: ``self.args.work_dir`` is the
+        Resume opens it only for a manifest whose own Target role is a Cycle Count
+        baseline: a record that has baseline prerequisites is refused first. The
+        scratch path depends only on the process and revision, so a second opening
+        while the first is held fails in ``git worktree add`` (#1959); callers share
+        this one. Call from the candidate checkout: ``self.args.work_dir`` is the
         Project Root.
         """
         worktrees = self.baseline_worktrees
