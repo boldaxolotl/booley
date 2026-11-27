@@ -265,8 +265,10 @@ def test_omitted_target_with_resume_is_accepted(entry, project, monkeypatch):
 
     write_targets(project, "sim")
     handle = TargetCatalog.build(project).select("chosen", for_flow="sim")
+    target = dict.fromkeys(("vlnv", "name", "role", "revision"), "") | {"selector": "chosen"}
     manifest = SimpleNamespace(
-        document={"work_items": (), "required_suite": {"names": [], "default_invocation": True}}
+        document={"target": target, "workload": {"trace": False}, "work_items": ()}
+        | {"required_suite": {"names": [], "default_invocation": True}}
     )
     validated = SimpleNamespace(
         target_handles=(handle,),
@@ -283,8 +285,8 @@ def test_omitted_target_with_resume_is_accepted(entry, project, monkeypatch):
     observed = []
 
     def resume(self, selected):
-        assert selected is validated
-        observed.append(selected.target_handles[0].identity)
+        assert selected.resume is validated
+        observed.append(selected.resume.target_handles[0].identity)
         return EndpointOutcome(report_text="RESULT: PASS")
 
     # Resuming runs EDA tools and needs an authenticated manifest.

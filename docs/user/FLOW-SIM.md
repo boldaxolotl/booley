@@ -484,7 +484,7 @@ starts,
 and the verdict card repeats it. Ask the agent to resume the run, or:
 
 ```bash
-booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
+booley flow sim --resume-from <manifest.json> --dry-run   # list the Test Runs still to run; runs nothing
 booley flow sim --resume-from <manifest.json>
 ```
 
@@ -500,9 +500,11 @@ booley flow sim --resume-from <manifest.json>
   command, with the same Test Runs, seeds and report directory.
 - A test with a recorded result is finished, even if it failed. Resume never
   re-runs failures; start a new run for that.
-- Resume refuses (exit `2`) when the Target's sources, Tests or simulation
-  settings have changed since the original run. The refusal names what changed
-  and, like the coverage refusal above, prints the command for a new run.
+- Resume refuses (exit `2`) after a new commit, or when the Target's sources,
+  Tests or simulation settings have changed since the original run: start a new
+  run. For uncommitted changes the refusal names what changed and, like the
+  coverage refusal above, prints the command. A moved checkout or a changed
+  simulator refuses too.
 - Don't edit Simulation Record files by hand: resume checks that they are
   intact.
 

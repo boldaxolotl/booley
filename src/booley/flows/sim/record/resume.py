@@ -114,6 +114,11 @@ def validate_resume_manifest(
     # A copied physical path names the same lexical origin, so receipts stay consistent.
     canonical = lexical_booley_path(booley_dir, canonical)
     candidate = _load_node(canonical, booley_dir)
+    if candidate.manifest.document["prerequisites"]:
+        raise SimulationRecordIntegrityError(
+            "this Simulation Record measured Cycle Counts against a baseline revision, "
+            "which resume no longer runs; start a new run instead"
+        )
     invocation = _origin_invocation(canonical)
     prerequisites: list[ValidatedManifestNode] = []
     _walk_prerequisites(candidate, invocation, frozenset({canonical}), prerequisites, booley_dir)
