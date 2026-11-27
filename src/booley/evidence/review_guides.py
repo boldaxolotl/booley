@@ -8,11 +8,11 @@ holds only its review checklist, so every category reports in the same shape.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
+from booley.core.file_hash import file_sha256
 from booley.runtime.paths import refs_dir
 
 
@@ -71,7 +71,7 @@ def review_guides_root() -> Path:
 def guide_digest(guide: ReviewGuide) -> str:
     """SHA-256 of the guide file's bytes; a missing or unreadable file digests as empty."""
     try:
-        return hashlib.sha256((review_guides_root() / guide.path).read_bytes()).hexdigest()
+        return file_sha256(review_guides_root() / guide.path)
     except OSError:
         return ""
 
