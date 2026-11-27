@@ -277,6 +277,7 @@ async def test_a_boundary_lookup_without_a_peer_is_retried(monkeypatch, tmp_path
     proc = fake_proc(tmp_path / "proc", {50001: (IDENTITY.pid, None)})
     (proc / str(IDENTITY.pid) / "environ").write_bytes(b"T3CODE_THREAD_ID=t3-1\0")
     resolve = functools.partial(agent_thread.resolve_agent_thread, proc_root=proc)
+    # The server names no /proc of its own, so the thread read is pointed at the fake one.
     monkeypatch.setattr(server, "resolve_agent_thread", resolve)
     monkeypatch.setattr(session_peer, "observed_peer", lambda _request: IDENTITY)
     ctx = context()
@@ -298,8 +299,28 @@ async def test_routed_checkout_survives_a_failing_peer_lookup(monkeypatch, tmp_p
 
     monkeypatch.setattr(session_peer, "observed_peer", broken)
     ctx = context()
+    ctx.session.client_params.client_info.name = "claude-code"
     ctx.request = object()
     request = await server._request_context(
         ctx, CallToolRequestParams(name="ordinary"), CallerCheckout(None, tmp_path)
     )
     assert request.checkout == tmp_path and request.agent is None
+
+
+@pytest.mark.asyncio
+async def test_a_codex_call_names_its_thread_without_a_peer_lookup(monkeypatch):
+    looked_up = []
+    monkeypatch.setattr(session_peer, "observed_peer", looked_up.append)
+    ctx = context()
+    ctx.request = object()
+    params = CallToolRequestParams(name="ordinary", _meta={"threadId": "cx-1"})
+    request = await server._request_context(ctx, params, None)
+    assert request.agent == agent_thread.AgentThread("codex", "cx-1")
+    assert looked_up == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("thread", ["", "t" * 1025, "a\nb", 7])
+async def test_an_invalid_thread_id_is_not_recorded(thread):
+    agent = await agent_thread.resolve_agent_thread("codex", {"threadId": thread}, None)
+    assert agent == agent_thread.AgentThread("codex", None)

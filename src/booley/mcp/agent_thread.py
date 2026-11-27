@@ -31,6 +31,11 @@ class AgentThread:
     thread: str | None
 
 
+def reads_peer(client_name: str, metadata: Mapping[str, Any]) -> bool:
+    """Whether naming this caller's thread needs its loopback peer: Claude's, not Codex's."""
+    return not codex_client(client_name, metadata) and "claude" in client_name.lower()
+
+
 async def resolve_agent_thread(
     client_name: str,
     metadata: Mapping[str, Any],
@@ -46,7 +51,7 @@ async def resolve_agent_thread(
     if codex_client(client_name, metadata):
         thread = metadata.get("threadId")
         return AgentThread("codex", str(thread) if valid_thread_id(thread) else None)
-    if "claude" not in client_name.lower():
+    if not reads_peer(client_name, metadata):
         return None
     thread = (
         await asyncio.to_thread(_t3_thread, peer, proc_root)

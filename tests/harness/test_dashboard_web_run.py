@@ -438,9 +438,7 @@ def test_unfinished_jobs_are_named_oldest_first_whatever_the_listing_order(world
     _queued_world(world)
     jobs = JobReader(world.booley, proc_root=world.proc).read().jobs
     listed = tuple(sorted(jobs, key=lambda job: job.record.run_id, reverse=reverse))
-    snapshot = model.DashboardSnapshot(JobSnapshot(listed))
-
-    occupants = model.worktree_occupants(snapshot, world.wt)
+    occupants = model.worktree_occupants(JobSnapshot(listed), world.wt)
 
     assert occupants.unfinished_jobs == ("run-r", "run-q")
 

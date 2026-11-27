@@ -46,7 +46,10 @@ def job_prefix(endpoint: str) -> str:
 
 @dataclass
 class HandleMap:
-    """Display allocations and direct aliases, loaded under the owner's writer lock."""
+    """Job handle allocations, loaded under the owner's writer lock.
+
+    ``aliases`` is only carried through load and save: older versions require the field.
+    """
 
     entries: dict[str, str] = field(default_factory=dict)
     aliases: dict[str, str] = field(default_factory=dict)
@@ -60,28 +63,18 @@ class HandleMap:
             "next_number": self.next_number,
         }
 
-    def labels(self) -> dict[str, str]:
-        entries = self.entries
-        return {k: entries[v] for k, v in self.aliases.items() if v in entries} | entries
-
     def reserve(self, key: str, prefix: str) -> str:
-        """Reserve *key*'s handle, keeping the one it or its alias already has."""
+        """Reserve *key*'s handle, keeping the one it already has."""
         require_str_value(key, field="handle key")
-        target = key if key in self.entries else self.aliases.get(key, key)
-        if key in self.aliases and key not in self.entries and target not in self.entries:
-            raise ValueError("requested handle alias has no allocation")
-        if target not in self.entries:
+        if key not in self.entries:
             self.entries[key] = f"{prefix}{self.next_number}"
             self.next_number += 1
-        return self.entries[target]
+        return self.entries[key]
 
     def drop(self, keys: set[str]) -> None:
-        """Remove *keys* and every alias pointing at them; an empty map restarts numbering."""
+        """Remove *keys*; an empty map restarts numbering."""
         for key in keys:
             self.entries.pop(key, None)
-        self.aliases = {
-            name: target for name, target in self.aliases.items() if target not in keys
-        }
         if not self.entries:
             self.aliases.clear()
             self.next_number = 1
@@ -172,9 +165,9 @@ class HandleStore:
             return handles
 
     def snapshot(self) -> tuple[dict[str, str], tuple[str, ...]]:
-        """Handles per run ID and alias, plus why they are unavailable."""
+        """Handles per run ID, plus why they are unavailable."""
         try:
-            return self.load().labels(), ()
+            return self.load().entries, ()
         except (OSError, ValueError, UnicodeError, RecursionError) as exc:
             return {}, (f"Job handles unavailable: {exc}",)
 

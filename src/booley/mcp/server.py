@@ -76,7 +76,7 @@ from booley.mcp import (
     review_tool,
     session_peer,
 )
-from booley.mcp.agent_thread import resolve_agent_thread
+from booley.mcp.agent_thread import reads_peer, resolve_agent_thread
 from booley.mcp.application import (
     McpApplication,
     McpDispatchResult,
@@ -2177,9 +2177,10 @@ async def _request_context(
     try:
         name, meta = _client_name_and_meta(context, params)
         peer = None if caller is None else caller.peer
-        if peer is None and context is not None and context.request is not None:
+        transport = None if context is None else context.request
+        if peer is None and transport is not None and reads_peer(name, meta):
             # Also retries a boundary lookup that found no peer.
-            peer = await asyncio.to_thread(session_peer.observed_peer, context.request)
+            peer = await asyncio.to_thread(session_peer.observed_peer, transport)
         agent = await resolve_agent_thread(name, meta, peer)
     except Exception:
         logger.debug("Caller agent lookup unavailable", exc_info=True)

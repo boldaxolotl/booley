@@ -65,7 +65,7 @@ def test_concurrent_processes_allocate_unique_stable_jobs(tmp_path):
 )
 def test_invalid_map_is_diagnosed_never_reset(tmp_path, mutation):
     store = handles.HandleStore(tmp_path)
-    store.save(handles.HandleMap({"one": "S1"}, next_number=2))
+    store.save(handles.HandleMap({"one": "J-SIM1"}, next_number=2))
     data = json.loads(store.path.read_bytes())
     data.update(mutation)
     store.path.write_text(json.dumps(data))
@@ -160,26 +160,23 @@ def test_shape_valid_maps_remain_usable(tmp_path_factory):
     for counter in [-1, 1, 99]:
         tmp_path = tmp_path_factory.mktemp(str(counter))
         store = handles.HandleStore(tmp_path)
-        entries = {"old": "S7", "duplicate": "S7", "unusual": "display", "collision": "S3"}
-        aliases = {"prior": "old", "dangling": "missing", "collision": "old"}
+        entries = {"old": "J-SIM7", "duplicate": "J-SIM7", "unusual": "display"}
+        aliases = {"prior": "old", "dangling": "missing"}
         store.save(handles.HandleMap(dict(entries), dict(aliases), counter))
         before = store.path.read_bytes()
         state = store.load()
         assert state.next_number == max(counter, 8), counter
-        assert state.labels() == {**entries, "prior": "S7"}, counter
-        assert state.reserve("prior", "S") == "S7", counter
-        assert (state.entries, state.aliases) == (entries, aliases), counter
-        assert state.reserve("new", "S") == f"S{max(counter, 8)}", counter
-        with pytest.raises(ValueError):
-            state.reserve("dangling", "S")
-        assert state.aliases["dangling"] == "missing", counter
+        assert store.snapshot() == (entries, ()), counter
+        assert state.reserve("old", "J-SIM") == "J-SIM7", counter
+        assert state.reserve("new", "J-SIM") == f"J-SIM{max(counter, 8)}", counter
+        assert state.aliases == aliases, counter
         assert store.path.read_bytes() == before, counter
 
 
-def test_dropping_an_entry_drops_its_aliases_and_an_empty_map_restarts():
+def test_an_emptied_map_restarts_numbering_and_drops_stored_aliases():
     state = handles.HandleMap({"one": "J-SIM1", "two": "J-SIM2"}, {"prior": "one"}, 3)
     state.drop({"one"})
-    assert (state.entries, state.aliases, state.next_number) == ({"two": "J-SIM2"}, {}, 3)
+    assert (state.entries, state.next_number) == ({"two": "J-SIM2"}, 3)
     state.drop({"two"})
     assert state == handles.HandleMap()
 
@@ -205,7 +202,7 @@ def test_handle_map_read_survives_transient_sharing_error(tmp_path, monkeypatch)
 
     store = _saved_handle_store(tmp_path)
     attempts = hold_opens(monkeypatch, {store.path: 1})
-    assert store.load().labels() == {"run-1": "J-SIM1"}
+    assert store.load().entries == {"run-1": "J-SIM1"}
     assert attempts[store.path] == 2
 
 

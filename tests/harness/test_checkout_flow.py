@@ -687,8 +687,8 @@ def test_checkout_flow_keeps_shared_state_in_main(
 
 
 @linux_only
-def test_checkout_flow_job_keeps_the_session_of_its_request(world: World) -> None:
-    """#5310: a measuring session's Flow Job stays its Job after the Flow rewrote the record."""
+def test_checkout_flow_job_keeps_the_agent_of_its_request(world: World) -> None:
+    """#5310: a measuring agent's Flow Job stays its Job after the Flow rewrote the record."""
     from booley.harness.checkout_flow import run_checkout_flow
 
     # No timeout: the Job records the standalone bound, and the preflight runs within it.

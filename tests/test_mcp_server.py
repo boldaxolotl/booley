@@ -771,6 +771,15 @@ class TestBooleyStatus:
         assert health.startswith("Health: ")
         assert closing == "```"
 
+    def test_format_status_card_survives_a_removed_server_cwd(self, monkeypatch):
+        def gone():
+            raise FileNotFoundError("the server cwd was removed")
+
+        # Windows refuses to remove a process's cwd, so the removal is simulated.
+        monkeypatch.setattr(server.Path, "cwd", gone)
+
+        assert "Branch: unknown\nCheckout: unknown\n" in server._format_status_card([], None)
+
 
 class TestBooleySleep:
     def test_hidden_by_default(self, monkeypatch):
