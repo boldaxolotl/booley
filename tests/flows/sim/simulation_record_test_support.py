@@ -1197,12 +1197,12 @@ def _scheduled_attempt(store: SimulationRecordStore, item) -> ScheduledAttempt:
 
 
 class _ParallelState:
-    def __init__(self, build_root, run_log, handle, first_finisher, schedule_seed):
+    def __init__(self, build_root, run_log, handle, first_finisher):
         self.build_root = build_root
         self.run_log = run_log
         self.handle = handle
         self.first_finisher = first_finisher
-        self.schedule_seed = schedule_seed
+        self.clock: Callable[[], float] = time.monotonic
         self.barrier = threading.Barrier(2, timeout=_PARALLEL_SYNC_TIMEOUT_S)
         self.first_finished = threading.Event()
         self.interval_gate = threading.Lock()
@@ -1243,9 +1243,9 @@ class _ParallelGroup:
     def launch_bundle(self, bundle_root: Path, evidence_root: Path, run_cwd: Path):
         del bundle_root, evidence_root, run_cwd
         name = self.names[0]
-        started = time.monotonic()
+        started = self.state.clock()
         self._coordinate(name)
-        finished = time.monotonic()
+        finished = self.state.clock()
         with self.state.interval_gate:
             self.state.intervals.append((name, started, finished))
             self.state.completion_order.append(name)
@@ -1270,7 +1270,6 @@ class _ParallelGroup:
         if name not in {"beta", "gamma"}:
             return
         self.state.barrier.wait()
-        time.sleep(0.001 * self.state.schedule_seed)
         if name == self.state.first_finisher:
             self.state.first_finished.set()
         else:
@@ -1323,7 +1322,7 @@ def _validated_simulation_record(store, manifest, project, handle) -> ValidatedR
 def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
     manifest = _three_item_manifest(runtime_execution_id or "")
     plan = create_simulation_record_plan(manifest)
-    project, state = _parallel_environment(tmp_path, "beta", 0)
+    project, state = _parallel_environment(tmp_path, "beta")
     monkeypatch.setattr(
         "booley.flows.sim.record.serial_execution.TargetCatalog.build",
         lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
@@ -1406,7 +1405,7 @@ def _set_runtime_execution_id(
         monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", runtime_execution_id)
 
 
-def _parallel_environment(tmp_path, first_finisher, schedule_seed):
+def _parallel_environment(tmp_path, first_finisher):
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
@@ -1422,7 +1421,7 @@ def _parallel_environment(tmp_path, first_finisher, schedule_seed):
         selector="sim",
         eda_tool="icarus",
     )
-    return project, _ParallelState(build_root, run_log, handle, first_finisher, schedule_seed)
+    return project, _ParallelState(build_root, run_log, handle, first_finisher)
 
 
 def _facts(

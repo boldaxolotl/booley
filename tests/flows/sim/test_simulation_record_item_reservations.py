@@ -286,7 +286,7 @@ def _scenario(
     *held_at_admission* 50 MiB claims are held (``early_holders``) when the Flow is admitted.
     """
     tmp_path.mkdir(parents=True, exist_ok=True)
-    project, state = _parallel_environment(tmp_path, "beta", 0)
+    project, state = _parallel_environment(tmp_path, "beta")
     state.barrier = threading.Barrier(1)  # one item at a time: nothing waits for a peer
     booley_dir = project / ".booley"
     pin_budget(monkeypatch, 1000)
