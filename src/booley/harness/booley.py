@@ -562,6 +562,8 @@ def _build_parser(features: frozenset[str] = frozenset()) -> argparse.ArgumentPa
 
 
 def _add_dashboard_subparser(sub: argparse._SubParsersAction) -> None:
+    from booley.runtime.sandbox_layout import DASHBOARD_PORT
+
     dashboard = sub.add_parser(
         "dashboard",
         help="Serve the web Dashboard",
@@ -572,7 +574,7 @@ def _add_dashboard_subparser(sub: argparse._SubParsersAction) -> None:
         type=_tcp_port,
         default=None,
         metavar="PORT",
-        help="Port to serve on (default: 8090)",
+        help=f"Port to serve on (default: {DASHBOARD_PORT})",
     )
 
 
@@ -1021,7 +1023,7 @@ def _add_session_subparser(sub) -> None:
     up_p.add_argument(
         "--no-ui",
         action="store_true",
-        help="Start the Sandbox without T3 Code, its relay and a pairing link",
+        help="Start the Sandbox without T3 Code, its relay, the Dashboard and a pairing link",
     )
     session_sub.add_parser("pair", help="Print a new T3 Code pairing link for the running Sandbox")
     enter_p = session_sub.add_parser(
@@ -1102,9 +1104,10 @@ def _add_utility_subparsers(sub) -> None:
 
 
 def _cmd_dashboard(args: argparse.Namespace, project_root: Path) -> int:
-    from booley.harness.dashboard.web import DEFAULT_PORT, serve
+    from booley.harness.dashboard.web import serve
+    from booley.runtime.sandbox_layout import DASHBOARD_PORT
 
-    return serve(project_root, args.port or DEFAULT_PORT)
+    return serve(project_root, args.port or DASHBOARD_PORT)
 
 
 def _add_targets_subparser(sub) -> None:

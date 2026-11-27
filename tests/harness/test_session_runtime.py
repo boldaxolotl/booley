@@ -1229,7 +1229,7 @@ class TestUp:
         assert "superseded" not in caplog.text
 
     @pytest.mark.skipif(sys.platform == "win32", reason="the registrar runs in the Linux Sandbox")
-    def test_post_start_starts_t3_code_once_and_registers_the_project(
+    def test_post_start_starts_t3_code_and_the_dashboard_once(
         self,
         workspace: Path,
         up_docker: SandboxDocker,
@@ -1247,17 +1247,20 @@ class TestUp:
         sr.up(workspace)
         before_down = len(up_docker.calls)
         sr.down(workspace)
-        t3.running = False  # the removed container's processes are gone
+        t3.running = t3.dashboard_running = False  # the removed container's processes are gone
         sr.up(workspace)
 
         base = "/home/agent/.t3"
         serve = ["t3", "serve", "--host", "127.0.0.1", "--port", "3773", "--base-dir", base]
         assert t3.served == [[*serve, str(workspace)]] * 2
         assert t3.added == [["t3", "project", "add", "--base-dir", base, str(workspace)]] * 2
-        assert [("t3:started" in run, "t3:running" in run) for run in runs] == [
-            (True, False),
-            (False, True),
-        ] * 2
+        dashboard = [sys.executable, "-m", "booley.harness.booley", "dashboard"]
+        assert t3.dashboards == [dashboard] * 2
+        for name in ("t3", "dashboard"):
+            assert [(f"{name}:started" in run, f"{name}:running" in run) for run in runs] == [
+                (True, False),
+                (False, True),
+            ] * 2
         later = up_docker.calls[before_down:]
         (created,) = [call for call in later if call[1] == "run"]
         mounts = _flag_values(created, "--mount")
@@ -2304,9 +2307,9 @@ class TestT3CodeRelay:
         status, _ = relay_cli.run(["status"], workspace)
 
         assert "pair#token" not in no_ui
-        assert all("t3:off" in run for run in runs[:2])  # the create and the start hook
-        assert off == "running\nUI: off\n"
-        assert len(t3.served) == 1
+        assert all("t3:off dashboard:off" in run for run in runs[:2])  # create and start hook
+        assert off == "running\nUI: off\nDashboard: off\n"
+        assert len(t3.served) == len(t3.dashboards) == 1
         (port,) = re.findall(r"T3 Code relay: 127\.0\.0\.1:(\d+)", up)
         base = f"http://127.0.0.1:{port}"
         assert f"{base}/pair#token={TOKEN}-1" in up
@@ -2314,9 +2317,13 @@ class TestT3CodeRelay:
         assert [
             (cmd[cmd.index("--ttl") + 1], cmd[cmd.index("--base-url") + 1]) for cmd in t3.paired
         ] == [("5m", base)] * 2
-        assert status.endswith(f"T3 Code: running\nT3 Code relay: 127.0.0.1:{port}\n")
+        ui = f"T3 Code: running\nT3 Code relay: 127.0.0.1:{port}\nDashboard: "
+        assert status.endswith(f"{ui}running\n")
         files = (f.read_text(errors="replace") for f in tmp_path.rglob("*") if f.is_file())
         assert TOKEN not in "".join([caplog.text, *runs, *files])
+        t3.dashboard_running = False
+        dead, _ = relay_cli.run(["status"], workspace)
+        assert dead.endswith(f"{ui}not answering on 127.0.0.1:8090\n")
 
     @linux_only
     def test_a_foreign_listener_on_the_t3_code_port_gets_no_pairing_link(
@@ -2362,10 +2369,11 @@ class TestT3CodeRelay:
         from booley.runtime import t3_relay
 
         _running_headless(attached.docker, workspace)
-        attached.docker.exec_reply = lambda argv: completed(stdout="running\n")
+        attached.docker.exec_reply = lambda argv: completed(stdout="running running\n")
         _record_relay(workspace, monkeypatch, "UNKNOWN")
 
-        assert sr.ui_status(workspace) == "T3 Code: running\nT3 Code relay: unknown"
+        status = "T3 Code: running\nT3 Code relay: unknown\nDashboard: running"
+        assert sr.ui_status(workspace) == status
         with pytest.raises(t3_relay.T3RelayError, match="cannot tell whether"):
             sr.pairing_link(workspace)
 
@@ -2497,47 +2505,132 @@ _RELAY_UNJUDGED = (
     "T3 Code runs",
     "",
 )
-_UI_OFF = _t3_not_applicable("the UI is off (booley session up --no-ui)")
+
+
+def _dashboard_not_applicable(reason: str) -> tuple[str, str, str]:
+    return ("skip", f"Dashboard check not applicable - {reason}", "")
+
+
+_NO_UI = "the UI is off (booley session up --no-ui)"
+_UI_OFF = [*_t3_not_applicable(_NO_UI), _dashboard_not_applicable(_NO_UI)]
+_STOPPED = "the Sandbox is not running"
+_VSCODE = "VS Code owns the Sandbox, which has no T3 Code relay"
+_DASH_OK = ("pass", "Dashboard answers on 127.0.0.1:8090 in the Sandbox", "")
+_DASH_DOWN = ("fail", "Dashboard does not answer on 127.0.0.1:8090 in the Sandbox")
+_DASH_OFF = (*_DASH_DOWN, "run `booley session up`, which starts the Dashboard")
+_REBUILD_IN_VSCODE = "run `Dev Containers: Rebuild Container` in VS Code"
+_DASH_OFF_VSCODE = (*_DASH_DOWN, f"{_REBUILD_IN_VSCODE}, which starts the Dashboard")
+_NO_AGENT_CLI = "the Sandbox allows no Agent CLI"
+_DASH_UNKNOWN = (
+    "fail",
+    "Doctor cannot tell whether the Dashboard answers in the Sandbox",
+    "run `booley session up`, then rerun `booley doctor`",
+)
+_DASH_UNKNOWN_VSCODE = (*_DASH_UNKNOWN[:2], f"{_REBUILD_IN_VSCODE}, then rerun `booley doctor`")
 
 
 @pytest.mark.parametrize(
-    ("sandbox", "t3", "relay", "expected"),
+    ("sandbox", "reply", "relay", "expected"),
     [
-        pytest.param("headless", "running", "RUNNING", [_SERVER_OK, _RELAY_OK], id="healthy"),
-        pytest.param("headless", "off", "RUNNING", [_SERVER_OFF, _RELAY_OK], id="server-off"),
-        pytest.param("headless", "running", "DEAD", [_SERVER_OK, _RELAY_DOWN], id="relay-died"),
-        pytest.param("headless", "off", "DEAD", [_SERVER_OFF, _RELAY_DOWN], id="both-died"),
         pytest.param(
             "headless",
-            "running",
+            "running running",
+            "RUNNING",
+            [_SERVER_OK, _RELAY_OK, _DASH_OK],
+            id="healthy",
+        ),
+        pytest.param(
+            "headless",
+            "off running",
+            "RUNNING",
+            [_SERVER_OFF, _RELAY_OK, _DASH_OK],
+            id="server-off",
+        ),
+        pytest.param(
+            "headless",
+            "running running",
+            "DEAD",
+            [_SERVER_OK, _RELAY_DOWN, _DASH_OK],
+            id="relay-died",
+        ),
+        pytest.param(
+            "headless",
+            "off running",
+            "DEAD",
+            [_SERVER_OFF, _RELAY_DOWN, _DASH_OK],
+            id="both-died",
+        ),
+        pytest.param(
+            "headless",
+            "running running",
             "UNKNOWN",
-            [_SERVER_OK, _RELAY_UNOBSERVABLE],
+            [_SERVER_OK, _RELAY_UNOBSERVABLE, _DASH_OK],
             id="relay-unobservable",
         ),
         pytest.param(
-            "headless", "running", None, [_SERVER_OK, _RELAY_DOWN], id="relay-unrecorded"
+            "headless",
+            "running running",
+            None,
+            [_SERVER_OK, _RELAY_DOWN, _DASH_OK],
+            id="relay-unrecorded",
         ),
         pytest.param(
-            "headless", "", None, [_SERVER_UNKNOWN, _RELAY_UNJUDGED], id="server-unknown"
+            "headless",
+            "",
+            None,
+            [_SERVER_UNKNOWN, _RELAY_UNJUDGED, _DASH_UNKNOWN],
+            id="server-unknown",
+        ),
+        pytest.param(
+            "headless",
+            "running off",
+            "RUNNING",
+            [_SERVER_OK, _RELAY_OK, _DASH_OFF],
+            id="dashboard-off",
         ),
         pytest.param(
             "stopped",
-            "off",
+            "off off",
             "RUNNING",
-            _t3_not_applicable("the Sandbox is not running"),
+            [*_t3_not_applicable(_STOPPED), _dashboard_not_applicable(_STOPPED)],
             id="stopped",
         ),
-        pytest.param("headless", "off", None, _UI_OFF, id="no-ui"),
+        pytest.param("headless", "off off", None, _UI_OFF, id="no-ui"),
         pytest.param(
-            "headless", "port-taken", "RUNNING", [_SERVER_TAKEN, _RELAY_OK], id="port-taken"
+            "headless",
+            "port-taken running",
+            "RUNNING",
+            [_SERVER_TAKEN, _RELAY_OK, _DASH_OK],
+            id="port-taken",
         ),
-        pytest.param("headless", "port-taken", None, _UI_OFF, id="no-ui-port-taken"),
+        pytest.param("headless", "port-taken off", None, _UI_OFF, id="no-ui-port-taken"),
+        pytest.param(
+            "headless",
+            "off running",
+            None,
+            [*_t3_not_applicable(_NO_UI), _DASH_OK],
+            id="no-ui-hand-started",
+        ),
         pytest.param(
             "editor",
-            "off",
+            "off off",
             None,
-            _t3_not_applicable("VS Code owns the Sandbox, which has no T3 Code relay"),
+            [*_t3_not_applicable(_VSCODE), _DASH_OFF_VSCODE],
             id="vscode",
+        ),
+        pytest.param(
+            "editor",
+            "off skipped",
+            None,
+            [*_t3_not_applicable(_VSCODE), _dashboard_not_applicable(_NO_AGENT_CLI)],
+            id="vscode-no-agent-cli",
+        ),
+        pytest.param(
+            "editor",
+            "",
+            None,
+            [*_t3_not_applicable(_VSCODE), _DASH_UNKNOWN_VSCODE],
+            id="vscode-unknown",
         ),
     ],
 )
@@ -2546,7 +2639,7 @@ def test_t3_code_ui_inspection(
     attached: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
     sandbox: str,
-    t3: str,
+    reply: str,
     relay: str | None,
     expected: list[tuple[str, str, str]],
 ) -> None:
@@ -2554,7 +2647,7 @@ def test_t3_code_ui_inspection(
     attached.docker.containers[name] = _sandbox_state(
         workspace, vscode=sandbox == "editor", running=sandbox != "stopped", name=name
     )
-    attached.docker.exec_reply = lambda _argv: completed(0 if t3 else 1, f"{t3}\n")
+    attached.docker.exec_reply = lambda _argv: completed(0 if reply else 1, f"{reply}\n")
     if relay is not None:
         _record_relay(workspace, monkeypatch, relay)
 
@@ -2562,24 +2655,45 @@ def test_t3_code_ui_inspection(
 
 
 @pytest.mark.parametrize(
-    ("foreign", "server"),
+    ("foreign", "server", "dashboard"),
     [
-        pytest.param(False, "T3 Code does not answer in the Sandbox; ", id="off"),
-        pytest.param(True, "127.0.0.1:3773 in the Sandbox is held by", id="port-taken"),
+        pytest.param(
+            False,
+            "T3 Code does not answer in the Sandbox; ",
+            ("skip", "Dashboard does not answer in the Sandbox; "),
+            id="off",
+        ),
+        pytest.param(
+            True,
+            "127.0.0.1:3773 in the Sandbox is held by",
+            ("pass", "Dashboard answers on 127.0.0.1:8090 in the Sandbox"),
+            id="port-taken",
+        ),
     ],
 )
 def test_t3_code_inspection_in_the_sandbox_skips_an_unproven_server(
-    monkeypatch: pytest.MonkeyPatch, foreign: bool, server: str
+    monkeypatch: pytest.MonkeyPatch, foreign: bool, server: str, dashboard: tuple[str, str]
 ) -> None:
     from booley.runtime import t3_inspection
 
-    serve_t3_code(monkeypatch, foreign=foreign)
+    serve_t3_code(monkeypatch, foreign=foreign).dashboard_running = foreign
 
     report = t3_inspection.inspect_ui_in_sandbox()
 
-    first, relay = report.findings
-    assert (str(first.severity), str(relay.severity)) == ("skip", "skip")
+    first, last = report.findings[0], report.findings[-1]
+    assert [str(f.severity) for f in report.findings] == ["skip", "skip", dashboard[0]]
     assert first.message.startswith(server)
+    assert last.message.startswith(dashboard[1])
+
+
+def test_status_shows_off_where_no_agent_cli_starts_the_dashboard(
+    workspace: Path, attached: SimpleNamespace
+) -> None:
+    name = sr.session_container_name(workspace)
+    attached.docker.containers[name] = _sandbox_state(workspace, vscode=True, name=name)
+    attached.docker.exec_reply = lambda _argv: completed(stdout="off skipped\n")
+
+    assert sr.ui_status(workspace) == "UI: off\nDashboard: off"
 
 
 def test_t3_code_ui_inspection_skips_when_the_sandbox_cannot_be_listed(
@@ -2598,7 +2712,7 @@ def test_no_ui_start_of_a_stopped_sandbox_leaves_no_ui_to_check(
 ) -> None:
     name = sr.session_container_name(workspace)
     attached.docker.containers[name] = _sandbox_state(workspace, running=False)
-    attached.docker.exec_reply = lambda _argv: completed(stdout="off\n")
+    attached.docker.exec_reply = lambda _argv: completed(stdout="off off\n")
     _record_relay(workspace, monkeypatch, "DEAD")
 
     assert sr.ensure(workspace, ui=False).started
@@ -2610,12 +2724,12 @@ def test_no_ui_start_of_a_running_sandbox_keeps_its_relay_record(
     workspace: Path, attached: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _running_headless(attached.docker, workspace)
-    attached.docker.exec_reply = lambda _argv: completed(stdout="off\n")
+    attached.docker.exec_reply = lambda _argv: completed(stdout="off off\n")
     _record_relay(workspace, monkeypatch, "DEAD")
 
     assert not sr.ensure(workspace, ui=False).started
 
-    assert _ui_findings(workspace) == [_SERVER_OFF, _RELAY_DOWN]
+    assert _ui_findings(workspace) == [_SERVER_OFF, _RELAY_DOWN, _DASH_OFF]
 
 
 def test_no_ui_start_fails_when_it_cannot_tell_whether_the_old_relay_runs(

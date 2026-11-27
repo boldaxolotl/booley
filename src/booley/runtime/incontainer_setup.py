@@ -21,7 +21,8 @@ booley.harness.incontainer_register``, does two things on every container start:
    container is the security boundary. These settings live only in the
    per-project container home, never in the host's agent configuration.
 5. **Starts T3 Code and registers the Project with it** (``ensure_t3_server``)
-   when an Agent CLI is allowed, on the same terms as the MCP server.
+   when an Agent CLI is allowed, on the same terms as the MCP server, and the
+   web Dashboard that T3 Code's preview panel shows (``ensure_dashboard_server``).
 
 Idempotent: a live server is left alone; an up-to-date registration is not
 rewritten. Stale stdio-form registrations from older Booley versions are
@@ -68,7 +69,7 @@ from booley.runtime.mcp_config import (
 )
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.runtime_context import in_hand_written_sandbox
-from booley.runtime.sandbox_layout import T3_BASE_DIR, T3_POLICY_TARGET
+from booley.runtime.sandbox_layout import DASHBOARD_PORT, T3_BASE_DIR, T3_POLICY_TARGET
 
 MCP_SERVER_NAME = "booley"
 _TOOL_TIMEOUT_SEC = 7200
@@ -83,7 +84,7 @@ _SERVER_LOG_TAIL_LINES = 8
 T3_PORT = 3773
 _T3_START_TIMEOUT_SECONDS = 30.0
 PAIRING_TTL = "5m"
-NO_UI_ENV = "BOOLEY_NO_UI"  # "1" in a hook's environment: start no T3 Code
+NO_UI_ENV = "BOOLEY_NO_UI"  # "1" in a hook's environment: start no T3 Code or Dashboard
 _T3_SERVER_NOT_READY = 78  # `t3 project add` before the server published its runtime record
 _T3_IDENTITY_TIMEOUT_SECONDS = 1.0  # the whole descriptor exchange
 _T3_DESCRIPTOR_LIMIT = 1 << 20  # reply bytes
@@ -225,6 +226,37 @@ def ensure_http_server(
     except OSError as exc:
         print(f"booley mcp http server spawn failed: {exc}", file=sys.stderr)
         return "failed"
+
+
+def ensure_dashboard_server(project_root: Path) -> str:
+    """Start the web Dashboard on loopback unless its port already answers.
+
+    Returns ``"running"`` (the port answers: nothing is started), ``"started"`` or
+    ``"failed"``. Never raises, so MCP registration still runs.
+    """
+    if _port_is_serving(DASHBOARD_PORT):
+        return "running"
+    try:
+        log_path = runtime_dir(project_root) / "dashboard.log"
+        with log_path.open("ab") as log:
+            return _start_detached(
+                [sys.executable, "-m", "booley.harness.booley", "dashboard"],
+                label="Booley Dashboard",
+                port=DASHBOARD_PORT,
+                log_path=str(log_path),
+                stdout=log,
+                stderr=log,
+                cwd=project_root,
+                timeout_seconds=_SERVER_START_TIMEOUT_SECONDS,
+            )
+    except Exception as exc:  # noqa: BLE001 - Booley Directory resolution raises several error types
+        print(f"Booley Dashboard not started: {exc}", file=sys.stderr)
+        return "failed"
+
+
+def dashboard_state() -> str:
+    """``"running"`` when the web Dashboard's loopback port answers, else ``"off"``."""
+    return "running" if _port_is_serving(DASHBOARD_PORT) else "off"
 
 
 def _start_detached(

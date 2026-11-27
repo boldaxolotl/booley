@@ -12,6 +12,15 @@
           "icon": "configure",
           "runOnWorktreeCreate": true,
           "async": false
+        },
+        {
+          "id": "booley-dashboard",
+          "name": "Booley Dashboard",
+          "command": "echo 'Booley Dashboard: http://127.0.0.1:8090/'",
+          "icon": "play",
+          "runOnWorktreeCreate": false,
+          "previewUrl": "http://127.0.0.1:8090/",
+          "autoOpenPreview": true
         }
       ],
       "locked": true

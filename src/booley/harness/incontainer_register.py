@@ -80,11 +80,19 @@ def hook_start_directory() -> Path:
     return cwd
 
 
-def start_t3(clis: tuple[str, ...]) -> str:
-    """Start T3 Code unless this start has no UI or no Agent CLI; return its status token."""
+def start_ui(clis: tuple[str, ...]) -> str:
+    """Start T3 Code and the web Dashboard; return ``t3:<status> dashboard:<status>``.
+
+    Neither starts when this start has no UI (both ``off``) or no Agent CLI (``skipped``).
+    The Dashboard starts whatever T3 Code's own outcome is.
+    """
     if os.environ.get(incontainer_setup.NO_UI_ENV) == "1":
-        return "off"
-    return incontainer_setup.ensure_t3_server(hook_start_directory()) if clis else "skipped"
+        return "t3:off dashboard:off"
+    if not clis:
+        return "t3:skipped dashboard:skipped"
+    start = hook_start_directory()
+    t3 = incontainer_setup.ensure_t3_server(start)
+    return f"t3:{t3} dashboard:{incontainer_setup.ensure_dashboard_server(start)}"
 
 
 _LABELS = {auth_token.APP_CLAUDE: "Claude", auth_token.APP_CODEX: "Codex"}
@@ -283,15 +291,15 @@ def main() -> None:
     worktrees = _repair_worktrees()
     clis = agent.sandbox_agent_clis()
     server = incontainer_setup.ensure_http_server() if clis else "skipped"
-    t3 = start_t3(clis)
+    ui = start_ui(clis)
     trust = sandbox_trust_paths(hook_start_directory()) if clis else ()
     status = _hide_issued_gateway(_register_clis(clis, trust))
     status = _drop_unchosen_gateway(status, choice)
     upgrade = observe_upgrade()
     doctor_launch = launch_auto_doctor()
     print(
-        f"booley incontainer-register: worktrees:{worktrees} server:{server} t3:{t3} upgrade:{upgrade} health:{doctor_launch} "
-        f"{status}{_auto_suffix(choice)}{invalidation}",
+        f"booley incontainer-register: worktrees:{worktrees} server:{server} {ui} upgrade:{upgrade} "
+        f"health:{doctor_launch} {status}{_auto_suffix(choice)}{invalidation}",
         file=sys.stderr,
     )
     if _any_refused(status):

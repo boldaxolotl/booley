@@ -1,4 +1,4 @@
-"""A fake T3 Code: the `t3` process boundary and the loopback port it serves."""
+"""A fake T3 Code and Dashboard: their process boundary and the loopback ports they serve."""
 
 from __future__ import annotations
 
@@ -24,11 +24,12 @@ from tests.time_budget import hang_guard_s
 TOKEN = "pairing-token-0123"
 ADDED = (0, "Added project 1 (p) at /p.")
 SANDBOX_T3_BASE = Path("/home/agent/.t3")  # where the T3 state volume is mounted
+_DASHBOARD_PORT = 8090  # the Dashboard's fixed loopback port (ADR 0093)
 
 
 @dataclass
 class T3CodeFake:
-    """Record `t3 serve`, `t3 project add`/`rename` and `t3 auth pairing create`.
+    """Record `t3 serve`, `t3 project add`/`rename`, `t3 auth pairing create` and `booley dashboard`.
 
     `projects` maps each registered workspace root to its title, and `serve` prints the
     pairing token on stdout, as T3 Code does.
@@ -50,9 +51,16 @@ class T3CodeFake:
     rename_reply: tuple[int, str] | OSError | None = None
     sinks: list[str] = field(default_factory=list)
     serve_stdouts: list[object] = field(default_factory=list)
+    dashboard_running: bool = False
+    dashboards: list[list[str]] = field(default_factory=list)
+    dashboard_cwds: list[object] = field(default_factory=list)
 
     def serving(self, port: int, **_kwargs: object) -> bool:
-        return port == mcp_config.http_port() or self.running
+        if port == mcp_config.http_port():
+            return True
+        if port == incontainer_setup.T3_PORT:
+            return self.running
+        return port == _DASHBOARD_PORT and self.dashboard_running
 
     def describe(self) -> str | None:
         return self.environment_id if self.running else None
@@ -76,9 +84,13 @@ class T3CodeFake:
             self.serve_stdouts.append(kwargs["stdout"])
             self.publish(self.on_host(Path(cmd[cmd.index("--base-dir") + 1])))
             self.running = True
+            if hasattr(kwargs["stdout"], "write"):
+                kwargs["stdout"].write(f"Token: {TOKEN}\n".encode())
+        elif cmd[1:] == ["-m", "booley.harness.booley", "dashboard"]:
+            self.dashboards.append(cmd)
+            self.dashboard_cwds.append(kwargs["cwd"])
+            self.dashboard_running = True
         self.sinks += [s.name for s in (kwargs["stdout"], kwargs["stderr"]) if hasattr(s, "name")]
-        if hasattr(kwargs["stdout"], "write"):
-            kwargs["stdout"].write(f"Token: {TOKEN}\n".encode())
         return SimpleNamespace(poll=lambda: None)
 
     def run(self, cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
