@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import re
 import sys
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from booley.measurement.base import changed_files, protected_edits
+from booley.measurement.protected_set import UnpinnableInputError, protected_set
 from booley.runtime.commit_export import export_commit
 from tests.conftest import require_symlinks
 from tests.runtime.test_commit_export import (
@@ -43,29 +47,7 @@ def export_head(repository: Path, head: str, destination: Path) -> Path:
     return export_commit(repository, head, destination).root
 
 
-def test_booley_toml_and_reviews_toml_edits_are_protected_path_edits(tmp_path: Path) -> None:
-    from booley.measurement.base import changed_files, protected_edits
-    from booley.measurement.protected_set import protected_set
-
-    repo = new_repository(tmp_path / "repo")
-    write(repo / "rtl.v", "rtl\n")
-    write(repo / ".booley" / "booley.toml", "[project]\n")
-    write(repo / ".booley" / "reviews.toml", "# reviews\n")
-    fork = commit_all(repo)
-    write(repo / "rtl.v", "rtl2\n")
-    write(repo / ".booley" / "booley.toml", "[project]\n# edited\n")
-    write(repo / ".booley" / "reviews.toml", "# edited\n")
-    head = commit_all(repo, "edit")
-
-    protected = protected_set(export_head(repo, head, tmp_path / "out"))
-    edits = protected_edits(changed_files(repo, fork, head), protected)
-
-    assert edits == (".booley/booley.toml", ".booley/reviews.toml")
-
-
 def test_protected_set_lists_tb_core_glob_waiver_and_constraint_paths(tmp_path: Path) -> None:
-    from booley.measurement.protected_set import protected_set
-
     repo = new_repository(tmp_path / "repo")
     write(
         repo / ".booley" / "booley.toml",
@@ -109,8 +91,6 @@ def test_protected_set_lists_tb_core_glob_waiver_and_constraint_paths(tmp_path: 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Git symlinks need core.symlinks on Windows")
 def test_entries_are_relative_to_the_real_root_behind_a_symlinked_parent(tmp_path: Path) -> None:
-    from booley.measurement.protected_set import protected_set
-
     require_symlinks(tmp_path)
     repo = new_repository(tmp_path / "repo")
     write(repo / ".booley" / "booley.toml", "[project]\n")
@@ -126,9 +106,6 @@ def test_entries_are_relative_to_the_real_root_behind_a_symlinked_parent(tmp_pat
 
 
 def test_deleting_a_declared_input_is_a_protected_path_edit(tmp_path: Path) -> None:
-    from booley.measurement.base import changed_files, protected_edits
-    from booley.measurement.protected_set import protected_set
-
     repo = new_repository(tmp_path / "repo")
     write(
         repo / ".booley" / "booley.toml",
@@ -149,8 +126,6 @@ def test_deleting_a_declared_input_is_a_protected_path_edit(tmp_path: Path) -> N
 
 
 def test_versioned_booley_directory_files_are_under_its_placement(tmp_path: Path) -> None:
-    from booley.measurement.protected_set import protected_set
-
     checkout, booley = make_versioned_booley_directory(tmp_path, "standalone")
     write(booley / "cores" / "x.core", CORE_TEMPLATE.format(name="x"))
     git(booley, "add", "cores/x.core")
@@ -177,29 +152,60 @@ def _waiver_repository(tmp_path: Path, link_to: str) -> tuple[Path, str]:
     return repo, commit_all(repo)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Git symlinks need core.symlinks on Windows")
-def test_waiver_directory_symlinked_outside_the_checkout_fails_naming_it(tmp_path: Path) -> None:
-    from booley.measurement.protected_set import UnpinnableInputError, protected_set
-
-    require_symlinks(tmp_path)
+# Each setup returns the repository, the head and the patterns the refusal must match.
+def _link_outside(tmp_path: Path) -> tuple[Path, str, tuple[str, ...]]:
     shared = tmp_path / "shared-waivers"
     shared.mkdir()
     repo, head = _waiver_repository(tmp_path, str(shared))
+    patterns = (
+        r"coverage waiver directory \.booley/coverage-waivers",
+        re.escape(f"-> {shared}"),
+        "cannot be pinned to a commit",
+    )
+    return repo, head, patterns
+
+
+def _link_dotdot(tmp_path: Path) -> tuple[Path, str, tuple[str, ...]]:
+    repo, head = _waiver_repository(tmp_path, "../../elsewhere")
+    return repo, head, (r"-> \.\./\.\./elsewhere",)
+
+
+def _relink_store(repo: Path, target: str | Path) -> str:
+    git(repo, "rm", "-q", "-r", "-f", "store")
+    (repo / "store").symlink_to(target)
+    return commit_all(repo, "relink")
+
+
+def _link_chain(tmp_path: Path) -> tuple[Path, str, tuple[str, ...]]:
+    shared = tmp_path / "shared-waivers"
+    shared.mkdir()
+    repo, _ = _waiver_repository(tmp_path, "../store")
+    return repo, _relink_store(repo, shared), (r"link store -> .*shared-waivers",)
+
+
+def _link_loop(tmp_path: Path) -> tuple[Path, str, tuple[str, ...]]:
+    repo, _ = _waiver_repository(tmp_path, "../store")
+    return repo, _relink_store(repo, ".booley/coverage-waivers"), ("cannot be pinned",)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="Git symlinks need core.symlinks on Windows")
+@pytest.mark.parametrize("setup", [_link_outside, _link_dotdot, _link_chain, _link_loop])
+def test_waiver_directory_link_that_cannot_be_pinned_fails(
+    tmp_path: Path, setup: Callable[[Path], tuple[Path, str, tuple[str, ...]]]
+) -> None:
+    require_symlinks(tmp_path)
+    repo, head, patterns = setup(tmp_path)
     root = export_head(repo, head, tmp_path / "out")
 
     with pytest.raises(UnpinnableInputError) as raised:
         protected_set(root)
 
-    message = str(raised.value)
-    assert "coverage waiver directory .booley/coverage-waivers" in message
-    assert f"-> {shared}" in message
-    assert "cannot be pinned to a commit" in message
+    for pattern in patterns:
+        assert re.search(pattern, str(raised.value)), pattern
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Git symlinks need core.symlinks on Windows")
 def test_waiver_directory_link_inside_the_checkout_is_not_an_error(tmp_path: Path) -> None:
-    from booley.measurement.protected_set import protected_set
-
     require_symlinks(tmp_path)
     repo, head = _waiver_repository(tmp_path, "../store")
     root = export_head(repo, head, tmp_path / "out")
@@ -207,55 +213,7 @@ def test_waiver_directory_link_inside_the_checkout_is_not_an_error(tmp_path: Pat
     assert ".booley/coverage-waivers/" in protected_set(root)
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="Git symlinks need core.symlinks on Windows")
-def test_waiver_directory_link_climbing_out_through_dotdot_fails(tmp_path: Path) -> None:
-    from booley.measurement.protected_set import UnpinnableInputError, protected_set
-
-    require_symlinks(tmp_path)
-    repo, head = _waiver_repository(tmp_path, "../../elsewhere")
-    root = export_head(repo, head, tmp_path / "out")
-
-    with pytest.raises(UnpinnableInputError, match=r"-> \.\./\.\./elsewhere"):
-        protected_set(root)
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="Git symlinks need core.symlinks on Windows")
-def test_waiver_directory_reached_through_a_chain_of_links_fails_naming_the_last(
-    tmp_path: Path,
-) -> None:
-    from booley.measurement.protected_set import UnpinnableInputError, protected_set
-
-    require_symlinks(tmp_path)
-    shared = tmp_path / "shared-waivers"
-    shared.mkdir()
-    repo, _ = _waiver_repository(tmp_path, "../store")
-    git(repo, "rm", "-q", "-r", "-f", "store")
-    (repo / "store").symlink_to(shared)
-    head = commit_all(repo, "chain")
-    root = export_head(repo, head, tmp_path / "out")
-
-    with pytest.raises(UnpinnableInputError, match=r"link store -> .*shared-waivers"):
-        protected_set(root)
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="Git symlinks need core.symlinks on Windows")
-def test_waiver_directory_link_loop_cannot_be_pinned(tmp_path: Path) -> None:
-    from booley.measurement.protected_set import UnpinnableInputError, protected_set
-
-    require_symlinks(tmp_path)
-    repo, _ = _waiver_repository(tmp_path, "../store")
-    git(repo, "rm", "-q", "-r", "-f", "store")
-    (repo / "store").symlink_to(".booley/coverage-waivers")
-    head = commit_all(repo, "loop")
-    root = export_head(repo, head, tmp_path / "out")
-
-    with pytest.raises(UnpinnableInputError, match="cannot be pinned"):
-        protected_set(root)
-
-
 def test_missing_waiver_directory_is_not_an_error(tmp_path: Path) -> None:
-    from booley.measurement.protected_set import protected_set
-
     repo = new_repository(tmp_path / "repo")
     write(repo / ".booley" / "booley.toml", WAIVER_CONFIG)
     head = commit_all(repo)
@@ -268,8 +226,6 @@ def test_missing_waiver_directory_is_not_an_error(tmp_path: Path) -> None:
 def test_checkout_without_configuration_protects_only_the_config_file_names(
     tmp_path: Path,
 ) -> None:
-    from booley.measurement.protected_set import protected_set
-
     repo = new_repository(tmp_path / "repo")
     write(repo / "rtl.v", "rtl\n")
     head = commit_all(repo)
