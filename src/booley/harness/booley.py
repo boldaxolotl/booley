@@ -196,17 +196,6 @@ def _command_project_binding(command: str, args: argparse.Namespace) -> ProjectB
     return command_project_bindings()[command]
 
 
-class _RetiredEdaToolOptionAction(argparse.Action):
-    """Reject retired scaffold flags with their canonical EDA-tool spelling."""
-
-    def __call__(self, parser, namespace, values, option_string=None) -> None:
-        replacement = {
-            "--sim-tool": "--sim-eda-tool",
-            "--lint-tool": "--lint-eda-tool",
-        }[str(option_string)]
-        parser.error(f"{option_string} is retired; use {replacement}")
-
-
 class _RootHelpAction(argparse.Action):
     def __init__(
         self,
@@ -758,14 +747,12 @@ def _add_init_scaffold_arguments(init_p) -> None:
         choices=("verilator", "icarus"),
         help="Scaffold simulator (default: verilator)",
     )
-    init_p.add_argument("--sim-tool", action=_RetiredEdaToolOptionAction, help=argparse.SUPPRESS)
     init_p.add_argument(
         "--tb-style",
         choices=("sv", "cocotb"),
         help="Scaffold: testbench style (default sv; cocotb is sandbox-sim only)",
     )
     _add_init_lint_arguments(init_p)
-    init_p.add_argument("--lint-tool", action=_RetiredEdaToolOptionAction, help=argparse.SUPPRESS)
     init_p.add_argument(
         "--asic",
         action=argparse.BooleanOptionalAction,

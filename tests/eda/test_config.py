@@ -44,9 +44,10 @@ def test_windows_accepts_only_image_provisioning(provisioning: str, match: str |
     "raw,match",
     [
         ({"quartus": {}}, "unsupported EDA kind"),
-        (
+        pytest.param(
             {"vivado": {"provisioning": "host", "installation": "vivado_2025_2"}},
-            "installation is retired",
+            r"unknown key\(s\): installation",
+            id="installation",
         ),
     ],
 )
