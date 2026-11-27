@@ -355,7 +355,7 @@ document: Booley product datasheet
         <tr><td data-l="Parameter">Architecture and design decisions</td><td data-l="Rating">Made by you</td><td data-l="Notes">Booley will not design hardware for you. You write the architecture and specs; it handles the grunt work.</td></tr>
         <tr><td data-l="Parameter">Operator experience</td><td data-l="Rating">Digital design required</td><td data-l="Notes">Booley assumes you can read RTL, judge a waveform, and know what a sane result looks like.</td></tr>
         <tr><td data-l="Parameter">HDL input</td><td data-l="Rating">SystemVerilog, Verilog</td><td data-l="Notes">VHDL and UVM are not supported.</td></tr>
-        <tr><td data-l="Parameter">ADE shell</td><td data-l="Rating">T3 Code in your browser</td><td data-l="Notes">Agent threads, terminals and the Dashboard run in T3 Code, the web UI the Sandbox serves.</td></tr>
+        <tr><td data-l="Parameter">User interface</td><td data-l="Rating">T3 Code in your browser</td><td data-l="Notes">Agent threads, terminals and the Dashboard run in T3 Code, the web UI the Sandbox serves.</td></tr>
         <tr><td data-l="Parameter">Setup effort</td><td data-l="Rating">Once per project</td><td data-l="Notes">Complex flows or heavy licensed tools may need project-specific work. Every later session builds on it.</td></tr>
         <tr><td data-l="Parameter">Maturity</td><td data-l="Rating">Work in progress</td><td data-l="Notes">Expect occasional bugs and rough edges in the UI.</td></tr>
       </tbody>

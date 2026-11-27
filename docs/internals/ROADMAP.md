@@ -104,9 +104,11 @@ Still missing:
   ([#2748](https://github.com/boldaxolotl/booley/issues/2748)).
 - Resuming an interrupted coverage run per Test Run instead of refusing it
   ([#2712](https://github.com/boldaxolotl/booley/issues/2712)).
-- Waivers as plain per-file waiver files reviewed in the diff
+- Waivers as plain per-file waiver files reviewed in the diff, without
+  approval records
   ([#3605](https://github.com/boldaxolotl/booley/issues/3605)).
-- Coverage-driven stimulus: use coverage holes to guide new tests.
+- Coverage-driven stimulus: generate new stimulus from coverage holes. The
+  Coverage Analyst only suggests tests to close them.
 
 ## Firmware Reviewer
 
@@ -130,7 +132,10 @@ trusted one. Hosted CI gets its own design. The direction so far:
 - Run `booley measure` on the pull request head as a required check, and
   measure `main` after each merge so the comparison run for the next pull
   request already exists.
-- Reuse a run when a merge commit's tree equals a tree already measured.
+- Keep the measurement store between CI runs. `booley measure` does not
+  measure a commit that is already a [Measured Commit](../GLOSSARY.md), and it
+  files runs under the commit's tree and rules, so a merge commit whose tree
+  and rules were already Measured is not measured again.
 - The Sandbox Image carries the EDA stack, so a hosted workflow needs only a
   few lines. A Stealth Mode Project keeps Booley out of its RTL repository, so
   its CI needs a home outside it.
@@ -229,7 +234,7 @@ Production RTL work needs more:
 - Formal verification
 - Clock domain crossing (CDC) and reset domain crossing (RDC) checks
 - Design for test (DFT) insertion
-- Static timing analysis (STA)
+- Sign-off static timing analysis (STA)
 - Power analysis and UPF
 - FPGA implementation beyond AMD Vivado: an open-source Yosys and nextpnr
   backend ([#3603](https://github.com/boldaxolotl/booley/issues/3603)) and
@@ -262,11 +267,15 @@ metric. Losing candidates stay until the user deletes them in T3 Code or with
 
 ## Notifications
 
-**Planned.** Agent sessions and slow Booley Flows run for hours, and today
-Booley sends no notice of its own, so the user has to keep watching. Booley
-should push a short notice to the desktop, a phone, or email when a session
-waits for the user, stops, or crashes, or when a long Flow Job finishes or
-fails.
+**Planned.** Agent sessions and slow Booley Flows run for hours. T3 Code
+notifies about sessions: with notifications turned on in its settings and
+allowed by the browser, it shows one when a thread finishes, fails, or needs
+an approval or input while its tab is open but not in focus. Booley sends no
+notice of its own, so a Flow Job that
+finishes or fails goes unnoticed until the user looks. Booley should push a
+short notice to the desktop, a phone, or email when a long Flow Job finishes
+or fails, and when a session waits for the user, stops, or crashes while T3
+Code is closed.
 
 The hard part is security. A notification service is a path out of the
 Sandbox, and the Sandbox must not gain one, so push services such as ntfy.sh
@@ -285,14 +294,17 @@ agent:
 
 ## Native ADE Surface
 
-**Planned.** Booley is an agentic development environment (ADE), but its
-agent-facing UI is thin: Developer Agent sessions run in VS Code terminals,
-and the Booley Dashboard, a web page of each worktree's Jobs, is the one view
-Booley adds. The next step is UI for supervising agents rather than editing
-code: a session panel, a Flow-run view, one-click
-waveform open, and views for Measurement Reports and reviews.
+**Planned.** Booley is an agentic development environment (ADE), and T3 Code
+is its user interface: each Developer Agent session is a T3 Code thread with
+its own terminals, and the [Booley Dashboard](../GLOSSARY.md), a web page of
+each worktree's Jobs in T3 Code's preview panel, shows what runs and links
+each finished Job's report. Still missing is UI for supervising agents rather
+than editing code:
+
+- One-click waveform opening from a result. Booley has no waveform viewer of
+  its own: `bwave gui` fails with a message.
+- Views for Measurement Reports and Review Runs.
 
 The end state is Booley as a **standalone ADE**: an app built around running
 and reviewing Developer Agent sessions, with the editor as one pane among
-many. Whether it embeds VS Code, forks it, or uses a lighter editor is open;
-the VS Code-based surface above is the path there.
+many. Whether it embeds VS Code, forks it, or uses a lighter editor is open.
