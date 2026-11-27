@@ -100,7 +100,9 @@ def hold_unlinks(monkeypatch: pytest.MonkeyPatch, held: dict[Path, int]) -> Coun
     return attempts
 
 
-def hold_replaces(monkeypatch: pytest.MonkeyPatch, held: dict[Path, int]) -> Counter[Path]:
+def hold_replaces(
+    monkeypatch: pytest.MonkeyPatch, held: dict[Path, int], *, winerror: int = 32
+) -> Counter[Path]:
     """Fail ``Path.replace`` onto each target in ``held`` with a sharing violation.
 
     The first ``held[target]`` replaces onto a target fail, later ones succeed.
@@ -115,7 +117,7 @@ def hold_replaces(monkeypatch: pytest.MonkeyPatch, held: dict[Path, int]) -> Cou
         if destination in held:
             attempts[destination] += 1
             if attempts[destination] <= held[destination]:
-                raise sharing_error()
+                raise sharing_error(winerror)
         return real_replace(path, destination)
 
     monkeypatch.setattr(Path, "replace", replace_with_holds)
