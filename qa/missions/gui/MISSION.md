@@ -116,8 +116,8 @@ Try:
 - Compare against the oracles: the `zbb` worktree's Dashboard shows the
   child's Jobs with the thread as owner and nothing from the main checkout;
   the main checkout's Dashboard shows the two Standalone Jobs owned by `you`;
-  Job detail and the `measure` Job's report match the records and the stored
-  run.
+  the Job's entry under Results and the `measure` Job's report match the
+  records and the stored run.
 - MCP from a second thread, Claude, on the main checkout: ask for the project
   status, the Targets, and one Specialist review (an RTL bug review of
   `picorv32.v`); the answers match `booley targets` and the report on disk,
@@ -252,7 +252,7 @@ that doesn't come back.
 ## Known traps
 - Area 3's request runs about half an hour. Start it as soon as area 3
   begins, and do the resize and MCP items while it works.
-- Until #4749 the Dashboard needs a manual `booley dashboard --web`, and it
+- Until #4749 the Dashboard needs a manual `booley dashboard`, and it
   stops with the Sandbox: restart it after area 6.
 - Until #4566 lands, threads, pairings or worktrees lost across
   `session down` and `up` are known; record what you saw, not a new finding,

@@ -106,11 +106,13 @@ document: Booley product datasheet
     </div>
   </section>
 
-  <!-- Figure 2: where Booley runs. The switch flips Local / Server; your PC keeps
-       its place while the Sandbox moves to the server (the script below). Desktop
-       animates one drawing; phones show one stacked drawing per setup. -->
+  <!-- Figure 1: where Booley runs. The switch flips Local / Server; your PC
+       keeps its place while the Sandbox moves to the server (the script
+       below). Desktop animates one drawing; phones show one stacked drawing
+       per setup. -->
   <figure class="dep" id="fig2" data-mode="local" aria-labelledby="fig2cap">
-    <div class="dep__switch" role="group" aria-label="Setup shown in Figure 2" hidden>
+    <div class="dep__switch" role="group"
+      aria-label="Setup shown in Figure 1" hidden>
       <span class="dep__thumb" aria-hidden="true"></span>
       <button type="button" data-mode="local" aria-pressed="true">Local setup</button>
       <button type="button" data-mode="server" aria-pressed="false">Server setup<small>in progress</small></button>
@@ -277,10 +279,16 @@ document: Booley product datasheet
         <text class="e" x="132" y="608">read-only</text>
       </svg>
     </div>
-    <figcaption id="fig2cap"><span class="dep__cap--local"><b>Figure 2.</b> Local setup: everything runs on your PC.</span><span class="dep__cap--server"><b>Figure 2.</b> Server setup (in progress, <a href="https://github.com/boldaxolotl/booley/issues/2586">#2586</a>): Sandboxes, agents, and EDA tools move to a shared server, one Sandbox per user. Your PC only runs VS Code or a browser.</span> How the parts fit together: <a href="docs/architecture/">architecture</a>.</figcaption>
+    <figcaption id="fig2cap"><span class="dep__cap--local"><b>Figure 1.</b>
+      Local setup: everything runs on your PC.</span><span
+      class="dep__cap--server"><b>Figure 1.</b> Server setup (in progress,
+      <a href="https://github.com/boldaxolotl/booley/issues/2586">#2586</a>):
+      Sandboxes, agents, and EDA tools move to a shared server, one Sandbox per
+      user. Your PC only runs VS Code or a browser.</span> How the parts fit
+      together: <a href="docs/architecture/">architecture</a>.</figcaption>
   </figure>
   <script>
-    /* Figure 2's switch: set data-mode on the figure; CSS does the motion. */
+    /* Figure 1's switch: set data-mode on the figure; CSS does the motion. */
     (function () {
       var fig = document.getElementById("fig2");
       var wide = fig.querySelector(".dep-wide");

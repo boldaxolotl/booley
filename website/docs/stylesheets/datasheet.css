@@ -164,7 +164,7 @@ figure { margin: 36px 0 8px; }
 figcaption { font: 400 14.5px/1.45 var(--sans); color: var(--ink-2); margin-top: 10px; max-width: 80ch; }
 figcaption b { color: var(--ink); font-weight: 650; }
 
-/* Figure 2: where Booley runs, as schematic line art. A switch flips Local /
+/* Figure 1: where Booley runs, as schematic line art. A switch flips Local /
    Server. Desktop animates one drawing: your PC keeps its box while the Sandbox
    slides onto the server. Phones show one stacked drawing per setup. */
 .dep text { font-family: var(--sans); fill: var(--ink); font-stretch: 85%; }

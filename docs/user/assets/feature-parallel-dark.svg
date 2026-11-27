@@ -6,7 +6,7 @@
     .fd { --paper: #121619; --ink: #e4e8eb; --ink-2: #a7b0b9; --rule: #5d6873; --rule-soft: #2f373e; --fill: #1e2429; --fill-2: #181d21; --mask: #4fbf93; --mask-ink: #08130e; --ok-fill: #173229; --quote-ink: #c5ccd2; --diff-add: #173229; --diff-del: #3a201b; --hatch: #1f4236; --review: #8db6e0; --fault: #ef8b77; --shadow: rgb(0 0 0 / 0.5); --series-build: #2f5d8a; --series-obs: #7fbcb3; --series-else: #c9ced4; --series-hung: #b8402c; --series-sleep: #e3b23c; --series-on-dark: #ffffff; --series-on-light: #15191e; --sans: "Archivo", "Arial Narrow", Arial, sans-serif; --serif: "Literata", Georgia, serif; --mono: "JetBrains Mono", ui-monospace, monospace; --page: 1120px; }
 /* ==================================================================
    Home page Features: the three card diagrams (website/illustration/
-   feature-*.svg), drawn as schematic line art like Figure 2.
+   feature-*.svg), drawn as schematic line art like Figure 1.
    Colours are datasheet.css tokens only. website/illustration/build.py
    also embeds this file, with one theme's token values, in the README
    copies of the diagrams, so every rule is scoped to the svg's .fd class.
