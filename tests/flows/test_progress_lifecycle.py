@@ -22,7 +22,6 @@ from booley.flows.progress_lifecycle import (
     read_progress_for_run,
     repair_progress_after_reap,
     retire_progress_of_requeued_attempt,
-    supersede_progress,
     write_progress_json,
 )
 from tests.conftest import symlink_or_skip
@@ -257,20 +256,20 @@ def test_progress_reader_follows_only_the_booley_dir_entry(tmp_path: Path) -> No
     assert not repair_progress_after_reap((linked_reports,), "sim", "run-2", booley_dir=entry)
 
 
-def test_supervisor_repair_cannot_overwrite_concurrent_resume_supersession(
+def test_supervisor_repair_cannot_overwrite_concurrent_retirement(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = tmp_path / "sim" / "1" / "progress.json"
     _write_progress(path)
-    supersede_at_replace = threading.Event()
+    retire_at_replace = threading.Event()
     repair_waiting = threading.Event()
-    allow_supersede = threading.Event()
+    allow_retire = threading.Event()
     original_replace = Path.replace
 
     def controlled_replace(source: Path, destination: Path) -> Path:
-        if threading.current_thread().name == "supersede":
-            supersede_at_replace.set()
-            assert allow_supersede.wait(timeout=hang_guard_s())
+        if threading.current_thread().name == "retire":
+            retire_at_replace.set()
+            assert allow_retire.wait(timeout=hang_guard_s())
         return original_replace(source, destination)
 
     monkeypatch.setattr(Path, "replace", controlled_replace)
@@ -278,17 +277,17 @@ def test_supervisor_repair_cannot_overwrite_concurrent_resume_supersession(
 
     def announcing_wait_for_file_lock(*args: Any, **kwargs: Any) -> Any:
         # The repair thread has read the stale document and now waits for the lock
-        # the paused supersede holds.
+        # the paused retirement holds.
         if threading.current_thread().name == "repair":
             repair_waiting.set()
         return real_wait_for_file_lock(*args, **kwargs)
 
     monkeypatch.setattr(progress_module, "wait_for_file_lock", announcing_wait_for_file_lock)
-    results: dict[str, bool] = {}
-    supersede = threading.Thread(
-        name="supersede",
+    results: dict[str, bool | None] = {}
+    retire = threading.Thread(
+        name="retire",
         target=lambda: results.setdefault(
-            "supersede", supersede_progress(path, new_invocation=2, new_run_id="resume-run")
+            "retire", retire_progress_of_requeued_attempt(path, endpoint="sim", run_id="run-1")
         ),
     )
     repair = threading.Thread(
@@ -298,15 +297,15 @@ def test_supervisor_repair_cannot_overwrite_concurrent_resume_supersession(
         ),
     )
 
-    supersede.start()
-    assert supersede_at_replace.wait(timeout=hang_guard_s())
+    retire.start()
+    assert retire_at_replace.wait(timeout=hang_guard_s())
     repair.start()
     assert repair_waiting.wait(timeout=hang_guard_s())
-    allow_supersede.set()
-    supersede.join(timeout=hang_guard_s())
+    allow_retire.set()
+    retire.join(timeout=hang_guard_s())
     repair.join(timeout=hang_guard_s())
 
-    assert results == {"supersede": True, "repair": False}
+    assert results == {"retire": None, "repair": False}
     assert json.loads(path.read_text())["phase"] == "superseded"
 
 
@@ -339,49 +338,13 @@ def test_run_lookup_skips_nonnumeric_invocation_and_unreadable_endpoint(
     assert read_progress_for_run((tmp_path,), "sim", "run-1") is None
 
 
-def test_supersede_is_idempotent_and_preserves_origin_identity(tmp_path: Path) -> None:
-    path = tmp_path / "sim" / "1" / "progress.json"
-    original = _write_progress(path, run_id="origin-run")
-    supersede_progress(path, new_invocation=2, new_run_id="resume-run")
-    first = json.loads(path.read_text(encoding="utf-8"))
-    supersede_progress(path, new_invocation=3, new_run_id="later-run")
-    second = json.loads(path.read_text(encoding="utf-8"))
-    assert first == second
-    assert first["phase"] == "superseded"
-    assert first["run_id"] == "origin-run"
-    assert first["completed_targets"] == original["completed_targets"]
-    assert first["pending_targets"] == original["pending_targets"]
-    assert first["superseded_by"] == {"invocation": 2, "run_id": "resume-run"}
-
-
-def test_supersede_ignores_nonresumable_phase_and_write_failure(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    path = tmp_path / "sim" / "1" / "progress.json"
-    document = _write_progress(path)
-    document["phase"] = "current"
-    path.write_text(json.dumps(document), encoding="utf-8")
-    assert not supersede_progress(path, new_invocation=2, new_run_id="resume-run")
-    document["phase"] = "running"
-    path.write_text(json.dumps(document), encoding="utf-8")
-
-    def fail_replace(*_args: object, **_kwargs: object) -> None:
-        raise OSError("disk unavailable")
-
-    # Private seam: a failed atomic replace cannot be provoked through the file
-    # system on every platform the suite runs on.
-    monkeypatch.setattr(progress_module, "_replace_if_unchanged", fail_replace)
-
-    assert not supersede_progress(path, new_invocation=2, new_run_id="resume-run")
-
-
 def test_progress_reader_rejects_oversize_and_nonobject_json(tmp_path: Path) -> None:
     path = tmp_path / "sim" / "1" / "progress.json"
     path.parent.mkdir(parents=True)
     path.write_text('"' + "x" * (2 * 1024 * 1024) + '"', encoding="utf-8")
-    assert not supersede_progress(path, new_invocation=2, new_run_id="resume-run")
+    assert read_progress_for_run((tmp_path,), "sim", "run-1") is None
     path.write_text("[]", encoding="utf-8")
-    assert not supersede_progress(path, new_invocation=2, new_run_id="resume-run")
+    assert read_progress_for_run((tmp_path,), "sim", "run-1") is None
 
 
 def test_run_lookup_skips_unrelated_roots(tmp_path: Path) -> None:
@@ -407,30 +370,6 @@ def test_default_progress_reader_refuses_links_above_report_root(tmp_path):
     alias = tmp_path / "alias"
     alias.symlink_to(real, target_is_directory=True)
     assert read_progress_for_run((alias / "project/reports",), "sim", "one") is None
-
-
-@pytest.mark.parametrize("linked", ["entry", "below"])
-def test_coverage_supersede_follows_only_the_booley_dir_entry(tmp_path: Path, linked: str) -> None:
-    real = tmp_path / "real-booley-dir"
-    entry = tmp_path / "project" / ".booley"
-    entry.parent.mkdir()
-    real.mkdir()
-    symlink_or_skip(entry, real, target_is_directory=True)
-    reports = real / "flow-reports"
-    if linked == "below":
-        (tmp_path / "elsewhere").mkdir()
-        symlink_or_skip(reports, tmp_path / "elsewhere", target_is_directory=True)
-    path = entry / "flow-reports" / "sim" / "1" / "progress.json"
-    _write_progress(path)
-
-    superseded = supersede_progress(
-        path, new_invocation=2, new_run_id="resume-run", booley_dir=entry
-    )
-
-    phase = json.loads(path.read_text(encoding="utf-8"))["phase"]
-    assert (superseded, phase) == (
-        (True, "superseded") if linked == "entry" else (False, "running")
-    )
 
 
 @pytest.mark.parametrize("held", [1, 100])

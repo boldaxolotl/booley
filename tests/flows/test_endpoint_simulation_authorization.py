@@ -32,7 +32,7 @@ def _handle(selector: str, identity: str, root: Path) -> TargetHandle:
     ("hook", "resume"),
     (
         pytest.param("_validate_prepared_selection", None, id="selection-rejection"),
-        pytest.param("_refuse_unfinished_coverage_resume", SimpleNamespace(), id="unfinished"),
+        pytest.param("_refuse_coverage_resume", SimpleNamespace(), id="coverage"),
     ),
 )
 def test_refusal_precedes_build_timeout(

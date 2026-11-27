@@ -20,7 +20,6 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import (
     SimulationRecord,
     collect_pre_sim_firings,
-    resolve_report_artifact_reference,
 )
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
@@ -1128,19 +1127,12 @@ def test_signal_aborted_coverage_progress_stays_terminal(tmp_path, monkeypatch):
     assert (progress["phase"], progress["pending_targets"]) == ("aborted", ["sim_0"])
 
 
-def _interrupt_coverage_publication(tmp_path, monkeypatch, *, selected=None, skipped=()):
-    """Interrupt a coverage run after its collection result committed.
+def _interrupt_coverage_publication(tmp_path, monkeypatch):
+    """Interrupt a coverage run after its collection result committed; return its report root.
 
-    The aggregate work item is complete, so the origin is a legitimate
-    publication-only resume source.  Returns ``(reports, request, runs)``.
+    The aggregate work item is complete, so only publication is unfinished.
     """
-    reports = _prepare_coverage_origin(tmp_path, monkeypatch, skipped=skipped)
-    runs: list[str | None] = []
-
-    class Counted(NativeExecution):
-        def run(self, request):
-            runs.append(request.test)
-            return super().run(request)
+    reports = _prepare_coverage_origin(tmp_path, monkeypatch)
 
     def checkpoint(actual):
         if actual == "before:summary_replace":
@@ -1148,100 +1140,25 @@ def _interrupt_coverage_publication(tmp_path, monkeypatch, *, selected=None, ski
 
     request = SimRequest(
         target="sim_0",
-        test=selected,
         work_dir=tmp_path,
         coverage=True,
         report_dir=reports,
     )
     with pytest.raises(KeyboardInterrupt):
         SimulateFlow(
-            coverage_execution=lambda handle, options, _commands, _access: Counted(),
+            coverage_execution=lambda *_args: NativeExecution(),
             simulation_record_publication_checkpoint=checkpoint,
         ).execute(request)
-    return reports, request, runs
-
-
-def test_resume_continues_its_origin_and_writes_no_dependency_receipt(tmp_path, monkeypatch):
-    from booley.flows.sim.record.artifact_reference import (
-        resolve_report_artifact_reference,
-    )
-    from booley.flows.sim.record.codec import MANIFEST_MAX_BYTES
-
-    reports, request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    original_path = next(
-        (reports / "sim/1/targets/sim_0/record").glob(
-            "work-items/*/attempts/*/coverage-record/native/raw/001-reset@1.dat"
-        )
-    )
-    original = original_path.read_bytes()
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    resumed_reports = reports
-    result = _coverage(tmp_path, resume_from=manifest, report_dir=resumed_reports)
-    assert result.exit_code == 0
-    assert (reports / "sim/1/targets/sim_0/coverage.json").is_file()
-    assert original_path.read_bytes() == original
-    attempts = list((reports / "sim/1/targets/sim_0/record").glob("work-items/*/attempts/*"))
-    assert len(attempts) == 1
-    projection = reports / "sim/1/targets/sim_0/simulation.json"
-    document = json.loads(projection.read_text())
-    assert document["simulation_record_manifest"]["path"] == "record/manifest.json"
-    assert document["simulation_record_manifest"]["path_base"] == "origin_target"
-    assert document["coverage_record"]["path"] == "coverage.json"
-    assert document["coverage_record"]["path_base"] == "origin_target"
-    assert not (resumed_reports / "sim/2/targets/sim_0/simulation.json").exists()
-    resume_report = json.loads((resumed_reports / "sim/2/report.json").read_text())
-    resume_simulation_record = resume_report["detail"]["records"]["sim_0"]
-    assert resume_simulation_record["dependency"] == "external_origin_record"
-    assert resume_simulation_record["artifacts"]["manifest"]["path_base"] == "reports_root"
-    assert resume_simulation_record["artifacts"]["manifest"]["path"] == (
-        "sim/1/targets/sim_0/record/manifest.json"
-    )
-    assert not (manifest.parent / "dependency-receipts").exists()
-    resolved = resolve_report_artifact_reference(
-        resumed_reports / "sim/2/report.json",
-        resume_simulation_record["artifacts"]["manifest"],
-        expected_kind="simulation_record_manifest",
-        expected_owner=resume_simulation_record["simulation_record_id"],
-        maximum=MANIFEST_MAX_BYTES,
-    )
-    assert resolved.path == manifest
-    result = SimulateFlow(
-        coverage_execution=lambda handle, options, _commands, _access: NativeExecution()
-    ).execute(request)
-    assert result.exit_code == 0
-    assert (reports / "sim/3/targets/sim_0/coverage.json").is_file()
-
-
-def test_resume_leaves_an_old_dependency_receipt_untouched(tmp_path, monkeypatch):
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    receipts = manifest.parent / "dependency-receipts"
-    receipts.mkdir()
-    old = receipts / f"{'0' * 64}.json"
-    old_bytes = json.dumps(
-        {
-            "$schema": "booley.simulation-record-dependency/v1",
-            "simulation_record_id": "00000000-0000-4000-8000-000000000000",
-            "manifest_sha256": "0" * 64,
-            "origin_invocation": str(reports / "sim/1"),
-            "origin_target": str(reports / "sim/1/targets/sim_0"),
-            "dependent_invocation": str(reports / "sim/9"),
-            "dependent_invocation_id": 9,
-        }
-    ).encode()
-    old.write_bytes(old_bytes)
-    result = _coverage(tmp_path, resume_from=manifest)
-    assert result.exit_code == 0
-    assert (reports / "sim/2/report.json").is_file()
-    assert list(receipts.iterdir()) == [old]
-    assert old.read_bytes() == old_bytes
+    return reports
 
 
 def test_resume_reports_busy_origin_lock(tmp_path, monkeypatch):
     from booley.flows.sim.record_reports import simulation_record_invocation_lock
+    from tests.flows.sim.test_simulation_record_resume_diagnostics import (
+        _interrupted_simulation_record,
+    )
 
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
+    reports, manifest, _executions = _interrupted_simulation_record(tmp_path, monkeypatch)
     fail_budget(monkeypatch)
 
     with simulation_record_invocation_lock(reports / "sim/1"):
@@ -1274,102 +1191,28 @@ def test_requeued_resume_attempt_keeps_the_origin_lock_it_already_holds(tmp_path
     flow.publication_resources.close()
 
 
-def test_resume_retains_explicit_configured_skipped_test(tmp_path, monkeypatch):
-    reports, _request, _runs = _interrupt_coverage_publication(
-        tmp_path, monkeypatch, selected=("wrap",), skipped=("wrap",)
-    )
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    execution = NativeExecution()
-
-    result = _coverage(tmp_path, execution, resume_from=manifest, report_dir=tmp_path / "resumed")
-
-    assert result.exit_code == 0
-    # The origin collected "wrap"; a publication-only resume never re-runs it.
-    assert execution.runs == []
-    report_path = tmp_path / "resumed/sim/1/report.json"
-    report = json.loads(report_path.read_text())
-    detail = report["detail"]
-    simulation_record = detail["records"]["sim_0"]
-    assert simulation_record["dependency"] == "external_origin_record"
-    assert set(simulation_record["artifacts"]) == {"manifest", "simulation", "coverage"}
-    assert {reference["path_base"] for reference in simulation_record["artifacts"].values()} == {
-        "external_origin_target"
-    }
-    assert (
-        detail["targets"]["sim_0"]["coverage_record"] == simulation_record["artifacts"]["coverage"]
-    )
-    assert result.outcome.report_text == (
-        "sim_0: simulation PASS · coverage collection COMPLETE · evaluation NOT_REQUESTED "
-        f"(Simulation Record {simulation_record['simulation_record_id']})\n"
-        f"  manifest: {manifest.resolve()}\n"
-        f"  report: {(tmp_path / 'resumed/sim/1/report.json').resolve()}\n"
-        "  coverage: line 100.0%\n"
-        f"  Coverage Record: {(manifest.parents[1] / 'coverage.json').resolve()}"
-    )
-    resolved = resolve_report_artifact_reference(
-        report_path,
-        simulation_record["artifacts"]["manifest"],
-        expected_kind="simulation_record_manifest",
-        expected_owner=simulation_record["simulation_record_id"],
-        maximum=1024 * 1024,
-        external_origin_target=manifest.parents[1],
-    )
-    assert resolved.path == manifest
-
-
-def test_coverage_resume_uses_manifest_when_origin_progress_is_missing(tmp_path, monkeypatch):
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    (reports / "sim/1/progress.json").unlink()
-    resumed_reports = tmp_path / "resumed"
-
-    result = _coverage(tmp_path, resume_from=manifest, report_dir=resumed_reports)
-
-    assert result.exit_code == 0
-    progress = json.loads((resumed_reports / "sim/1/progress.json").read_text())
-    assert progress["phase"] == "complete"
-    assert progress["completed_targets"] == ["sim_0"]
-    assert progress["pending_targets"] == []
-
-
-def test_interrupted_coverage_resume_publishes_terminal_progress(tmp_path, monkeypatch):
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    resumed_reports = tmp_path / "resumed"
-
-    def interrupt_again(boundary):
-        if boundary == "before:summary_replace":
-            raise KeyboardInterrupt("resume interrupted")
-
-    with pytest.raises(KeyboardInterrupt, match="resume interrupted"):
-        _coverage(
-            tmp_path, checkpoint=interrupt_again, resume_from=manifest, report_dir=resumed_reports
-        )
-
-    progress = json.loads((resumed_reports / "sim/1/progress.json").read_text())
-    assert progress["phase"] == "aborted"
-    assert progress["completed_targets"] == []
-    assert progress["pending_targets"] == ["sim_0"]
-
-
 def _simulation_record_bytes(root):
     return {path: path.read_bytes() for path in sorted(root.rglob("*")) if path.is_file()}
 
 
 @pytest.mark.parametrize("dry_run", [False, True])
-@pytest.mark.parametrize("state", ["interrupted", "pending"])
-def test_resume_refuses_unfinished_coverage_collection(tmp_path, monkeypatch, state, dry_run):
+@pytest.mark.parametrize("state", ["interrupted", "pending", "completed"])
+def test_resume_refuses_every_coverage_record(tmp_path, monkeypatch, state, dry_run):
     from booley.flows.sim.record.store import SimulationRecordStore
 
-    reports, _request = _interrupt_coverage_collection(
-        tmp_path,
-        monkeypatch,
-        boundary="after:manifest_commit" if state == "pending" else None,
-    )
+    if state == "completed":
+        reports = _interrupt_coverage_publication(tmp_path, monkeypatch)
+    else:
+        reports, _request = _interrupt_coverage_collection(
+            tmp_path,
+            monkeypatch,
+            boundary="after:manifest_commit" if state == "pending" else None,
+        )
     simulation_record = reports / "sim/1/targets/sim_0/record"
     manifest = simulation_record / "manifest.json"
     observed = SimulationRecordStore(manifest.parent).scan()
-    assert len(getattr(observed, state)) == 1
+    items = getattr(observed, "complete" if state == "completed" else state)
+    assert len(items) == 1
     tree_before = set(reports.rglob("*"))
     bytes_before = _simulation_record_bytes(simulation_record)
     factory_calls = []
@@ -1383,11 +1226,13 @@ def test_resume_refuses_unfinished_coverage_collection(tmp_path, monkeypatch, st
     assert result.exit_code == 2
     text = result.outcome.report_text
     assert "booley flow sim --target sim_0 --coverage" in text
-    assert "no recorded result" in text
+    assert (
+        "a coverage run never resumes" if state == "completed" else "no recorded result"
+    ) in text
     assert factory_calls == []
     assert set(reports.rglob("*")) == tree_before
     assert _simulation_record_bytes(simulation_record) == bytes_before
-    assert result.outcome.detail[state] == list(getattr(observed, state))
+    assert result.outcome.detail[state] == list(items)
 
 
 @pytest.mark.parametrize(
@@ -1447,7 +1292,7 @@ def test_resume_refusal_command_repeats_the_record(
 
 
 def test_resume_refusal_preserves_corrupt_result_integrity_error(tmp_path, monkeypatch):
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
+    reports = _interrupt_coverage_publication(tmp_path, monkeypatch)
     simulation_record = reports / "sim/1/targets/sim_0/record"
     result_path = next(simulation_record.glob("work-items/*/result.json"))
     raw = result_path.read_bytes()
@@ -1459,20 +1304,9 @@ def test_resume_refusal_preserves_corrupt_result_integrity_error(tmp_path, monke
     assert result.outcome.report_text.startswith("Simulation Record integrity failure:")
 
 
-def _crash_coverage_publication(tmp_path, monkeypatch, boundary, *, no_waivers=False):
+def _crash_coverage_publication(tmp_path, monkeypatch, boundary):
     _pin_revision(monkeypatch, "b" * 40)
     _coverage_project(tmp_path, monkeypatch, '[sim_0]\ntests = ["reset", "wrap"]\n')
-    reports = tmp_path / "reports"
-    runs = []
-
-    class CountedExecution(NativeExecution):
-        def run(self, request):
-            runs.append(request.test)
-            return super().run(request)
-
-    def execution_factory(_handle, _options, _commands, _access):
-        return CountedExecution()
-
     armed = True
 
     def checkpoint(actual):
@@ -1481,123 +1315,60 @@ def _crash_coverage_publication(tmp_path, monkeypatch, boundary, *, no_waivers=F
             armed = False
             raise OSError(f"injected crash at {boundary}")
 
-    interrupted = _coverage(
-        tmp_path, factory=execution_factory, checkpoint=checkpoint, no_waivers=no_waivers
-    )
+    interrupted = _coverage(tmp_path, checkpoint=checkpoint)
     assert interrupted.exit_code == 2
-    public = reports / "sim/1/targets/sim_0/coverage.json"
-    return reports, runs, public, execution_factory, interrupted
+    return tmp_path / "reports/sim/1/targets/sim_0/coverage.json", interrupted
 
 
 @pytest.mark.parametrize(
-    ("boundary", "published"),
+    "boundary",
     [
-        ("after:simulation_result", False),
-        ("before:summary_replace", False),
-        ("after:summary_replace", False),
-        ("before:coverage_reference", False),
-        ("after:coverage_reference", True),
+        "before:coverage_record",
+        "after:coverage_record",
+        "before:simulation_result",
+        "after:simulation_result",
+        "before:summary_replace",
+        "after:summary_replace",
+        "before:coverage_reference",
+        "after:coverage_reference",
     ],
 )
-def test_coverage_publication_crash_resumes_at_the_aggregate_boundary(
-    tmp_path, monkeypatch, boundary, published
-):
-    """A finished collection with unfinished publication resumes without re-running."""
-    from booley.flows.sim.coverage_record_store import load_coverage_record
-
-    _reports, runs, public, execution_factory, interrupted = _crash_coverage_publication(
-        tmp_path, monkeypatch, boundary
-    )
-    assert public.exists() is published
-    failed = interrupted.outcome.detail["targets"]["sim_0"]
-    assert failed["passed"] is True
-    assert failed["simulation"] == "pass"
-    assert failed["collection"] == "complete"
-    assert failed["evaluation"] == "not_requested"
-    assert ("coverage_record" in failed) is (boundary == "after:coverage_reference")
-    completed_runs = tuple(runs)
-    manifest = public.parent / "record/manifest.json"
-
-    resumed = _coverage(tmp_path, factory=execution_factory, resume_from=manifest)
-
-    assert resumed.exit_code == 0
-    assert tuple(runs) == completed_runs
-    assert resolve_coverage_record_reference(public).coverage_record_path.is_file()
-    nested_coverage_records = list(
-        public.parent.glob("record/work-items/*/attempts/*/coverage-record/coverage.json")
-    )
-    assert len(nested_coverage_records) == 1
-    assert all(
-        load_coverage_record(path).coverage_record.coverage_record_id
-        for path in nested_coverage_records
-    )
-
-
-@pytest.mark.parametrize(
-    "boundary", ["before:coverage_record", "after:coverage_record", "before:simulation_result"]
-)
-def test_coverage_collection_crash_refuses_resume(tmp_path, monkeypatch, boundary):
-    """A collection without a recorded result is refused, never silently re-run."""
-    _reports, runs, public, execution_factory, _interrupted = _crash_coverage_publication(
-        tmp_path, monkeypatch, boundary
-    )
-    manifest = public.parent / "record/manifest.json"
-    completed_runs = tuple(runs)
-    nested_before = list(public.parent.glob("record/work-items/*/attempts/*/coverage-record"))
-
-    resumed = _coverage(tmp_path, factory=execution_factory, resume_from=manifest)
-
-    assert resumed.exit_code == 2
-    assert "booley flow sim --target sim_0 --coverage" in resumed.outcome.report_text
-    assert "no recorded result" in resumed.outcome.report_text
-    assert tuple(runs) == completed_runs
-    nested_after = list(public.parent.glob("record/work-items/*/attempts/*/coverage-record"))
-    assert nested_after == nested_before
-
-
-def test_resumed_coverage_publication_failure_preserves_current_attempt_truth(
-    tmp_path, monkeypatch
-):
-    _reports, _runs, public, execution_factory, _interrupted = _crash_coverage_publication(
-        tmp_path, monkeypatch, "after:simulation_result"
-    )
-    armed = True
-
-    def checkpoint(boundary):
-        nonlocal armed
-        if armed and boundary == "before:summary_replace":
-            armed = False
-            raise OSError("injected resumed summary failure")
+def test_coverage_crash_refuses_resume(tmp_path, monkeypatch, boundary):
+    """Wherever a coverage run crashed, its record is refused, never resumed or re-run."""
+    public, interrupted = _crash_coverage_publication(tmp_path, monkeypatch, boundary)
+    collected = boundary not in {
+        "before:coverage_record",
+        "after:coverage_record",
+        "before:simulation_result",
+    }
+    if collected:
+        assert public.exists() is (boundary == "after:coverage_reference")
+        failed = interrupted.outcome.detail["targets"]["sim_0"]
+        assert failed["passed"] is True
+        assert failed["simulation"] == "pass"
+        assert failed["collection"] == "complete"
+        assert failed["evaluation"] == "not_requested"
+        assert ("coverage_record" in failed) is (boundary == "after:coverage_reference")
+        line = {"percent": 100.0, "threshold": None, "met": None}
+        assert failed["coverage_metrics"]["line"] == line
+    tree_before = set((tmp_path / "reports").rglob("*"))
+    factory_calls = []
 
     resumed = _coverage(
         tmp_path,
-        factory=execution_factory,
-        checkpoint=checkpoint,
+        factory=lambda *args: factory_calls.append(args),
         resume_from=public.parent / "record/manifest.json",
     )
 
     assert resumed.exit_code == 2
-    detail = resumed.outcome.detail["targets"]["sim_0"]
-    assert detail["passed"] is True
-    assert detail["simulation"] == "pass"
-    assert detail["collection"] == "complete"
-    assert detail["evaluation"] == "not_requested"
-    assert "coverage_metrics" in detail
-    assert detail["coverage_metrics"]["line"] == {"percent": 100.0, "threshold": None, "met": None}
+    text = resumed.outcome.report_text
+    assert "booley flow sim --target sim_0 --coverage" in text
+    assert ("a coverage run never resumes" if collected else "no recorded result") in text
+    assert factory_calls == []
+    assert set((tmp_path / "reports").rglob("*")) == tree_before
 
 
 def test_failure_reference_encoding_cannot_mask_original_error(tmp_path, monkeypatch):
-    _reports, _runs, public, execution_factory, _interrupted = _crash_coverage_publication(
-        tmp_path, monkeypatch, "after:simulation_result"
-    )
-    armed = True
-
-    def checkpoint(boundary):
-        nonlocal armed
-        if armed and boundary == "after:coverage_reference":
-            armed = False
-            raise OSError("injected resumed reference failure")
-
     def fail_reference(*_args, **_kwargs):
         raise OSError("injected report reference failure")
 
@@ -1606,51 +1377,24 @@ def test_failure_reference_encoding_cannot_mask_original_error(tmp_path, monkeyp
         "booley.flows.sim.record_presentation._report_artifact_reference",
         fail_reference,
     )
-    resumed = _coverage(
-        tmp_path,
-        factory=execution_factory,
-        checkpoint=checkpoint,
-        resume_from=public.parent / "record/manifest.json",
+    _public, result = _crash_coverage_publication(
+        tmp_path, monkeypatch, "after:coverage_reference"
     )
 
-    assert resumed.exit_code == 2
-    detail = resumed.outcome.detail["targets"]["sim_0"]
+    detail = result.outcome.detail["targets"]["sim_0"]
     assert detail["passed"] is True
     assert detail["simulation"] == "pass"
-    assert detail["error"] == "injected resumed reference failure"
+    assert detail["error"] == "injected crash at after:coverage_reference"
     assert "coverage_record" not in detail
 
 
-@pytest.mark.parametrize("resumed", [False, True], ids=["fresh", "resumed"])
-def test_unreadable_publication_evidence_preserves_simulation_truth(
-    tmp_path, monkeypatch, resumed
-):
-    if resumed:
-        _reports, _runs, public, _factory, _interrupted = _crash_coverage_publication(
-            tmp_path, monkeypatch, "after:simulation_result"
-        )
-
+def test_unreadable_publication_evidence_preserves_simulation_truth(tmp_path, monkeypatch):
     def unreadable(*_args, **_kwargs):
         raise OSError("nested coverage evidence unreadable")
 
     monkeypatch.setattr("booley.flows.sim.record_presentation.load_coverage_record", unreadable)
-    if resumed:
+    _public, result = _crash_coverage_publication(tmp_path, monkeypatch, "after:simulation_result")
 
-        def checkpoint(boundary):
-            if boundary == "before:summary_replace":
-                raise OSError("resumed publication failed")
-
-        result = _coverage(
-            tmp_path,
-            checkpoint=checkpoint,
-            resume_from=public.parent / "record/manifest.json",
-        )
-    else:
-        _reports, _runs, _public, _factory, result = _crash_coverage_publication(
-            tmp_path, monkeypatch, "after:simulation_result"
-        )
-
-    assert result.exit_code == 2
     assert "targets" in result.outcome.detail
     detail = result.outcome.detail["targets"]["sim_0"]
     assert detail["simulation"] == "pass"
@@ -1661,7 +1405,7 @@ def test_unreadable_publication_evidence_preserves_simulation_truth(
     assert "coverage_record" not in detail
 
 
-def _run_with_retention_reference_failure(monkeypatch, request, execution=None):
+def _run_with_retention_reference_failure(monkeypatch, request):
     calls = []
 
     def fail_once(public):
@@ -1674,44 +1418,7 @@ def _run_with_retention_reference_failure(monkeypatch, request, execution=None):
         patch.setattr(
             "booley.flows.sim.record_presentation.resolve_coverage_record_reference", fail_once
         )
-        return SimulateFlow(
-            coverage_execution=lambda *_args: execution or NativeExecution()
-        ).execute(request)
-
-
-def test_resumed_retention_failure_matches_fresh_failed_target(tmp_path, monkeypatch):
-    reports, _runs, public, _factory, _interrupted = _crash_coverage_publication(
-        tmp_path, monkeypatch, "after:simulation_result"
-    )
-    execution = NativeExecution()
-    fresh = _run_with_retention_reference_failure(
-        monkeypatch,
-        SimRequest(
-            target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "fresh"
-        ),
-    )
-    resumed = _run_with_retention_reference_failure(
-        monkeypatch,
-        SimRequest(
-            resume_from=public.parent / "record/manifest.json",
-            work_dir=tmp_path,
-            report_dir=reports,
-        ),
-        execution,
-    )
-
-    assert fresh.exit_code == resumed.exit_code == 2
-    assert "targets" in resumed.outcome.detail
-    detail = resumed.outcome.detail["targets"]["sim_0"]
-    assert detail == fresh.outcome.detail["targets"]["sim_0"]
-    assert detail["simulation"] == "pass"
-    assert detail["passed"] is True
-    assert detail["collection"] == "infrastructure_error"
-    assert detail["evaluation"] == "not_requested"
-    assert detail["abort_remaining"] is True
-    assert "coverage_record" not in detail
-    assert [test["name"] for test in detail["tests"]] == ["reset", "wrap"]
-    assert execution.runs == []
+        return SimulateFlow(coverage_execution=lambda *_args: NativeExecution()).execute(request)
 
 
 def test_retention_failure_preserves_in_memory_simulation_record_truth(tmp_path, monkeypatch):
@@ -1885,26 +1592,8 @@ def test_absent_waiver_directory_is_evaluated_and_an_invalid_one_blocks(tmp_path
     assert _coverage_evaluation_status(tmp_path / "raw", "sim_0") == "not_requested"
 
 
-def test_no_waivers_resume_of_ungated_manifest_does_not_rerun_tests(tmp_path, monkeypatch):
-    _reports, runs, public, execution_factory, _interrupted = _crash_coverage_publication(
-        tmp_path, monkeypatch, "after:simulation_result", no_waivers=True
-    )
-    completed_runs = tuple(runs)
-
-    resumed = _coverage(
-        tmp_path,
-        factory=execution_factory,
-        resume_from=public.parent / "record/manifest.json",
-    )
-
-    assert resumed.exit_code == 0, resumed.outcome
-    assert tuple(runs) == completed_runs
-
-
 @pytest.mark.parametrize("verdict", ["pass", "fail"])
-def test_public_coverage_simulation_record_headline_fresh_and_resume(
-    tmp_path, monkeypatch, verdict
-):
+def test_public_coverage_simulation_record_headline(tmp_path, monkeypatch, verdict):
     reports = _prepare_coverage_origin(tmp_path, monkeypatch)
     runs = []
 
@@ -1913,76 +1602,17 @@ def test_public_coverage_simulation_record_headline_fresh_and_resume(
             runs.append(request.test)
             return super().run(request)
 
-    def invoke(request):
-        return SimulateFlow(
-            coverage_execution=lambda *_args: Counted(hits=0, verdict=verdict)
-        ).execute(request)
+    result = SimulateFlow(
+        coverage_execution=lambda *_args: Counted(hits=0, verdict=verdict)
+    ).execute(SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports))
 
-    fresh = invoke(
-        SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
-    )
-    completed = tuple(runs)
-    assert tuple(item.name for item in completed) == ("reset", "wrap")
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    resumed = invoke(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports))
-    assert tuple(runs) == completed
-    for result in (fresh, resumed):
-        assert result.outcome.detail["targets"]["sim_0"]["evaluation"] == "not_requested"
-        assert result.outcome.detail["targets"]["sim_0"]["simulation"] == verdict
-        assert result.exit_code == (1 if verdict == "fail" else 0), result.outcome
+    assert tuple(item.name for item in runs) == ("reset", "wrap")
+    assert result.outcome.detail["targets"]["sim_0"]["evaluation"] == "not_requested"
+    assert result.outcome.detail["targets"]["sim_0"]["simulation"] == verdict
+    assert result.exit_code == (1 if verdict == "fail" else 0), result.outcome
     assert not (tmp_path / "state.json").exists()
     report = json.loads((reports / "sim.json").read_text())
     assert "criterion_key" not in report and "criterion_met" not in report
-
-
-@pytest.mark.parametrize("dry_run", [False, True])
-def test_public_publication_resumable_coverage_mismatch_diagnostics(
-    tmp_path, monkeypatch, dry_run
-):
-    reports, _request, runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    before = {
-        path.relative_to(manifest.parent).as_posix(): path.read_bytes()
-        for path in manifest.parent.rglob("*")
-        if path.is_file()
-    }
-    report_before = {
-        path.relative_to(reports).as_posix(): path.read_bytes()
-        for path in reports.rglob("*")
-        if path.is_file()
-    }
-    (tmp_path / "rtl/counter.sv").write_text("module counter; endmodule\n// changed\n")
-
-    def forbidden_execution(*_args):
-        pytest.fail("mismatch refusal must precede coverage build and collection")
-
-    result = _coverage(
-        tmp_path,
-        factory=forbidden_execution,
-        resume_from=manifest,
-        dry_run=dry_run,
-    )
-    assert result.exit_code == 2
-    assert "source closures" in result.outcome.detail["mismatches"]
-    (command,) = [
-        line.strip()
-        for line in result.outcome.report_text.splitlines()
-        if line.strip().startswith("booley flow sim --target sim_0")
-    ]
-    assert " --coverage" in command
-    assert [test.name for test in runs] == ["reset", "wrap"]
-    after = {
-        path.relative_to(manifest.parent).as_posix(): path.read_bytes()
-        for path in manifest.parent.rglob("*")
-        if path.is_file()
-    }
-    assert after == before
-    if dry_run:
-        assert {
-            path.relative_to(reports).as_posix(): path.read_bytes()
-            for path in reports.rglob("*")
-            if path.is_file()
-        } == report_before
 
 
 def _coverage_hook_flow_fixture(tmp_path, monkeypatch):
@@ -2278,25 +1908,6 @@ def test_symlinked_booley_dir_publishes_and_analyses_coverage(tmp_path, monkeypa
         read_coverage_record(coverage_record_path).coverage_record
         == resolved.loaded.coverage_record
     )
-
-
-def test_symlinked_booley_dir_coverage_resume_supersedes_origin_progress(tmp_path, monkeypatch):
-    root, reports = _linked_coverage_project(tmp_path, monkeypatch)
-
-    def checkpoint(actual):
-        if actual == "before:summary_replace":
-            raise KeyboardInterrupt("simulated publication interruption")
-
-    with pytest.raises(KeyboardInterrupt):
-        _coverage(root, checkpoint=checkpoint, report_dir=reports)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-
-    result = _coverage(root, resume_from=manifest, report_dir=reports)
-
-    assert result.exit_code == 0
-    progress = json.loads((reports / "sim/1/progress.json").read_text())
-    assert progress["phase"] == "superseded"
-    assert progress["superseded_by"]["invocation"] == 2
 
 
 def test_coverage_analysis_refuses_a_coverage_record_written_by_booley_0_3_0(tmp_path):

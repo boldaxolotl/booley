@@ -898,14 +898,6 @@ def _attach_failure_reference(
         detail["coverage_record"] = reference
 
 
-class _CoverageTargetError(RuntimeError):
-    """Carry a projected coverage failure across the resume progress lifecycle."""
-
-    def __init__(self, message: str, detail: dict[str, object]) -> None:
-        super().__init__(message)
-        self.detail = detail
-
-
 def _observed_failure_detail(
     selector: str, observations: tuple[Mapping[str, object], ...], evaluation: str
 ) -> dict[str, object]:
@@ -957,7 +949,7 @@ def _coverage_failed_target(
     report_invocation: Path | None = None,
 ) -> dict[str, object]:
     """Use one failure precedence, retaining simulation truth without retrying retention."""
-    if isinstance(error, (_CoverageAggregateError, _CoverageTargetError)):
+    if isinstance(error, _CoverageAggregateError):
         detail = {str(key): _structured_json(value) for key, value in error.detail.items()}
     elif isinstance(error, SimulationRecordPublicationError):
         detail = _publication_failure_detail(error.failure, evaluation, report_invocation)

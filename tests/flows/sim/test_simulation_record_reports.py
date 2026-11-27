@@ -186,53 +186,6 @@ def test_cycle_card_preserves_complete_reason_strings(reason, tmp_path):
     assert f"\n  {reason}\n  y\n  one: cycles=7" in rendered
 
 
-@pytest.mark.parametrize("failure", [None, "retention", "supersede", "projection"])
-def test_authenticated_coverage_resume_keeps_report_counts(tmp_path, monkeypatch, failure):
-    # Private seam: a resumed run that fails after completing can only be made to fail by
-    # patching `_checkpoint_coverage_record` or `supersede_progress`, and
-    # `_simulation_record_outcomes` is the only place the discarded outcomes are observable.
-    from tests.flows.sim.test_coverage_flow import NativeExecution, _interrupt_coverage_publication
-
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
-    execution = NativeExecution()
-    if failure:
-        target = {
-            "retention": "booley.flows.sim.flow_resume._checkpoint_coverage_record",
-            "supersede": "booley.flows.sim.flow_resume.supersede_progress",
-            "projection": "booley.flows.sim.acceptance.write_compatibility_projection",
-        }[failure]
-        monkeypatch.setattr(
-            target,
-            lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("after completed resume")),
-        )
-    resumed = tmp_path / "resumed"
-    flow = SimulateFlow(coverage_execution=lambda *_args: execution)
-    result = flow.execute(SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=resumed))
-    report = json.loads((resumed / "sim/1/report.json").read_text())
-    assert result.exit_code == (2 if failure else 0)
-    assert execution.runs == []
-    assert report["cycle_counts"]["sim_0"] == [
-        {"test": "reset", "cycle_count": None},
-        {"test": "wrap", "cycle_count": None},
-    ]
-    assert report == json.loads((resumed / "sim.json").read_text())
-    progress = json.loads((resumed / "sim/1/progress.json").read_text())
-    assert "cycle_counts" not in json.dumps(progress)
-    if failure == "projection":
-        # The Target stays pending: no Coverage Record line names an unpublished projection.
-        assert progress["phase"] == "aborted" and progress["pending_targets"] == ["sim_0"]
-        assert "Coverage Record:" not in result.outcome.report_text
-    if failure:
-        assert flow._simulation_record_outcomes == ()
-    else:
-        simulation_record = report["detail"]["records"]["sim_0"]
-        assert all(item["cycle_count"] is None for item in simulation_record["observations"])
-        assert (
-            simulation_record["artifacts"]["simulation"]["path_base"] == "external_origin_target"
-        )
-
-
 def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeypatch):
     # Private seam: `_simulation_record_endpoint_outcome` builds the outcome from 2,000 hand-
     # made observations per Target, which a real run cannot produce, and
@@ -387,9 +340,10 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
 def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counters):
     # Private seam: the resume needs a typed execution without destination admission or origin
     # locking, so the test replaces `_simulation_record_policy`,
-    # `_lock_simulation_record_resume_origin`, `_resume_simulation_record_plan` and
-    # `_resume_simulation_record_executor`.
+    # `_lock_simulation_record_resume_origin`, `_resume_simulation_record_plan` and the
+    # ordinary executor.
 
+    from booley.flows.sim import flow_resume
     from booley.flows.sim.flow import PreparedSimulationEndpoint
     from booley.flows.sim.record.coordinator import SimulationRecordPolicy
     from booley.flows.sim.record.model import create_simulation_record_plan
@@ -420,10 +374,15 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
         "_resume_simulation_record_plan",
         lambda *args, **kwargs: create_simulation_record_plan(manifest),
     )
+    build = flow_resume.OrdinaryHdlSerialExecutor
+    # Each flow keeps its own counters: the executor is chosen by the flow that builds it.
     monkeypatch.setattr(
-        flow,
-        "_resume_simulation_record_executor",
-        lambda *args: _executor(invocation / "build", counters),
+        "booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor",
+        lambda *, invoke: (
+            _executor(invocation / "build", counters)
+            if invoke.__self__ is flow
+            else build(invoke=invoke)
+        ),
     )
     return flow, PreparedSimulationEndpoint((), validated, ("sim",), {})
 
