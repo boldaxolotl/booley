@@ -41,7 +41,13 @@ from booley.runtime.incontainer_git_identity import (
     load_git_identity,
 )
 from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
-from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, T3_BASE_DIR, WORK_DIR
+from booley.runtime.sandbox_layout import (
+    BOOLEY_DIR_TARGET,
+    T3_BASE_DIR,
+    T3_BASE_DIR_ENV,
+    WORK_DIR,
+    t3_project_base_dir,
+)
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 # --- Supported agent apps (mirrors the init wizard's app selection) ---
@@ -620,6 +626,11 @@ def _planned_seeds(app: str, cli_seeds: Sequence[CliSeeds]) -> list[_Seed]:
     ]
 
 
+def _runs_t3_code(seeds: Sequence[_Seed]) -> bool:
+    """Whether an Agent CLI is allowed, so the spec carries T3 Code's volume and directory."""
+    return any(seed.app in _APP_STATE_DIR for seed in seeds)
+
+
 def _cli_seed_mounts(
     seeds: Sequence[_Seed], project_id: str, legacy_clis: frozenset[str]
 ) -> list[str]:
@@ -658,7 +669,7 @@ def _cli_seed_mounts(
         state_mount = state_volume_mount(seed.app, project_id, seed.policy, legacy=legacy)
         if state_mount:
             mounts.append(state_mount)
-    if any(seed.app in _APP_STATE_DIR for seed in seeds):
+    if _runs_t3_code(seeds):
         mounts.append(t3_state_volume_mount(project_id))
     return mounts
 
@@ -1009,6 +1020,8 @@ def build_devcontainer_spec(
     }
     if egress == "unproxied":
         spec["containerEnv"]["BOOLEY_EGRESS"] = "unproxied"
+    if _runs_t3_code(seeds):
+        spec["containerEnv"][T3_BASE_DIR_ENV] = t3_project_base_dir(project_id)
 
     config_command, creds_commands = _seed_commands(seeds)
     post_create = _build_post_create_command(config_command, creds_commands, mcp_start_command)

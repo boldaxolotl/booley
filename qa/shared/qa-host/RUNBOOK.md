@@ -89,9 +89,9 @@ runs.
    port as its base URL:
 
    ```bash
-   qa$ booley session enter -- t3 auth pairing create \
-     --base-dir /home/agent/.t3 \
-     --base-url http://127.0.0.1:<port + 110> --ttl 30m --json
+   qa$ booley session enter -- sh -c 't3 auth pairing create \
+     --base-dir "$BOOLEY_T3_BASE_DIR" \
+     --base-url http://127.0.0.1:<port + 110> --ttl 30m --json'
    ```
 
    Open `pairUrl` on the outer host. For a link that Booley prints, change its

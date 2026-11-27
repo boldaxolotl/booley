@@ -49,6 +49,7 @@ _START_ENV = (
     "BOOLEY_AGENT_CLIS",
     "BOOLEY_PRIMARY_AUTH",
     "BOOLEY_CONTAINER",
+    "BOOLEY_T3_BASE_DIR",
     "BOOLEY_MCP_DEVELOPER_AGENT",
     "CODEX_HOME",
     "RTL_PROJECT_ROOT",
@@ -330,6 +331,42 @@ def test_ensure_t3_server_registers_the_project_under_its_name(
     assert t3.checked == [["t3", "policy", "check", "/etc/t3code/policy.json"]]
     err = capsys.readouterr().err
     assert "boom" not in err and err.count("\n") == lines
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the Sandbox's base directory is a symlink")
+@pytest.mark.parametrize("restart", ["kept", "removed", "directory", "elsewhere"])
+def test_t3_code_keeps_its_state_under_the_projects_base_dir(
+    tmp_path, monkeypatch, capsys, restart
+):
+    volume, alias = tmp_path / "t3-volume", tmp_path / "t3-alias"
+    volume.mkdir()
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_bytes(b'[project]\nname = "chip"\n')
+    monkeypatch.setattr(reg, "T3_BASE_DIR", str(volume))  # a host test has no volume mount
+    monkeypatch.setenv("BOOLEY_T3_BASE_DIR", str(alias))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    t3 = _t3_code(monkeypatch)
+    assert reg.ensure_t3_server(tmp_path) == "started"
+    assert t3.served[0][t3.served[0].index("--base-dir") + 1] == str(alias)
+    record = (volume / "userdata" / "server-runtime.json").read_bytes()
+
+    t3.running = False  # the container stopped
+    if restart != "kept":
+        alias.unlink()  # a recreated container has a fresh home
+    if restart == "directory":
+        alias.mkdir()
+    elif restart == "elsewhere":
+        alias.symlink_to(tmp_path)
+    status = reg.ensure_t3_server(tmp_path)
+
+    if restart in ("directory", "elsewhere"):
+        assert status == "failed" and len(t3.served) == 1
+        assert "T3 Code not started" in capsys.readouterr().err
+        return
+    assert status == "started" and t3.replaced_records == [record]  # found in the volume
+    reg.create_t3_pairing("http://127.0.0.1:1")
+    commands = [*t3.served, *t3.added, *t3.renamed, *t3.paired]
+    assert [cmd[cmd.index("--base-dir") + 1] for cmd in commands] == [str(alias)] * 6
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="NTFS would allocate the sparse log files")
