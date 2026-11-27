@@ -10,7 +10,7 @@ from pathlib import Path
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.core.boundary import require_dict, require_str
 from booley.core.resources import package_data_dir
-from booley.runtime import incontainer_setup, platform_paths, session_runtime
+from booley.runtime import incontainer_setup, platform_paths, runtime_context, session_runtime
 from booley.runtime.incontainer_setup import T3_PORT
 
 _VERSION_TIMEOUT_S = 30
@@ -89,7 +89,10 @@ def inspect_ui_in_sandbox(project_root: Path | None) -> DiagnosticReport:
         findings.skip("T3 Code server check skipped - project config invalid")
     else:
         _judge_server_in_sandbox(findings, incontainer_setup.t3_state(project_root))
-    findings.skip("T3 Code relay check skipped - it runs from the host")
+    if runtime_context.in_hand_written_sandbox():
+        findings.skip("T3 Code relay check not applicable - Booley did not create this Sandbox")
+    else:
+        findings.skip("T3 Code relay check skipped - it runs from the host")
     return findings.report()
 
 
@@ -100,10 +103,13 @@ def _judge_server_in_sandbox(findings: Findings, t3: str) -> None:
     what = "T3 Code does not answer in the Sandbox"
     if t3 == incontainer_setup.T3_PORT_TAKEN:
         what = f"{_SERVER} is held by another process"
-    findings.skip(
-        f"{what}; from inside, Doctor cannot tell a --no-ui start from a stopped server "
-        "- run booley doctor on the host"
-    )
+    # A hand-written Sandbox has no host-side `booley` to send the user to.
+    if not runtime_context.in_hand_written_sandbox():
+        what += (
+            "; from inside, Doctor cannot tell a --no-ui start from a stopped server "
+            "- run booley doctor on the host"
+        )
+    findings.skip(what)
 
 
 def _not_applicable(findings: Findings, reason: str) -> None:
