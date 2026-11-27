@@ -15,8 +15,7 @@ from booley.runtime import devcontainer as dc
 from tests.gateway_command_support import write_token_command
 from tests.harness.agent_auth_support import install_agent_clis, pin_venue
 from tests.harness.doctor_environment_support import patch_doctor_environment
-from tests.harness.doctor_run_support import run_doctor
-from tests.harness.test_doctor import _write_project
+from tests.harness.doctor_run_support import run_doctor, write_project
 
 _CLAUDE_LOGIN = {
     "claudeAiOauth": {"accessToken": "a", "refreshToken": "r", "expiresAt": 4102444800000}
@@ -27,7 +26,7 @@ _CODEX_LOGIN = {"tokens": {"access_token": "a", "refresh_token": "r"}}
 @pytest.fixture
 def home(tmp_path, monkeypatch) -> Path:
     """A host Project with no credentials in the environment or on disk, both CLIs installed."""
-    patch_doctor_environment(monkeypatch, tmp_path, _write_project(tmp_path))
+    patch_doctor_environment(monkeypatch, tmp_path, write_project(tmp_path))
     home = Path.home()
     for name in ("HOME", "USERPROFILE"):
         monkeypatch.setenv(name, str(home))

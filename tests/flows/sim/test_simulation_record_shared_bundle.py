@@ -46,6 +46,7 @@ from booley.flows.sim.runtime_inputs import (
     RuntimeInputError,
     materialize_simulation_record_runtime_inputs,
 )
+from tests.flows.sim.fault_point_support import inject_faults
 from tests.flows.sim.simulation_record_boundary import (
     PASS_PROCESS,
     Launch,
@@ -841,23 +842,17 @@ def test_bundle_mutation_fails_closed(
 ) -> None:
     """A changed bundle is refused during an attempt, and one changed before launch never launches."""
     before_launch = mutation == "before_launch"
-    options: dict[str, Any] = (
-        {
-            "checkpoint": lambda boundary: (
-                mutate_bundle_directory(
-                    _bundle_directories(invocation, kind)[0], "undeclared_entry"
-                )
-                if boundary == "after:runtime_inputs"
-                else None
-            )
-        }
-        if before_launch
-        else {"mutate_bundle": mutation}
-    )
+    options: dict[str, Any] = {} if before_launch else {"mutate_bundle": mutation}
+
+    def change_bundle_before_launch(boundary: str) -> None:
+        if boundary == "after:runtime_inputs":
+            mutate_bundle_directory(_bundle_directories(invocation, kind)[0], "undeclared_entry")
+
     invocation, counters, _launched, run = _bundle_run(tmp_path, monkeypatch, kind=kind, **options)
     expected = "bundle artifact changed" if mutation == "changed_artifact" else "undeclared bundle"
 
-    with pytest.raises(SimulationRecordIntegrityError, match=expected):
+    hook = change_bundle_before_launch if before_launch else None
+    with inject_faults(hook), pytest.raises(SimulationRecordIntegrityError, match=expected):
         run()
 
     store = SimulationRecordStore(invocation / "targets/sim/record")

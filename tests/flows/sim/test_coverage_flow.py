@@ -25,6 +25,7 @@ from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.filesystem_utils import safe_rmtree
+from tests.flows.sim.fault_point_support import inject_faults
 from tests.flows.sim.test_coverage_invocation import project
 from tests.flows.sim.test_coverage_transaction import NativeExecution
 from tests.memory_budget_support import fail_budget
@@ -59,10 +60,10 @@ def _coverage(
         request = {"target": "sim_0", "coverage": True, **request}
     request.setdefault("report_dir", work_dir / "reports")
     flow = SimulateFlow(
-        coverage_execution=factory or (lambda *_args: execution or NativeExecution()),
-        simulation_record_publication_checkpoint=checkpoint,
+        coverage_execution=factory or (lambda *_args: execution or NativeExecution())
     )
-    return flow.execute(SimRequest(work_dir=work_dir, **request))
+    with inject_faults(checkpoint):
+        return flow.execute(SimRequest(work_dir=work_dir, **request))
 
 
 def _pin_revision(monkeypatch: pytest.MonkeyPatch, revision: str) -> None:
@@ -1104,11 +1105,11 @@ def _interrupt_coverage_collection(
         no_waivers=no_waivers,
         report_dir=reports,
     )
-    with pytest.raises(KeyboardInterrupt):
-        SimulateFlow(
-            coverage_execution=lambda handle, options, _commands, _access: Interrupted(),
-            simulation_record_publication_checkpoint=checkpoint if boundary else None,
-        ).execute(request)
+    flow = SimulateFlow(
+        coverage_execution=lambda handle, options, _commands, _access: Interrupted()
+    )
+    with inject_faults(checkpoint if boundary else None), pytest.raises(KeyboardInterrupt):
+        flow.execute(request)
     return reports, request
 
 
@@ -1143,11 +1144,9 @@ def _interrupt_coverage_publication(tmp_path, monkeypatch):
         coverage=True,
         report_dir=reports,
     )
-    with pytest.raises(KeyboardInterrupt):
-        SimulateFlow(
-            coverage_execution=lambda *_args: NativeExecution(),
-            simulation_record_publication_checkpoint=checkpoint,
-        ).execute(request)
+    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
+    with inject_faults(checkpoint), pytest.raises(KeyboardInterrupt):
+        flow.execute(request)
     return reports
 
 
@@ -1624,21 +1623,14 @@ def _coverage_hook_flow_fixture(tmp_path, monkeypatch):
 def test_actual_coverage_hook_publication_crash_keeps_only_durable_evidence(
     tmp_path, monkeypatch, side
 ):
-    from booley.flows.sim.record.coverage_execution import CoverageAggregateExecutor
     from tests.flows.sim.test_simulation_record_crash_matrix import (
         _CrashOnce,
         _InjectedProcessDeath,
     )
 
-    original = CoverageAggregateExecutor.__init__
     crash = _CrashOnce(f"{side}:pre_sim_evidence")
-
-    def with_checkpoint(executor, **kwargs):
-        original(executor, **{**kwargs, "publication_checkpoint": crash})
-
-    monkeypatch.setattr(CoverageAggregateExecutor, "__init__", with_checkpoint)
     flow = _coverage_hook_flow_fixture(tmp_path, monkeypatch)
-    with pytest.raises(_InjectedProcessDeath):
+    with inject_faults(crash), pytest.raises(_InjectedProcessDeath):
         flow.execute(
             SimRequest(
                 target="sim_0", work_dir=tmp_path, coverage=True, report_dir=tmp_path / "reports"
@@ -1769,9 +1761,9 @@ def test_owned_coverage_sink_crash_preserves_actual_hook_before_adapter_launch(
     crash = _CrashOnce(f"{side}:pre_sim_evidence")
     execution.set_pre_sim_evidence_sink(
         # The crash boundary is inside the executor's hook sink, below the public execution.
-        lambda evidence: _publish_hook(request, evidence, 1, crash)
+        lambda evidence: _publish_hook(request, evidence, 1)
     )
-    with pytest.raises(_InjectedProcessDeath):
+    with inject_faults(crash), pytest.raises(_InjectedProcessDeath):
         execution.run(_run_request(target, raw_path))
     assert crash.tripped
     assert "run_script" not in captured

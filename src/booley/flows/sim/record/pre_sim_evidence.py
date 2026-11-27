@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
+from booley.flows.sim import faults
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.execution.contract import PreSimEvidence, PreSimScopeStoppedError
 from booley.flows.sim.execution.pre_sim_reporting import pre_sim_document
@@ -74,7 +75,6 @@ def publish_pre_sim_firing(
     evidence: PreSimEvidence,
     *,
     ordinal: int = 1,
-    checkpoint: Callable[[str], None] | None = None,
 ) -> Mapping[str, object]:
     """Publish before later build checks or simulator work can fail."""
     decoder = request.pre_sim_decoder
@@ -89,8 +89,7 @@ def publish_pre_sim_firing(
     if len(raw) > MANIFEST_MAX_BYTES:
         raise SimulationRecordIntegrityError("Pre-Sim Commands evidence exceeds byte limit")
     key = _firing_key(document)
-    if checkpoint is not None:
-        checkpoint("before:pre_sim_evidence")
+    faults.fault_point("before:pre_sim_evidence")
     observer = request.pre_sim_firing_published
     path = request.store.publish_pre_sim_evidence(
         request.attempt_directory,
@@ -98,8 +97,7 @@ def publish_pre_sim_firing(
         raw,
         on_published=(lambda: observer(key)) if observer is not None else None,
     )
-    if checkpoint is not None:
-        checkpoint("after:pre_sim_evidence")
+    faults.fault_point("after:pre_sim_evidence")
     scope = current_supervised_execution()
     if scope is not None and scope.cancelled():
         raise PreSimScopeStoppedError("execution scope stopped after Pre-Sim Commands")

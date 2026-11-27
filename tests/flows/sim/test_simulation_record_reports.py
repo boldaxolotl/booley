@@ -29,6 +29,7 @@ from booley.flows.test_runs import build_test_run
 from booley.mcp.job_results import _read_report_json
 from booley.runtime.file_lock import LockContentionError
 from tests.conftest import symlink_or_skip
+from tests.flows.sim.fault_point_support import inject_faults
 from tests.flows.sim.simulation_record_test_support import (
     _recorded_simulation_record,
 )
@@ -542,8 +543,8 @@ def test_actual_publication_observer_checkpoint_and_exception_semantics(tmp_path
             raise RuntimeError("checkpoint failure")
 
     request, evidence = _observed_hook_request(tmp_path, observer)
-    with pytest.raises(RuntimeError, match="failure"):
-        publish_pre_sim_firing(request, evidence, checkpoint=checkpoint)
+    with inject_faults(checkpoint), pytest.raises(RuntimeError, match="failure"):
+        publish_pre_sim_firing(request, evidence)
     sidecars = tuple((request.attempt_directory / "pre-sim").glob("*.json"))
     assert len(events) == len(sidecars) == int(stop != "before")
     if sidecars:

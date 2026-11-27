@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim import faults
 from booley.flows.sim.build_session import SimulationBuildLeaseStoppedError
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.coverage_record import CoverageRecordValidationError
@@ -231,7 +232,6 @@ class SimulationRecord:
         self,
         executor: SerialWorkExecutor | None = None,
         *,
-        publication_checkpoint: Callable[[str], None] | None = None,
         manifest_published: Callable[[Path], None] | None = None,
         work_item_request: WorkItemRequest | None = None,
     ) -> None:
@@ -240,7 +240,6 @@ class SimulationRecord:
         self._work_item_request = work_item_request
         self._flow_claim: FlowClaim | None = None
         self._executor = executor
-        self._publication_checkpoint = publication_checkpoint or (lambda _boundary: None)
         self._publication_gate = threading.Lock()
 
     def preview(self, request: NewSimulationRecordPreviewRequest) -> NewSimulationRecordPreview:
@@ -328,14 +327,14 @@ class SimulationRecord:
                     / f"{COVERAGE_RECORD_DIRECTORY}/coverage.json"
                 )
                 failure = replace(failure, nested_coverage_record=nested)
-            self._publication_checkpoint("before:summary_replace")
+            faults.fault_point("before:summary_replace")
             summary = store.regenerate_summary(manifest)
-            self._publication_checkpoint("after:summary_replace")
+            faults.fault_point("after:summary_replace")
             if failure is not None:
                 reference = self._publish_coverage_reference(
                     store, manifest, work_item_id, result, nested
                 )
-                self._publication_checkpoint("after:coverage_reference")
+                faults.fault_point("after:coverage_reference")
         except (OSError, ValueError, RuntimeError) as exc:
             if failure is None:
                 raise
@@ -379,7 +378,7 @@ class SimulationRecord:
             raise SimulationRecordIntegrityError(
                 "nested Coverage Record cannot be authenticated"
             ) from exc
-        self._publication_checkpoint("before:coverage_reference")
+        faults.fault_point("before:coverage_reference")
         return publish_coverage_record_reference(store.root.parent / "coverage.json", reference)
 
     def _expect_builds(
@@ -419,11 +418,11 @@ class SimulationRecord:
     def _publish_manifest(
         self, store: SimulationRecordStore, manifest: SimulationRecordManifest
     ) -> None:
-        self._publication_checkpoint("before:manifest_commit")
+        faults.fault_point("before:manifest_commit")
         store.publish_manifest(manifest)
         if self._manifest_published is not None:
             self._manifest_published(store.manifest_path)
-        self._publication_checkpoint("after:manifest_commit")
+        faults.fault_point("after:manifest_commit")
 
     @staticmethod
     def _preflight_incomplete(
@@ -650,9 +649,9 @@ class SimulationRecord:
         result: SimulationResult,
     ) -> None:
         with self._publication_gate:
-            self._publication_checkpoint("before:simulation_result")
+            faults.fault_point("before:simulation_result")
             store.publish_result(work_item_id, result)
-            self._publication_checkpoint("after:simulation_result")
+            faults.fault_point("after:simulation_result")
 
 
 def raise_if_cancelled_before_publication() -> None:
