@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import itertools
 import json
 import os
 import shutil
@@ -1201,9 +1202,7 @@ class _ParallelState:
         self.build_root = build_root
         self.run_log = run_log
         self.handle = handle
-        self.clock: Callable[[], float] = time.monotonic
-        self.barrier = threading.Barrier(2, timeout=_PARALLEL_SYNC_TIMEOUT_S)
-        self.first_finished = threading.Event()
+        self.clock: Callable[[], float] = itertools.count().__next__  # a tick per reading
         self.interval_gate = threading.Lock()
         self.intervals: list[tuple[str, float, float]] = []
         self.completion_order: list[str] = []
@@ -1243,7 +1242,6 @@ class _ParallelGroup:
         del bundle_root, evidence_root, run_cwd
         name = self.names[0]
         started = self.state.clock()
-        self._coordinate(name)
         finished = self.state.clock()
         with self.state.interval_gate:
             self.state.intervals.append((name, started, finished))
@@ -1262,17 +1260,6 @@ class _ParallelGroup:
             0.1,
             (test,),
         )
-
-    def _coordinate(self, name: str) -> None:
-        # The first item builds under the Flow's claim, then the others are admitted beside
-        # it; only the last two meet here.
-        if name not in {"beta", "gamma"}:
-            return
-        self.state.barrier.wait()
-        if name == "beta":
-            self.state.first_finished.set()
-        else:
-            assert self.state.first_finished.wait(timeout=_PARALLEL_SYNC_TIMEOUT_S)
 
 
 class _ParallelExecution:
