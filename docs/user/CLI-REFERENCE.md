@@ -61,9 +61,12 @@ booley measure --validate         # check .booley/metrics.toml; measures nothing
 ```
 
 - `booley dashboard` serves a page and JSON on `127.0.0.1` until you stop it,
-  on port 8090 unless `--port` names another.
+  on port 8090 unless `--port` names another. A Sandbox that starts T3 Code
+  already serves it on 8090, so a second one needs `--port`.
   Open `http://127.0.0.1:<port>/?worktree=<absolute path>` for a worktree's
-  page, which refreshes every 3 s.
+  page, which refreshes every 3 s. Without `?worktree=`, `/` lists the main
+  checkout and T3 Code's worktrees to pick from, or goes to the main checkout
+  when it is the only one.
   `GET /api/snapshot?worktree=<absolute path>` answers for the main checkout or
   a linked worktree with that worktree's Jobs only: the unfinished Jobs, the
   newest 50 finished Jobs with a `report_url` for each report, and the

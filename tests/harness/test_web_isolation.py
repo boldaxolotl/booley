@@ -9,7 +9,7 @@ from pathlib import Path
 import booley
 from booley.core.models import AgentCallParams
 from booley.harness import web_isolation
-from booley.runtime import _claude_backend, _codex_backend, mcp_config
+from booley.runtime import _claude_backend, _codex_backend, mcp_config, sandbox_layout
 from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
 
 
@@ -62,7 +62,7 @@ def test_shipped_t3code_policy_turns_off_remote_features_and_limits_drivers() ->
     }
 
 
-def test_shipped_t3code_policy_locks_worktrees_and_their_prepare_script() -> None:
+def test_shipped_t3code_policy_locks_worktrees_prepare_and_the_dashboard_button() -> None:
     # T3 Code's managed policy format fixes the shape; ADR 0082 fixes the values.
     settings = json.loads((_docker_data() / "t3code-policy.json").read_text(encoding="utf-8"))[
         "settings"
@@ -73,11 +73,14 @@ def test_shipped_t3code_policy_locks_worktrees_and_their_prepare_script() -> Non
         "locked": True,
     }
     assert settings["defaultProjectScripts"]["locked"] is True
+    scripts = settings["defaultProjectScripts"]["value"]
     assert [
-        (script["command"], script["async"])
-        for script in settings["defaultProjectScripts"]["value"]
-        if script["runOnWorktreeCreate"]
+        (script["command"], script["async"]) for script in scripts if script["runOnWorktreeCreate"]
     ] == [("booley worktree prepare", False)]
+    buttons = [script for script in scripts if not script["runOnWorktreeCreate"]]
+    assert [button["autoOpenPreview"] for button in buttons] == [True]
+    # The button's fixed URL is the port the start step's `booley dashboard` binds.
+    assert buttons[0]["previewUrl"] == f"http://127.0.0.1:{sandbox_layout.DASHBOARD_PORT}/"
 
 
 def test_sandbox_image_installs_both_managed_policies() -> None:

@@ -22,6 +22,10 @@ PROJECT_DATA_MOUNT_PATH = "/work/.booley"
 # Read-only bind of the issued devcontainer spec; only Session Issuance mounts it.
 DEVCONTAINER_TARGET = "/work/.devcontainer"
 
+# The web Dashboard's loopback port in the Sandbox. The preview URL of T3 Code's locked
+# button (``data/docker/t3code-policy.json``) names it.
+DASHBOARD_PORT = 8090
+
 # T3 Code's managed policy; Session Issuance mounts the Sandbox's own copy over it.
 T3_POLICY_TARGET = "/etc/t3code/policy.json"
 # T3 Code's base directory; the Project's T3 state volume is mounted there.

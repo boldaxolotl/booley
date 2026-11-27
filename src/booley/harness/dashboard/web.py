@@ -2,8 +2,10 @@
 
 ``GET /api/snapshot?worktree=<absolute path>`` answers for the main checkout or one
 registered linked worktree; ``GET /api/report?...`` serves a report the snapshot links to.
-Every error is ``{"error": "<sentence>"}`` and carries no Jobs. ``GET /`` serves the page
-that polls the snapshot, and its assets come from ``/assets/``.
+Every error is ``{"error": "<sentence>"}`` and carries no Jobs. ``GET /?worktree=<path>``
+serves the page that polls the snapshot, and its assets come from ``/assets/``. Without a
+worktree, ``GET /`` asks which one: the main checkout or one of T3 Code's worktrees; when
+the main checkout is the only choice it redirects there.
 
 While the ``web-run-panel`` Feature Flag is on for the Project, ``GET /api/run/entries``,
 ``/api/run/targets``, ``/api/run/tests`` and ``/api/run/form`` answer the Run form's choices
@@ -19,16 +21,24 @@ failed, or the Job record cannot be written).
 
 from __future__ import annotations
 
+import html
 import sys
 import threading
 from collections.abc import Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 from starlette.applications import Starlette
 from starlette.concurrency import run_in_threadpool
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.responses import (
+    FileResponse,
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,
+    Response,
+)
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -38,7 +48,11 @@ from booley.core.booley_layout import BooleyLayoutError, git_common_directory
 from booley.core.boundary import require_dict
 from booley.core.resources import package_data_dir
 from booley.harness.dashboard import web_run
-from booley.harness.dashboard.git_worktrees import WorktreeGitError, worktree_registrations
+from booley.harness.dashboard.git_worktrees import (
+    Registration,
+    WorktreeGitError,
+    worktree_registrations,
+)
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.launch import Launcher
 from booley.harness.dashboard.model import read_occupants
@@ -51,7 +65,8 @@ from booley.harness.dashboard.web_snapshot import find_report, finished_sim_runs
 from booley.runtime import job_slots, loopback_http
 
 HOST = "127.0.0.1"
-DEFAULT_PORT = 8090
+# The browser refuses any load from outside this server.
+_PAGE_HEADERS = {"Content-Security-Policy": "default-src 'self'"}
 
 
 class _RefusalError(Exception):
@@ -68,6 +83,19 @@ async def _refuse(_request: Request, exc: Exception) -> Response:
     return JSONResponse({"error": exc.message}, status_code=exc.status)
 
 
+def _registrations(main: Path) -> list[Registration]:
+    """Every registered worktree, the main checkout first; 503 when Git cannot list them."""
+    try:
+        return worktree_registrations(main)
+    except WorktreeGitError as exc:
+        raise _RefusalError(503, f"Git could not list the worktrees: {exc}") from exc
+
+
+def _branch_name(registration: Registration) -> str | None:
+    branch = registration.branch
+    return None if branch is None else branch.removeprefix("refs/heads/")
+
+
 def _accepted_worktree(main: Path, value: str | None) -> tuple[Path, str | None]:
     """The resolved main checkout or linked worktree *value* names, with its branch.
 
@@ -78,10 +106,7 @@ def _accepted_worktree(main: Path, value: str | None) -> tuple[Path, str | None]
         raise _RefusalError(400, "worktree is required: pass an absolute path as ?worktree=")
     if not Path(value).is_absolute():
         raise _RefusalError(400, "worktree must be an absolute path")
-    try:
-        registrations = worktree_registrations(main)
-    except WorktreeGitError as exc:
-        raise _RefusalError(503, f"Git could not list the worktrees: {exc}") from exc
+    registrations = _registrations(main)
     try:
         real = Path(value).resolve()
         for registration in registrations:
@@ -92,32 +117,70 @@ def _accepted_worktree(main: Path, value: str | None) -> tuple[Path, str | None]
                 and registration.path.resolve() == real
                 and git_common_directory(real) == git_common_directory(main)
             ):
-                branch = registration.branch
-                return real, None if branch is None else branch.removeprefix("refs/heads/")
+                return real, _branch_name(registration)
     except (OSError, ValueError, RuntimeError, BooleyLayoutError):
         pass
     raise _RefusalError(404, "worktree is not the main checkout or a worktree of this Project")
 
 
-def _page(assets: Path) -> Callable[[Request], Response]:
-    """The handler of ``GET /``: the static page, which carries no Jobs.
+def _choices(main: Path, booley_dir: Path) -> list[tuple[Path, str | None]]:
+    """The main checkout, then each T3 Code worktree whose directory exists, with branches."""
+    first, *linked = _registrations(main)
+    t3_worktrees = (booley_dir / "t3-worktrees").resolve()
+    chosen = [
+        entry
+        for entry in linked
+        if entry.path.is_dir() and entry.path.resolve().is_relative_to(t3_worktrees)
+    ]
+    return [(entry.path.resolve(), _branch_name(entry)) for entry in (first, *chosen)]
 
-    It shows the snapshot's own refusal for a bad worktree. The policy makes the browser
-    refuse any load from outside this server.
+
+def _page_link(worktree: Path) -> str:
+    return "/?" + urlencode({"worktree": str(worktree)}, errors="replace")
+
+
+def _picker(choices: list[tuple[Path, str | None]]) -> Response:
+    """The page that asks which worktree to show: one link per choice."""
+    items = "".join(
+        f'<li><a href="{html.escape(_page_link(path))}">{html.escape(str(path))}</a> '
+        f'<span class="muted">{html.escape(branch or "detached HEAD")}</span></li>\n'
+        for path, branch in choices
+    )
+    page = (
+        '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        "<title>Booley Dashboard</title>\n"
+        '<link rel="stylesheet" href="/assets/dashboard.css">\n</head>\n<body>\n'
+        f"<main>\n<h2>Which worktree?</h2>\n<ul>\n{items}</ul>\n</main>\n</body>\n</html>\n"
+    )
+    # A branch or path that is not UTF-8 shows "?" for what cannot be encoded.
+    return HTMLResponse(page.encode(errors="replace"), headers=_PAGE_HEADERS)
+
+
+def _page(main: Path, booley_dir: Path, assets: Path) -> Callable[[Request], Response]:
+    """The handler of ``GET /``: the static page of one worktree, or the choice of one.
+
+    Neither carries Jobs. The static page shows the snapshot's own refusal for a bad worktree.
     """
 
-    def page(_request: Request) -> Response:
-        return FileResponse(
-            assets / "index.html", headers={"Content-Security-Policy": "default-src 'self'"}
-        )
+    def page(request: Request) -> Response:
+        if request.query_params.get("worktree"):
+            return FileResponse(assets / "index.html", headers=_PAGE_HEADERS)
+        choices = _choices(main, booley_dir)
+        if len(choices) == 1:
+            return RedirectResponse(_page_link(choices[0][0]))
+        return _picker(choices)
 
     return page
 
 
-def _page_routes() -> list[Route | Mount]:
+def _page_routes(main: Path, booley_dir: Path) -> list[Route | Mount]:
     """``GET /`` and the page's assets, which ship in the package."""
     assets = package_data_dir() / "dashboard_web"
-    return [Route("/", _page(assets)), Mount("/assets", StaticFiles(directory=assets))]
+    return [
+        Route("/", _page(main, booley_dir, assets)),
+        Mount("/assets", StaticFiles(directory=assets)),
+    ]
 
 
 def _required(query: Mapping[str, str], name: str, meaning: str) -> str:
@@ -311,7 +374,7 @@ def create_app(
 
     return Starlette(
         routes=[
-            *_page_routes(),
+            *_page_routes(main, booley_dir),
             Route("/api/snapshot", snapshot),
             Route("/api/report", report),
             *_run_routes(main, booley_dir, reader, lock, features),

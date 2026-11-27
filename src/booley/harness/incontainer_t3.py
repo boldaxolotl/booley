@@ -1,9 +1,10 @@
-"""In-Sandbox entry of the host's T3 Code controls: ``python -m booley.harness.incontainer_t3``.
+"""In-Sandbox entry of the host's UI controls: ``python -m booley.harness.incontainer_t3``.
 
 The host runs it through the hook shell, so it sees the hook's environment and working
-directory. Verbs: ``start`` (the registrar's T3 Code step), ``state`` (``running``, ``off`` or
-``port-taken``), and ``pair <relay port>`` (T3 Code's pairing reply on stdout, or ``port-taken``
-and exit 1 when another process holds T3 Code's port).
+directory. Verbs: ``start`` (the registrar's step for T3 Code and the web Dashboard),
+``state`` (``<T3 Code> <Dashboard>``: ``running``, ``off`` or, for T3 Code, ``port-taken``,
+then ``running`` or ``off``), and ``pair <relay port>`` (T3 Code's pairing reply on stdout,
+or ``port-taken`` and exit 1 when another process holds T3 Code's port).
 """
 
 from __future__ import annotations
@@ -30,9 +31,9 @@ def main(argv: list[str]) -> int:
     """Run one verb; the pairing reply goes to stdout only, never to a log or stderr."""
     args = _parser().parse_args(argv)
     if args.verb == "start":
-        print(incontainer_register.start_t3(agent.sandbox_agent_clis()))
+        print(incontainer_register.start_ui(agent.sandbox_agent_clis()))
     elif args.verb == "state":
-        print(incontainer_setup.t3_state())
+        print(f"{incontainer_setup.t3_state()} {incontainer_setup.dashboard_state()}")
     else:
         if incontainer_setup.t3_state() == incontainer_setup.T3_PORT_TAKEN:
             print(incontainer_setup.T3_PORT_TAKEN)

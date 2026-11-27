@@ -52,8 +52,9 @@ _START_ENV = (
     "CODEX_HOME",
     "RTL_PROJECT_ROOT",
 )
-# Bound before the autouse stub below replaces it, for the tests of the T3 Code start.
+# Bound before the autouse stubs below replace them, for the tests of the UI start.
 _REAL_ENSURE_T3_SERVER = reg.ensure_t3_server
+_REAL_ENSURE_DASHBOARD_SERVER = getattr(reg, "ensure_dashboard_server", None)
 
 
 @pytest.fixture(autouse=True)
@@ -103,17 +104,21 @@ def first_run(tmp_path_factory, monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _t3_code_answers(monkeypatch):
-    """No test here starts the real `t3`: T3 Code already answers.
+    """No test here starts the real `t3` or `booley dashboard`: both already answer.
 
     The T3 Code fake replaces the port and descriptor probes and the `subprocess` that the
     MCP server launch fake drives, so only the T3 Code start tests install it, through `_t3_code`.
     """
     monkeypatch.setattr(reg, "ensure_t3_server", lambda _root: "running")
+    monkeypatch.setattr(reg, "ensure_dashboard_server", lambda _root: "running", raising=False)
 
 
 def _t3_code(monkeypatch, **kwargs):
-    """Run the real T3 Code start against the T3 Code fake; return the fake."""
+    """Run the real T3 Code and Dashboard starts against the T3 Code fake; return the fake."""
     monkeypatch.setattr(reg, "ensure_t3_server", _REAL_ENSURE_T3_SERVER)
+    monkeypatch.setattr(
+        reg, "ensure_dashboard_server", _REAL_ENSURE_DASHBOARD_SERVER, raising=False
+    )
     return serve_t3_code(monkeypatch, **kwargs)
 
 
@@ -447,7 +452,26 @@ def test_a_t3_code_failure_never_stops_registration(tmp_path, monkeypatch, capsy
 
     entry.main()
 
-    assert re.search(r"t3:failed .* claude:current", capsys.readouterr().err)
+    assert re.search(r"t3:failed dashboard:failed .* claude:current", capsys.readouterr().err)
+
+
+@pytest.mark.parametrize("no_ui", [False, True], ids=["ui", "no-ui"])
+def test_the_start_step_starts_the_dashboard_once_unless_no_ui(
+    first_run, tmp_path, monkeypatch, capsys, no_ui
+):
+    t3 = _t3_code(monkeypatch, volume=tmp_path / "t3-volume")
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
+    if no_ui:
+        monkeypatch.setenv("BOOLEY_NO_UI", "1")
+
+    errors = [_main(capsys)[1], _main(capsys)[1]]
+
+    command = [sys.executable, "-m", "booley.harness.booley", "dashboard"]
+    assert t3.dashboards == ([] if no_ui else [command])
+    assert t3.dashboard_cwds == ([] if no_ui else [first_run.project])
+    statuses = ("off", "off") if no_ui else ("started", "running")
+    for status, err in zip(statuses, errors, strict=True):
+        assert f" dashboard:{status} " in err
 
 
 def test_no_agent_cli_skips_t3_code(tmp_path, monkeypatch, capsys):

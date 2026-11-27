@@ -315,7 +315,7 @@ def test_port_outside_tcp_range_is_refused(capsys, port):
 def test_dashboard_serves_the_web_dashboard(world, monkeypatch, capsys):
     served = capture_serving(monkeypatch)
     # The default port belongs to the host; an ephemeral one keeps parallel workers apart.
-    monkeypatch.setattr("booley.harness.dashboard.web.DEFAULT_PORT", 0)
+    monkeypatch.setattr("booley.runtime.sandbox_layout.DASHBOARD_PORT", 0)
 
     assert tlr._cmd_dashboard(_dashboard_args(), world.main) == 0
 
@@ -447,9 +447,11 @@ def test_unlistable_worktrees_are_a_503_without_jobs(world, monkeypatch):
 
     with _client(world, monkeypatch) as client:
         response = client.get("/api/snapshot", params={"worktree": str(world.wt)})
+        page = client.get("/")
 
-    assert response.status_code == 503
+    assert response.status_code == page.status_code == 503
     assert response.json() == {"error": "Git could not list the worktrees: git worktree failed"}
+    assert page.json() == response.json()
 
 
 def test_report_route_serves_only_reports_of_the_named_worktree(world, monkeypatch):
@@ -992,6 +994,39 @@ def test_page_and_its_assets_are_served_from_this_server(world, monkeypatch):
     assert "@import" not in css
 
 
+def test_page_without_a_worktree_offers_the_main_checkout_and_t3_worktrees(world, monkeypatch):
+    t3 = world.booley / "t3-worktrees" / "work" / "t3-1a2b3c4d"
+    gone = world.booley / "t3-worktrees" / "work" / "gone"
+
+    with _client(world, monkeypatch) as client:
+        alone = client.get("/", follow_redirects=False)
+        assert alone.status_code == 307
+        (target,) = parse_qs(urlparse(alone.headers["location"]).query)["worktree"]
+        assert Path(target) == world.main.resolve()
+        git(world.main, "worktree", "add", "-q", "-b", "t3code/a&b", str(t3), "HEAD")
+        git(world.main, "worktree", "add", "-q", "--detach", str(gone), "HEAD")
+        gone_picker = client.get("/", params={"worktree": ""}).text
+        shutil.rmtree(gone)
+        picker = client.get("/", follow_redirects=False)
+        references = _References()
+        references.feed(picker.text)
+        links = {
+            Path(parse_qs(urlparse(url).query)["worktree"][0]): url
+            for url in references.urls
+            if url.startswith("/?")
+        }
+        assert set(links) == {world.main.resolve(), t3.resolve()}
+        picked = client.get(links[t3.resolve()])
+        snapshot = client.get("/api/snapshot" + links[t3.resolve()].removeprefix("/"))
+
+    assert picker.status_code == 200
+    assert picker.headers["content-security-policy"] == "default-src 'self'"
+    assert "Which worktree?" in picker.text and "t3code/a&amp;b" in picker.text
+    assert "detached HEAD" in gone_picker
+    assert (picked.status_code, snapshot.status_code) == (200, 200)
+    assert snapshot.json()["header"]["branch"] == "t3code/a&b"
+
+
 def test_page_renders_the_snapshot_with_results_collapsed_and_polls(world, monkeypatch, tmp_path):
     _queued_world(world)
     _job(
@@ -1133,7 +1168,6 @@ def test_page_shows_the_snapshot_error_instead_of_jobs(world, tmp_path, monkeypa
         good_deleted = _reply(client, deleted)
         shutil.rmtree(deleted)
         scenarios = {
-            "missing": ("", [_reply(client, "")]),
             "unknown": (_search(nowhere), [_reply(client, nowhere)]),
             "outside": (_search(outside), [_reply(client, outside)]),
             "deleted": (_search(deleted), [good_deleted, _reply(client, deleted)]),

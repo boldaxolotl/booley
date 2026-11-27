@@ -49,11 +49,11 @@ container that **Reopen in Container** does. Run these on the host, after
 
 ```bash
 booley session up                       # create or start the Sandbox and print a T3 Code pairing link
-booley session up --no-ui               # the same without T3 Code and the link
+booley session up --no-ui               # the same without T3 Code, the Dashboard and the link
 booley session pair                     # print a new pairing link, for a second browser
 booley session enter                    # open a shell inside it (starts it if needed)
 booley session enter -- booley doctor   # or run one command and exit
-booley session status                   # running, stopped, absent, or a pending start/recovery; whether T3 Code runs
+booley session status                   # running, stopped, absent, or a pending start/recovery; whether T3 Code and the Dashboard run
 booley session refresh                  # rebuild the image if needed and recreate the Sandbox
 booley session down                     # stop and remove the Sandbox
 ```
@@ -63,7 +63,8 @@ serves. Open it in a browser on the host within 5 minutes to pair that
 browser; each command prints a new link. Treat the link like a password: it
 holds a one-time token. `up --no-ui` is for scripted Sandboxes and starts no
 UI, but it doesn't stop one that already runs: run `session down` first.
-`session status` reports whether T3 Code runs. `session down` keeps T3 Code's
+`session status` reports whether T3 Code and the
+[Dashboard](USAGE.md#the-dashboard) run. `session down` keeps T3 Code's
 threads, pairings and worktrees for the next `up`.
 
 T3 Code lists the Project under its `[project].name` from

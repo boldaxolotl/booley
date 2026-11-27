@@ -49,7 +49,7 @@ and keeps the Developer Agent away from the rest of your computer.
 | Place | What goes there | Example |
 | --- | --- | --- |
 | **Host terminal** | Commands on your own computer, outside Docker | `booley doctor`, `booley auth` |
-| **Container terminal** | Commands inside the Sandbox, after VS Code has reopened the project in its container | `booley dashboard`, `git diff` |
+| **Container terminal** | Commands inside the Sandbox, after VS Code has reopened the project in its container | `booley measure`, `git diff` |
 | **Developer Agent chat** | Plain-language requests and skills that start with `/` | *"Run lint and explain every finding"* |
 
 Command blocks go in the terminal named in the text around them. Sentences in
@@ -207,12 +207,14 @@ shows peak memory and run time per Target. How to read a result:
 The Dashboard is a web page of one worktree's Jobs, the long runs of Flows and
 Specialists. Open it to see what runs there, what waits and how each run ended.
 
-1. Run `booley dashboard` in a container terminal. It serves
-   `http://127.0.0.1:8090` until you press `Ctrl+C`; `--port` picks another
-   port.
-2. Open `http://127.0.0.1:8090/?worktree=<absolute path>` in the preview panel
-   of [T3 Code](SANDBOX.md#entering-the-sandbox-without-vs-code). Each worktree
-   has its own page.
+1. Click **Booley Dashboard** in the top bar of
+   [T3 Code](SANDBOX.md#entering-the-sandbox-without-vs-code). The page opens
+   in the preview panel; the Sandbox already serves it.
+2. Pick the worktree: the main checkout or one of your T3 Code threads'
+   worktrees. Each has its own page. With no T3 Code worktree, the page opens
+   the main checkout.
+
+A Sandbox started with `booley session up --no-ui` has no Dashboard.
 
 It shows the running and queued Jobs, and the finished ones with a link to each
 report. A `booley flow` or `booley specialist` run you type in a container

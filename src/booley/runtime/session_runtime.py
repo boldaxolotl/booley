@@ -51,7 +51,7 @@ from booley.runtime.sandbox_apply import (
     image_is_managed,
     in_sandbox_steps,
 )
-from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
+from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, DASHBOARD_PORT
 
 if TYPE_CHECKING:
     from booley.eda.provisioning.authority import LicenseProfile
@@ -72,7 +72,7 @@ KEEPALIVE_CMD = ("sleep", "infinity")
 # strings (see devcontainer.build_devcontainer_spec), not argv, so they need one.
 _HOOK_SHELL = ("bash", "-lc")
 
-# The in-Sandbox entry of the T3 Code controls, followed by a verb.
+# The in-Sandbox entry of the UI controls, followed by a verb.
 _T3_ENTRY = "python -m booley.harness.incontainer_t3 "
 
 _LOCAL_ENV_RE = re.compile(r"\$\{localEnv:([^}:]+)\}")
@@ -918,8 +918,8 @@ def _up_unlocked(
 def ensure(workspace: Path, *, rebuild: bool = False, ui: bool = True) -> EnsureResult:
     """Ensure a Sandbox and expose startup metadata to the CLI.
 
-    Without *ui* nothing starts T3 Code or its relay; a Sandbox that already runs keeps them,
-    and one this call starts drops the relay left from before.
+    Without *ui* nothing starts T3 Code, its relay or the Dashboard; a Sandbox that already runs
+    keeps them, and one this call starts drops the relay left from before.
     """
     from booley.runtime import t3_relay
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
@@ -935,7 +935,7 @@ def ensure(workspace: Path, *, rebuild: bool = False, ui: bool = True) -> Ensure
         # A VS Code-owned Sandbox is not stopped by `session down`, so it gets no relay.
         if result.vscode or not ui:
             return result
-        if not result.started:  # a Sandbox left running by `up --no-ui` has no T3 Code yet
+        if not result.started:  # a Sandbox left running by `up --no-ui` has no UI yet
             _run_hook(result.name, _T3_ENTRY + "start", "T3 Code start")
         return replace(result, relay=t3_relay.start(workspace, result.name))
 
@@ -2675,12 +2675,13 @@ class UiState:
 
     vscode: bool
     t3: str  # the Sandbox's "running", "off" or "port-taken"; "unknown" when it gave no answer
+    dashboard: str  # the Sandbox's "running" or "off"; "unknown" when it gave no answer
     relay: RelayObservation | None
     relay_error: str | None = None
 
 
 def ui_state(workspace: Path) -> UiState | None:
-    """Observe T3 Code and its relay; ``None`` when no Sandbox runs."""
+    """Observe T3 Code, its relay and the Dashboard; ``None`` when no Sandbox runs."""
     from booley.runtime import t3_relay
 
     selected = resolve_running_sandbox(workspace)
@@ -2688,18 +2689,21 @@ def ui_state(workspace: Path) -> UiState | None:
         return None
     try:
         state = _run(hook_argv(selected.name, f"{_T3_ENTRY}state"), timeout=_PAIRING_TIMEOUT_S)
-        t3_state = _last_line(state.stdout) if state.returncode == 0 else "unknown"
+        reply = _last_line(state.stdout) if state.returncode == 0 else ""
     except subprocess.TimeoutExpired:
-        t3_state = "unknown"
+        reply = ""
+    t3_state, _, dashboard = reply.partition(" ")
+    # A Sandbox Image whose entry names no Dashboard gives only the first word.
+    t3_state, dashboard = t3_state or "unknown", dashboard or "unknown"
     try:
         relay = t3_relay.observe(workspace, selected.name)
     except t3_relay.T3RelayError as exc:
-        return UiState(selected.vscode, t3_state, None, str(exc))
-    return UiState(selected.vscode, t3_state, relay)
+        return UiState(selected.vscode, t3_state, dashboard, None, str(exc))
+    return UiState(selected.vscode, t3_state, dashboard, relay)
 
 
 def ui_status(workspace: Path) -> str | None:
-    """The T3 Code and relay lines of `session status`; ``None`` when no Sandbox runs."""
+    """The T3 Code, relay and Dashboard lines of `session status`; ``None`` without a Sandbox."""
     state = ui_state(workspace)
     if state is None:
         return None
@@ -2710,11 +2714,14 @@ def ui_status(workspace: Path) -> str | None:
     else:
         relay = f"127.0.0.1:{state.relay.port}"
     if state.t3 == "off" and relay == "off":
-        return "UI: off"
+        return f"UI: off\nDashboard: {state.dashboard}"
     t3 = state.t3
     if t3 == incontainer_setup.T3_PORT_TAKEN:
         t3 = f"off ({incontainer_setup.T3_PORT_TAKEN_MESSAGE})"
-    return f"T3 Code: {t3}\nT3 Code relay: {relay}"
+    dashboard = state.dashboard
+    if dashboard == "off":
+        dashboard = f"not answering on 127.0.0.1:{DASHBOARD_PORT}"
+    return f"T3 Code: {t3}\nT3 Code relay: {relay}\nDashboard: {dashboard}"
 
 
 def _project_data_alias_capable(image_id: str) -> bool:

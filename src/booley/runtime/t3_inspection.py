@@ -1,4 +1,4 @@
-"""Doctor's T3 Code checks: the pinned install, the server in the Sandbox, the host relay."""
+"""Doctor's UI checks: T3 Code's install, server and host relay, and the web Dashboard."""
 
 from __future__ import annotations
 
@@ -12,9 +12,11 @@ from booley.core.boundary import require_dict, require_str
 from booley.core.resources import package_data_dir
 from booley.runtime import incontainer_setup, platform_paths, runtime_context, session_runtime
 from booley.runtime.incontainer_setup import T3_PORT
+from booley.runtime.sandbox_layout import DASHBOARD_PORT
 
 _VERSION_TIMEOUT_S = 30
 _SERVER = f"127.0.0.1:{T3_PORT} in the Sandbox"
+_DASHBOARD = f"127.0.0.1:{DASHBOARD_PORT} in the Sandbox"
 
 
 def pinned_version() -> str:
@@ -54,7 +56,7 @@ def inspect_install(command: list[str], remedy: Callable[[], str]) -> Diagnostic
 
 
 def inspect_ui(project_root: Path) -> DiagnosticReport:
-    """On the host: whether T3 Code answers in the running Sandbox and its relay runs."""
+    """On the host: whether T3 Code and the Dashboard answer in the Sandbox and the relay runs."""
     findings = Findings()
     try:
         # Doctor skips what needs the Sandbox until a lifecycle command recovers it.
@@ -65,30 +67,36 @@ def inspect_ui(project_root: Path) -> DiagnosticReport:
         findings.skip(f"T3 Code server and relay checks could not run: {exc}")
         return findings.report()
     if state is None:
-        _not_applicable(findings, "the Sandbox is not running")
+        _ui_not_applicable(findings, "the Sandbox is not running")
     elif state.vscode:
         _not_applicable(findings, "VS Code owns the Sandbox, which has no T3 Code relay")
+        _judge_dashboard(findings, state)
     elif (
         state.t3 in ("off", incontainer_setup.T3_PORT_TAKEN)
         and state.relay is None
         and state.relay_error is None
     ):
         # No relay is recorded: `session up` started no UI that is still meant to run.
-        _not_applicable(findings, "the UI is off (booley session up --no-ui)")
+        _ui_not_applicable(findings, "the UI is off (booley session up --no-ui)")
     else:
         _judge_server(findings, state.t3)
         _judge_relay(findings, state)
+        _judge_dashboard(findings, state)
     return findings.report()
 
 
 def inspect_ui_in_sandbox() -> DiagnosticReport:
-    """Inside the Sandbox: whether T3 Code answers. The relay and its record are on the host."""
+    """Inside the Sandbox: whether T3 Code and the Dashboard answer; the relay is on the host."""
     findings = Findings()
     _judge_server_in_sandbox(findings, incontainer_setup.t3_state())
     if runtime_context.in_hand_written_sandbox():
         findings.skip("T3 Code relay check not applicable - Booley did not create this Sandbox")
     else:
         findings.skip("T3 Code relay check skipped - it runs from the host")
+    if incontainer_setup.dashboard_state() == "running":
+        findings.pass_(f"Dashboard answers on {_DASHBOARD}")
+    else:
+        _skip_unproven(findings, "Dashboard does not answer in the Sandbox")
     return findings.report()
 
 
@@ -99,6 +107,11 @@ def _judge_server_in_sandbox(findings: Findings, t3: str) -> None:
     what = "T3 Code does not answer in the Sandbox"
     if t3 == incontainer_setup.T3_PORT_TAKEN:
         what = f"{_SERVER} is held by another process"
+    _skip_unproven(findings, what)
+
+
+def _skip_unproven(findings: Findings, what: str) -> None:
+    """Skip a server that does not answer, as seen from inside the Sandbox."""
     # A hand-written Sandbox has no host-side `booley` to send the user to.
     if not runtime_context.in_hand_written_sandbox():
         what += (
@@ -111,6 +124,32 @@ def _judge_server_in_sandbox(findings: Findings, t3: str) -> None:
 def _not_applicable(findings: Findings, reason: str) -> None:
     for check in ("server", "relay"):
         findings.skip(f"T3 Code {check} check not applicable - {reason}")
+
+
+def _ui_not_applicable(findings: Findings, reason: str) -> None:
+    _not_applicable(findings, reason)
+    findings.skip(f"Dashboard check not applicable - {reason}")
+
+
+def _judge_dashboard(findings: Findings, state: session_runtime.UiState) -> None:
+    if state.dashboard == "running":
+        findings.pass_(f"Dashboard answers on {_DASHBOARD}")
+    elif state.dashboard != "off":
+        findings.fail(
+            "Doctor cannot tell whether the Dashboard answers in the Sandbox",
+            "run `booley session up`, then rerun `booley doctor`",
+        )
+    elif state.vscode:
+        # `session up` runs no hook in this Sandbox; the start hook VS Code runs does.
+        findings.fail(
+            f"Dashboard does not answer on {_DASHBOARD}",
+            "run `Dev Containers: Rebuild Container` in VS Code, which starts the Dashboard",
+        )
+    else:
+        findings.fail(
+            f"Dashboard does not answer on {_DASHBOARD}",
+            "run `booley session up`, which starts the Dashboard",
+        )
 
 
 def _judge_server(findings: Findings, t3: str) -> None:
