@@ -314,8 +314,9 @@ the first row to reach the top bar with the tabs, filters, Run, and Help; the
 footer shows the keys you can use.
 
 Sessions have short handles such as `S17`; Jobs carry their kind, as in
-`J-SIM25` or `J-SYN34`. A session resumed after a long pause may get a new
-handle, except a conversation resumed in its worktree, which keeps its handle.
+`J-SIM25`, `J-SYN34`, `J-MEAS3` for a `booley measure` run or `J-MUT7` for a
+Mutation Flow run. A session resumed after a long pause may get a new handle,
+except a conversation resumed in its worktree, which keeps its handle.
 
 `booley chat --name uart-fix` labels a session: the terminal tab, the Claude
 session name and the Dashboard's session list, header and worktree picker show
