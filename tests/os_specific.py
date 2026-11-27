@@ -397,7 +397,6 @@ OS_SPECIFIC_TESTS: tuple[str, ...] = (
     "tests/runtime/test_project_gitignore_fixtures.py",
     "tests/runtime/test_project_prepare.py",
     "tests/runtime/test_project_repositories.py",
-    "tests/runtime/test_project_repository_selection_contract.py",
     "tests/runtime/test_project_resources.py",
     "tests/runtime/test_project_runtime_gitignore.py",
     "tests/runtime/test_project_trackability.py",
