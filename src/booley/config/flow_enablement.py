@@ -53,9 +53,6 @@ def retired_config_error(raw: Mapping[str, Any]) -> str | None:
                     "`booley flow sim --mode elab-only` and delete "
                     "standalone_frontend"
                 )
-        for key in ("venue", "backend", "host_setup_commands"):
-            if key in flows:
-                return _retired_flow_key_error("flows", key, flows[key])
         for name, section in flows.items():
             if not isinstance(section, dict):
                 continue
@@ -65,28 +62,7 @@ def retired_config_error(raw: Mapping[str, Any]) -> str | None:
                     "delete the key — the standalone module probe now follows "
                     "each Target's simulator"
                 )
-            for key in ("venue", "backend", "host_setup_commands"):
-                if key in section:
-                    return _retired_flow_key_error(f"flows.{name}", key, section[key])
-    sandbox = raw.get("sandbox", {})
-    if isinstance(sandbox, dict) and "passthrough_env" in sandbox:
-        return "booley.toml [sandbox].passthrough_env is retired; use a host License Profile"
     return None
-
-
-def _retired_flow_key_error(section: str, key: str, value: object) -> str:
-    if key == "backend" and str(value).strip() == "none" and section != "flows":
-        flow_name = section.removeprefix("flows.")
-        return (
-            f'booley.toml [{section}].backend = "none" is retired; write instead:\n'
-            f"  [flows.{flow_name}]\n  enabled = false"
-        )
-    if key == "backend":
-        return (
-            f"booley.toml [{section}].backend is retired; all Flows run inside "
-            "the Sandbox; delete the key"
-        )
-    return f"booley.toml [{section}].{key} is retired; delete the key"
 
 
 def _load_config(work_dir: Path | None) -> tuple[Path | None, dict[str, Any]]:

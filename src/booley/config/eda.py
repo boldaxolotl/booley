@@ -50,11 +50,6 @@ def parse_eda_config(raw: object) -> dict[str, EdaConfig]:
 def _parse_kind(kind: str, section: Any) -> EdaConfig:
     if not isinstance(section, dict):
         raise EdaConfigError(f"booley.toml [eda.{kind}] must be a table")
-    if "installation" in section:
-        raise EdaConfigError(
-            f"booley.toml [eda.{kind}].installation is retired; "
-            "select the installation with `booley eda grant add --installation ...`"
-        )
     unknown = set(section) - _ALLOWED_KEYS
     if unknown:
         names = ", ".join(sorted(str(name) for name in unknown))
