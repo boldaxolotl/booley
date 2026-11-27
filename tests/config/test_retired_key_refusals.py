@@ -296,7 +296,7 @@ _HOST = "src/booley/config/host_config.py"
 _LAYOUT = "src/booley/core/booley_layout.py"
 _YOSYS = "src/booley/flows/synth/backends/yosys/core.py"
 _RECIPE = "src/booley/flows/synth/recipe_migrations.py"
-_RETIRED_FLOW = f"{_FLOW_ENABLEMENT}::retired_config_error"
+_RETIRED_FLOW = f"{_FLOW_ENABLEMENT}::retired_config_errors"
 _RETIRED_FLOW_KEYS = f"{_FLOW_SCHEMA}::_retired_flow_key_findings"
 _RETIRED_FLOWS = f"{_FLOW_SCHEMA}::_retired_flow_findings"
 _SANDBOX_PARSE = f"{_AGENT}::_parse_sandbox_config"
@@ -372,14 +372,10 @@ def _flow_cases() -> Iterator[Refusal]:
         "keep-build-dir": ("sim", {"keep_build_dir": True}, None),
         "sim-output-dir": ("sim", {"output_dir": "x"}, None),
         "target": ("lint", {"target": "x"}, None),
-        "standalone-frontend-doctor": ("sim", {"standalone_frontend": "auto"}, None),
     }
     for name, (flow, section, fix) in flow_keys.items():
         key = next(iter(section))
-        site = _RETIRED_FLOW_KEYS
-        if key == "standalone_frontend":
-            site = f"{_FLOW_SCHEMA}::_flow_shape_findings"
-        yield Refusal(f"flow-{name}", (site,), key, fix, _flow_audit(flow, section))
+        yield Refusal(f"flow-{name}", (_RETIRED_FLOW_KEYS,), key, fix, _flow_audit(flow, section))
 
 
 CASES: list[Refusal] = [
@@ -395,7 +391,7 @@ CASES: list[Refusal] = [
         (_RETIRED_FLOW,),
         "standalone_frontend",
         None,
-        _flow({"flows": {"venue": "x", "sim": {"standalone_frontend": "auto"}}}),
+        _flow({"flows": {"sim": {"standalone_frontend": "auto"}}}),
     ),
     Refusal(
         "audit-eda-retired",
@@ -549,13 +545,6 @@ CASES: list[Refusal] = [
     ),
     Refusal("flows-builtin", (_RETIRED_FLOWS,), "builtin", None, _flows_audit({"builtin": []})),
     Refusal(
-        "flows-elab-doctor",
-        (_RETIRED_FLOWS,),
-        "[flows.elab]",
-        "--mode elab-only",
-        _flows_audit({"elab": {}}),
-    ),
-    Refusal(
         "synth-timing-engine",
         (_RETIRED_OPTION,),
         "timing_engine",
@@ -661,6 +650,9 @@ NOT_A_KEY: dict[str, str] = {
         "conflicting values, not a retired key"
     ),
     "src/booley/eda/cli.py::run": "a deprecated CLI command, not configuration",
+    "src/booley/harness/setup/readiness.py::_check_project_setup": (
+        "warns that a leftover configs.toml file is ignored; it names a file, not a key"
+    ),
     "src/booley/flows/endpoint_session.py::finish_execution": "reports a removed checkout",
     "src/booley/flows/mutation/flow.py::<module>": (
         "a report note that duplicate Mutants are removed, not configuration"

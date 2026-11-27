@@ -21,7 +21,6 @@ _OPTIONAL = (
     "doctor-waivers.toml",
     "SETUP-PLAN.md",
     "pipeline.toml",
-    "configs.toml",
 )
 _INPUT_TREES = (
     "cores",
