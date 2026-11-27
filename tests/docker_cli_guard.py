@@ -1,18 +1,13 @@
-"""Guard and answers at the Docker CLI boundary, so no unit test starts a real ``docker`` process.
+"""Answers and routing at the Docker CLI boundary.
 
-``booley.runtime.host_docker._run_docker`` is the seam the interactive
-Docker CLI calls go through; other runtime modules call
-``booley.runtime.platform_paths.run_captured_bounded`` directly.  Tests that
-must never reach Docker replace the seam with a function that fails the test at
-once and records the call, so a call made from a worker thread (where the
-failure may be swallowed) still fails the test when
-:func:`assert_docker_cli_unused` runs at teardown.
+``booley.runtime.host_docker._run_docker`` is the seam the interactive Docker CLI
+calls go through; other runtime modules call
+``booley.runtime.platform_paths.run_captured_bounded`` directly.  The guard that fails a
+test starting ``docker`` is ``tests/docker_cli_guard_plugin.py``.
 """
 
 from __future__ import annotations
 
-import ntpath
-import posixpath
 import subprocess
 from types import ModuleType
 
@@ -36,28 +31,6 @@ from booley.runtime import (
     session_runtime,
     vaporview,
 )
-
-#: Argument lists of every Docker CLI call attempted since the last install.
-DOCKER_CLI_CALLS: list[list[str]] = []
-
-
-def _fail_on_docker_call(args: list[str], *_args: object, **_kwargs: object):
-    """Stand-in for ``_run_docker``; accepts ``timeout=`` and ``executable=``."""
-    DOCKER_CLI_CALLS.append(list(args))
-    pytest.fail(f"test reached the Docker CLI: docker {' '.join(args)}")
-
-
-def forbid_docker_cli(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make any ``_run_docker`` call fail the running test."""
-    DOCKER_CLI_CALLS.clear()
-    monkeypatch.setattr(host_docker, "_run_docker", _fail_on_docker_call)
-
-
-def assert_docker_cli_unused() -> None:
-    """Fail when a guarded ``_run_docker`` call happened (even if swallowed)."""
-    calls = list(DOCKER_CLI_CALLS)
-    DOCKER_CLI_CALLS.clear()
-    assert not calls, f"test reached the Docker CLI: {calls}"
 
 
 def docker_cli_absent(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
@@ -201,63 +174,3 @@ def route_bounded_captures_through_subprocess_run(monkeypatch: pytest.MonkeyPatc
     fake still sees the command.  The stand-in keeps each caller's ``errors`` mode.
     """
     monkeypatch.setattr(platform_paths, "run_captured_bounded", _routed_bounded_capture)
-
-
-#: Command lines of every ``docker`` process a guarded test tried to start.
-DOCKER_PROCESS_STARTS: list[str] = []
-
-
-def _program_of(args: object, executable: object) -> str:
-    """Name of the program a ``Popen`` call would start, or ``""`` when unknowable."""
-    if executable:
-        return str(executable)
-    if isinstance(args, str):
-        words = args.split()
-        return words[0] if words else ""
-    try:
-        first = next(iter(args), "")  # type: ignore[call-overload]
-    except TypeError:
-        return ""
-    return str(first)
-
-
-def _is_docker(program: str) -> bool:
-    """True when *program* is ``docker`` (any directory, any case, optional ``.exe``)."""
-    name = ntpath.basename(posixpath.basename(program)).casefold()
-    return name.removesuffix(".exe") == "docker"
-
-
-def forbid_docker_processes(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make starting a ``docker`` process fail the running test.
-
-    Replaces ``subprocess.Popen`` with a subclass that records and fails the test
-    when the program it would start is ``docker`` (the ``executable=`` keyword if
-    given, else the first word of a string command or ``args[0]`` of a list).
-    ``subprocess.run`` and ``platform_paths.run_captured_bounded`` both build a
-    ``Popen``, so both are covered.  Pair it with :func:`assert_docker_processes_unused`
-    at teardown to catch a failure swallowed by a broad ``except``.
-
-    It does not catch a ``from subprocess import Popen`` binding made before the
-    patch, ``os.spawn*``/``os.system``, or ``docker`` hidden inside a ``shell=True``
-    pipeline.
-    """
-    DOCKER_PROCESS_STARTS.clear()
-    real_popen = subprocess.Popen
-
-    class _GuardedPopen(real_popen):  # type: ignore[misc, valid-type]
-        def __init__(self, args, *popen_args, **kwargs):
-            program = _program_of(args, kwargs.get("executable"))
-            if _is_docker(program):
-                shown = args if isinstance(args, str) else " ".join(map(str, args))
-                DOCKER_PROCESS_STARTS.append(shown)
-                pytest.fail(f"test started a docker process: {shown}")
-            super().__init__(args, *popen_args, **kwargs)
-
-    monkeypatch.setattr(subprocess, "Popen", _GuardedPopen)
-
-
-def assert_docker_processes_unused() -> None:
-    """Fail when a guarded test tried to start ``docker`` (even if swallowed)."""
-    starts = list(DOCKER_PROCESS_STARTS)
-    DOCKER_PROCESS_STARTS.clear()
-    assert not starts, f"test started a docker process: {starts}"

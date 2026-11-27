@@ -431,6 +431,7 @@ OS_SPECIFIC_TESTS: tuple[str, ...] = (
     "tests/test_booley_directory_errors.py",
     "tests/test_core_projection.py",
     "tests/test_core_security.py",
+    "tests/test_docker_cli_guard_plugin.py",
     "tests/test_filesystem_utils.py",
     "tests/test_fusesoc_registry.py",
     "tests/test_guidance_links.py",
