@@ -1291,7 +1291,6 @@ def test_overlapping_lanes_finish_in_the_chosen_order_and_leave_no_child_claim(
 
 
 def _execute_pre_cancelled_coverage(tmp_path):
-    from booley.flows.sim.execution.contract import PreSimScopeStoppedError
     from booley.flows.sim.record.coverage_execution import CoverageAggregateExecutor
     from tests.flows.sim.simulation_record_test_support import (
         _maximum_hook_selection_plan,
@@ -1329,7 +1328,8 @@ def test_a_lane_that_lost_its_lease_keeps_its_own_terminal_cause(
 ) -> None:
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))  # for the coverage executor
     machine = build_machine()
-    # Recovery never completes, so the terminal cause comes from the lane itself.
+    # Recovery never completes, so the terminal cause comes from the lane itself. Patched:
+    # no public entry point makes a child's recovery fail.
     monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _registry, _execution_id: False)
     losers: list[Lane] = []
 
@@ -1370,7 +1370,8 @@ def test_a_child_token_left_after_terminal_proof_fails_the_record(
     build_machine: Callable[[], LaneStepMachine], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     machine = build_machine()
-    # Report every token still present, as if the lane's release never landed.
+    # Report every token still present, as if the lane's release never landed. Patched:
+    # no public entry point leaves a released token behind.
     monkeypatch.setattr(machine.record.store, "token_absent", lambda _token: False)
     items = machine.record.manifest.document["work_items"][:1]
     run, (lane,) = machine.start_idle(1, items=items)
@@ -1472,6 +1473,7 @@ def test_resume_keeps_run_directories_of_an_unrecoverable_lane(
         )
         runs.append(directory)
     with monkeypatch.context() as patch:
+        # Patched: no public entry point makes a child's recovery fail.
         patch.setattr(ChildExecutionRegistry, "cancel", lambda _registry, _execution_id: False)
         with pytest.raises(SimulationRecordIntegrityError, match="recovery is incomplete"):
             recover_interrupted_attempts(

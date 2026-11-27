@@ -1197,11 +1197,10 @@ def _scheduled_attempt(store: SimulationRecordStore, item) -> ScheduledAttempt:
 
 
 class _ParallelState:
-    def __init__(self, build_root, run_log, handle, first_finisher):
+    def __init__(self, build_root, run_log, handle):
         self.build_root = build_root
         self.run_log = run_log
         self.handle = handle
-        self.first_finisher = first_finisher
         self.clock: Callable[[], float] = time.monotonic
         self.barrier = threading.Barrier(2, timeout=_PARALLEL_SYNC_TIMEOUT_S)
         self.first_finished = threading.Event()
@@ -1270,7 +1269,7 @@ class _ParallelGroup:
         if name not in {"beta", "gamma"}:
             return
         self.state.barrier.wait()
-        if name == self.state.first_finisher:
+        if name == "beta":
             self.state.first_finished.set()
         else:
             assert self.state.first_finished.wait(timeout=_PARALLEL_SYNC_TIMEOUT_S)
@@ -1322,7 +1321,7 @@ def _validated_simulation_record(store, manifest, project, handle) -> ValidatedR
 def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
     manifest = _three_item_manifest(runtime_execution_id or "")
     plan = create_simulation_record_plan(manifest)
-    project, state = _parallel_environment(tmp_path, "beta")
+    project, state = _parallel_environment(tmp_path)
     monkeypatch.setattr(
         "booley.flows.sim.record.serial_execution.TargetCatalog.build",
         lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
@@ -1405,7 +1404,7 @@ def _set_runtime_execution_id(
         monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", runtime_execution_id)
 
 
-def _parallel_environment(tmp_path, first_finisher):
+def _parallel_environment(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
@@ -1421,7 +1420,7 @@ def _parallel_environment(tmp_path, first_finisher):
         selector="sim",
         eda_tool="icarus",
     )
-    return project, _ParallelState(build_root, run_log, handle, first_finisher)
+    return project, _ParallelState(build_root, run_log, handle)
 
 
 def _facts(

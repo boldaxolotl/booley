@@ -15,6 +15,8 @@ import pytest
 from booley.flows.endpoint_admission import AdmissionGate
 from booley.flows.sim.config import parse_run_cwd_template, resolve_pre_sim_build_access
 from booley.flows.sim.flow import SimulateFlow
+from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 from booley.flows.sim.record.coordinator import (
     ResumeSimulationRecordPreviewRequest,
     ResumeSimulationRecordRunRequest,
@@ -36,6 +38,8 @@ from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR
 from booley.runtime.execution_records import (
     ExecutionId,
+    atomic_write_json,
+    execution_paths,
 )
 from booley.runtime.job_slots import (
     CLASS_MEMORY,
@@ -45,6 +49,8 @@ from tests.flows.sim.simulation_record_test_support import (
     _interrupted_simulation_record,
     _manifest_for,
     _NoEdaExecutor,
+    _own_attempt_run_directory,
+    _request,
     _SimulationRecordAdmissionEndpoint,
 )
 from tests.flows.sim.test_simulation_record_resume_diagnostics import (
@@ -314,6 +320,45 @@ def test_resume_execution_uses_a_fresh_scan_after_preview(tmp_path: Path) -> Non
     assert second_outcome.recovery.completed == first_outcome.recovery.completed
 
     assert store.manifest_path.read_bytes() == manifest_bytes
+
+
+def test_resume_recovers_interrupted_lanes_before_it_runs_pending_items(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    (project / ".booley").mkdir(parents=True)
+    store = SimulationRecordStore(tmp_path / "reports/sim/1/targets/sim/record")
+    manifest = _manifest_for(("smoke",))
+    store.publish_manifest(manifest)
+    item = manifest.document["work_items"][0]
+    interrupted = _request(store, manifest, item, project, invocation=1)
+    attempt = _NoEdaExecutor().documents(interrupted)[0]
+    store.publish_attempt(interrupted.attempt_directory, attempt)
+    lane = uuid.uuid4().hex
+    run_directory, _ = _own_attempt_run_directory(tmp_path, store, item["work_item_id"], lane)
+    record = execution_paths(ExecutionId(lane), booley_dir=project / ".booley").record
+    record.parent.mkdir(parents=True)
+    atomic_write_json(record, {"state": "waiting", "tree_terminal": False})
+    # Patched: no public entry point makes a child's recovery fail.
+    monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _registry, _execution_id: False)
+    preview = _resume_request(store, project)
+    executor = _NoEdaExecutor()
+
+    with pytest.raises(SimulationRecordIntegrityError, match="recovery is incomplete"):
+        SimulationRecord(executor).run(
+            ResumeSimulationRecordRunRequest(
+                preview.validated,
+                preview.current_plan,
+                project,
+                None,
+                SimulationRecordPolicy(),
+                tmp_path / "reports/sim/2",
+                _admission(),
+            )
+        )
+
+    assert executor.calls == 0
+    assert run_directory.exists()
 
 
 def test_resume_inspection_scans_the_validated_manifest_without_rereading(

@@ -482,7 +482,7 @@ def test_managed_simulation_record_publishes_lane_results_in_plan_order_and_clea
 ) -> None:
     manifest = _three_item_manifest()
     plan = create_simulation_record_plan(manifest)
-    project, state = _parallel_environment(tmp_path, "beta")
+    project, state = _parallel_environment(tmp_path)
     # Nothing orders the items: the lane step machine checks the interleavings.
     state.barrier = threading.Barrier(1)
     state.first_finished.set()
@@ -574,7 +574,7 @@ def test_unsized_memory_admitted_simulation_record_runs_work_items_without_child
 
     manifest = _three_item_manifest()
     plan = create_simulation_record_plan(manifest)
-    project, state = _parallel_environment(tmp_path, "beta")
+    project, state = _parallel_environment(tmp_path)
     state.clock = itertools.count().__next__  # a tick per reading, no wall-clock wait
     # One item at a time: nothing waits for a peer to overlap.
     state.barrier = threading.Barrier(1)
