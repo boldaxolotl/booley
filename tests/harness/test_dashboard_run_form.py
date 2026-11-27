@@ -164,28 +164,16 @@ def test_target_and_test_fields_are_pickers():
     assert "One Target" in fields["--target"].hint
     assert "More forms (seeds)" in fields["--test"].hint
     assert fields["--seed"].hint.startswith("Seed for every selected Test Run")
-    assert fields["--target"].shown("") == "automatic"
-    assert fields["--target"].shown("sim_fifo") == "sim_fifo"
-    assert fields["--test"].shown("") == "default suite"
-    assert fields["--test"].shown(()) == "default suite"
-    assert fields["--test"].shown(("reset", "stress+soak")) == "reset, stress+soak"
     assert fields["--seed"].kind == "text"
-    assert fields["--seed"].shown("") == ""
-    assert fields["--coverage"].shown("") == "off"
-    assert fields["--coverage"].shown("on") == "on"
-    assert fields["--mode"].shown("") == "default"
-    assert fields["--mode"].shown("elab-only") == "elab-only"
 
 
-def test_a_required_target_field_has_no_automatic():
+def test_a_required_target_option_makes_a_required_field():
     from booley.harness.dashboard import run_form
 
     parser = parser_for("sim")
     next(a for a in parser._actions if a.dest == "target").required = True
     target = {field.label: field for field in run_form.describe(parser).fields}["--target"]
     assert target.required
-    assert target.shown("") == ""
-    assert target.shown("sim_fifo") == "sim_fifo"
 
 
 # --- command_argv ---------------------------------------------------------------

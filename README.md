@@ -58,8 +58,8 @@ simulation or synthesis run needs and starts as many together as your machine
 can hold, so small runs don't wait behind big ones and nothing runs out of
 memory.
 
-Everything sits in one VS Code window: agent chats, RTL, terminals, waveforms,
-and a dashboard of each worktree's Jobs.
+Agent chats, RTL, terminals and waveforms sit in one VS Code window, and a web
+dashboard shows each worktree's Jobs.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://booley.dev/docs/assets/feature-parallel-dark.svg">

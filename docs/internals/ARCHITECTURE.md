@@ -161,7 +161,8 @@ are in [SETUP.md](../user/SETUP.md#sign-in-and-billing).
 
 `booley dashboard` serves the Booley Dashboard, a web page of each worktree's
 Jobs for T3 Code's preview panel. With the `web-run-panel` Feature Flag on, the
-page can also start Booley Flows as Standalone Jobs. The design is in
+page can also start Booley Flows and the built-in Specialists as Standalone
+Jobs. The design is in
 [ADR 0093](../adr/0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md).
 
 ### Why VS Code

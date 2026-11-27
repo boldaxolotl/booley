@@ -1,8 +1,7 @@
 """Session activity reported by agent-client lifecycle hooks (ADR 0068).
 
 A hook writes the last lifecycle event of one session; the Session Registry
-reads its end marker and prunes old signals. Activity is presentational only:
-no lifecycle rule reads it.
+reads its end marker and prunes old signals.
 
 The writer is the standalone hook script the Sandbox Image installs
 (``booley/data/docker/session_activity_hook.py``); it cannot import this
@@ -211,7 +210,7 @@ class ActivityStore:
         publishes by atomic replacement and shares no lock with this
         pruner, so the file is examined again immediately before removal: a
         replacement is a different inode. The remaining window is the instant
-        between that check and the unlink; losing it shows unknown until the
+        between that check and the unlink; losing it drops the signal until the
         session's next event.
         """
         try:

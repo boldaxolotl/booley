@@ -74,8 +74,8 @@ document: Booley product datasheet
           learns how much memory each simulation or synthesis run needs and
           starts as many together as your machine can hold, so small runs don’t
           wait behind big ones and nothing runs out of memory.</p>
-          <p>Everything sits in one VS Code window: agent chats, RTL, terminals,
-          waveforms, and a dashboard of each worktree’s Jobs.</p>
+          <p>Agent chats, RTL, terminals and waveforms sit in one VS Code
+          window, and a web dashboard shows each worktree’s Jobs.</p>
         </div>
         <div class="feat__fig">
 --8<-- "feature-parallel.svg"

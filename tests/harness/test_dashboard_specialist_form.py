@@ -138,8 +138,8 @@ def test_focus_choices_follow_the_category():
         category: next(f for f in form.fields({"category": category}) if f.dest == "focus")
         for category in ("rtl", "tb")
     }
-    assert focus_rows["tb"].values() == ("quality",)
-    assert focus_rows["rtl"].shown("") == ""  # required: no "default" spelling
+    assert focus_rows["tb"].choices == ("quality",)
+    assert focus_rows["rtl"].required  # so the form offers no default
 
 
 def test_spec_path_row_shows_only_for_the_spec_focus():
@@ -160,8 +160,6 @@ def test_spec_path_row_shows_only_for_the_spec_focus():
         "More",
     ]
     assert labels({"category": "rtl", "more": "on"}) == [*closed, "Max turns", "Timeout"]
-    more = next(f for f in form.fields({"category": "rtl"}) if f.dest == "more")
-    assert (more.shown(""), more.shown("on")) == ("▸ max turns, timeout", "▾")
     # A stale prefill never reaches another focus's command.
     values = {"category": "rtl", "focus": "bugs", "spec": "docs/spec.md", "scope": "a.v"}
     assert form.argv(values) == ("--category", "rtl", "--focus", "bugs", "--scope", "a.v")

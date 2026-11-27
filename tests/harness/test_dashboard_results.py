@@ -259,6 +259,32 @@ def test_lint_preparation_failure_adds_no_headline():
     assert present_report(report_of("lint", detail, 2)).flow_result.value == "ERROR"
 
 
+@pytest.mark.parametrize(
+    "endpoint,detail,headline",
+    [
+        ("lint", {"eda_tools": {"t": "verible"}}, "Lint: warning count unavailable · verible"),
+        ("lint", {"total_warnings": "many"}, "Lint: warning count unavailable"),
+        ("lint", {"targets": ["t"]}, "Lint: warning count unavailable"),
+        ("reviewer", {"MAJOR": 1}, "Review: unavailable pending"),
+        ("reviewer", {"gate_passed": False}, "Review: unavailable pending"),
+        ("mutation", {"total_valid": 4}, "Mutation: unavailable/4 detected"),
+        ("mutation", {"not_detected": 1}, "Mutation: unavailable/unavailable detected"),
+        ("mutation", {"min_detected": 3}, "Mutation: unavailable/unavailable detected (min 3)"),
+        ("mutation", {"survivors": ["m1"]}, "Mutation: unavailable/unavailable detected"),
+        (
+            "mutation",
+            {"classified": [{"status": "not_detected"}]},
+            "Mutation: unavailable/unavailable detected",
+        ),
+        ("coverage_analyst", {"eligibility": "eligible"}, "Coverage analysis: unavailable"),
+        ("coverage_analyst", {"hypotheses": []}, "Coverage analysis: unavailable"),
+    ],
+)
+def test_partial_report_keeps_a_headline(endpoint, detail, headline):
+    result = present_report(report_of(endpoint, detail, 2))
+    assert result.flow_result.value == f"ERROR · {headline}"
+
+
 def test_goal_metric_evidence_keeps_measurements_and_omission_marker():
 
     facts = {

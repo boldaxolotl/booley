@@ -210,22 +210,13 @@ Specialists. Open it to see what runs there, what waits and how each run ended.
 1. Run `booley dashboard` in a container terminal. It serves
    `http://127.0.0.1:8090` until you press `Ctrl+C`; `--port` picks another
    port.
-2. Open `http://127.0.0.1:8090/?worktree=<absolute path>` in T3 Code's preview
-   panel. Each worktree has its own page.
+2. Open `http://127.0.0.1:8090/?worktree=<absolute path>` in the preview panel
+   of [T3 Code](SANDBOX.md#entering-the-sandbox-without-vs-code). Each worktree
+   has its own page.
 
-The page shows:
-
-- **Header:** the worktree and its branch, the Sandbox's CPU, memory and disk,
-  and Job admission: the Memory Budget and how many Jobs run or wait.
-- **Now:** the running and queued Jobs, each with its owner and, when queued,
-  its position in the queue.
-- **Results:** the newest 50 finished Jobs, collapsed until you open them, with
-  a link to each report.
-
-A Job's owner is the thread or session that started it. A `booley flow` or
-`booley specialist` run you type in a container terminal is a Standalone Job,
-owned by `you`. Jobs have short handles that carry their kind, as in `J-SIM25`
-or `J-SYN34`.
+It shows the running and queued Jobs, and the finished ones with a link to each
+report. A `booley flow` or `booley specialist` run you type in a container
+terminal is a Standalone Job, owned by `you`.
 
 ### Several agents at once
 
