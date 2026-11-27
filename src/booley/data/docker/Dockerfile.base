@@ -570,9 +570,9 @@ COPY src/booley/data/docker/vivado-wrapper /usr/local/bin/vivado
 RUN chmod 755 /usr/local/bin/vivado
 USER agent
 
-# Pre-create writable dirs for agent CLIs (bind-mounting individual files into a
-# non-existent directory would create it as root and prevent agent writes).
-RUN mkdir -p /home/agent/.codex /home/agent/.claude
+# Pre-create writable dirs for agent CLIs and T3 Code (mounting into a non-existent
+# directory would create it as root and prevent agent writes).
+RUN mkdir -p /home/agent/.codex /home/agent/.claude /home/agent/.t3
 
 # Resolved package inventory (#829): the final runtime base's installed dpkg
 # packages plus exact Python and pip versions. This layer must stay after every

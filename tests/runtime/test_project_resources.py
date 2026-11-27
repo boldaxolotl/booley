@@ -206,6 +206,7 @@ def _purge_host(host: FakeHost, root: str, other: str, monkeypatch: pytest.Monke
     host.volumes = {
         used: "1MB",
         idle: "2MB",
+        f"booley-t3-state-{project_name_id(root)}": "4MB",
         f"booley-codex-state-{project_name_id(other)}": "3MB",
     }
     host.containers = {"c" * 64: (_id("4"), (used,), project_label_id(root))}
@@ -236,8 +237,9 @@ def test_purge_removes_only_unused_resources_proven_to_be_the_projects(
         f"{family}-wheel:latest",
         _id("5"),
         f"booley-claude-state-{project_name_id(root)}",
+        f"booley-t3-state-{project_name_id(root)}",
     )
-    assert host.removals == [*removed[:4], removed[5]]
+    assert host.removals == [*removed[:4], *removed[5:]]
     # The mirrored wheel bytes survive their Project tag and are named as kept.
     assert result.kept == (f"{_id('3')}: bytes kept (another image or tag still needs them)",)
     assert {row[0] for row in host.images} == {_id("3"), _id("4"), _id("6"), _id("7")}
@@ -289,6 +291,7 @@ def test_purge_failure_names_progress_and_a_rerun_finishes(
     host.fail_volume_rm = False
     assert project_resources.purge(root).removed == (
         f"booley-claude-state-{project_name_id(root)}",
+        f"booley-t3-state-{project_name_id(root)}",
     )
 
 
