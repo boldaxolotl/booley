@@ -67,11 +67,6 @@ from booley.flows.sim.record.model import (
     create_simulation_record_plan,
 )
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
-from booley.flows.sim.record.resume import (
-    ValidatedManifestNode,
-    ValidatedResumeManifest,
-    ValidatedTargetBinding,
-)
 from booley.flows.sim.record.scheduler import (
     ScheduledAttempt,
 )
@@ -1295,16 +1290,6 @@ class _SimulationRecordAdmissionEndpoint:
         return _Claim(self._slots, token)
 
 
-def _validated_simulation_record(store, manifest, project, handle) -> ValidatedResumeManifest:
-    node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
-    return ValidatedResumeManifest(
-        node,
-        (),
-        (handle,),
-        (ValidatedTargetBinding(node, project.resolve(), handle),),
-    )
-
-
 def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
     manifest = _three_item_manifest(runtime_execution_id or "")
     plan = create_simulation_record_plan(manifest)
@@ -1365,7 +1350,6 @@ def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
     finally:
         slots.release(outer)
     store = SimulationRecordStore(invocation / "targets/sim/record")
-    validated = _validated_simulation_record(store, manifest, project, state.handle)
     return SimpleNamespace(
         simulation_record=simulation_record,
         fault_enabled=fault_enabled,
@@ -1376,7 +1360,6 @@ def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
         slots=slots,
         state=state,
         store=store,
-        validated=validated,
     )
 
 
@@ -1904,18 +1887,6 @@ def _own_attempt_run_directory(
         )
     )
     return run.path, document
-
-
-def _validated_resume(store, plan, target, root: Path) -> ValidatedResumeManifest:
-    node = ValidatedManifestNode(
-        store.manifest_path, plan.manifest, manifest_digest(plan.manifest)
-    )
-    return ValidatedResumeManifest(
-        node,
-        (),
-        (target.handle,),
-        (ValidatedTargetBinding(node, root.resolve(), target.handle),),
-    )
 
 
 @dataclass(frozen=True)

@@ -32,7 +32,6 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
-    ResumeSimulationRecordRunRequest,
     SimulationRecord,
     SimulationRecordPolicy,
 )
@@ -40,18 +39,13 @@ from booley.flows.sim.record.coverage_execution import (
     CoverageAggregateExecutor,
 )
 from booley.flows.sim.record.model import create_simulation_record_plan
-from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
-from booley.flows.sim.record.resume import (
-    ValidatedManifestNode,
-    ValidatedResumeManifest,
-)
+from booley.flows.sim.record.planning import finalize_manifest
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.record_reports import write_compatibility_projection
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _coverage_simulation_record_plan,
-    _validated_resume,
     as_if_the_sandbox_restarted,
 )
 from tests.flows.sim.test_coverage_transaction import NativeExecution
@@ -233,25 +227,20 @@ def _crash_environment(tmp_path: Path):
     return project, build_root, run_log
 
 
-def _resume_crashed_simulation_record(
-    simulation_record, request, store, manifest, plan, crash_point
-):
+def _resume_crashed_simulation_record(simulation_record, request, store, plan, crash_point):
     if crash_point == "before:manifest_commit":
         assert not store.manifest_path.exists()
         return simulation_record.run(request)
     assert store.manifest_path.is_file()
-    validated = ValidatedResumeManifest(
-        ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest)), (), ()
-    )
     return simulation_record.run(
-        ResumeSimulationRecordRunRequest(
-            validated,
+        NewSimulationRecordRunRequest(
             plan,
             request.project_root,
             request.report_root,
             request.policy,
-            request.invocation_directory,
-            request.admission,
+            record_directory=store.root,
+            invocation_directory=request.invocation_directory,
+            admission=request.admission,
         )
     )
 
@@ -288,7 +277,7 @@ def test_serial_publication_boundary_resume_matrix(
     with pytest.raises(_InjectedProcessDeath, match=crash_point):
         case.record.run(case.request)
     outcome = _resume_crashed_simulation_record(
-        case.record, case.request, store, manifest, case.plan, crash_point
+        case.record, case.request, store, case.plan, crash_point
     )
     _assert_crash_recovery(outcome, store, crash_point, case.launches, crash)
     # The route axis must really reach its build: private builds live under the attempt.
@@ -621,7 +610,7 @@ def _serial_kill_case(
 
     crash_point = "before:manifest_commit" if not killed.store.manifest_path.exists() else "x"
     outcome = _resume_crashed_simulation_record(
-        killed.record, killed.request, killed.store, killed.manifest, killed.plan, crash_point
+        killed.record, killed.request, killed.store, killed.plan, crash_point
     )
     baseline = _serial_case(root / "baseline", monkeypatch, route == "shared", None)
     baseline_outcome = baseline.record.run(baseline.request)
@@ -683,14 +672,14 @@ def _coverage_case(root: Path, checkpoint):
         plan, root, invocation.parent, policy, invocation, _admission()
     )
     store = SimulationRecordStore(invocation / "targets/sim_0/record")
-    resume = ResumeSimulationRecordRunRequest(
-        _validated_resume(store, plan, target, root),
+    resume = NewSimulationRecordRunRequest(
         plan,
         root,
         invocation.parent,
         policy,
-        invocation,
-        _admission(),
+        record_directory=store.root,
+        invocation_directory=invocation,
+        admission=_admission(),
     )
     return record, request, resume, store, invocation / "targets" / "sim_0"
 
@@ -837,17 +826,12 @@ def test_invalid_committed_result_fails_closed_before_executor_entry(
             entered.append(request.attempt_id)
             raise AssertionError("invalid Result must fail before EDA execution")
 
-    validated = ValidatedResumeManifest(
-        ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest)),
-        (),
-        (),
-    )
-    request = ResumeSimulationRecordRunRequest(
-        validated=validated,
-        current_plan=plan,
-        project_root=tmp_path,
-        report_root=invocation.parent,
-        policy=SimulationRecordPolicy(),
+    request = NewSimulationRecordRunRequest(
+        plan,
+        tmp_path,
+        invocation.parent,
+        SimulationRecordPolicy(),
+        record_directory=store.root,
         invocation_directory=invocation,
         admission=_admission(),
     )
@@ -1132,28 +1116,25 @@ def _baseline_disclosure_manifest(manifest):
 def _resume_real_hook_crash(tmp_path, invocation, store):
     from tests.flows.sim.simulation_record_test_support import (
         _executor,
-        _handle,
         _legacy_disclosures,
     )
 
     manifest = store.load_manifest()
-    node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
     project = tmp_path / "project"
-    validated = ValidatedResumeManifest(node, (), (_handle(project),))
     destination = invocation.parent / "2"
     destination.mkdir()
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     resumed = SimulationRecord(
         _executor(tmp_path / "build", counters, disclosures=_legacy_disclosures())
     ).run(
-        ResumeSimulationRecordRunRequest(
-            validated,
+        NewSimulationRecordRunRequest(
             create_simulation_record_plan(manifest),
             project,
             invocation.parent,
             SimulationRecordPolicy(),
-            destination,
-            _admission(),
+            record_directory=store.root,
+            invocation_directory=destination,
+            admission=_admission(),
         )
     )
     return resumed, counters
@@ -1256,7 +1237,7 @@ def test_cancelled_attempt_leaves_no_runtime_input(
         project = case.request.project_root
         destination, parent = project / "run/inputs/input.bin", project / "run/inputs"
         resume = lambda: _resume_crashed_simulation_record(  # noqa: E731
-            case.record, case.request, case.store, case.manifest, case.plan, "x"
+            case.record, case.request, case.store, case.plan, "x"
         )
     else:
         record, request, resume_request, _store, _target = _coverage_case(

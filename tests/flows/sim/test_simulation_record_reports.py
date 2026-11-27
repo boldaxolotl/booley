@@ -31,7 +31,6 @@ from booley.runtime.file_lock import LockContentionError
 from tests.conftest import symlink_or_skip
 from tests.flows.sim.simulation_record_test_support import (
     _recorded_simulation_record,
-    prerequisite_documents,
 )
 from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.fusesoc_test_support import symlinked_booley_dir
@@ -228,15 +227,13 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeyp
 
 def _resume_hook_simulation_record(tmp_path, monkeypatch, interrupted, *, external=False):
     from booley.flows.sim.record.coordinator import (
-        ResumeSimulationRecordRunRequest,
+        NewSimulationRecordRunRequest,
         SimulationRecord,
         SimulationRecordPolicy,
     )
     from booley.flows.sim.record.model import create_simulation_record_plan
-    from booley.flows.sim.record.planning import manifest_digest
-    from booley.flows.sim.record.resume import ValidatedManifestNode, ValidatedResumeManifest
     from booley.flows.sim.record.store import SimulationRecordStore
-    from tests.flows.sim.simulation_record_test_support import _admission, _executor, _handle
+    from tests.flows.sim.simulation_record_test_support import _admission, _executor
     from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
     origin, original = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
@@ -244,21 +241,19 @@ def _resume_hook_simulation_record(tmp_path, monkeypatch, interrupted, *, extern
     if interrupted:
         (original.pre_sim_firings[0].path.parents[3] / "result.json").unlink()
     manifest = store.load_manifest()
-    node = ValidatedManifestNode(original.manifest_path, manifest, manifest_digest(manifest))
     project = tmp_path / "project"
-    validated = ValidatedResumeManifest(node, (), (_handle(project),))
     invocation = tmp_path / "external/reports/1" if external else origin.parent / "2"
     invocation.mkdir(parents=True)
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     resumed = SimulationRecord(_executor(tmp_path / "build", counters)).run(
-        ResumeSimulationRecordRunRequest(
-            validated,
+        NewSimulationRecordRunRequest(
             create_simulation_record_plan(manifest),
             project,
             origin.parent,
             SimulationRecordPolicy(),
-            invocation,
-            _admission(),
+            record_directory=store.root,
+            invocation_directory=invocation,
+            admission=_admission(),
         )
     )
     return original, resumed, counters, invocation
@@ -354,7 +349,7 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
 
     manifest = SimulationRecordStore(original.manifest_path.parent).load_manifest()
     node = ValidatedManifestNode(original.manifest_path, manifest, manifest_digest(manifest))
-    validated = ValidatedResumeManifest(node, (), (_handle(tmp_path / "project"),))
+    validated = ValidatedResumeManifest(node, (_handle(tmp_path / "project"),))
     invocation.mkdir(parents=True, exist_ok=True)
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
@@ -562,8 +557,9 @@ def test_actual_publication_observer_checkpoint_and_exception_semantics(tmp_path
 def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
     # Private seam: the observer that records each Pre-Sim firing a published run saw is
     # `_record_pre_sim_firing`; only the Flow's own observer proves its authority.
-    from booley.flows.sim.record.model import create_simulation_record_plan
-    from booley.flows.sim.record.store import SimulationRecordStore
+    from dataclasses import replace
+
+    from booley.flows.sim.record import collect_pre_sim_firings
     from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
     from tests.flows.sim.test_simulation_record_dependency import _add_observed_cycles
 
@@ -587,19 +583,16 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
         invocation_directory=invocation,
         observer=flow._record_pre_sim_firing,
     )
-    manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
-    prerequisites = prerequisite_documents(
-        create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
-    )
     _, candidate = _successful_pre_sim_record(
         candidate_root,
         monkeypatch,
         "immutable",
-        transform=lambda document: document.update(prerequisites=prerequisites),
         invocation_directory=invocation,
         observer=flow._record_pre_sim_firing,
     )
-    return candidate
+    # One outcome that holds both roles' firings, which the endpoint retains on a scan error.
+    firings = collect_pre_sim_firings(candidate.manifest_path, baseline.manifest_path)
+    return replace(candidate, pre_sim_firings=firings)
 
 
 @pytest.fixture
@@ -979,27 +972,6 @@ def test_prior_firing_reauthentication_reads_each_attempt_once(tmp_path, monkeyp
         "each sidecar must be decoded once"
     )
     assert accesses == {f.path: 1 for f in firings}, "each sidecar must have one byte access"
-
-
-def test_shared_collection_bound_counts_distinct_prerequisite_references(
-    observed_hook_flow, monkeypatch
-):
-    # Private seam: `_PRE_SIM_DAG_BOUND` is 4,096 roots, not buildable in a unit test, so the
-    # test lowers it.
-    from booley.flows.sim.record import SimulationRecordIntegrityError, store
-
-    _flow, candidate = observed_hook_flow
-    invocation = candidate.manifest_path.parents[3]
-    # Three roots reach one baseline reference: only distinct references count.
-    monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 1)
-    roots = (
-        *sorted((invocation / "targets").glob("*/record/manifest.json")),
-        candidate.manifest_path,
-    )
-    assert len(collect_pre_sim_firings(*roots)) == 2
-    monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 0)
-    with pytest.raises(SimulationRecordIntegrityError, match="exceeds DAG bound"):
-        collect_pre_sim_firings(*roots)
 
 
 @pytest.mark.parametrize("linked", ["entry", "below", "above"])

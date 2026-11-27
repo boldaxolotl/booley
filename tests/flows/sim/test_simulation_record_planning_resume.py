@@ -19,8 +19,6 @@ from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
-    ResumeSimulationRecordPreviewRequest,
-    ResumeSimulationRecordRunRequest,
     SimulationRecord,
     SimulationRecordCancellationError,
     SimulationRecordPolicy,
@@ -113,14 +111,6 @@ def test_interrupted_managed_simulation_record_exact_resume_preserves_parent_ide
 
 
 def _resume_simulation_record_twice(case, runtime_execution_id):
-    request_args = (
-        case.validated,
-        case.plan,
-        case.project,
-        case.invocation.parent,
-        SimulationRecordPolicy(),
-        case.invocation,
-    )
     summaries = []
     outcomes = []
     for _ in range(2):
@@ -129,7 +119,15 @@ def _resume_simulation_record_twice(case, runtime_execution_id):
         ).enter() as admission:
             outcomes.append(
                 case.simulation_record.run(
-                    ResumeSimulationRecordRunRequest(*request_args, admission)
+                    NewSimulationRecordRunRequest(
+                        case.plan,
+                        case.project,
+                        case.invocation.parent,
+                        SimulationRecordPolicy(),
+                        record_directory=case.store.root,
+                        invocation_directory=case.invocation,
+                        admission=admission,
+                    )
                 )
             )
         summaries.append(case.store.summary_path.read_bytes())
@@ -171,25 +169,16 @@ def _seed_authenticated_states(
             (item_root / "result.json").write_bytes(result.canonical_bytes())
 
 
-def _resume_request(store: SimulationRecordStore, project: Path):
+def _validated_manifest(store: SimulationRecordStore) -> ValidatedResumeManifest:
     manifest = store.load_manifest()
-    validated = ValidatedResumeManifest(
-        ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest)),
-        (),
-        (),
-    )
-    return ResumeSimulationRecordPreviewRequest(
-        validated=validated,
-        current_plan=create_simulation_record_plan(manifest),
-        project_root=project,
-        report_root=None,
-        policy=SimulationRecordPolicy(),
+    return ValidatedResumeManifest(
+        ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest)), ()
     )
 
 
 # Windows CI: 3x the slowest observed duration (tests/timeout_headroom.py).
 @pytest.mark.timeout(90)
-def test_maximum_simulation_record_previews_authenticated_mixed_resume_without_eda(
+def test_maximum_simulation_record_inspects_mixed_resume_without_eda(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -209,12 +198,11 @@ def test_maximum_simulation_record_previews_authenticated_mixed_resume_without_e
         1,
         998,
     )
-    request = _resume_request(store, project)
-    status = SimulationRecord().inspect_resume(request.validated)
+    validated = _validated_manifest(store)
 
     started = time.monotonic()
+    status = SimulationRecord().inspect_resume(validated)
     first = store.regenerate_summary()
-    preview = SimulationRecord().preview(request)
     elapsed = time.monotonic() - started
     first_bytes = store.summary_path.read_bytes()
     second = store.regenerate_summary()
@@ -225,15 +213,6 @@ def test_maximum_simulation_record_previews_authenticated_mixed_resume_without_e
     assert status.completed == recovery.complete
     assert status.interrupted == recovery.interrupted
     assert status.pending == recovery.pending
-    assert (
-        len(preview.recovery.completed),
-        len(preview.recovery.interrupted),
-        len(preview.recovery.pending),
-    ) == (
-        1,
-        1,
-        998,
-    )
     assert first == second
     assert store.summary_path.read_bytes() == first_bytes
     assert elapsed < scaled(15)
@@ -260,7 +239,8 @@ def test_resume_endpoint_refreshes_recovery_after_failure(
         raise OSError("failed")
 
     monkeypatch.setattr(
-        "booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", fail_after_attempts
+        "booley.flows.sim.record.serial_execution.OrdinaryHdlSerialExecutor.execute",
+        fail_after_attempts,
     )
 
     result = SimulateFlow().execute(
@@ -354,19 +334,18 @@ def test_resume_recovers_interrupted_lanes_before_it_runs_pending_items(
     atomic_write_json(record, {"state": "waiting", "tree_terminal": False})
     # Patched: no public entry point makes a child's recovery fail.
     monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _registry, _execution_id: False)
-    preview = _resume_request(store, project)
     executor = _NoEdaExecutor()
 
     with pytest.raises(SimulationRecordIntegrityError, match="recovery is incomplete"):
         SimulationRecord(executor).run(
-            ResumeSimulationRecordRunRequest(
-                preview.validated,
-                preview.current_plan,
+            NewSimulationRecordRunRequest(
+                create_simulation_record_plan(manifest),
                 project,
                 None,
                 SimulationRecordPolicy(),
-                tmp_path / "reports/sim/2",
-                _admission(),
+                record_directory=store.root,
+                invocation_directory=tmp_path / "reports/sim/2",
+                admission=_admission(),
             )
         )
 
@@ -381,7 +360,7 @@ def test_resume_inspection_scans_the_validated_manifest_without_rereading(
         tmp_path / "reports" / "sim" / "1" / "targets" / "sim" / "record"
     )
     store.publish_manifest(_manifest_for(("smoke",)))
-    validated = _resume_request(store, tmp_path).validated
+    validated = _validated_manifest(store)
     store.manifest_path.unlink()
 
     status = SimulationRecord().inspect_resume(validated)
