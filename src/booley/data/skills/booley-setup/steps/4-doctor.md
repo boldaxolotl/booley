@@ -1,6 +1,9 @@
 # Step 4 — Doctor (final audit)
 
-> Part of the `booley-setup` skill. Run in order, or invoke this step alone with `booley-setup 4`. This step is a plain `booley doctor` in a container terminal (doctor is context-aware — it checks whichever side it runs on, but setup runs it in the devcontainer).
+> Part of the `booley-setup` skill. Run in order, or invoke this step alone
+> with `booley-setup 4`. This step is a plain `booley doctor` in a container
+> terminal (doctor is context-aware — it checks whichever side it runs on, but
+> setup runs it in the Sandbox).
 
 Use this as the last Booley setup skill. The goal is a fully clean Doctor:
 zero failures and zero active (unwaived) warnings in every required invocation.
@@ -224,8 +227,9 @@ allowlist exactly—hybrid does not authorize committing operational state.
   Booley in exactly the history stealth mode exists to keep clean.
   `info/exclude` is local to the clone and travels nowhere.
 - With `[stealth] enabled = true`, the execution phase's host Stealth
-  footprint step re-ran `booley init`, which wrote `/.devcontainer`,
-  `/.booley`, and `/.claude` there, so normally you are only **verifying**:
+  footprint step re-ran `booley init`, which wrote
+  `/.booley` there beside its other generated entries, so normally you are
+  only **verifying**:
   `git check-ignore -v .booley` should name `.git/info/exclude`, and `git
   status --porcelain` must not list `.booley/`. Repair a missing entry by
   running that host step (idempotent), not by hand-editing. A fresh init records no Stealth choice,
@@ -268,8 +272,8 @@ allowlist exactly—hybrid does not authorize committing operational state.
   the destination is absent first) and report that recovery path. Preserve the
   backup.
 - Once the files belong to the RTL repository, drop the `/.booley` line
-  from `.git/info/exclude` (leave `/.devcontainer` and `/.claude` there unless the
-  user asks otherwise — those are machine-specific runtime config).
+  from `.git/info/exclude` (leave init's other generated entries there unless
+  the user asks otherwise — they name local generated files).
 - After migration, ensure the inner Git metadata is backed up outside these
   files: the RTL repository must track regular files, not an embedded-repository
   gitlink. Then `git add .booley`; inspect `git ls-files --stage

@@ -1,6 +1,8 @@
 # Step 3 — AGENTS.md
 
-> Part of the `booley-setup` skill. Run in order, or invoke this step alone with `booley-setup 3`. This step runs inside the devcontainer — edit files in the worktree and run `booley doctor` in a container terminal.
+> Part of the `booley-setup` skill. Run in order, or invoke this step alone
+> with `booley-setup 3`. This step runs inside the Sandbox — edit files in the
+> worktree and run `booley doctor` in a container terminal.
 
 Create a minimal Project-level `AGENTS.md` for Developer Agents doing RTL work. The
 file is high leverage: do not auto-write, pad, or invent facts.
@@ -31,8 +33,9 @@ file is high leverage: do not auto-write, pad, or invent facts.
   omit it only when worktree guidance is irrelevant.
 - Keep the template's `booley_status` bullet and its two Sandbox bullets
   ("Inside the Sandbox…" and "If `booley_status` is absent…") verbatim. The
-  `booley_status` bullet establishes the editor as a user-visible surface for
-  files and diffs. The Project Root's guidance links resolve on the host too, where
+  `booley_status` bullet tells the Developer Agent how to point the user to
+  files and changes, which the user opens in an editor on the host. The
+  Project Root's guidance links resolve on the host too, where
   none of the Booley Flows are registered; the Sandbox bullets explain why.
   Doctor warns if the "Inside the Sandbox" bullet goes missing.
 - When `booley.toml` selects `booley-sandbox-riscv`, keep the template's RISC-V

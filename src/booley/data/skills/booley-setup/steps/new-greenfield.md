@@ -91,8 +91,10 @@ only):
   Doctor gate, or `project.core-file-untracked` blocks it.
 
   When the scaffold succeeds, record `scaffold: applied` and the exact command in
-  `SETUP-PLAN.md` §3. Then tell the user to **Reopen in Container** and re-invoke
-  `/booley-setup new` there; that session takes the first branch above.
+  `SETUP-PLAN.md` §3. Then tell the user to run `booley session up` on the
+  host, open the pairing link it prints, and re-invoke `/booley-setup new` in
+  a T3 Code thread on the main checkout; that session takes the first branch
+  above.
 - **Already scaffolded** (populated `.booley/` and a `.core`): don't
   re-ask what the scaffold already fixed — read the choices from the config,
   confirm them in the grill message as `pre-set`, and record them in SETUP-PLAN.

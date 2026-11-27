@@ -3,10 +3,11 @@
 Booley's core move is giving Developer Agents **one consistent interface to the
 EDA tools** through Booley Flows, the same for Claude Code and Codex and the
 same across the EDA tools each Flow supports, and wrapping the result in an
-agentic development environment (ADE): one VS Code window where you direct and
-supervise those agents. That makes Developer Agents more capable, but it also
-gives the engineer a faster, lower-friction RTL workflow. Every feature below
-builds on that foundation; the reasoning behind the load-bearing choices is in
+agentic development environment (ADE), where you direct and supervise those
+agents from your browser in T3 Code, a web UI the Sandbox serves. That makes
+Developer Agents more capable, but it also gives the engineer a faster,
+lower-friction RTL workflow. Every feature below builds on that foundation;
+the reasoning behind the load-bearing choices is in
 [ARCHITECTURE.md](../internals/ARCHITECTURE.md).
 
 New to Booley's vocabulary (Developer Agent, Specialist, Sandbox, Booley Flow,
@@ -77,25 +78,23 @@ and runs the EDA tools, and you set the direction, answer its questions, and
 judge the evidence.
 
 Booley is not only infrastructure for the Developer Agent. It is workflow
-infrastructure for the hardware engineer: Developer Agent sessions, editor, EDA
-tools, waveforms, and review evidence share a single VS Code window.
+infrastructure for the hardware engineer: Developer Agent threads, their
+worktrees and each worktree's Jobs share one T3 Code window in your browser.
 
 - **Hands-on.** Work through conversation: ask for an edit, run Booley Flows,
   debug a failure. You can still read and edit RTL yourself between agent
   turns.
-- **Parallel.** Leave sessions running in container terminals alongside, each
-  on its own branch and worktree ([Parallel Sessions](#parallel-sessions)), and
-  step in when an agent needs a decision. The Booley Dashboard shows each
-  worktree's Jobs.
+- **Parallel.** Run several threads at once, each on its own worktree and
+  branch ([Parallel Sessions](#parallel-sessions)), and step in when an agent
+  needs a decision.
 
-Either way, Booley removes the manual transitions among editor, build commands,
-logs, waveform viewer, and review artifacts. Less time spent on that plumbing
-means faster iterations and more opportunities to verify, refine, and optimize
-the design.
+Either way, Booley removes the manual transitions among build commands, logs,
+waveforms, and review artifacts. Less time spent on that plumbing means faster
+iterations and more opportunities to verify, refine, and optimize the design.
 
-Today the shell is stock VS Code: agent sessions run in its terminals. The
-Booley Dashboard is a web page of each worktree's Jobs, for T3 Code's preview
-panel.
+Today the user interface (UI) is T3 Code: agent sessions run in its threads,
+and the Booley Dashboard, a web page of each worktree's Jobs, opens in its
+preview panel.
 Native agent-supervision UI (evidence status, Flow dashboards, one-click
 review) is on the
 [roadmap](../internals/ROADMAP.md#native-ade-surface), and the long-term
@@ -226,9 +225,11 @@ Settings are in [Jobs](CONFIG.md#jobs--concurrency-jobs); the reasoning is in
 ### Parallel Sessions
 
 Several Developer Agents working in one checkout overwrite each other's edits
-and builds. Run each session in its own linked worktree and branch inside the
-Sandbox instead; the Dashboard shows each worktree's Jobs,
-and [Job Admission](#job-admission) decides how many of their Jobs run at once.
+and builds. Start each session as a T3 Code thread on a new worktree instead:
+T3 Code creates the worktree and its branch, and Booley prepares it before the
+thread's first turn ([Worktrees](WORKTREES.md)). The Dashboard shows each
+worktree's Jobs, and [Job Admission](#job-admission) decides how many of their
+Jobs run at once.
 
 ### Code Coverage
 
@@ -337,6 +338,10 @@ simulation did. Booley lets it observe actual simulation behavior through
 `bwave`, a custom-built Rust waveform tool. It can query signal values at
 specific time ranges, use one signal as a trigger for sampling another, and
 trace data through the design: systematic debugging instead of guesswork.
+
+Booley has no waveform viewer of its own for now: `bwave gui` fails with a
+message. Waveform views are on the
+[roadmap](../internals/ROADMAP.md#native-ade-surface).
 
 **FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so
 Booley's successful trace artifact is FST: the open, transition-based waveform

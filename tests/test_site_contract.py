@@ -2,7 +2,8 @@
 
 These tests fail when a README link points at a site section or page that no
 longer exists, when a site colour escapes the theme tokens or fails WCAG AA
-contrast, or when a generated diagram is stale.
+contrast, when a generated diagram is stale, or when the architecture diagram
+names a retired client or omits the T3 Code relay.
 """
 
 import html
@@ -60,6 +61,15 @@ def test_generated_diagrams_are_up_to_date():
         for theme in build.THEME_RULES:
             generated = build.feature_out(name, theme).read_text(encoding="utf-8")
             assert generated == build.feature_svg(name, theme), (name, theme)
+
+
+def test_architecture_diagrams_draw_the_t3_code_path():
+    """Both architecture diagrams draw the T3 Code relay and no VS Code path."""
+    retired = re.compile(r"vs ?code|dev ?containers?|codespaces?", re.IGNORECASE)
+    for name in ("architecture.svg", "architecture-dark.svg"):
+        drawing = (ROOT / "docs/user/assets" / name).read_text(encoding="utf-8")
+        assert retired.findall(drawing) == [], name
+        assert "T3 Code relay" in drawing, name
 
 
 # ---------------------------------------------------------------- theme tokens

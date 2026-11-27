@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" class="arch" viewBox="0 0 1100 1085" width="1100" height="1085" role="img" aria-labelledby="fig2t fig2d">
+<svg xmlns="http://www.w3.org/2000/svg" class="arch" viewBox="0 0 1100 1215" width="1100" height="1215" role="img" aria-labelledby="fig2t fig2d">
   <!-- Booley architecture diagram for docs/internals/ARCHITECTURE.md. Source:
        website/illustration/architecture.svg; after editing it, run
        website/illustration/build.py, which embeds the fonts and writes
@@ -28,9 +28,9 @@
     .arch .ln { fill: none; stroke: var(--ink); stroke-width: 1.3; }
     .arch .ah { fill: var(--ink); }
   </style>
-  <rect class="bg" width="1100" height="1085"/>
+  <rect class="bg" width="1100" height="1215"/>
   <title id="fig2t">Booley architecture</title>
-  <desc id="fig2d">On the host, Booley issues, refreshes, and reaps one Booley devcontainer Sandbox per Project folder, and VS Code attaches to it through Dev Containers. By default all Sandbox egress goes through the host's egress proxy to LLM APIs and allowlisted hosts. Inside the Sandbox, Developer Agent sessions (Claude Code or Codex, one per Sandbox terminal) edit the Project's Git worktrees (the main checkout plus one worktree per T3 Code thread, which Booley prepares), which hold the RTL, testbenches, FuseSoC .core Targets, booley.toml, and metrics.toml, and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job. Jobs are admitted against the Memory Budget: excess Jobs queue and none is preempted. A Booley Flow (sim, lint, synth, fpga, mutation) resolves the Target with FuseSoC, has FuseSoC or a Booley adapter build the EDA tool command, runs the EDA tools, parses their logs into metrics, and writes a report. Specialists (the Reviewer and the Coverage Analyst) run an Agent CLI with fresh context. The MCP server calls B-Wave directly, not as a Job: it queries FST traces from simulation. The EDA tools are linters (Verilator, Verible), synthesis (Yosys, OpenROAD), simulators (Verilator, Icarus, with cocotb testbenches), and FPGA implementation (Vivado, installed on the host, granted to the Project, and mounted read-only).</desc>
+  <desc id="fig2d">On the host, Booley issues, refreshes, and reaps one Booley Sandbox per Project folder. The engineer's browser reaches T3 Code in the Sandbox through the T3 Code relay, which listens on the host's loopback only and passes each connection into the Sandbox through docker exec. By default all Sandbox egress goes through the host's egress proxy to LLM APIs and allowlisted hosts. Inside the Sandbox, T3 Code starts the Developer Agent sessions (Claude Code or Codex, one per T3 Code thread) and shows the Booley Dashboard, a page per worktree of that worktree's Jobs, in its preview panel. The sessions edit the Project's Git worktrees (the main checkout plus the worktrees T3 Code creates for its threads, which Booley prepares), which hold the RTL, testbenches, FuseSoC .core Targets, booley.toml, and metrics.toml, and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job. Jobs are admitted against the Memory Budget: excess Jobs queue and none is preempted. A Booley Flow (sim, lint, synth, fpga, mutation) resolves the Target with FuseSoC, has FuseSoC or a Booley adapter build the EDA tool command, runs the EDA tools, parses their logs into metrics, and writes a report. Specialists (the Reviewer and the Coverage Analyst) run an Agent CLI with fresh context. The MCP server calls B-Wave directly, not as a Job: it queries FST traces from simulation. The EDA tools are linters (Verilator, Verible), synthesis (Yosys, OpenROAD), simulators (Verilator, Icarus, with cocotb testbenches), and FPGA implementation (Vivado, installed on the host, granted to the Project, and mounted read-only).</desc>
   <defs>
     <marker id="f2a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
   </defs>
@@ -42,7 +42,7 @@
   <path class="ln" d="M120 58 V95" marker-start="url(#f2a)" marker-end="url(#f2a)"/>
 
   <!-- the host -->
-  <rect class="host" x="10" y="72" width="1080" height="1003"/>
+  <rect class="host" x="10" y="72" width="1080" height="1133"/>
   <text class="hl" x="1076" y="92" text-anchor="end">Host</text>
 
   <rect class="bx" x="30" y="95" width="180" height="56"/>
@@ -50,22 +50,49 @@
   <text class="s" x="120" y="139" text-anchor="middle">default for all egress</text>
   <path class="ln" d="M120 151 V185" marker-start="url(#f2a)" marker-end="url(#f2a)"/>
 
-  <rect class="bx" x="250" y="95" width="400" height="56"/>
-  <text class="t" x="450" y="118" text-anchor="middle">Booley on the host</text>
-  <text class="s" x="450" y="139" text-anchor="middle">Host Bootstrap, Sandbox image and lifecycle, idle reaper</text>
-  <path class="ln" d="M450 151 V185" marker-end="url(#f2a)"/>
-  <text class="e" x="458" y="173">issues, refreshes, reaps</text>
+  <rect class="bx" x="250" y="95" width="370" height="56"/>
+  <text class="t" x="435" y="118" text-anchor="middle">Booley on the host</text>
+  <text class="s" x="435" y="139" text-anchor="middle">Host Bootstrap, Sandbox image and lifecycle, idle reaper</text>
+  <path class="ln" d="M435 151 V185" marker-end="url(#f2a)"/>
+  <text class="e" x="443" y="173">issues, refreshes, reaps</text>
 
-  <rect class="bx" x="690" y="95" width="220" height="56"/>
-  <text class="t" x="800" y="118" text-anchor="middle">VS Code</text>
-  <text class="s" x="800" y="139" text-anchor="middle">editor UI</text>
-  <text class="e" x="808" y="173">Dev Containers</text>
+  <rect class="bx" x="660" y="95" width="200" height="56"/>
+  <text class="t" x="760" y="118" text-anchor="middle">T3 Code relay</text>
+  <text class="s" x="760" y="139" text-anchor="middle">host loopback only</text>
+  <text class="e" x="768" y="173">docker exec</text>
+
+  <rect class="bx" x="900" y="95" width="170" height="56"/>
+  <text class="t" x="985" y="118" text-anchor="middle">Browser</text>
+  <text class="s" x="985" y="139" text-anchor="middle">T3 Code web UI</text>
+  <path class="ln" d="M900 123 H860" marker-end="url(#f2a)"/>
 
   <!-- the Sandbox boundary -->
-  <rect class="sandbox" x="30" y="185" width="1040" height="790"/>
-  <text class="sbl" x="46" y="964">Booley devcontainer Sandbox (one per Project folder)</text>
-  <!-- VS Code attaches to the sessions; drawn after the Sandbox fill -->
-  <path class="ln" d="M800 151 V200 H300 V210" marker-end="url(#f2a)"/>
+  <rect class="sandbox" x="30" y="185" width="1040" height="920"/>
+  <text class="sbl" x="46" y="1094">Booley Sandbox (one per Project folder)</text>
+  <!-- The relay reaches T3 Code; drawn after the Sandbox fill -->
+  <path class="ln" d="M760 151 V200 H370 V220" marker-end="url(#f2a)"/>
+
+  <!-- T3 Code and the Dashboard its preview panel shows -->
+  <rect class="bx" x="50" y="220" width="640" height="86"/>
+  <rect class="hd" x="50" y="220" width="640" height="36"/>
+  <text class="t" x="64" y="244">T3 Code</text>
+  <text class="s" x="676" y="244" text-anchor="end">t3 serve, Sandbox loopback</text>
+  <text class="b" x="64" y="277">Each thread runs in the main checkout or a worktree</text>
+  <text class="b" x="64" y="297">The preview panel shows the Booley Dashboard</text>
+
+  <path class="ln" d="M690 263 H790" marker-end="url(#f2a)"/>
+  <text class="e" x="740" y="254" text-anchor="middle">preview panel</text>
+  <rect class="bx" x="790" y="220" width="260" height="86"/>
+  <rect class="hd" x="790" y="220" width="260" height="36"/>
+  <text class="t" x="804" y="244">Booley Dashboard</text>
+  <text class="b" x="804" y="277">A page per worktree:</text>
+  <text class="b" x="804" y="297">that worktree's Jobs</text>
+
+  <path class="ln" d="M215 306 V340" marker-end="url(#f2a)"/>
+  <text class="e" x="223" y="328">starts, one per thread</text>
+
+  <!-- everything below T3 Code -->
+  <g transform="translate(0 130)">
 
   <!-- row A: sessions and worktrees -->
   <rect class="bx" x="60" y="210" width="330" height="120"/>
@@ -74,15 +101,14 @@
   <rect class="hd" x="50" y="220" width="330" height="36"/>
   <text class="t" x="64" y="244">Developer Agent sessions</text>
   <text class="b" x="64" y="282">Claude Code or Codex,</text>
-  <text class="b" x="64" y="303">one per Sandbox terminal</text>
-  <text class="s" x="64" y="327">started from T3 Code</text>
+  <text class="b" x="64" y="303">one per T3 Code thread</text>
 
   <path class="ln" d="M390 280 H430" marker-end="url(#f2a)"/>
   <text class="e" x="410" y="271" text-anchor="middle">edit</text>
   <rect class="bx" x="430" y="220" width="620" height="120"/>
   <rect class="hd" x="430" y="220" width="620" height="36"/>
   <text class="t" x="444" y="244">Project Git worktrees</text>
-  <text class="s" x="1036" y="244" text-anchor="end">main checkout + one per T3 Code thread</text>
+  <text class="s" x="1036" y="244" text-anchor="end">main checkout + T3 Code's worktrees</text>
   <text class="b" x="444" y="284">• RTL and testbenches</text>
   <text class="b" x="444" y="310">• <tspan class="k">FuseSoC .core</tspan> Targets</text>
   <text class="b" x="744" y="284">• booley.toml, hooks</text>
@@ -157,4 +183,5 @@
   <text class="t" x="918" y="1023" text-anchor="middle">Vivado on the host</text>
   <text class="s" x="918" y="1045" text-anchor="middle">granted, mounted read-only</text>
   <path class="ln" d="M918 1000 V924" marker-end="url(#f2a)"/>
+  </g>
 </svg>
