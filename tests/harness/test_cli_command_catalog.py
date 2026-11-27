@@ -11,6 +11,8 @@ import pytest
 from booley.harness import booley as cli
 from booley.harness.terminal_status import section_header
 from booley.presentation import colors
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.sandbox_venue_fake import place
 
 PUBLIC_COMMANDS: list[str] = [
     "chat",
@@ -68,7 +70,7 @@ def _grouped_rows(help_text: str) -> tuple[dict[str, list[str]], set[int]]:
 
 
 def _run_cli(monkeypatch: pytest.MonkeyPatch, capsys, *argv: str) -> str:
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr("sys.argv", ["booley", *argv])
     with pytest.raises(SystemExit) as exc:
         cli._parse_cli()
@@ -183,9 +185,7 @@ def test_command_locations_enforce_the_audited_boundary(
 ) -> None:
     for command, location in COMMAND_LOCATION_TABLE:
         for inside in (False, True):
-            monkeypatch.setattr(
-                cli.runtime_context, "inside_session_runtime", lambda inside=inside: inside
-            )
+            place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if inside else RuntimeLocation.HOST)
             monkeypatch.setattr("sys.argv", ["booley", command])
             assert cli.COMMAND_LOCATIONS[command].value == location, command
             refused = (location == "Sandbox" and not inside) or (location == "host" and inside)
