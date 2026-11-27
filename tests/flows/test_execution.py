@@ -27,22 +27,12 @@ def test_malformed_config_preserves_legacy_enabled_default(tmp_path):
         None,
         [],
         {"flows": []},
-        *({"flows": {"sim": {"enabled": value}}} for value in (None, 0, "false", {})),
         {
             "flows": {"venue": "x", "sim": {"backend": "none", "host_setup_commands": []}},
             "sandbox": {"passthrough_env": []},
         },
     ],
-    ids=[
-        "none",
-        "list",
-        "flows-list",
-        "enabled-none",
-        "enabled-0",
-        "enabled-str",
-        "enabled-map",
-        "unread-keys",
-    ],
+    ids=["none", "list", "flows-list", "unread-keys"],
 )
 def test_only_an_explicit_boolean_false_disables_a_flow(config):
     assert flow_enabled_from_config("sim", config) is True

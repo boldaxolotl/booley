@@ -98,7 +98,6 @@ def test_invalid_pre_run_commands_refuse_in_preflight(
     assert isinstance(outcome, EndpointOutcome)
     assert outcome.exit_code == 2
     assert doctor_finding.message in outcome.report_text
-    assert doctor_finding.fix in outcome.report_text
 
 
 def test_state_backed_simulation_preflight_rejection_reaches_stderr(

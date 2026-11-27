@@ -7,8 +7,9 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from booley.config import flow_knobs
 from booley.core.booley_dir import resolve_booley_dir
-from booley.core.boundary import as_dict
+from booley.core.boundary import BoundaryError, as_dict
 from booley.core.config_paths import (
     BooleyTomlError,
     main_repository_root,
@@ -19,11 +20,11 @@ from booley.targets.flow_names import config_section
 
 
 class FlowConfigError(BooleyTomlError):
-    """Project Flow configuration contains a retired execution surface."""
+    """Project Flow configuration contains a retired key or an invalid ``enabled``."""
 
 
 def flow_enabled(flow_name: str, work_dir: Path | None) -> bool:
-    """Read ``[flows.<name>].enabled`` with the existing enabled default."""
+    """Read ``[flows.<name>].enabled`` (default true); a non-boolean value raises."""
     path, cfg = _load_config(work_dir)
     try:
         return flow_enabled_from_config(flow_name, cfg)
@@ -39,16 +40,26 @@ def flow_enabled_from_config(flow_name: str, cfg: object) -> bool:
         raise FlowConfigError(migration)
     flows = as_dict(cfg.get("flows"), default={}) or {}
     section = config_section(flows, flow_name)
-    return section.get("enabled", True) is not False
+    try:
+        return flow_knobs.enabled(flow_name, section)
+    except BoundaryError as exc:
+        raise FlowConfigError(str(exc)) from exc
 
 
 def retired_config_error(raw: Mapping[str, Any]) -> str | None:
     """Return the first hard-migration error for a removed execution surface."""
+    errors = retired_config_errors(raw)
+    return errors[0] if errors else None
+
+
+def retired_config_errors(raw: Mapping[str, Any]) -> list[str]:
+    """Return every hard-migration error for removed execution surfaces, in order."""
+    errors: list[str] = []
     flows = raw.get("flows", {})
     if isinstance(flows, dict):
         for retired in ("elab", "elaborate"):
             if retired in flows:
-                return (
+                errors.append(
                     f"booley.toml [flows.{retired}] is retired; use "
                     "`booley flow sim --mode elab-only` and delete "
                     "standalone_frontend"
@@ -57,12 +68,12 @@ def retired_config_error(raw: Mapping[str, Any]) -> str | None:
             if not isinstance(section, dict):
                 continue
             if "standalone_frontend" in section:
-                return (
+                errors.append(
                     f"booley.toml [flows.{name}].standalone_frontend is retired; "
                     "delete the key — the standalone module probe now follows "
                     "each Target's simulator"
                 )
-    return None
+    return errors
 
 
 def _load_config(work_dir: Path | None) -> tuple[Path | None, dict[str, Any]]:
