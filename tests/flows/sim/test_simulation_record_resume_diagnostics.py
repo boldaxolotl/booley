@@ -3,14 +3,19 @@
 import json
 import shlex
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.record.codec import canonical_json_bytes
+from booley.flows.sim.record.codec import (
+    canonical_json_bytes,
+    decode_simulation_record_manifest,
+)
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
 from booley.flows.sim.request import SimRequest
+from tests.flows.sim.simulation_record_test_support import prerequisite_documents
 from tests.flows.sim.test_coverage_invocation import project
 
 
@@ -357,6 +362,45 @@ def test_legacy_record_resumes_only_against_an_unchanged_suite(tmp_path, monkeyp
     assert _snapshot(manifest.parent) == before
 
 
+def test_a_manifest_with_prerequisites_is_refused(tmp_path, monkeypatch):
+    reports, manifest, executions = _interrupted_simulation_record(tmp_path, monkeypatch)
+    stored = decode_simulation_record_manifest(manifest.read_bytes())
+    linked = Path("targets/sim_0@baseline/record/manifest.json")
+    (reports / "sim/1" / linked).parent.mkdir(parents=True)
+    (reports / "sim/1" / linked).write_bytes(manifest.read_bytes())
+    entries = prerequisite_documents(SimpleNamespace(manifest=stored), linked)
+    _rewrite_manifest(manifest, lambda document: document.update(prerequisites=entries))
+    before = _snapshot(manifest.parent)
+
+    result = SimulateFlow().execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports)
+    )
+
+    assert result.exit_code == 2
+    assert "start a new run" in result.outcome.report_text
+    assert len(executions) == 1
+    assert _snapshot(manifest.parent) == before
+
+
+def test_resume_dry_run_lists_the_test_runs_it_runs_again(tmp_path, monkeypatch):
+    reports, manifest, _executions = _interrupted_simulation_record(tmp_path, monkeypatch)
+
+    result = SimulateFlow().execute(
+        SimRequest(resume_from=manifest, work_dir=tmp_path, report_dir=reports, dry_run=True)
+    )
+
+    assert result.exit_code == 0
+    assert result.outcome.report_text.splitlines()[1:7] == [
+        "completed: 0",
+        "interrupted: 1",
+        "  reset@1",
+        "pending: 1",
+        "  wrap@1",
+        "mismatches: 0",
+    ]
+    assert not (reports / "sim/2").exists()
+
+
 _WORK_DIR_NOTICE = "booley: --work-dir is deprecated; use --project instead (removal after one compatibility release)\n"
 
 
@@ -369,7 +413,7 @@ def test_cli_resume_announces_validated_origin_before_execution(
     flow = SimulateFlow()
     witnessed: list[str] = []
 
-    def before_executor(**_kwargs):
+    def before_execution(*_args):
         witnessed.append(capsys.readouterr().err)
         assert witnessed == [
             _WORK_DIR_NOTICE + f"Simulation Record manifest: {manifest.resolve()}\n"
@@ -377,9 +421,11 @@ def test_cli_resume_announces_validated_origin_before_execution(
         assert manifest.is_file()
         raise RuntimeError("resume executor unavailable")
 
-    # Private seam: building the executor is the first observable point after the origin
-    # is announced.
-    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor", before_executor)
+    # Private seam: executing the first item is an observable point after the origin is
+    # announced.
+    monkeypatch.setattr(
+        "booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor.execute", before_execution
+    )
     if mode == "mismatch":
         (tmp_path / "rtl/counter.sv").write_text("module counter; wire changed; endmodule\n")
     capsys.readouterr()

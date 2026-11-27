@@ -1,7 +1,6 @@
 """Two-role Simulation Records and baseline prerequisites."""
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -235,38 +234,6 @@ def test_relative_cycle_criteria_on_two_tests_share_one_baseline_simulation_reco
     assert counters["launch"] == 2  # the shared baseline already ran; only the candidate runs
 
 
-def test_resume_authenticates_a_shared_baseline_simulation_record_once(tmp_path, monkeypatch):
-    """Resuming a candidate whose links share one baseline manifest walks it once."""
-    from types import SimpleNamespace
-
-    from booley.flows.sim.record import resume
-    from tests.flows.sim.simulation_record_test_support import _handle
-
-    baseline, _prerequisites, candidate, _counters = _shared_baseline_candidate(
-        tmp_path, monkeypatch
-    )
-    project = tmp_path / "project"
-    baseline_checkout = tmp_path / "baseline-checkout"
-    baseline_checkout.mkdir()
-    revisions = {project.resolve(): "abc123", baseline_checkout.resolve(): "baseline"}
-    monkeypatch.setattr(resume, "git_full_sha", lambda _ref, root: revisions[Path(root).resolve()])
-    monkeypatch.setattr(
-        resume.TargetCatalog,
-        "build",
-        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: _handle(project)),
-    )
-
-    validated = resume.validate_resume_manifest(
-        candidate.manifest_path,
-        project_root=project,
-        revision_root=lambda target: (
-            project if target["role"] == "candidate" else baseline_checkout
-        ),
-    )
-
-    assert [node.path for node in validated.prerequisites] == [baseline.manifest_path]
-
-
 def _prerequisite_entry(manifest_path, record_id, target, work_item_id):
     """A cycle-count baseline prerequisite link to *manifest_path* with placeholder size and digest."""
     return {
@@ -344,26 +311,19 @@ def _write_candidate_with_prerequisite(tmp_path, manifest_path):
     return path
 
 
-@pytest.mark.parametrize("walk", ["resume-walk", "pre-sim-walk"])
-def test_an_escaping_prerequisite_manifest_path_is_refused_before_use(tmp_path, walk):
-    """Decode no longer checks prerequisite paths, so each walk checks the one it opens."""
+def test_an_escaping_prerequisite_manifest_path_is_refused_before_use(tmp_path):
+    """Decode no longer checks prerequisite paths, so the walk checks the one it opens."""
     from booley.flows.sim.record import collect_pre_sim_firings
     from booley.flows.sim.record.codec import SimulationRecordIntegrityError
-    from booley.flows.sim.record.resume import validate_resume_manifest
 
     path = _write_candidate_with_prerequisite(
         tmp_path, "../outside/targets/x/record/manifest.json"
-    )
-    walk_function = (
-        collect_pre_sim_firings
-        if walk == "pre-sim-walk"
-        else lambda manifest: validate_resume_manifest(manifest, project_root=tmp_path)
     )
 
     with pytest.raises(
         SimulationRecordIntegrityError, match=r"is not targets/<Target>/record/manifest\.json"
     ):
-        walk_function(path)
+        collect_pre_sim_firings(path)
 
 
 def test_an_escaping_work_item_id_is_refused_before_use(tmp_path):

@@ -10,10 +10,10 @@ import pytest
 from booley.audit.diagnostic_results import Severity
 from booley.harness import doctor
 from booley.runtime import issuance_invalidation, session_issuance, session_runtime
+from tests.harness.doctor_environment_support import patch_doctor_environment
 from tests.harness.test_doctor import (
     _doctor_run,
     _messages,
-    _patch_environment,
     _write_project,
 )
 
@@ -24,7 +24,7 @@ def test_host_doctor_leaves_pending_sandbox_recovery_to_lifecycle_commands(
 ) -> None:
     real_up = session_runtime.up
     booley_dir = _write_project(tmp_path)
-    calls = _patch_environment(monkeypatch, tmp_path, booley_dir)
+    calls = patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     monkeypatch.setattr(doctor.session_runtime, "up", real_up)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     identity = str((tmp_path if pending_for == "this-project" else tmp_path / "other").resolve())
