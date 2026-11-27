@@ -82,7 +82,7 @@ def docker(
 
 
 def _hang_tag(docker: FakeDocker, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(  # boundary: the tag deadline; the real 30 s wait is out of reach
+    monkeypatch.setattr(  # boundary: the tag deadline (clock); no setting shortens the 30 s
         init_docker_image, "DEFAULT_IMAGE_TAG_TIMEOUT_S", 1
     )
     docker.pause_after("tag")
@@ -335,6 +335,7 @@ def test_source_fingerprint_mismatch_verdicts(
                 "v0.2.3",
                 f"Booley v{VERSION} requires sandbox image v{VERSION}",
                 "may be incompatible",
+                "docker exited 1",
             ),
             (),
             1,
@@ -438,6 +439,7 @@ def test_registry_pull_timeout(tmp_path, monkeypatch, capsys, docker, override, 
 
     output = capsys.readouterr().out
     assert "pull timed out after 1 seconds" in output
+    assert "override with BOOLEY_IMAGE_PULL_TIMEOUT" in output
     assert warning in output
 
 
