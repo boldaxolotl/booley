@@ -141,7 +141,7 @@ def _change(tmp_path: Path, *paths: str, text: str = "fixture\n") -> tuple[Path,
     return repo, base, _commit(repo, "change")
 
 
-@pytest.mark.parametrize("shard_count", [3, 4, 6, 8, 10])
+@pytest.mark.parametrize("shard_count", [4, 6, 8, 10])
 def test_windows_shard_experiment_builds_complete_matrix(shard_count: int) -> None:
     entries = build_test_matrix(shard_count, linux_shard_count=1)["include"]
     shards = [entry for entry in entries if entry["mode"] == "shard"]

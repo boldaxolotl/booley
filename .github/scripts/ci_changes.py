@@ -104,7 +104,7 @@ ALL_JOBS = (*ALWAYS_JOBS, *CONDITIONAL_JOBS)
 # README, website and documentation content that the narrow `docs-check` job
 # covers. ci_docs_tests.py derives its content-test selection from this.
 DOCUMENTATION_CATEGORIES = frozenset({"docs", "site", "readme"})
-WINDOWS_SHARD_COUNTS = (3, 4, 6, 8, 10)
+WINDOWS_SHARD_COUNTS = (4, 6, 8, 10)
 # Complete suites leave native_bwave to bwave-integration. Windows legs also run only
 # the registered OS-specific modules (tests/os_specific.py).
 SUITE_MARK_EXPRESSION = "not native_bwave"
@@ -114,8 +114,7 @@ WINDOWS_MARK_EXPRESSION = f"os_specific and {SUITE_MARK_EXPRESSION}"
 # RISC-V tooling stage instead of reusing the published image, so it must build
 # the RISC-V image even when the dispatched commit does not touch its inputs.
 RISCV_MEASUREMENT_ARMS = ("automatic", "cold")
-# Three shards of the OS-specific selection take about as long as four of the whole suite.
-DEFAULT_WINDOWS_SHARD_COUNT = 3
+DEFAULT_WINDOWS_SHARD_COUNT = 4
 # Ubuntu Python 3.11 legs: two duration-balanced shards, adopted from the
 # controlled comparison in issue #1792 (see .github/ci/README.md, "Shard counts
 # and benchmarks"). A manual run may still pick 1 (one complete-suite job) or 3. Ubuntu Python 3.14 runs the suite

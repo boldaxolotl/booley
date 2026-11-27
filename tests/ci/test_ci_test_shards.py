@@ -130,6 +130,12 @@ def test_manifest_verifier_rejects(
         verify_manifests(paths, group="windows", shard_count=2)
 
 
+def _standalone_pytest_environment() -> dict[str, str]:
+    """Drop the outer run's variables: a nested pytest would delete this xdist worker's temp."""
+    environment = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    return environment | {"PYTHONPATH": str(_ROOT / ".github/scripts")}
+
+
 def _collect_windows_shard(entry: dict[str, object], manifest: Path) -> None:
     """Collect one Windows shard leg over a registered and an unregistered module."""
     result = run_nested_pytest(
@@ -144,7 +150,7 @@ def _collect_windows_shard(entry: dict[str, object], manifest: Path) -> None:
             *("--ci-shard-manifest", str(manifest)),
         ],
         cwd=_ROOT,
-        env=os.environ | {"PYTHONPATH": str(_ROOT / ".github/scripts")},
+        env=_standalone_pytest_environment(),
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

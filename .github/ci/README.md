@@ -18,7 +18,7 @@ combination. That keeps the required gate to many short parallel jobs instead
 of a full OS-by-Python matrix:
 
 - Python 3.14 on Windows runs the registered [OS-specific](#os-specific-tests)
-  modules in three duration-balanced shards, skipping
+  modules in four duration-balanced shards, skipping
   [Sandbox-only tests](#sandbox-only-tests).
 - Python 3.14 on Ubuntu runs the complete suite under branch coverage in six
   `coverage-shards` jobs, using coverage.py's `sysmon` core (PEP 669) so one
@@ -137,7 +137,7 @@ time from both models.
 
 Manual `Tests` runs accept dispatch inputs that change the shard layout, so a
 candidate layout can be measured without a code change; `ci_changes.py` rejects
-them outside `workflow_dispatch`. The defaults (three Windows shards, two Ubuntu
+them outside `workflow_dispatch`. The defaults (four Windows shards, two Ubuntu
 3.11 shards with `loadscope`, six coverage shards) come from measured runs; the
 inputs and their allowed values are in `ci_changes.py`.
 
