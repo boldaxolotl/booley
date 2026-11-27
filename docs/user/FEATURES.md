@@ -92,8 +92,9 @@ Either way, Booley removes the manual transitions among build commands, logs,
 waveforms, and review artifacts. Less time spent on that plumbing means faster
 iterations and more opportunities to verify, refine, and optimize the design.
 
-Today the shell is T3 Code: agent sessions run in its threads, and the Booley
-Dashboard, a web page of each worktree's Jobs, opens in its preview panel.
+Today the user interface (UI) is T3 Code: agent sessions run in its threads,
+and the Booley Dashboard, a web page of each worktree's Jobs, opens in its
+preview panel.
 Native agent-supervision UI (evidence status, Flow dashboards, one-click
 review) is on the
 [roadmap](../internals/ROADMAP.md#native-ade-surface), and the long-term
