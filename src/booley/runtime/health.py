@@ -125,6 +125,7 @@ def compute_fingerprint(booley_dir: Path, project_root: Path) -> dict[str, Any]:
         fingerprint[f"root_{name}_identity"] = _path_identity(project_root / name)
     fingerprint["core_files_sha256"] = _core_digest(project_root, booley_dir)
     fingerprint["booley_version"] = booley.__version__
+    # Only this input retries: Booley writes and polls it; elsewhere an error just reports drift.
     fingerprint["upgrade_review_sha256"] = file_sha256_or_none(
         booley_dir / "runtime" / "upgrade_review.json", retry_sharing=True
     )

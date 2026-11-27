@@ -2,7 +2,8 @@
 
 A function counts when it reads a file, hashes it with ``hashlib`` (directly or
 through a same-module hasher) and returns the digest, looping over nothing but
-that file's chunks.  Loops over several paths are fingerprints, not copies.
+that file's chunks (``iter(read, b"")``, or a ``while`` that reads and opens
+nothing).  Loops over several paths are fingerprints, not copies.
 """
 
 from __future__ import annotations
@@ -17,6 +18,8 @@ import booley
 _SOURCE = Path(booley.__file__).parent
 _HELPER = _SOURCE / "core" / "file_hash.py"
 _LOOPS = (ast.For, ast.AsyncFor, ast.While, ast.comprehension)
+_HASHLIB = {"sha256", "file_digest", "new"}
+_WRITE_MODES = {"w", "wb", "a", "ab", "x", "xb"}
 
 
 def _name(node: ast.AST) -> str:
@@ -30,11 +33,13 @@ def _calls(node: ast.AST) -> list[ast.Call]:
 def _hashes(call: ast.Call, hashers: set[str]) -> bool:
     func = call.func
     if isinstance(func, ast.Attribute) and _name(func.value) == "hashlib":
-        return func.attr in {"sha256", "file_digest", "new"}
+        return func.attr in _HASHLIB
     return _name(func) in hashers
 
 
 def _reads(call: ast.Call) -> bool:
+    if any(isinstance(arg, ast.Constant) and arg.value in _WRITE_MODES for arg in call.args):
+        return False
     func = call.func
     if isinstance(func, ast.Attribute):
         return func.attr in {"read_bytes", "open"}
@@ -59,8 +64,11 @@ def _returns_digest(function: ast.AST, hashers: set[str]) -> bool:
     nodes = list(ast.walk(function))
     tainted: set[str] = set()
     for node in nodes:
-        if isinstance(node, ast.Assign) and _is_digest(node.value, tainted, hashers):
-            tainted.update(_name(target) for target in node.targets)
+        if not isinstance(node, ast.Assign | ast.AnnAssign) or node.value is None:
+            continue
+        if _is_digest(node.value, tainted, hashers):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            tainted.update(_name(target) for target in targets)
     return any(
         isinstance(node, ast.Return)
         and node.value is not None
@@ -69,14 +77,18 @@ def _returns_digest(function: ast.AST, hashers: set[str]) -> bool:
     )
 
 
+def _chunk_loop(loop: ast.AST) -> bool:
+    if isinstance(loop, ast.While):
+        calls = _calls(loop)
+        return any(
+            isinstance(call.func, ast.Attribute) and call.func.attr == "read" for call in calls
+        ) and not any(_reads(call) for call in calls)
+    assert isinstance(loop, ast.For | ast.AsyncFor | ast.comprehension)
+    return isinstance(loop.iter, ast.Call) and _name(loop.iter.func) == "iter"
+
+
 def _chunks_only(function: ast.AST) -> bool:
-    loops = [node for node in ast.walk(function) if isinstance(node, _LOOPS)]
-    return all(
-        not isinstance(loop, ast.While)
-        and isinstance(loop.iter, ast.Call)
-        and _name(loop.iter.func) == "iter"
-        for loop in loops
-    )
+    return all(_chunk_loop(node) for node in ast.walk(function) if isinstance(node, _LOOPS))
 
 
 def _file_hash_functions(source: str) -> list[str]:
@@ -84,17 +96,24 @@ def _file_hash_functions(source: str) -> list[str]:
     functions = [
         node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
     ]
+    imported = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "hashlib"
+        for alias in node.names
+        if alias.name in _HASHLIB
+    }
     hashers = {
         node.name
         for node in tree.body
         if isinstance(node, ast.FunctionDef)
-        and any(_hashes(call, set()) for call in _calls(node))
+        and any(_hashes(call, imported) for call in _calls(node))
         and _returns_digest(node, set())
     }
     return [
         f"{function.lineno} {function.name}"
         for function in functions
-        if any(_hashes(call, hashers - {function.name}) for call in _calls(function))
+        if any(_hashes(call, imported | hashers - {function.name}) for call in _calls(function))
         and any(_reads(call) for call in _calls(function))
         and _returns_digest(function, hashers - {function.name})
         and _chunks_only(function)
@@ -118,6 +137,32 @@ def _file_hash_functions(source: str) -> list[str]:
             True,
         ),
         (
+            "def f(p):\n    d = hashlib.sha256()\n    with p.open('rb') as s:\n"
+            "        while c := s.read(9):\n            d.update(c)\n"
+            "    return d.hexdigest()\n",
+            True,
+        ),
+        (
+            "from hashlib import sha256\ndef f(p):\n    return sha256(p.read_bytes()).hexdigest()\n",
+            True,
+        ),
+        (
+            "def f(p):\n    r: str = hashlib.sha256(p.read_bytes()).hexdigest()\n    return r\n",
+            True,
+        ),
+        (
+            "def f(paths):\n    d = hashlib.sha256()\n    while paths:\n"
+            "        with paths.pop().open('rb') as s:\n            d.update(s.read())\n"
+            "    return d.hexdigest()\n",
+            False,
+        ),
+        (
+            "def f(response, p):\n    d = hashlib.sha256()\n    with p.open('wb') as o:\n"
+            "        while c := response.read(9):\n            d.update(c)\n"
+            "            o.write(c)\n    return d.hexdigest()\n",
+            False,
+        ),
+        (
             "def f(paths):\n    d = hashlib.sha256()\n    for p in paths:\n"
             "        d.update(p.read_bytes())\n    return d.hexdigest()\n",
             False,
@@ -130,7 +175,21 @@ def _file_hash_functions(source: str) -> list[str]:
         ),
         (_HELPER, True),  # the scan sees the real thing, not only these snippets
     ],
-    ids=["read", "chunks", "assigned", "local-hasher", "paths", "bytes", "excerpt", "helper"],
+    ids=[
+        "read",
+        "chunks",
+        "assigned",
+        "local-hasher",
+        "while-chunks",
+        "imported",
+        "annotated",
+        "while-paths",
+        "download",
+        "paths",
+        "bytes",
+        "excerpt",
+        "helper",
+    ],
 )
 def test_scan_flags_a_file_hash_function_and_not_a_fingerprint(
     source: str | Path, flagged: bool

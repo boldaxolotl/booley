@@ -316,8 +316,8 @@ Write the smallest change that fully solves the stated problem. Every line
 traces to an acceptance criterion or a demonstrated failure; "it might happen"
 is not a reason. Before adding code, delete or reuse what exists.
 Hash one file by path with `booley.core.file_hash` (`file_sha256`,
-`file_sha256_or_none`, `file_sha256_and_size`); a ratchet test fails on a
-new copy.
+`file_sha256_or_none`, `file_sha256_and_size`); a ratchet test catches the
+common forms of a new file-hash function.
 
 These are bloat. Do not write them:
 

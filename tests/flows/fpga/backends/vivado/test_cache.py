@@ -336,7 +336,7 @@ def test_reachable_file_unreadable_is_keyed_as_missing(
     without_file = fpga_cache.input_fingerprint(
         resolved, {}, out_of_context=False, reachable_dirs=(empty,)
     )
-    # Private: no portable file is listed as a regular file yet fails to open
+    # No portable file is listed as a regular file yet fails to open
     # (root and Windows ignore a chmod 000), so the one hashing call is replaced.
     real_hash = fpga_cache.file_sha256_and_size
 

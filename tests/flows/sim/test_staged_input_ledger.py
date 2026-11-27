@@ -231,6 +231,7 @@ def test_an_unreadable_object_keeps_its_entry(case: _Case, monkeypatch) -> None:
     def unreadable(_path: Path) -> str:
         raise PermissionError("denied")
 
+    # No portable file is unreadable to the sweep (root and Windows ignore chmod 000).
     monkeypatch.setattr(staged_input_ledger, "file_sha256", unreadable)
     retained = sweep_cancelled_run_inputs(case.booley)
 
@@ -281,6 +282,7 @@ def test_an_object_replaced_while_it_was_hashed_is_not_deleted(case: _Case, monk
         successor.replace(path)  # a new inode: the old one is only freed afterwards
         return digest
 
+    # No public hook runs between the sweep's hash and its unlink.
     monkeypatch.setattr(staged_input_ledger, "file_sha256", replacing)
     sweep_cancelled_run_inputs(case.booley)
 
