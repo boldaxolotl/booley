@@ -356,7 +356,10 @@ def main(argv: list[str] | None = None) -> int:
     except subprocess.CalledProcessError as error:
         print(f"error: {error.stderr.decode('utf-8', errors='replace')}", file=sys.stderr)
         return 2
-    except (ValueError, SyntaxError) as error:
+    except SyntaxError as error:
+        print(f"error: {error.filename}:{error.lineno}: {error.msg}", file=sys.stderr)
+        return 2
+    except ValueError as error:
         print(f"error: {error}", file=sys.stderr)
         return 2
     if message:

@@ -189,7 +189,7 @@ def test_exemption_label_decides_each_run(
 @pytest.mark.parametrize(
     ("text", "base_override", "named"),
     [
-        pytest.param("def broken(:\n", None, "test_broken.py", id="unparsable-file"),
+        pytest.param("def broken(:\n", None, "tests/test_broken.py:1:", id="unparsable-file"),
         pytest.param("x = 1\n", "no-such-revision", "no-such-revision", id="git-failure"),
     ],
 )
