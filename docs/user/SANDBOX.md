@@ -68,8 +68,7 @@ UI, but it doesn't stop one that already runs: run `session down` first.
 T3 Code lists the Project under its `[project].name` from
 [`booley.toml`](CONFIG.md#booleytoml). Booley sets that name again each time
 the Sandbox starts, so a name you give the Project in T3 Code lasts only until
-then. Without `[project].name`, Booley leaves the name alone, and T3 Code
-names a Project it has not seen before `work`.
+then.
 
 `session enter` works like a terminal inside the container, so every
 in-Sandbox command works through it. Ending a `session enter` command, with
