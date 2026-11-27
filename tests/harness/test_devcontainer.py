@@ -592,7 +592,7 @@ class TestConfigSeed:
         seed = next(m for m in spec["mounts"] if "claude-config-seed" in m)
         assert f"target={dc.AGENT_HOME}/.claude/" not in seed
 
-    def test_state_volume_still_last_with_seed(self):
+    def test_state_volumes_follow_seeds(self):
         # Ordering contract: the persisted state volumes stay after the seeds,
         # the CLI's first, then T3 Code's.
         spec = build_spec(

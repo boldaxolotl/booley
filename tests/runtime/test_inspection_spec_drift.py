@@ -471,6 +471,19 @@ def test_missing_state_volume_reports_lost_transcripts(
     )
 
 
+def test_missing_t3_volume_reports_lost_threads_not_transcripts(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _seed(project, dc.APP_CLAUDE)
+    spec["mounts"] = [m for m in spec["mounts"] if "target=/home/agent/.t3," not in m]
+    _write(project, spec)
+
+    finding = _drift(_inspect(project, monkeypatch, expected_spec=_host(project)))
+
+    assert "no persistent volume for T3 Code's state" in finding.message
+    assert "transcripts" not in finding.message
+
+
 def test_long_diff_is_capped(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     spec = _seed(project, dc.APP_CLAUDE)
     _vscode(spec)["settings"].update({f"extra.setting{index}": index for index in range(30)})

@@ -402,14 +402,20 @@ def _report_drift(
     spec: dict,
     differences: list[str],
 ) -> None:
-    """Warn with the capped diff, naming the lost agent home-state volume when it is missing."""
+    """Warn with the capped diff, naming what is lost when a state volume is missing."""
     header = (
         "devcontainer.json differs from the spec `booley init` would write (- on disk, + expected)"
     )
-    if dc.spec_volume_targets(rebuilt) - dc.spec_volume_targets(spec):
+    missing = dc.spec_volume_targets(rebuilt) - dc.spec_volume_targets(spec)
+    if missing - {sandbox_layout.T3_BASE_DIR}:
         header += (
             "; no persistent volume for the agent's home-state - in-container "
             "transcripts/plans are lost on every rebuild"
+        )
+    elif missing:
+        header += (
+            "; no persistent volume for T3 Code's state - its threads and browser "
+            "pairings are lost on every rebuild"
         )
     shown = differences[:_MAX_DIFF_LINES]
     if len(differences) > len(shown):
