@@ -712,6 +712,7 @@ def test_check_only_missing_sidecar_images_and_containers_are_pending(
         ("network", ("network", "inspect", _NETWORK)),
         ("proxy", ("container", "inspect", _PROXY)),
     ],
+    ids=["proxy-image", "reaper-image", "network", "proxy"],
 )
 def test_check_only_continues_after_sidecar_error(monkeypatch, tmp_path, capsys, resource, call):
     from tests.harness.test_bootstrap import (
