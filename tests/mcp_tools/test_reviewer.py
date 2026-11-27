@@ -14,6 +14,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.specialists.reviewer import (
     REVIEW_GUIDES,
     RTL_FOCUS_CATEGORIES,
@@ -36,6 +37,7 @@ from tests.mcp_tools.reviewer_support import (
     issue,
     run_review,
 )
+from tests.sandbox_venue_fake import place
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -1557,7 +1559,6 @@ def test_unbound_done_findings_do_not_claim_goal_approval(
     agent: ScriptedAgent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: bool
 ) -> None:
     from booley.flows.cli_selection import CliInvocation
-    from booley.runtime import runtime_context
     from booley.runtime.booley_dir import reset_cache
 
     directory = tmp_path / ".booley"
@@ -1565,7 +1566,7 @@ def test_unbound_done_findings_do_not_claim_goal_approval(
     (directory / "booley.toml").write_text("[project]\n", encoding="utf-8")
     monkeypatch.setenv("BOOLEY_DIR", str(directory))
     reset_cache()
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     agent.answer({"issues": [finding(severity="CRITICAL")]})
     argv = ["--work-dir", str(tmp_path), *BUGS]
     for _ in range(2):

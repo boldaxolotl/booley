@@ -28,8 +28,10 @@ import pytest
 from booley.bwave import vaporview_bridge as bwave_bridge
 from booley.core.host_shell import quote_arg
 from booley.runtime import vaporview
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.bwave.session_store_support import isolate_temporary_store
 from tests.conftest import MINIMAL_FST_BYTES
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import scaled
 
@@ -2166,7 +2168,7 @@ def test_open_is_gone_and_says_so(monkeypatch, capsys):
     """`open` must not fall through to the query translator and die about globs."""
     from booley.bwave import cli as bwave
 
-    monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setattr(sys, "argv", ["bwave", "open", "@dut", "-s", "tb.dut.fifo.*"])
 
     with pytest.raises(SystemExit) as exc:
@@ -2186,7 +2188,7 @@ def test_gui_is_container_only(monkeypatch, capsys):
     """Shared guard, but `open` is the most human-facing verb — pin it."""
     from booley.bwave import cli as bwave
 
-    monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(sys, "argv", ["bwave", "gui"])
 
     with pytest.raises(SystemExit) as exc:

@@ -17,6 +17,7 @@ from tests.docker_cli_guard import (
 )
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.harness.session_docker_fake import SandboxDocker, completed, route_docker_commands
+from tests.sandbox_venue_fake import place
 from tests.sharing_error_support import hold_opens
 from tests.subprocess_budget import run_bounded_child
 
@@ -31,13 +32,13 @@ from booley.runtime import (
     auth_token,
     inspection,
     project_image,
-    runtime_context,
     session_admission,
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import host_docker as idk
 from booley.runtime import session_issuance as runtime_spec
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import Attachment
 
 
@@ -58,7 +59,7 @@ def _isolate_active_inventory(monkeypatch):
 @pytest.fixture(autouse=True)
 def _host_side(monkeypatch, fake_sandbox_attachment):
     """Inspect as the host does, with an unknown Sandbox owner; in-runtime tests override it."""
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
 
 
 project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
@@ -186,7 +187,7 @@ def test_host_doctor_accepts_vscode_managed_runtime_state(live_sandbox) -> None:
 def test_in_runtime_doctor_does_not_require_vivado_for_disabled_fpga(
     tmp_path, monkeypatch
 ) -> None:
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     _isolate_runtime_files(monkeypatch)
     request = inspection.RuntimeInspectionRequest(
         tmp_path, "image", None, eda={"vivado": EdaConfig("vivado", "host")}, fpga_enabled=False

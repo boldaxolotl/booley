@@ -224,14 +224,11 @@ def test_doctor_grades_an_exported_key_under_the_policy(
 ):
     """Under subscription the key never reaches the agents, so it cannot count as the
     rotation-free credential (an accepted NOTE, no WARN); the visitor mode accepts it."""
-    from booley.runtime import runtime_context
 
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
     pin_venue(monkeypatch, inside=inside)
-    # Pin the venue: a Sandbox without a seed sidecar reports a different NOTE.
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: inside)
     install_agent_clis(Path.home())
 
     findings = credential_findings(

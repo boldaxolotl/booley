@@ -21,10 +21,12 @@ from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.flows.base import SubprocessResult
 from booley.flows.fpga.vivado_startup import inspect_vivado_startup
 from booley.flows.runtime_reality import FlowRuntimeInspectionRequest
-from booley.runtime import runtime_context, session_runtime
+from booley.runtime import session_runtime
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import Attachment
 from tests.canned_process_support import canned_command
 from tests.runtime.test_sandbox_remedy_workflows import VSCODE_INIT
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import scaled
 
@@ -154,7 +156,7 @@ _REMEDY = VSCODE_INIT + ", then retry"
 def test_sandbox_failure_is_a_finding(tmp_path, monkeypatch, error, finding):
     # The remedy is the host's: tell the host from the Sandbox, and answer the Docker
     # inventory that names how the Project's Sandbox is entered.
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE)
 
     def failing_builder(_argv):

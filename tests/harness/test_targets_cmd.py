@@ -12,7 +12,9 @@ import pytest
 from booley.fusesoc import fusesoc_registry
 from booley.harness import booley as tlr
 from booley.presentation import colors
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.fusesoc_test_support import INHERITED_CORE_TEXT
+from tests.sandbox_venue_fake import place
 
 _CORE = textwrap.dedent(
     """\
@@ -314,7 +316,7 @@ class TestTargetsDetail:
         def failing_resolve(*args, **kwargs):
             raise fusesoc_registry.TargetResolutionError("could not invoke fusesoc")
 
-        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+        place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
         monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", failing_resolve)
         assert _run(project, "sim") == 0
         out = capsys.readouterr().out
@@ -330,7 +332,7 @@ class TestTargetsDetail:
             raise fusesoc_registry.TargetResolutionError("no fusesoc")
 
         monkeypatch.setattr(colors, "COLORS_ENABLED", True)
-        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+        place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
         monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", failing_resolve)
 
         assert _run(project, "synth") == 0
@@ -357,7 +359,7 @@ class TestTargetsDetail:
             edam_path=project / "build/demo.eda.yml",
         )
         monkeypatch.setattr(colors, "COLORS_ENABLED", True)
-        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+        place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
         monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", lambda *_a, **_k: resolved)
 
         assert _run(project, "sim") == 0
@@ -369,7 +371,7 @@ class TestTargetsDetail:
         def failing_resolve(*args, **kwargs):
             raise fusesoc_registry.TargetResolutionError("no fusesoc")
 
-        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+        place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
         monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", failing_resolve)
         assert _run(project, "sim", "--json") == 0
         payload = json.loads(capsys.readouterr().out)
@@ -383,7 +385,7 @@ class TestTargetsDetail:
         def unexpected_resolve(*args, **kwargs):
             raise AssertionError("host detail must not invoke fusesoc")
 
-        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
+        place(monkeypatch, RuntimeLocation.HOST)
         monkeypatch.setattr(fusesoc_registry, "resolve_target_handle", unexpected_resolve)
 
         assert _run(project, "sim", "--json") == 0
@@ -395,7 +397,7 @@ class TestTargetsDetail:
         )
 
     def test_host_detail_text_points_to_runtime(self, project: Path, capsys, monkeypatch):
-        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
+        place(monkeypatch, RuntimeLocation.HOST)
 
         assert _run(project, "sim") == 0
         out = capsys.readouterr().out

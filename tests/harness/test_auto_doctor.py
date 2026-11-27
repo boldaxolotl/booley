@@ -27,8 +27,10 @@ from booley.runtime import (
     vaporview,
 )
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.sandbox_venue_fake import place
 from tests.time_budget import hang_guard_s
 
 
@@ -570,9 +572,7 @@ def _publish_with_real_bridge_check(
             counts=reporter.counts, findings=tuple(reporter.findings or ()), exit_code=0
         )
 
-    from booley.runtime import runtime_context
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setattr(vaporview.subprocess, "run", probe_run)
     monkeypatch.setattr(doctor, "run_doctor_result", run_doctor)
     return auto_doctor._execute(project_root, booley_dir, "session-start")
