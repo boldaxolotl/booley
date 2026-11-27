@@ -1042,8 +1042,8 @@ def test_check_only_scaffold_reports_prospective_greenfield_route(repo, monkeypa
     assert "After applying the scaffold" in output, "planned scaffold needs prospective advice"
     assert "/booley-setup new` in your agent chat here on the host" in output
     advice = output[output.index("After applying the scaffold") :]
-    assert advice.index("/booley-setup new") < advice.index("Reopen in Container")
-    assert 'choose "Reopen in Container"' not in output
+    assert advice.index("/booley-setup new") < advice.index("booley session up")
+    assert "Reopen in Container" not in output
     assert "Scaffolded starter project" not in output
     assert "plan phase, here on the host" not in output
     assert "Checked initialization: pending or unresolved" in output.splitlines()[-1]
@@ -1482,7 +1482,7 @@ EXPECTED_FRESH_INIT = (
         "worktree link policy",
         "line endings",
         "guidance links",
-        "Sandbox (Reopen in Container)",
+        "Sandbox",
         "Project Inventory",
         "post-setup advisories",
     ],
@@ -1516,7 +1516,7 @@ EXPECTED_RERUN_INIT = (
         "worktree link policy",
         "line endings",
         "guidance links",
-        "Sandbox (Reopen in Container)",
+        "Sandbox",
         "Project Inventory",
         "post-setup advisories",
     ],

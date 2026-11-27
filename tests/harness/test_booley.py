@@ -85,14 +85,23 @@ def test_parser_reads_command_flags(argv, expected, monkeypatch):
     assert {key: args.get(key, "absent") for key in expected} == expected
 
 
-def test_bare_booley_in_the_sandbox_prints_help(monkeypatch, capsys):
-    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+@pytest.mark.parametrize("inside", [True, False])
+def test_bare_booley_prints_help_and_the_host_gets_started(inside, monkeypatch, capsys):
+    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: inside)
     with pytest.raises(SystemExit) as raised:
         _parse_argv(monkeypatch)
     assert raised.value.code == 0
     out = capsys.readouterr().out
     assert "usage: booley" in out
-    assert "Getting started" not in out
+    assert ("Getting started" in out) is not inside
+    assert ("booley session up" in out and "T3 Code thread" in out) is not inside
+    assert "devcontainer" not in out
+
+
+def test_session_enter_help_names_the_t3_code_terminal(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        _parse_argv(monkeypatch, "session", "-h")
+    assert "in T3 Code, use a thread's terminal" in " ".join(capsys.readouterr().out.split())
 
 
 @pytest.mark.parametrize(
@@ -630,7 +639,7 @@ class TestEnforceVenue:
         err = capsys.readouterr().err
         assert f"booley {command}" in err
         assert "Sandbox" in err
-        assert "Reopen in Container" in err  # names the fix, not just the rule
+        assert "booley session up" in err  # names the fix, not just the rule
 
     @pytest.mark.parametrize("command", ["dashboard", "worktree", "flow", "specialist"])
     def test_container_only_command_allowed_in_container(self, command, monkeypatch):

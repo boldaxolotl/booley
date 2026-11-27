@@ -174,14 +174,11 @@ def container_only_error(what: str) -> str | None:
     if inside_session_runtime():
         return None
     return (
-        f"ERROR: `{what}` runs inside the Booley Sandbox "
-        f"(the project's devcontainer), not on the host.\n\n"
-        f'  Open the project in VS Code and accept "Reopen in Container", '
-        f"then run this\n"
-        f"  command in the integrated terminal. Or enter the Sandbox "
-        f"from the host:\n"
+        f"ERROR: `{what}` runs inside the Booley Sandbox, not on the host.\n\n"
+        f"  Run `booley session up` on the host, open the pairing link it prints, and\n"
+        f"  run this command in a T3 Code thread's terminal. From a host shell, use:\n"
         f"      booley session enter -- {what}\n\n"
-        f"  See `booley session enter --help` for Sandbox entry options, "
+        f"  See `booley session --help` for Sandbox entry options, "
         f"`booley --help` for public commands,\n"
         f"  and `booley cheat --skills` for guided agent workflows."
     )

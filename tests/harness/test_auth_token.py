@@ -639,6 +639,7 @@ class TestClaudeMintLocation:
         output = capsys.readouterr().out
         assert " ".join(output.split()).count(UNKNOWN_SANDBOX_STEPS) == 1
         assert f"{app} Projects with auth={policy} use this stored credential." in output
+        assert "booley session up" in " ".join(output.split()) and "VS Code" not in output
         assert [line.strip() for line in output.splitlines() if "revoke" in line] == [
             "In those Projects it does not refresh, so a host-side login can no longer "
             "revoke a running agent."

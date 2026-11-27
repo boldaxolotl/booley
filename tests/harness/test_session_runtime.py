@@ -2307,6 +2307,8 @@ class TestT3CodeRelay:
         status, _ = relay_cli.run(["status"], workspace)
 
         assert "pair#token" not in no_ui
+        assert "T3 Code thread" in up and "T3 Code thread" not in no_ui
+        assert "booley session enter" in no_ui
         assert all("t3:off dashboard:off" in run for run in runs[:2])  # create and start hook
         assert off == "running\nUI: off\nDashboard: off\n"
         assert len(t3.served) == len(t3.dashboards) == 1

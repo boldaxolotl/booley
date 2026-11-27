@@ -3532,9 +3532,12 @@ def test_host_agent_session(app, tmp_path, monkeypatch):
             app,
             "Project Setup",
             "booley_status",
-            "booley session up && booley session enter",
+            "booley session up",
+            "pairing link",
+            "T3 Code thread",
         ):
             assert fragment in finding.message
+        assert "Reopen in Container" not in finding.message
 
 
 _CUSTOM_FLOW = (
