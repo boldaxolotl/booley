@@ -6619,3 +6619,21 @@ def test_doctor_skips_the_t3_code_checks_it_cannot_run(
         monkeypatch.setattr(doctor.idk, "image_exists", lambda *_a, **_kw: False)
 
     assert f"T3 Code {skipped}" in _messages(_doctor_run(tmp_path), Severity.SKIP)
+
+
+def test_doctor_reports_a_t3_version_command_that_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _runtime_setup(tmp_path, monkeypatch, inside=False)
+
+    def time_out(cmd: list[str]) -> bool:
+        if cmd[-2:] == ["t3", "--version"]:
+            raise subprocess.TimeoutExpired(cmd, 30)
+        return False
+
+    _answer_command(monkeypatch, time_out)
+
+    failures = _messages(_doctor_run(tmp_path), Severity.FAIL)
+
+    (message,) = [m for m in failures if m.startswith("T3 Code")]
+    assert "installed check failed: t3 --version could not run: " in message
