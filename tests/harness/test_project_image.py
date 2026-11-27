@@ -100,7 +100,10 @@ class TestConsolidate:
             "git+https://github.com/x/y.git@v1\n",  # remote VCS is bakeable
             encoding="utf-8",
         )
-        body, kept, skipped, _ = pi.consolidated_requirements(tmp_path, [a])
+        all_local = tmp_path / "all-local.txt"
+        all_local.write_text("./only-local\n", encoding="utf-8")
+        body, kept, skipped, _ = pi.consolidated_requirements(tmp_path, [a, all_local])
+        assert "# from all-local.txt" not in body  # nothing of it is baked
         assert "alpha-pkg==1.2.3" in kept
         assert "git+https://github.com/x/y.git@v1" in kept
         assert "localpkg @ file:../ext/localpkg" in skipped
