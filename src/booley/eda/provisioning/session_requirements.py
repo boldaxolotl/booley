@@ -9,11 +9,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 
 from booley.config.eda import PROVISIONING_HOST, EdaConfig, EdaConfigError
+from booley.core import docker_cli
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.configuration import load_eda_config
 from booley.eda.provisioning.licensing.flexnet_docker import (
     RelayDockerError,
-    Runner,
     ensure_relay_image,
     resolve_relay_image_id,
     resources_for_session,
@@ -103,7 +103,7 @@ def _load_vivado_config(project: Path) -> EdaConfig | None:
 
 
 def with_relay_identity(
-    requirements: SessionEdaRequirements, *, runner: Runner
+    requirements: SessionEdaRequirements, *, runner: docker_cli.Runner
 ) -> SessionEdaRequirements:
     """Add the immutable relay image ID to licensed requirements; never builds or pulls."""
     if requirements.license_profile is None:
@@ -114,7 +114,7 @@ def with_relay_identity(
 def prepare_runtime_dependencies(
     requirements: SessionEdaRequirements,
     *,
-    runner: Runner,
+    runner: docker_cli.Runner,
     force_relay: bool = False,
 ) -> SessionEdaRequirements:
     """Prepare mutable dependencies after a caller validates one leased value."""
@@ -205,7 +205,7 @@ def _optional_license(project: Path) -> authority.LicenseProfile | None:
         raise SessionRequirementsError(str(exc)) from exc
 
 
-def _relay_image_id(runner: Runner) -> str:
+def _relay_image_id(runner: docker_cli.Runner) -> str:
     try:
         return resolve_relay_image_id(runner=runner)
     except RelayDockerError as exc:
