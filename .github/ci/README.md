@@ -136,8 +136,8 @@ inputs and their allowed values are in `ci_changes.py`.
 The merge queue retries nothing, so one rare test failure would eject a PR or
 batch. The pytest steps of the `docs-check`, `test`, and `coverage-shards` jobs
 therefore run through `.github/scripts/ci_pytest_rerun.py`; other jobs do not
-rerun. When a run ends with test failures or errors (a timeout-headroom overrun
-is one), it reruns only the failed test ids once, in a separate serial pytest
+rerun. When a run ends with test failures or errors, it reruns only the failed
+test ids once, in a separate serial pytest
 process (`-n 0`, no shard options). The rerun keeps the mark expression,
 per-test timeout, and time scale. The job passes when every rerun passes, or
 when only [quarantined](#quarantine-of-flaky-tests) tests fail again.
@@ -247,6 +247,12 @@ set 2 and run `--timeout=120`. Across the 161 tests that both the Windows and
 Linux timing models contain, the Windows to Linux time ratio has
 median 1.06, 90th percentile 1.55, and 95th percentile 2.12, so a factor of 2
 covers the usual Windows tail. Ubuntu legs keep factor 1 and `--timeout=60`.
+
+The Windows legs also pass `--timeout-headroom-warn=0.5`: a passing test that
+uses more than half its per-test timeout is reported in the step log, as a
+warning annotation, and in `junit.xml`, and still passes. It only warns so that
+runner noise does not fail unrelated pull requests; the per-test timeout is the
+hard limit.
 
 The per-test limit must stay at least twice the hang guard, and at least 60 s:
 after a guard expires the helper still kills the process tree and drains its

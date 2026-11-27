@@ -264,7 +264,7 @@ def require_symlinks(tmp_path: Path) -> None:
 # worker with no traceback, so size N by the rule in ``tests/timeout_headroom.py``
 # (3x the slowest Windows CI duration, from the ``time`` values in the
 # ``junit-windows-*`` and ``full-junit-windows-latest-*`` artifacts). The Windows
-# legs fail a passing test that uses more than 80% of its budget.
+# legs warn above 50% of the budget; the budget itself is the hard limit.
 _DEFAULT_TEST_TIMEOUT_S = 120
 _XDIST_WORKER_TEMP: Path | None = None
 
