@@ -2636,6 +2636,8 @@ def create_pairing_link(container: str, port: int) -> PairingLink:
             f"T3 Code gave no pairing link in {_PAIRING_TIMEOUT_S} seconds"
         ) from None
     if result.returncode:
+        if _last_line(result.stdout) == incontainer_setup.T3_PORT_TAKEN:
+            raise SessionError(f"T3 Code is off: {incontainer_setup.T3_PORT_TAKEN_MESSAGE}")
         raise SessionError(f"t3 auth pairing create failed (exit {result.returncode})")
     try:
         url = require_str(require_dict(json.loads(_last_line(result.stdout))), "pairUrl")
@@ -2680,6 +2682,8 @@ def ui_status(workspace: Path) -> str | None:
         relay = "unknown"
     if t3_state == "off" and relay == "off":
         return "UI: off"
+    if t3_state == incontainer_setup.T3_PORT_TAKEN:
+        t3_state = f"off ({incontainer_setup.T3_PORT_TAKEN_MESSAGE})"
     return f"T3 Code: {t3_state}\nT3 Code relay: {relay}"
 
 
