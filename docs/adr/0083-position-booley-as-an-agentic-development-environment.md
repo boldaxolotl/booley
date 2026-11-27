@@ -89,6 +89,6 @@ stand.
 T3 Code replaces VS Code as Booley's user interface (UI)
 ([ADR 0093](0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md)): the
 browser app that holds Developer Agent sessions as threads, their terminals,
-and the Booley Dashboard. It replaces the Decision's sentence on VS Code and
-is described as Booley's UI, not as the product. The ADE positioning, the
-tagline, and everything else in this ADR stand.
+and the Booley Dashboard. This replaces the Decision's sentence on VS Code.
+T3 Code is described as Booley's UI, not as the product. The ADE positioning,
+the tagline, and everything else in this ADR stand.

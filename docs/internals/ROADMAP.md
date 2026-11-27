@@ -267,15 +267,14 @@ metric. Losing candidates stay until the user deletes them in T3 Code or with
 
 ## Notifications
 
-**Planned.** Agent sessions and slow Booley Flows run for hours. T3 Code
-notifies about sessions: with notifications turned on in its settings and
-allowed by the browser, it shows one when a thread finishes, fails, or needs
-an approval or input while its tab is open but not in focus. Booley sends no
-notice of its own, so a Flow Job that
-finishes or fails goes unnoticed until the user looks. Booley should push a
-short notice to the desktop, a phone, or email when a long Flow Job finishes
-or fails, and when a session waits for the user, stops, or crashes while T3
-Code is closed.
+**Planned.** Agent sessions and slow Booley Flows run for hours. While T3 Code
+is open, it can notify when a thread finishes, fails, or needs an approval or
+input, once turned on in its settings: in the app for a thread the user is not
+viewing, or on the desktop when its tab is not in focus and the browser allows
+it. Booley sends no notice of its own, so a Flow Job's own finish or failure
+raises none. Booley should push a short notice to the desktop, a phone, or
+email when a long Flow Job finishes or fails, and when a session waits for the
+user, stops, or crashes while T3 Code is closed.
 
 The hard part is security. A notification service is a path out of the
 Sandbox, and the Sandbox must not gain one, so push services such as ntfy.sh
@@ -297,13 +296,15 @@ agent:
 **Planned.** Booley is an agentic development environment (ADE), and T3 Code
 is its user interface: each Developer Agent session is a T3 Code thread with
 its own terminals, and the [Booley Dashboard](../GLOSSARY.md), a web page of
-each worktree's Jobs in T3 Code's preview panel, shows what runs and links
-each finished Job's report. Still missing is UI for supervising agents rather
-than editing code:
+each worktree's Jobs in T3 Code's preview panel, shows what runs and links the
+reports of finished Flow and Specialist Jobs. Still missing is UI for
+supervising agents rather than editing code:
 
-- One-click waveform opening from a result. Booley has no waveform viewer of
-  its own: `bwave gui` fails with a message.
-- Views for Measurement Reports and Review Runs.
+- One-click waveform opening from a result. Booley has no
+  [Waveform Viewer](../../crates/bwave/GLOSSARY.md) of its own: `bwave gui`
+  fails with a message.
+- Views for [Measurement Reports](../GLOSSARY.md) and
+  [Review Runs](../GLOSSARY.md).
 
 The end state is Booley as a **standalone ADE**: an app built around running
 and reviewing Developer Agent sessions, with the editor as one pane among
