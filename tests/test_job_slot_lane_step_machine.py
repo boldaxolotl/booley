@@ -1399,7 +1399,11 @@ def test_reaping_a_terminal_lane_token_is_not_a_lost_lease(
     machine.scheduler.finish(reap)
     assert [c["execution_id"] for c in _execution_claims(machine)] == [_PARENT_EXECUTION]
     _tick(machine, lane)
-    machine.supervise(run)
+    supervisor = run.worker
+    assert supervisor is not None
+    machine.scheduler.grant(supervisor)  # one pass, up to its end or a lock the lane holds
+    while supervisor.pending is not None and supervisor.pending[0] not in LOCK_WAIT_KINDS:
+        machine.scheduler.grant(supervisor)
     machine.run_lanes(run, lambda: lane.ended)
     _end_run(machine, run)
     assert run.error is None
