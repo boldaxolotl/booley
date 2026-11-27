@@ -261,14 +261,16 @@ class SimulationRecordResumeMixin:
     def _frozen_test_run_options(
         self, manifest: SimulationRecordManifest, selector: str
     ) -> str | None:
-        """``--test`` options that repeat the record's Test Runs in a new run.
+        """``--test``/``--seed`` options that repeat the record's Test Runs in a new run.
 
         None when the manifest's Test Runs cannot be read.  Empty when the
-        frozen Test Runs are the Target's whole default suite: the plain
+        frozen Test Runs are the Target's whole default suite, in its order
+        (a coverage record, planned sorted by Test, ignores order): the plain
         selection then resolves to the same runs.  Any other record (a subset,
-        a Test Variant, a pinned or drawn seed, a default that has since
-        changed) is named run by run, so a new run draws and resolves nothing
-        again.
+        a reordering, a Test Variant, a pinned or drawn seed, a default that
+        has since changed) is named run by run, so a new run draws no seed
+        again.  The unnamed invocation is named by ``--seed``, or by nothing
+        without a seed.
         """
         try:
             runs = [run for group in _manifest_run_groups(manifest) for run in group]
@@ -276,16 +278,25 @@ class SimulationRecordResumeMixin:
             return None
         try:
             defaults = self._target_test_plan(selector).default_runs()
-            whole_suite = sorted(runs, key=lambda run: run.name) == sorted(
-                defaults, key=lambda run: run.name
-            )
+            if SimulationRecordManifestView(manifest).is_coverage:
+                whole_suite = sorted(runs, key=lambda run: run.name) == sorted(
+                    defaults, key=lambda run: run.name
+                )
+            else:
+                whole_suite = tuple(runs) == defaults
         except (fusesoc_registry.FuseSocError, ValueError):
             # Nothing shows the frozen runs are the default suite, so the command
             # names each of them (test_test_run_resolution_errors).
             whole_suite = False
         if whole_suite:
             return ""
-        return "".join(f" {shlex.quote(f'--test={run.name}')}" for run in runs)
+        options: list[str] = []
+        for run in runs:
+            if run.test is not None:
+                options.append(f" {shlex.quote(f'--test={run.name}')}")
+            elif run.seed is not None:
+                options.append(f" --seed {run.seed}")
+        return "".join(options)
 
     def _resume_simulation_record(
         self, validated: ValidatedResumeManifest
