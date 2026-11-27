@@ -29,14 +29,14 @@ from tests.harness.doctor_host_support import (
     raise_child_peak_rss,
     serve_healthy_doctor_host,
 )
-from tests.harness.git_support import git_stdout
-from tests.harness.test_doctor import (
-    _doctor_run,
-    _git_init,
-    _runtime_setup,
-    _seed_sandbox_files,
-    _write_project,
+from tests.harness.doctor_run_support import (
+    git_init,
+    run_doctor,
+    runtime_setup,
+    seed_sandbox_files,
+    write_project,
 )
+from tests.harness.git_support import git_stdout
 from tests.harness.test_doctor_selftest_builtin import _write_sim_bad_report
 
 
@@ -63,7 +63,6 @@ def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host, sim=""):
 
     from booley.harness.setup.readiness import ProjectAudit
     from tests.conftest import require_symlinks, symlink_or_skip
-    from tests.harness.test_doctor import _git_init
 
     require_symlinks(tmp_path)
     data = tmp_path / "external-project-data"
@@ -85,8 +84,8 @@ def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host, sim=""):
     bad.mkdir(parents=True)
     (bad / "tb.sv").write_text("module tb; // BAD\nendmodule\n")
     shutil.copytree(data, flow_project / ".booley", dirs_exist_ok=True)
-    _git_init(flow_project)
-    _git_init(data)
+    git_init(flow_project)
+    git_init(data)
     audit = ProjectAudit(flow_project, data, tomllib.loads(config.read_text()), "sim")
     monkeypatch.setattr(doctor.dc, "BOOLEY_DIR_TARGET", str(alias))
     from tests.runtime.test_sandbox_layout import configure_project_alias
@@ -275,7 +274,7 @@ def _assert_doctor_runs_write_no_history(monkeypatch, launches) -> None:
 
 
 def _project(root):
-    directory = _write_project(root, seed_interactive=False)
+    directory = write_project(root, seed_interactive=False)
     return SimpleNamespace(
         project_root=root,
         booley_dir=directory,
@@ -286,16 +285,16 @@ def _project(root):
 
 def _host_project(root, monkeypatch, build=None):
     """A Project (from *build*) in a real Git repository, on a host that answers as healthy."""
-    _git_init(root)
+    git_init(root)
     project = (build or _project)(root)
-    _seed_sandbox_files(root)
+    seed_sandbox_files(root)
     serve_healthy_doctor_host(monkeypatch, root)
     return project
 
 
 def _deep_run(project, *, skip_agents=False):
     """A whole deep Doctor run that records its attempt; return the result and the record."""
-    result = _doctor_run(
+    result = run_doctor(
         project.project_root, deep=True, skip_agent_checks=skip_agents, record_clean=True
     )
     return result, deep.load_deep_record(project.booley_dir)
@@ -471,8 +470,8 @@ def _model_probe_run(
     *scratch_gone* the temp directory vanishes after the memory probe, before any model probe.
     Returns the result, the model probes' models, every agent call and the deep record.
     """
-    _git_init(tmp_path)
-    _runtime_setup(tmp_path, monkeypatch, inside=True)
+    git_init(tmp_path)
+    runtime_setup(tmp_path, monkeypatch, inside=True)
     booley_dir = tmp_path / ".booley"
     toml = booley_dir / "booley.toml"
     # The fixture's own `[agent]` table would duplicate the one in *config*.
@@ -695,8 +694,8 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
 
     from booley.harness.setup import readiness
 
-    _git_init(tmp_path)
-    directory = _write_project(tmp_path, seed_interactive=False)
+    git_init(tmp_path)
+    directory = write_project(tmp_path, seed_interactive=False)
     # Select exactly one real Simulation Target and exclude unrelated Flow families.
     core = tmp_path / "unit.core"
     core.write_text(core.read_text().split("  lint_fast:")[0])
@@ -712,7 +711,7 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
     if policy is not None:
         git_stdout(tmp_path, "config", "--local", _RELATIVE_WORKTREES, policy)
     if data_policy is not None:
-        _git_init(directory)
+        git_init(directory)
         git_stdout(directory, "config", "--local", _RELATIVE_WORKTREES, data_policy)
     monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
     route_bounded_capture_through_subprocess_run(monkeypatch, readiness)
@@ -803,9 +802,7 @@ def test_runtime_policy_full_doctor_qualification(
         tmp_path, monkeypatch, policy, missing, health_failure, data_policy
     )
     commands = _qualification_transport(monkeypatch, missing, audit)
-    result = doctor.run_doctor_result(
-        argparse.Namespace(deep=True, skip_agent_checks=False), tmp_path
-    )
+    result = run_doctor(tmp_path, deep=True, record_clean=True)
     assert result.health_evidence is True
     if policy == "true":
         assert any(
@@ -855,16 +852,16 @@ def test_pending_review_qualifies_once_and_ack_preserves_deep(tmp_path, monkeypa
 
     monkeypatch.setattr(doctor, "_run_project_phase", project_phase)
     commands = _qualification_transport(monkeypatch, None, audit)
-    plain = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
+    plain = run_doctor(tmp_path, record_clean=True)
     assert [f.check_id for f in plain.diagnostics.active_findings] == ["upgrade.review-pending"]
     assert not plain.clean and plain.exit_code == 0
-    result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
+    result = run_doctor(tmp_path, deep=True, record_clean=True)
     assert not result.clean and result.exit_code == 0
     assert result.deep_status.current
     assert deep.load_deep_record(audit.booley_dir).outcome is deep.DeepOutcome.SUCCESS
     before = deep.deep_stamp_path(audit.booley_dir).read_bytes()
     upgrade_review.acknowledge(audit.booley_dir, "2.0.0", packaged_changelog=_changelog(tmp_path))
-    final = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
+    final = run_doctor(tmp_path, record_clean=True)
     assert final.clean and final.deep_status.current
     assert deep.deep_stamp_path(audit.booley_dir).read_bytes() == before
     assert commands == ["smoke", "good", "bad", "core"]
@@ -881,7 +878,7 @@ def test_real_qualification_applies_warning_waiver_without_inventing_execution(
             'reason="Reviewed policy exception"\npermanent=true\n'
         )
     commands = _qualification_transport(monkeypatch, missing, audit)
-    result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
+    result = run_doctor(tmp_path, deep=True, record_clean=True)
     record = deep.load_deep_record(audit.booley_dir)
     assert result.deep_status.current is (waived and missing is None)
     assert record.outcome is (

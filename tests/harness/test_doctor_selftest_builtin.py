@@ -24,12 +24,12 @@ from booley.harness import doctor
 from booley.harness import doctor_deep as deep
 from booley.runtime import issuance_invalidation
 from tests.harness.doctor_host_support import serve_healthy_doctor_host
-from tests.harness.test_doctor import (
-    _doctor_run,
-    _git_init,
-    _script_flow,
-    _write_bad_overlay,
-    _write_project,
+from tests.harness.doctor_run_support import (
+    git_init,
+    run_doctor,
+    script_flow,
+    write_bad_overlay,
+    write_project,
 )
 
 
@@ -152,13 +152,13 @@ def _evidence_case(kind):
 
 def _setup(tmp_path, monkeypatch, *, tests='["smoke", "full"]', overlay=True, sim_enabled=True):
     """A healthy whole-run Project; *tests* is the `sim_fast` list `tests.toml` selects from."""
-    _git_init(tmp_path)
-    booley_dir = _write_project(tmp_path)
+    git_init(tmp_path)
+    booley_dir = write_project(tmp_path)
     serve_healthy_doctor_host(monkeypatch, tmp_path)
     if tests is not None:
         (booley_dir / "tests.toml").write_text(f"[sim_fast]\ntests = {tests}\n", encoding="utf-8")
     if overlay:
-        _write_bad_overlay(booley_dir)
+        write_bad_overlay(booley_dir)
     if not sim_enabled:
         config = booley_dir / "booley.toml"
         text = config.read_text(encoding="utf-8")
@@ -195,9 +195,9 @@ def _deep_run(booley_dir, monkeypatch, on_bad=None):
     def _accepted_report(argv, _report):
         _write_sim_bad_report(argv, project=SimpleNamespace(booley_dir=booley_dir))
 
-    _script_flow(monkeypatch, "sim", answer)
-    _script_flow(monkeypatch, "lint", answer)
-    result = _doctor_run(booley_dir.parent, deep=True, record_clean=True)
+    script_flow(monkeypatch, "sim", answer)
+    script_flow(monkeypatch, "lint", answer)
+    result = run_doctor(booley_dir.parent, deep=True, record_clean=True)
     return result, launches
 
 
