@@ -60,6 +60,12 @@ Reach for the `booley.core.boundary` helpers (`src/booley/core/boundary.py`) —
 rejects NaN/inf and the `isinstance(True, int)` bool trap (in Python, `bool`
 subclasses `int`, so a naive `isinstance(x, int)` wrongly accepts `True`/`False`).
 
+Docker CLI output is external input too. Read `docker inspect` JSON objects, and
+Booley's labels, through `booley.core.docker_cli`
+(`src/booley/core/docker_cli.py`): its `Runner`, `inspect`, `inspect_labels`,
+`labels`, `failure_detail`, and label-name constants, instead of another runner
+type or JSON guard.
+
 ### 6. Fail fast, fail loud
 
 Raise exceptions on unexpected state. Don't return `None` and hope the

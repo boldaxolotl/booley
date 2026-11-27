@@ -6,7 +6,6 @@ import json
 import logging
 import os
 import subprocess
-from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -19,6 +18,7 @@ from booley.config.host_config import (
     host_config_path,
     load_host_policy,
 )
+from booley.core import docker_cli
 from booley.core.boundary import (
     BoundaryError,
     as_str_list,
@@ -35,11 +35,8 @@ from booley.core.project_identity import matches_project_label
 from booley.core.user_paths import config_dir
 from booley.runtime import devcontainer as dc
 from booley.runtime.filesystem_utils import unlink_file
-from booley.runtime.platform_paths import (
-    host_path_from_docker_mount,
-    run_captured_bounded,
-    same_host_path,
-)
+from booley.runtime.host_docker import relay_docker
+from booley.runtime.platform_paths import host_path_from_docker_mount, same_host_path
 from booley.runtime.private_store import session_store_repair
 from booley.runtime.sandbox_apply import (
     Attachment,
@@ -49,13 +46,11 @@ from booley.runtime.sandbox_apply import (
 )
 from booley.runtime.timefmt import format_age, parse_timestamp, rfc3339_from_datetime
 
-Run = Callable[..., subprocess.CompletedProcess[str]]
 _SCHEMA_VERSION = 2
 _FOLDER_LABEL = "devcontainer.local_folder"
-_PROJECT_LABEL = "booley.project-id"
 _PROJECT_LISTING_FORMAT = (
     '{{.ID}}\t{{.Names}}\t{{.Label "devcontainer.local_folder"}}'
-    '\t{{.Label "booley.project-id"}}\t{{.Label "booley.role"}}'
+    f'\t{{{{.Label "{docker_cli.PROJECT_ID_LABEL}"}}}}\t{{{{.Label "{docker_cli.ROLE_LABEL}"}}}}'
 )
 # Roles a Project Sandbox (or its licensed relay) can carry. Any other role
 # names a Booley host sidecar such as ``reaper`` or ``egress-proxy``.
@@ -98,20 +93,11 @@ class Sandbox:
 _DOCKER_TIMEOUT_S = 30
 
 
-def _run(argv: list[str], *, timeout: int = _DOCKER_TIMEOUT_S) -> subprocess.CompletedProcess[str]:
-    """Run *argv* capturing text; on timeout kill its whole process tree and raise.
-
-    Raises ``subprocess.TimeoutExpired`` within a bounded margin of *timeout*, even
-    when a descendant still holds the output pipes.
-    """
-    return run_captured_bounded(argv, timeout=timeout)
-
-
 def admit_start(
     project_root: Path,
     *,
     target_name: str,
-    run: Run = _run,
+    run: docker_cli.Runner = relay_docker,
     now: datetime | None = None,
 ) -> None:
     """Admit a slot-consuming start or raise an actionable refusal."""
@@ -130,7 +116,7 @@ def admit_start(
 def claim_vscode_start(
     project_root: Path,
     *,
-    run: Run = _run,
+    run: docker_cli.Runner = relay_docker,
     now: datetime | None = None,
 ) -> bool:
     """Atomically reserve capacity for a later VS Code Docker start."""
@@ -180,7 +166,7 @@ def withdraw_claims(project_root: str) -> None:
         unlink_file(path, missing_ok=True)
 
 
-def has_pending_claim(project_root: Path, *, run: Run = _run) -> bool:
+def has_pending_claim(project_root: Path, *, run: docker_cli.Runner = relay_docker) -> bool:
     """Return whether this Project has a validated pending editor start."""
     root = _canonical_root(project_root)
     claims = tuple(claim for claim in _claims() if same_host_path(claim.project_root, root))
@@ -192,13 +178,17 @@ def has_pending_claim(project_root: Path, *, run: Run = _run) -> bool:
     return bool(remaining)
 
 
-def vscode_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[Sandbox, ...]:
+def vscode_sandboxes(
+    project_root: Path, *, run: docker_cli.Runner = relay_docker
+) -> tuple[Sandbox, ...]:
     """Return strictly identified VS Code Sandboxes for one Project."""
     root = _canonical_root(project_root)
     return _project_vscode_sandboxes(root, _vscode_inventory({root}, run))
 
 
-def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[Sandbox, ...]:
+def running_project_sandboxes(
+    project_root: Path, *, run: docker_cli.Runner = relay_docker
+) -> tuple[Sandbox, ...]:
     """Read one Project's running inventory without touching admission claims.
 
     Listing hints exclude only positively identified foreign Projects. Every
@@ -208,11 +198,13 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
 
     root = _canonical_root(project_root)
     local_name = session_container_name(project_root)
-    command = ["docker", "ps", "--no-trunc", "--format", _PROJECT_LISTING_FORMAT]
+    command = ["ps", "--no-trunc", "--format", _PROJECT_LISTING_FORMAT]
     try:
-        result = run(command, timeout=_DOCKER_TIMEOUT_S)
+        result = run(command, _DOCKER_TIMEOUT_S)
         if result.returncode:
-            raise AdmissionError("cannot enumerate Project Sandboxes safely: " + _detail(result))
+            raise AdmissionError(
+                "cannot enumerate Project Sandboxes safely: " + docker_cli.failure_detail(result)
+            )
         items = {}
         for line in result.stdout.splitlines():
             fields = line.split("\t")
@@ -245,7 +237,7 @@ def running_project_sandboxes(project_root: Path, *, run: Run = _run) -> tuple[S
 
 
 def _classified_sandbox(
-    container_id: str, name: str, role: str, local_name: str, run: Run
+    container_id: str, name: str, role: str, local_name: str, run: docker_cli.Runner
 ) -> Sandbox | None:
     """Inspect one listed row once: ``None`` for a proven relay, else its Sandbox."""
     document = _inspect_document(container_id, name, run)
@@ -258,7 +250,7 @@ def _classified_sandbox(
     return _sandbox(document, container_id, name, exact_id=True)
 
 
-def running_sandboxes(*, run: Run = _run) -> tuple[Sandbox, ...]:
+def running_sandboxes(*, run: docker_cli.Runner = relay_docker) -> tuple[Sandbox, ...]:
     """Read the host-wide running Booley Sandbox inventory that admission uses."""
     try:
         return _inventory(run)
@@ -282,12 +274,14 @@ def recreate_remedy(item: Sandbox) -> str:
 def _relay_without_workspace(document: dict[str, Any], container_id: str, name: str) -> bool:
     """Exclude a relay only after proving it has no interactive workspace bind."""
     try:
-        labels = _labels(require_dict(document.get("Config"), field="Config").get("Labels"))
+        labels = docker_cli.labels(
+            require_dict(document.get("Config"), field="Config").get("Labels")
+        )
         mounts = require_list(document.get("Mounts"), field="Mounts")
         return (
             require_str(document, "Id") == container_id
             and require_str(document, "Name").removeprefix("/") == name
-            and labels.get("booley.role") == "license-relay"
+            and labels.get(docker_cli.ROLE_LABEL) == "license-relay"
             and _FOLDER_LABEL not in labels
             and not any(
                 require_dict(mount, field="Mount").get("Destination") == "/work"
@@ -330,33 +324,34 @@ def _foreign_listing(folder: str, project_id: str, name: str, root: str, local_n
     )
 
 
-def _verify_workspace_mount(item: Sandbox, root: str, run: Run) -> None:
+def _verify_workspace_mount(item: Sandbox, root: str, run: docker_cli.Runner) -> None:
     container_id = item.container_id
-    result = run(
-        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"],
-        timeout=_DOCKER_TIMEOUT_S,
-    )
     try:
-        if result.returncode:
-            raise AdmissionError(f"cannot revalidate Sandbox {container_id}: {_detail(result)}")
         # The second probe verifies full identity again, rather than trusting a name.
-        document = require_dict(json.loads(result.stdout), field="Sandbox")
+        document = docker_cli.inspect(run, "container", container_id, timeout=_DOCKER_TIMEOUT_S)
         if (
             require_str(document, "Id") != container_id
             or require_str(document, "Name").removeprefix("/") != item.name
         ):
             raise AdmissionError("Sandbox identity changed during Project resolution")
-        labels = _labels(require_dict(document.get("Config"), field="Config").get("Labels"))
+        labels = docker_cli.labels(
+            require_dict(document.get("Config"), field="Config").get("Labels")
+        )
         if (
             not same_host_path(_workspace_mount_root(document, item.name), root)
-            or labels.get("booley.role") != "interactive"
-            or labels.get(_PROJECT_LABEL) != item.project_id
+            or labels.get(docker_cli.ROLE_LABEL) != "interactive"
+            or labels.get(docker_cli.PROJECT_ID_LABEL) != item.project_id
             or not same_host_path(_project_root(document, labels, item.name), root)
             or require_dict(document.get("State"), field="State").get("Running") is not True
         ):
             raise AdmissionError(
                 "Sandbox Project root/mount identity is contradictory or unavailable"
             )
+    except docker_cli.InspectError as exc:
+        if exc.result is not None:
+            detail = docker_cli.failure_detail(exc.result)
+            raise AdmissionError(f"cannot revalidate Sandbox {container_id}: {detail}") from exc
+        raise AdmissionError(f"cannot revalidate Sandbox {container_id} identity") from exc
     except (BoundaryError, ValueError) as exc:
         raise AdmissionError(f"cannot revalidate Sandbox {container_id} identity") from exc
 
@@ -368,18 +363,19 @@ def _policy() -> SandboxHostPolicy:
         raise AdmissionError(str(exc)) from exc
 
 
-def _inventory(run: Run) -> tuple[Sandbox, ...]:
+def _inventory(run: docker_cli.Runner) -> tuple[Sandbox, ...]:
     command = [
-        "docker",
         "ps",
         "--filter",
         f"label={dc.INTERACTIVE_ROLE_LABEL}",
         "--format",
         "{{.ID}}\t{{.Names}}",
     ]
-    result = run(command, timeout=_DOCKER_TIMEOUT_S)
+    result = run(command, _DOCKER_TIMEOUT_S)
     if result.returncode:
-        raise AdmissionError("cannot enumerate Booley Sandboxes safely: " + _detail(result))
+        raise AdmissionError(
+            "cannot enumerate Booley Sandboxes safely: " + docker_cli.failure_detail(result)
+        )
     items = []
     for line in result.stdout.splitlines():
         fields = line.split("\t")
@@ -390,7 +386,7 @@ def _inventory(run: Run) -> tuple[Sandbox, ...]:
 
 
 def _vscode_inventory(
-    project_roots: set[str], run: Run, known: tuple[Sandbox, ...] = ()
+    project_roots: set[str], run: docker_cli.Runner, known: tuple[Sandbox, ...] = ()
 ) -> tuple[Sandbox, ...]:
     """Inspect only stopped/running editor Sandboxes relevant to claims or cleanup.
 
@@ -402,7 +398,6 @@ def _vscode_inventory(
         return ()
     result = run(
         [
-            "docker",
             "ps",
             "-a",
             "--filter",
@@ -412,10 +407,12 @@ def _vscode_inventory(
             "--format",
             '{{.ID}}\t{{.Names}}\t{{.Label "devcontainer.local_folder"}}',
         ],
-        timeout=_DOCKER_TIMEOUT_S,
+        _DOCKER_TIMEOUT_S,
     )
     if result.returncode:
-        raise AdmissionError("cannot enumerate VS Code Sandboxes safely: " + _detail(result))
+        raise AdmissionError(
+            "cannot enumerate VS Code Sandboxes safely: " + docker_cli.failure_detail(result)
+        )
     items = []
     for line in result.stdout.splitlines():
         fields = line.split("\t")
@@ -436,23 +433,24 @@ def _vscode_inventory(
     return tuple(items)
 
 
-def _inspect_document(container_id: str, listed_name: str, run: Run) -> dict[str, Any]:
+def _inspect_document(
+    container_id: str, listed_name: str, run: docker_cli.Runner
+) -> dict[str, Any]:
     """Run the one ``docker container inspect`` for a listed container and parse it."""
-    result = run(
-        ["docker", "container", "inspect", container_id, "--format", "{{json .}}"],
-        timeout=_DOCKER_TIMEOUT_S,
-    )
-    if result.returncode:
-        raise AdmissionError(f"cannot inspect Sandbox {listed_name}: {_detail(result)}")
     try:
-        return require_dict(json.loads(result.stdout), field=f"Sandbox {listed_name}")
-    except (BoundaryError, ValueError) as exc:
+        return docker_cli.inspect(run, "container", container_id, timeout=_DOCKER_TIMEOUT_S)
+    except docker_cli.InspectError as exc:
+        if exc.result is not None:
+            detail = docker_cli.failure_detail(exc.result)
+            raise AdmissionError(f"cannot inspect Sandbox {listed_name}: {detail}") from exc
         raise AdmissionError(
             f"Docker returned incomplete inspection for Sandbox {listed_name}"
         ) from exc
 
 
-def _inspect(container_id: str, listed_name: str, run: Run, *, exact_id: bool = False) -> Sandbox:
+def _inspect(
+    container_id: str, listed_name: str, run: docker_cli.Runner, *, exact_id: bool = False
+) -> Sandbox:
     document = _inspect_document(container_id, listed_name, run)
     return _sandbox(document, container_id, listed_name, exact_id=exact_id)
 
@@ -464,7 +462,7 @@ def _sandbox(
     try:
         config = require_dict(document.get("Config"), field="Config")
         state = require_dict(document.get("State"), field="State")
-        labels = _labels(config.get("Labels"))
+        labels = docker_cli.labels(config.get("Labels"))
         running = require_bool_value(state.get("Running"), field="State.Running")
         started_at = require_str(state, "StartedAt")
         # A never-started container reports Docker's zero timestamp.
@@ -480,7 +478,7 @@ def _sandbox(
         raise AdmissionError(
             f"Docker returned incomplete inspection for Sandbox {listed_name}"
         ) from exc
-    if labels.get("booley.role") != "interactive":
+    if labels.get(docker_cli.ROLE_LABEL) != "interactive":
         raise AdmissionError(f"cannot prove Sandbox ownership for {listed_name}")
     if name != listed_name:
         raise AdmissionError(f"Sandbox identity changed while inspecting {listed_name}")
@@ -488,7 +486,7 @@ def _sandbox(
         container_id,
         name,
         root,
-        labels.get(_PROJECT_LABEL),
+        labels.get(docker_cli.PROJECT_ID_LABEL),
         created,
         started,
         running,
@@ -511,16 +509,6 @@ def _container_egress(raw_env: object) -> str:
         entry.removeprefix(prefix) for entry in as_str_list(raw_env) if entry.startswith(prefix)
     ]
     return declared_egress(values[-1] if values else None)
-
-
-def _labels(raw: object) -> dict[str, str]:
-    values = require_dict(raw, field="Config.Labels")
-    return {
-        require_str_value(key, field="Config.Labels key"): require_str_value(
-            value, field=f"Config.Labels[{key!r}]"
-        )
-        for key, value in values.items()
-    }
 
 
 def _project_root(document: dict[str, Any], labels: dict[str, str], name: str) -> str:
@@ -557,7 +545,7 @@ def _docker_time(value: str) -> datetime:
 
 
 def _admission_snapshot(
-    run: Run, *, requesting_root: str, candidate_roots: set[str] | None = None
+    run: docker_cli.Runner, *, requesting_root: str, candidate_roots: set[str] | None = None
 ) -> tuple[
     tuple[Sandbox, ...], tuple[PendingStartClaim, ...], tuple[Sandbox, ...], tuple[str, ...]
 ]:
@@ -738,7 +726,3 @@ def _refusal(
     lines.append(f"Or raise [sandbox].max_sessions in {host_config_path()}.")
     lines.append(HOST_POLICY_MIGRATION_GUIDANCE)
     return "\n".join(lines)
-
-
-def _detail(result: subprocess.CompletedProcess[str]) -> str:
-    return result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"

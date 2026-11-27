@@ -26,7 +26,6 @@ from booley.runtime import (
     booley_dir_migration,
     host_docker,
     runtime_attachment,
-    session_admission,
     session_runtime,
 )
 from tests.docker_cli_guard_plugin import allow_docker_cli
@@ -391,6 +390,13 @@ def isolate_session_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)
 
 
+def docker_runner(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+) -> Callable[[list[str], int], subprocess.CompletedProcess[str]]:
+    """Serve admission's ``docker_cli.Runner`` from a full-argv Session fake."""
+    return lambda args, timeout: run(["docker", *args], timeout=timeout)
+
+
 def route_session_commands(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -406,9 +412,8 @@ def route_session_commands(
     no running Job); returns the `(argv, kwargs)` of each probe call.
     """
     isolate_session_cli(monkeypatch, tmp_path)
-    # `_run` is each module's one Docker CLI runner and no public entry takes a runner.
+    # `_run` is the Session's one Docker CLI runner and no public entry takes a runner.
     monkeypatch.setattr(session_runtime, "_run", run)
-    monkeypatch.setattr(session_admission, "_run", run)
     monkeypatch.setattr(host_docker, "container_exists", lambda name: name in existing)
     monkeypatch.setattr(host_docker, "network_exists", lambda _name: False)
     probed: list[tuple[list[str], dict[str, Any]]] = []

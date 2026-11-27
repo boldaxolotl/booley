@@ -286,6 +286,14 @@ def test_run_docker_timeout_stops_or_abandons_the_tree(
             assert wait_until_heartbeat_stops(paths["heartbeat"]), "grandchild outlived the kill"
 
 
+def test_run_docker_decodes_utf8_output_whatever_the_locale() -> None:
+    """Admission reads child output as UTF-8, so non-ASCII Sandbox labels survive on Windows."""
+    text = "Zo\u00eb \u0141"
+    script = f"import sys; sys.stdout.buffer.write({text.encode()!r})"
+    result = idk._run_docker(["-c", script], timeout=hang_guard_s(), executable=sys.executable)
+    assert result.stdout == text
+
+
 def test_run_docker_returns_output_and_raises_for_a_missing_cli(tmp_path: Path) -> None:
     code = "import sys; print('out'); print('err', file=sys.stderr); sys.exit(3)"
 
