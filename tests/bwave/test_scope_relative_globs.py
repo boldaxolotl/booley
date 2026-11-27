@@ -173,6 +173,8 @@ def test_gui_resolves_relative_glob(
 ) -> None:
     """AC1/AC3: ``gui --signals dut.*`` resolves the same tree, even beside a missing selector."""
     monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)
+    # Private: `bwave gui` reaches the viewer bridge after resolving, and #4757 replaces that
+    # path; the resolver is the only entry that stops before the viewer.
     try:
         signals, _listing = cli._resolve_signal_globs(str(store), globs, 100)
     except SystemExit as error:
@@ -198,6 +200,8 @@ def test_gui_total_miss_suggests_anchored_form(
 ) -> None:
     """AC5: ``gui`` relays the suggestion in its own total-miss error."""
     monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)
+    # Private: `bwave gui` reaches the viewer bridge after resolving, and #4757 replaces that
+    # path; the resolver is the only entry that stops before the viewer.
     with pytest.raises(SystemExit) as raised:
         cli._resolve_signal_globs(str(store), ["u_core.*"], 100)
     assert raised.value.code == 2
@@ -224,6 +228,8 @@ def test_bare_name_suffix_match_unchanged(store: Path) -> None:
 def _resolve_gui(store: Path, glob: str, monkeypatch: pytest.MonkeyPatch) -> set[str]:
     """Names ``gui --signals glob`` resolves on the built binary."""
     monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)
+    # Private: `bwave gui` reaches the viewer bridge after resolving, and #4757 replaces that
+    # path; the resolver is the only entry that stops before the viewer.
     signals, _listing = cli._resolve_signal_globs(str(store), [glob], 100)
     return {signal.bwave_name for signal in signals}
 
@@ -252,6 +258,8 @@ def test_gui_refuses_bit_slice(
 ) -> None:
     """#4898: ``gui`` takes whole signals, so a bit-slice selector exits 2."""
     monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)
+    # Private: `bwave gui` reaches the viewer bridge after resolving, and #4757 replaces that
+    # path; the resolver is the only entry that stops before the viewer.
     with pytest.raises(SystemExit) as raised:
         if group:
             cli._resolve_signal_groups(str(store), ["G=dut.count[3:0]"], 100)
