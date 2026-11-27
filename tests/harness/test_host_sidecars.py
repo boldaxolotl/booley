@@ -819,21 +819,32 @@ def test_check_only_missing_sidecar_images_and_containers_are_pending(
     assert _tree_snapshot(tmp_path) == before
 
 
-@pytest.mark.parametrize("resource", ["proxy-image", "reaper-image", "network", "proxy"])
-def test_check_only_continues_after_sidecar_error(monkeypatch, tmp_path, capsys, resource):
+@pytest.mark.parametrize(
+    ("resource", "call"),
+    [
+        ("proxy-image", ("image", "inspect", sidecars.legacy.PROXY_IMAGE)),
+        ("reaper-image", ("image", "inspect", sidecars.legacy.REAPER_IMAGE)),
+        ("network", ("network", "inspect", _NETWORK)),
+        ("proxy", ("container", "inspect", _PROXY)),
+    ],
+    ids=["proxy-image", "reaper-image", "network", "proxy"],
+)
+def test_check_only_continues_after_sidecar_error(monkeypatch, tmp_path, capsys, resource, call):
     from tests.harness.test_bootstrap import (
         _assert_complete,
+        _assert_inspect_only,
         _inspection_environment,
         _run_inspection,
     )
 
     environment = _inspection_environment(monkeypatch, tmp_path)
-    environment.docker.failure = resource
+    environment.docker.answer(*call, code=1, stderr="access denied")
     status, output = _run_inspection(capsys)
     _assert_complete(output)
     assert status == 2
     assert f"✗  {resource}:" in output
     assert "access" in output
+    _assert_inspect_only(environment.docker)
 
 
 def test_complete_inspection_foreign_container_with_missing_image_remains_error(
@@ -846,7 +857,7 @@ def test_complete_inspection_foreign_container_with_missing_image_remains_error(
     )
 
     _inspection_environment(monkeypatch, tmp_path)
-    _add_container(_serve_inspection(monkeypatch, tmp_path_factory), _PROXY)
+    _add_container(_inspection_docker(monkeypatch, tmp_path_factory), _PROXY)
     status, output = _run_inspection(capsys)
     _assert_complete(output)
     assert status == 2
@@ -885,7 +896,7 @@ def test_check_only_stale_network_blockers_are_errors(
     )
 
     _inspection_environment(monkeypatch, tmp_path)
-    docker = _serve_inspection(monkeypatch, tmp_path_factory)
+    docker = _inspection_docker(monkeypatch, tmp_path_factory)
     _add_network(docker, internal=False)
     if blocker == "foreign":
         _add_container(docker, "foreign", networks=(_NETWORK,))
@@ -912,7 +923,7 @@ def test_check_only_stale_container_with_active_session_is_error(
     )
 
     _inspection_environment(monkeypatch, tmp_path)
-    docker = _serve_inspection(monkeypatch, tmp_path_factory)
+    docker = _inspection_docker(monkeypatch, tmp_path_factory)
     _add_current_image(docker, sidecars.legacy.PROXY_IMAGE)
     _add_current_image(docker, sidecars.legacy.REAPER_IMAGE)
     _add_container(docker, _PROXY, image="old-sha", labels={sidecars.ROLE_LABEL: "egress-proxy"})
@@ -930,7 +941,7 @@ def test_check_only_pending_container_keeps_differences(
     from tests.harness.test_bootstrap import _inspection_environment, _run_inspection
 
     _inspection_environment(monkeypatch, tmp_path)
-    docker = _serve_inspection(monkeypatch, tmp_path_factory)
+    docker = _inspection_docker(monkeypatch, tmp_path_factory)
     _add_current_image(docker, sidecars.legacy.PROXY_IMAGE)
     _add_current_image(docker, sidecars.legacy.REAPER_IMAGE)
     status, output = _run_inspection(capsys)
@@ -1057,10 +1068,8 @@ def test_readiness_check_accepts_unproxied_leftover_proxy(docker: FakeDocker) ->
     assert _mutations(docker) == []
 
 
-def _serve_inspection(monkeypatch, tmp_path_factory) -> FakeDocker:
-    """Put the real sidecar adapter back over `_inspection_environment`'s and serve it."""
-    # private: undoes that helper's stand-in; no public entry takes a Docker port.
-    monkeypatch.setattr(sidecars, "_docker_adapter", sidecars._DockerCli)
+def _inspection_docker(monkeypatch, tmp_path_factory) -> FakeDocker:
+    """A store-backed daemon in place of `_inspection_environment`'s reply-only one."""
     return _egress_docker(tmp_path_factory.mktemp("inspection-docker"), monkeypatch)
 
 
@@ -1071,7 +1080,7 @@ def _unproxied_inspection(monkeypatch, tmp_path, tmp_path_factory) -> FakeDocker
     # Patching the host policy loader: it reads the machine's policy file, and no public entry
     # point pins an unproxied policy without writing that file into the real Booley directory.
     monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: _UNPROXIED)
-    docker = _serve_inspection(monkeypatch, tmp_path_factory)
+    docker = _inspection_docker(monkeypatch, tmp_path_factory)
     _add_sidecar(docker, _REAPER, "reaper", sidecars.legacy.REAPER_IMAGE, _UNPROXIED)
     return docker
 

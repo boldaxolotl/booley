@@ -1,14 +1,15 @@
-"""A fixed Memory Budget for admission tests, set at the budget-computation seam.
+"""The one fake of ``compute_memory_budget``: tests replace it only through this module.
 
-No ``booley.toml`` key sets the budget and the host's memory must not matter, so
-tests pin what ``booley.flows.memory_admission.compute_memory_budget`` returns.
-The ``pin_memory_budget`` fixture wraps ``pin_budget`` for test functions;
-helpers that already hold a ``monkeypatch`` call ``pin_budget`` directly.
+It is patched where Memory Admission (``ADMISSION``) and the Booley Dashboard's web snapshot
+(``DASHBOARD``) import it. ``tests/conftest.py`` calls ``measure_or_fall_back`` for every test
+and wraps ``pin_budget`` as the ``pin_memory_budget`` fixture. It is patched because no public
+input sets the budget: the real one comes from the host's cgroup and process memory.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import importlib
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
@@ -16,6 +17,8 @@ if TYPE_CHECKING:
     from booley.runtime.memory_budget import MemoryBudget
 
 MIB = 1024**2
+ADMISSION = "booley.flows.memory_admission"
+DASHBOARD = "booley.harness.dashboard.web_snapshot"
 
 
 def budget_of(byte_count: int, *, swap_bytes: int = 0) -> MemoryBudget:
@@ -43,20 +46,36 @@ def budget_of(byte_count: int, *, swap_bytes: int = 0) -> MemoryBudget:
     )
 
 
-def pin_budget(monkeypatch: pytest.MonkeyPatch, mib: int) -> None:
-    """Make admission see a Memory Budget of *mib* MiB."""
-    from booley.flows import memory_admission
+def measure_or_fall_back(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let admission measure the host, with a fixed 64 GiB budget where it cannot (Windows)."""
+    from booley.runtime import memory_budget
 
-    monkeypatch.setattr(
-        memory_admission, "compute_memory_budget", lambda **_: budget_of(mib * MIB)
-    )
+    real_compute = memory_budget.compute_memory_budget
+
+    def compute_or_fixed(**kwargs: Any) -> MemoryBudget:
+        try:
+            return real_compute(**kwargs)
+        except OSError:
+            return budget_of(64 * 1024**3)
+
+    module = importlib.import_module(ADMISSION)
+    monkeypatch.setattr(module, "compute_memory_budget", compute_or_fixed)
 
 
-def fail_budget(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make the Memory Budget uncomputable, so every admitted Job carries a warning."""
-    from booley.flows import memory_admission
+def pin_budget(
+    monkeypatch: pytest.MonkeyPatch, mib: int, *, swap_mib: int = 0, importer: str = ADMISSION
+) -> None:
+    """Make *importer* see a Memory Budget of *mib* MiB."""
+    budget = budget_of(mib * MIB, swap_bytes=swap_mib * MIB)
+    module = importlib.import_module(importer)
+    monkeypatch.setattr(module, "compute_memory_budget", lambda **_: budget)
+
+
+def fail_budget(monkeypatch: pytest.MonkeyPatch, *, importer: str = ADMISSION) -> None:
+    """Make the Memory Budget uncomputable for *importer*."""
 
     def unreadable(**_: object) -> MemoryBudget:
         raise OSError("MemTotal unreadable")
 
-    monkeypatch.setattr(memory_admission, "compute_memory_budget", unreadable)
+    module = importlib.import_module(importer)
+    monkeypatch.setattr(module, "compute_memory_budget", unreadable)

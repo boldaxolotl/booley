@@ -25,17 +25,16 @@ from starlette.testclient import TestClient
 
 from booley.harness import booley as tlr
 from booley.runtime import job_records, job_slots
-from booley.runtime.memory_budget import resolve_memory_budget
 from booley.runtime.pid import ProcessIdentity
 from tests.conftest import symlink_or_skip
 from tests.git_support import git
+from tests.memory_budget_support import DASHBOARD, fail_budget, pin_budget
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s
 from tests.uvicorn_support import capture_serving
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
-GIB = 2**30
 MIB = 2**20
 SCOPE = "pid:[4026531836]"
 # 2026-10-08T10:00:20Z
@@ -107,13 +106,7 @@ def _client(world: World, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """
     snapshot = _snapshot_module()
     monkeypatch.setattr(snapshot, "wall_clock", lambda: NOW)
-    monkeypatch.setattr(
-        snapshot,
-        "compute_memory_budget",
-        lambda **_kw: resolve_memory_budget(
-            limit_bytes=8 * GIB, installed_bytes=None, processes=()
-        ),
-    )
+    pin_budget(monkeypatch, BUDGET_BYTES // MIB, importer=DASHBOARD)
     app = _web().create_app(world.main, world.booley, proc_root=world.proc, cgroup=world.cgroup)
     return TestClient(app)
 
@@ -674,12 +667,9 @@ def test_run_alone_holder_is_reported_not_summed(world, monkeypatch):
 
 
 def test_budget_shows_without_jobs_and_unavailable_budget_is_marked(world, monkeypatch):
-    def unreadable(**_kw):
-        raise OSError("MemTotal is unreadable")
-
     with _client(world, monkeypatch) as client:
         empty = _snapshot(client, world.wt)["header"]["admission"]
-        monkeypatch.setattr(_snapshot_module(), "compute_memory_budget", unreadable)
+        fail_budget(monkeypatch, importer=DASHBOARD)
         marked = _snapshot(client, world.wt)["header"]["admission"]
 
     assert empty == {
@@ -691,7 +681,7 @@ def test_budget_shows_without_jobs_and_unavailable_budget_is_marked(world, monke
         "queued_jobs": 0,
     }
     assert marked["memory_budget_bytes"] is None
-    assert marked["memory_budget_unavailable"] == "MemTotal is unreadable"
+    assert marked["memory_budget_unavailable"] == "MemTotal unreadable"
 
 
 PROBE = Path(__file__).with_name("dashboard_page_probe.cjs")
