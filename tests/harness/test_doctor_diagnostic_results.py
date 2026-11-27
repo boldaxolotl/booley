@@ -29,9 +29,9 @@ from tests.docker_cli_guard import (
     route_bounded_captures_through_subprocess_run,
     route_docker_helper_through_subprocess_run,
 )
+from tests.harness.doctor_environment_support import patch_doctor_environment
 from tests.harness.doctor_host_support import answer_doctor_commands, hide_container_cli
 from tests.harness.test_doctor import (
-    _patch_environment,
     _write_project,
 )
 from tests.subprocess_budget import run_bounded_child
@@ -71,7 +71,7 @@ def _use_real_host_checks(monkeypatch, root, booley_dir, bootstrap_result):
     # keep the stub for every later test in the process.
     importlib.import_module("booley.harness.init_cmd")
     inspect_host = host_diagnostics.inspect_host
-    calls = _patch_environment(monkeypatch, root, booley_dir)
+    calls = patch_doctor_environment(monkeypatch, root, booley_dir)
     monkeypatch.setattr(host_diagnostics, "inspect_host", inspect_host)
     monkeypatch.setattr(host_diagnostics, "load_host_installation", _canonical_host_installation)
     monkeypatch.setattr(
@@ -328,7 +328,7 @@ def test_project_observations_keep_the_existing_order(tmp_path, monkeypatch, val
         stream.write("\n[stealth]\nenabled = true\n")
     if not valid:
         (booley_dir / "booley.toml").unlink()
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
     result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
 
@@ -374,7 +374,7 @@ def test_manual_and_automatic_doctor_agree_and_write_no_project_file(tmp_path, m
     (booley_dir / "cores").mkdir()
     (booley_dir / "cores" / "hidden.core").write_text("CAPI=2:\nname: ::hidden:0\n")
     run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     before = _project_files(tmp_path)
 
     automatic = auto_doctor.run_if_due(tmp_path, trigger="test")
@@ -453,7 +453,7 @@ def test_doctor_reports_cocotb_targets(tmp_path, monkeypatch, cocotb):
             encoding="utf-8",
             newline="\n",
         )
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
     result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
 
@@ -627,7 +627,7 @@ def test_core_tree_section_output_is_pinned(tmp_path, monkeypatch, capsys):
     moved to their owner and are unchanged by the move.
     """
     booley_dir = _core_tree_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     result = doctor.run_doctor_result(
         argparse.Namespace(deep=False, verbose=True, concise=False), tmp_path
     )
@@ -720,7 +720,7 @@ def test_core_repository_hygiene_section_output_is_pinned(
     real_run = subprocess.run
     real_bounded = platform_paths.run_captured_bounded
     booley_dir = _core_hygiene_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     owner = importlib.import_module("booley.runtime.core_repository_hygiene")
     monkeypatch.setattr(
         owner,
@@ -796,7 +796,7 @@ def test_core_resolution_deep_output_is_pinned(tmp_path, monkeypatch, capsys):
     excerpt is shown without ``--verbose``.
     """
     booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     err = "Parse error. Ignoring file /work/unit.core:\nfilesets.tb.depend must be array\nsecond line"
 
     def sandbox_resolves_all_but_sim_fast(argv, _env):
@@ -878,7 +878,7 @@ def test_flow_runtime_rows_render_unchanged(tmp_path, monkeypatch, capsys, scena
         (tmp_path / "design.core").write_text(_FPGA_CORE, encoding="utf-8", newline="\n")
         with (booley_dir / "booley.toml").open("a", encoding="utf-8", newline="\n") as stream:
             stream.write("\n[flows.fpga]\n")
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     if scenario == "binary missing":
         answer_doctor_commands(
             monkeypatch,
