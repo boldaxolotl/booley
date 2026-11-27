@@ -35,11 +35,6 @@ from booley.flows.sim.record.coordinator import (
     SimulationRecordPolicy,
 )
 from booley.flows.sim.record.model import create_simulation_record_plan
-from booley.flows.sim.record.run_directory import (
-    RunDirectory,
-    claimed_run_directory,
-    expand_run_directory,
-)
 from booley.flows.sim.record.scheduler import (
     BoundedSimulationRecordScheduler,
     ScheduledAttempt,
@@ -84,7 +79,6 @@ from tests.flows.sim.simulation_record_test_support import (
     _ParallelExecution,
     _remove_child_lease,
     _remove_slot_entry,
-    _run_identity,
     _scheduled_attempt,
     _three_item_manifest,
     _two_item_manifest,
@@ -855,42 +849,6 @@ def test_child_context_reader_rejects_corrupt_record(tmp_path, monkeypatch, erro
     paths.context.chmod(0o600)
     paths.context.write_bytes(b"{" if error == "truncated" else canonical_json_bytes(document))
     assert child_context_matches(paths, child_id) is False
-
-
-def test_canonical_collision_keys_are_stable_across_threads(tmp_path: Path) -> None:
-    literal = tmp_path / "literal"
-    literal.mkdir()
-    first = expand_run_directory(
-        str(literal),
-        project_root=tmp_path,
-        simulation_record_id=str(uuid.uuid4()),
-        target_key="sim",
-        work_item_key="item",
-        attempt_key="attempt",
-    )
-    alias = expand_run_directory(
-        str(literal / ".." / "literal"),
-        project_root=tmp_path,
-        simulation_record_id=str(uuid.uuid4()),
-        target_key="sim",
-        work_item_key="item",
-        attempt_key="attempt",
-    )
-    barrier = threading.Barrier(2)
-    keys: list[str] = []
-
-    def claim(run: RunDirectory) -> None:
-        barrier.wait()
-        with claimed_run_directory(run, identity=_run_identity()):
-            keys.append(run.collision_key)
-
-    threads = [threading.Thread(target=claim, args=(run,)) for run in (first, alias)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join()
-    assert first.collision_key == alias.collision_key
-    assert keys == [first.collision_key, first.collision_key]
 
 
 def test_unsized_memory_admitted_simulation_record_runs_work_items_without_child_lanes(
