@@ -10,11 +10,22 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 
 _REPLAY = "import sys; sys.stdout.write(sys.argv[1]); sys.stderr.write(sys.argv[2]); sys.exit(int(sys.argv[3]))"
+_IN_DIRECTORY = (
+    "import os, sys; os.path.samefile(os.getcwd(), sys.argv[4]) or "
+    "sys.exit('wrong working directory'); "
+)
 
 
-def canned_command(result: SubprocessResult) -> list[str]:
-    """An argv whose process writes *result*'s stdout and stderr and exits with its code."""
-    return [sys.executable, "-c", _REPLAY, result.stdout, result.stderr, str(result.returncode)]
+def canned_command(result: SubprocessResult, *, cwd: Path | None = None) -> list[str]:
+    """An argv whose process writes *result*'s stdout and stderr and exits with its code.
+
+    With *cwd*, the process first fails unless it was started in that directory.
+    """
+    argv = [sys.executable, "-c", _REPLAY, result.stdout, result.stderr, str(result.returncode)]
+    if cwd is None:
+        return argv
+    argv[2] = _IN_DIRECTORY + _REPLAY
+    return [*argv, str(cwd)]
 
 
 def measured_flow(project: Path) -> SimulateFlow:

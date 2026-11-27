@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -21,7 +22,13 @@ from booley.harness import sandbox_stop_warning
 from booley.runtime import (
     booley_dir as booley_dir_module,
 )
-from booley.runtime import host_docker, runtime_attachment, session_admission, session_runtime
+from booley.runtime import (
+    booley_dir_migration,
+    host_docker,
+    runtime_attachment,
+    session_admission,
+    session_runtime,
+)
 
 _SRC_ROOT = Path(__file__).parents[2] / "src"
 
@@ -452,3 +459,24 @@ def run_cli(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> int:
     """Run `booley <argv>` in-process and return its exit code."""
     monkeypatch.setattr(sys, "argv", ["booley", *argv])
     return cli.main()
+
+
+def serve_migration_docker(monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
+    """Answer the Booley Directory migration's Docker inventory from a new fake.
+
+    The fake's ``missing`` also hides ``docker`` from command lookup.
+    """
+    docker = SandboxDocker()
+    which = shutil.which
+
+    def lookup(name: str, *args: Any, **kwargs: Any) -> str | None:
+        if name == "docker":
+            return None if docker.missing else "docker"
+        return which(name, *args, **kwargs)
+
+    # The migration's two Docker seams: command lookup and its bounded capture.
+    monkeypatch.setattr(shutil, "which", lookup)
+    monkeypatch.setattr(
+        booley_dir_migration, "run_captured_bounded", lambda argv, **_kw: docker.run(argv)
+    )
+    return docker
