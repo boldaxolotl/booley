@@ -44,8 +44,8 @@ Until it is fixed, after untrusted agent work:
 
 ## Entering the Sandbox
 
-`booley session` starts the Sandbox and enters it. Run these on the host, after
-`booley init`:
+The `booley session` commands start, enter and stop the Sandbox. Run them on the
+host, after `booley init`:
 
 ```bash
 booley session up                       # create or start the Sandbox and print a T3 Code pairing link
@@ -64,9 +64,9 @@ browser; each command prints a new link. Treat the link like a password: it
 holds a one-time token. `up --no-ui` is for scripted Sandboxes and starts no
 UI, but it doesn't stop one that already runs: run `session down` first.
 `session status` reports whether T3 Code and the
-[Dashboard](USAGE.md#the-dashboard) run. `session down` keeps T3 Code's
-threads, pairings and worktrees for the next `up`; see
-[what survives](#what-survives-session-down).
+[Dashboard](USAGE.md#the-dashboard) run.
+[What survives `session down`](#what-survives-session-down) lists what T3 Code
+keeps for the next `up`.
 
 T3 Code lists the Project under its `[project].name` from
 [`booley.toml`](CONFIG.md#booleytoml). Booley sets that name again each time
@@ -344,7 +344,7 @@ These keys are host-only: `booley.toml` rejects them, and Booley stops on an
 unknown key or an invalid value.
 
 - **`idle_timeout_seconds`**: a Sandbox stops after this long with no Booley
-  activity and no open editor or terminal session in it.
+  activity, no open T3 Code page and no terminal session in it.
 - **`max_sessions`**: counts every Booley Sandbox on the Docker daemon, across
   all Projects. At the limit, starting another one fails with a list of the
   running Sandboxes; Booley never stops existing work to make room. Free a
@@ -379,9 +379,8 @@ host login, the `booley auth` token, or the API key from your shell. Its
 session history is kept across rebuilds.
 
 Booley's tools and skills work in every listed CLI, so a plain `claude` or
-`codex` in a Sandbox terminal has them. The Developer Agent's window uses the
-`default` CLI; Specialists use whichever listed CLI their model needs. T3 Code
-in the Sandbox offers threads only for the listed CLIs.
+`codex` in a Sandbox terminal has them. Specialists use the `default` CLI unless
+their model needs another listed one.
 
 After changing `clis`, `auth`, or `default`,
 [apply the change](#after-changing-sandbox-settings). Until you do, a changed
@@ -393,11 +392,8 @@ edits before you apply them.
 
 T3 Code runs inside the Sandbox. Booley reaches it through a relay on the host
 that listens on `127.0.0.1` only, so only a browser on this machine can open it.
-`session up` reuses the Project's previous port when it is free, so a paired
-browser stays paired. When another process holds that port, the relay moves to a
-new one, `session up` warns, and you pair the browser again with the new link.
-[`booley session up --no-ui`](#entering-the-sandbox) starts the Sandbox without
-T3 Code, the relay and the Dashboard.
+A paired browser stays paired across `session up` unless another process has
+taken the relay's port.
 
 ### What survives `session down`
 
@@ -405,10 +401,10 @@ T3 Code, the relay and the Dashboard.
   [`booley projects forget --purge <project>`](SETUP.md#projects-on-this-machine--host)
   removes it.
 - **T3 Code's worktrees** are in `.booley/t3-worktrees/` of the Project's main
-  checkout on the host. They stay usable as plain Git worktrees if the volume is
-  lost.
-- **T3 Code's logs** are capped: each time T3 Code starts, Booley deletes the
-  oldest until at most 200 MB remain.
+  checkout on the host. They stay plain Git worktrees if the volume is lost,
+  usable from a Sandbox terminal.
+- **T3 Code's logs** in that volume are capped: each time T3 Code starts, Booley
+  deletes the oldest until at most 200 MB remain.
 
 ### What Booley's policy turns off
 
@@ -443,9 +439,8 @@ If Claude reports `No such tool available` for one of them, or Codex reports
 
 ### Opening files in a host editor
 
-T3 Code's **Open in VS Code** button is disabled in the Sandbox, because Booley
-gives the Sandbox no way to start programs on the host. Use your own editor on
-the host instead: open the Project Root, or a thread's worktree under
+T3 Code's **Open in VS Code** button is disabled in the Sandbox. Use your own
+editor on the host instead: open the Project Root, or a thread's worktree under
 `.booley/t3-worktrees/` in the Project's main checkout. After untrusted agent
 work, first read the advice on the
 [known escape](#known-sandbox-escape-through-shared-git-metadata).
@@ -486,9 +481,8 @@ These steps apply when `[sandbox].image` names an image Booley doesn't build.
 After upgrading Booley, first rebuild your image with the new Booley wheel
 installed.
 
-Then, after an upgrade or a settings change:
-
-Run `booley session down`, `booley init --seed`, and `booley session up` on the
+Then recreate the Sandbox after each upgrade or settings change. Run
+`booley session down`, `booley init --seed`, and `booley session up` on the
 host.
 
 `--seed` rewrites the Sandbox's container settings without building any image.
