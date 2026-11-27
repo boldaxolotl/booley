@@ -58,6 +58,8 @@ _UTILIZATION_ROWS = {
     "dsp_count": "DSPs",
     "latch_count": "Register as Latch",
 }
+_METRIC_KEYS = {*_UTILIZATION_ROWS, "wns_ns", "whs_ns", "comb_loop_count", "per_clock"}
+_ANSWER_KEYS = {"stdout", "stderr", "returncode", "route", "metrics", "broken_report"}
 
 
 def _routed_files(metrics: dict) -> dict[str, str]:
@@ -152,7 +154,7 @@ class FakeVivado:
         monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(fake.directory / "runtime"))
         # The Edalize Makefile's ``make`` and Vivado are the boundary; the work root
         # the Flow passes is where they would write.
-        monkeypatch.setattr(fpga_edam, "fpga_run_command", fake._command)
+        monkeypatch.setattr(fpga_edam, "fpga_run_command", fake._command)  # boundary: runs Vivado
         return fake
 
     def answer(self, **answers: object) -> None:
@@ -162,6 +164,9 @@ class FakeVivado:
         ``broken_report`` (``"<report>:<fault>"``, fault ``missing``, ``empty`` or
         ``stale``). A list answers one run each, in run order: baseline Targets
         first, then current, each in Target order."""
+        metrics = answers.get("metrics", {})
+        named = set().union(*(metrics if isinstance(metrics, list) else [metrics]))
+        assert not answers.keys() - _ANSWER_KEYS and not named - _METRIC_KEYS, answers
         self.answers = {key: list(v) if isinstance(v, list) else v for key, v in answers.items()}
 
     def _take(self, key: str, default: object) -> object:

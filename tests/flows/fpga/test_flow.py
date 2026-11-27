@@ -17,6 +17,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from booley.core.build_paths import work_root_for
 from booley.evidence.timing import make_clock_timing, per_clock_to_json
@@ -376,7 +377,7 @@ def test_fpga_run_records_no_criterion(
         state_file.write_bytes(before)
         monkeypatch.setenv("BOOLEY_STATE_FILE", str(state_file))
     _write_project_config(tmp_path)
-    # A crash before routing leaves no report to parse.
+    # A run that exits non-zero does not route, so no report states these metrics.
     vivado.answer(
         returncode=returncode, metrics={"lut_count": 1200, "ff_count": 700, "wns_ns": wns_ns}
     )
@@ -887,7 +888,7 @@ def test_xdc_resolves_from_fileset(
     tmp_path: Path, vivado: FakeVivado, resolution: _Resolution
 ) -> None:
     """ADR 0031: the Target's file_type:xdc fileset is the XDC source of truth,
-    and its files resolve absolute against the build root."""
+    and its files resolve from the work root to the Project's files."""
     _write_project_config(tmp_path)
     resolution.edit = lambda resolved: dataclasses.replace(
         resolved,
@@ -990,6 +991,7 @@ def test_real_fusesoc_fpga_setup(
     edam_text = edam.read_text(encoding="utf-8")
     assert str(project) not in edam_text
     assert project.as_posix() not in edam_text
+    assert yaml.safe_load(edam_text)["parameters"]["WIDTH"]["datatype"] == "int"
 
 
 def test_vivado_failure_text_names_project_paths(
@@ -1689,7 +1691,6 @@ def test_baseline_summary_rows_notes_and_result(
     out = _TtyOut()
     monkeypatch.setattr("sys.stdout", out)
     _commit_project(tmp_path)
-    passing: dict = {}
     clocks = per_clock_to_json(
         {
             "fast": make_clock_timing("fast", 2.0, 0.5, 0.1),
@@ -1703,12 +1704,11 @@ def test_baseline_summary_rows_notes_and_result(
         route=[False, True, False, True, True, True],
         stderr=["", "", _SYNTH_SYNTAX, "", "", ""],
         metrics=[
-            passing,
-            {**passing, "lut_count": 1000, "ff_count": 160, "bram_count": 2, "dsp_count": 4},
             {},
-            {**passing, "wns_ns": -0.3},
+            {"lut_count": 1000, "ff_count": 160, "bram_count": 2, "dsp_count": 4},
+            {},
+            {"wns_ns": -0.3},
             {
-                **passing,
                 "lut_count": 1010,
                 "ff_count": 200,
                 "bram_count": 4,
@@ -1718,7 +1718,7 @@ def test_baseline_summary_rows_notes_and_result(
                 "per_clock": clocks,
                 "latch_count": 1,
             },
-            passing,
+            {},
         ],
     )
 
