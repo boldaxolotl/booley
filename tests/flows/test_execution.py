@@ -28,8 +28,21 @@ def test_malformed_config_preserves_legacy_enabled_default(tmp_path):
         [],
         {"flows": []},
         *({"flows": {"sim": {"enabled": value}}} for value in (None, 0, "false", {})),
+        {
+            "flows": {"venue": "x", "sim": {"backend": "none", "host_setup_commands": []}},
+            "sandbox": {"passthrough_env": []},
+        },
     ],
-    ids=["none", "list", "flows-list", "enabled-none", "enabled-0", "enabled-str", "enabled-map"],
+    ids=[
+        "none",
+        "list",
+        "flows-list",
+        "enabled-none",
+        "enabled-0",
+        "enabled-str",
+        "enabled-map",
+        "unread-keys",
+    ],
 )
 def test_only_an_explicit_boolean_false_disables_a_flow(config):
     assert flow_enabled_from_config("sim", config) is True
@@ -38,28 +51,6 @@ def test_only_an_explicit_boolean_false_disables_a_flow(config):
 def test_enabled_false_read_from_flow_section(tmp_path):
     root = _project(tmp_path, "[flows.sim]\nenabled = false\n")
     assert flow_enabled("sim", root) is False
-
-
-@pytest.mark.parametrize(
-    ("backend", "message"),
-    [
-        ("docker", r"all Flows run inside the Sandbox"),
-        ("host", r"all Flows run inside the Sandbox"),
-        ("none", r"enabled = false"),
-    ],
-)
-def test_retired_backend_is_a_hard_migration_error(backend, message):
-    config = {"flows": {"sim": {"backend": backend}}}
-
-    with pytest.raises(FlowConfigError, match=message):
-        flow_enabled_from_config("sim", config)
-
-
-def test_loaded_project_backend_is_not_silently_ignored(tmp_path):
-    root = _project(tmp_path, '[flows.sim]\nbackend = "docker"\n')
-
-    with pytest.raises(FlowConfigError, match=r"delete the key"):
-        flow_enabled("sim", root)
 
 
 def test_linked_worktree_without_local_config_uses_main_project_config(tmp_path):
@@ -90,8 +81,8 @@ def test_every_flow_rejects_retired_standalone_frontend_tables(requested, sectio
         flow_enabled_from_config(requested, config)
 
 
-def test_retired_flow_key_error_names_the_document_it_read(tmp_path):
-    root = _project(tmp_path, '[flows.lint]\nbackend = "x"\n')
+def test_flow_config_error_names_the_document_it_read(tmp_path):
+    root = _project(tmp_path, "[flows.elab]\n")
     with pytest.raises(FlowConfigError, match="retired") as raised:
-        flow_enabled("lint", root)
+        flow_enabled("sim", root)
     assert raised.value.path == root / ".booley" / "booley.toml"

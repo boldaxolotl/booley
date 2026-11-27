@@ -304,7 +304,7 @@ def test_mask_paths_become_read_only_empty_binds(project: Path) -> None:
 
 
 def test_invalid_mask_paths_reported_and_ignored(project: Path, capsys) -> None:
-    # Whole-knob rejection (mirrors passthrough_env): a partially applied
+    # Whole-knob rejection: a partially applied
     # mask list would leave the user believing a path is hidden.
     (project / ".booley" / "booley.toml").write_text(
         '[sandbox]\nmask_paths = ["ok/path", "../escape"]\n', encoding="utf-8", newline="\n"
