@@ -440,12 +440,19 @@ def _apply_suite_warning_filters() -> None:
         warnings.filterwarnings(*parse_warning_filter(spec, escape=False))
 
 
-def test_tool_owned_sqlite_finalizer_warning_is_ignored() -> None:
-    """A late-finalized coverage.py SQLite connection must not fail a green shard."""
-    observed = (
+@pytest.mark.parametrize(
+    "observed",
+    [
         "Exception ignored in: <sqlite3.Connection object at 0x7f6240eee890>\n"
-        "Enable tracemalloc to get traceback where the object was allocated."
-    )
+        "Enable tracemalloc to get traceback where the object was allocated.",
+        # CPython 3.14 names the event in its unraisable message.
+        "Exception ignored while finalizing database connection "
+        "<sqlite3.Connection object at 0x7cfa75a10b80>: None",
+    ],
+    ids=["ignored-in", "while-finalizing"],
+)
+def test_tool_owned_sqlite_finalizer_warning_is_ignored(observed: str) -> None:
+    """A late-finalized coverage.py SQLite connection must not fail a green shard."""
     with warnings.catch_warnings():
         _apply_suite_warning_filters()
         warnings.warn(pytest.PytestUnraisableExceptionWarning(observed), stacklevel=1)
