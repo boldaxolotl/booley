@@ -7,8 +7,10 @@ containers, networks and volumes. This module is also that program, run as
 
 from __future__ import annotations
 
+import itertools
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -24,6 +26,18 @@ if TYPE_CHECKING:  # the program imports the standard library only
 
 _State = dict[str, Any]
 _Result = tuple[int, str, str]
+_which = shutil.which  # tests patch ``shutil.which``; the Windows launcher lookup must not
+_LABEL_FIELD = re.compile(r'\{\{\.Label "([^"]+)"\}\}')
+_LABEL_OF_IMAGE = re.compile(r'\{\{ ?index \.Config\.Labels "([^"]+)" ?\}\}')
+
+
+def _record(value: Any) -> _State:
+    return {"Image": value} if isinstance(value, str) else value
+
+
+def _network(value: Any) -> _State:
+    """A network is its labels, or a record with ``Labels``, ``Internal`` and ``Options``."""
+    return value if {"Labels", "Internal", "Options"} & set(value) else {"Labels": value}
 
 
 def image_row(repository: str, tag: str, image_id: str, eol: str = "\n") -> str:
@@ -46,6 +60,53 @@ def _layers(value: Any) -> list[str]:
     return [value] if isinstance(value, str) else value.get("Layers", [value["Id"]])
 
 
+def _container(containers: _State, reference: str) -> str | None:
+    """A container's name, given its name or ``Id``."""
+    if reference in containers:
+        return reference
+    return next((n for n, v in containers.items() if _record(v).get("Id") == reference), None)
+
+
+def _container_document(name: str, record: _State) -> _State:
+    """``container inspect``; an ``Inspect`` document overrides what the record derives."""
+    inspect = record.get("Inspect", {})
+    running = {"Running": record.get("Running", True)}
+    return {
+        "Id": record.get("Id", name),
+        "Name": f"/{name}",
+        "Image": record["Image"],
+        "Config": {"Labels": record.get("Labels", {})},
+        "Mounts": record.get("Mounts", []),
+        **inspect,
+        "State": {**inspect.get("State", {}), **running},
+        "NetworkSettings": {"Networks": {net: {} for net in record.get("Networks", [])}},
+    }
+
+
+def _container_answers(name: str, value: Any, _template: str | None) -> dict[str | None, str]:
+    record = _record(value)
+    document = json.dumps(_container_document(name, record))
+    return {"{{.Image}}": record["Image"], "{{json .}}": document}
+
+
+def _image_answers(_key: str, value: Any, template: str | None) -> dict[str | None, str]:
+    record = {} if isinstance(value, str) else value
+    layers = _layers(value)
+    config = {"Labels": record.get("Labels", {}), "Env": record.get("Env", [])}
+    document = {"Id": _id(value), "Config": config, "RootFS": {"Layers": layers}}
+    answers: dict[str | None, str] = {
+        None: json.dumps([document]),
+        "{{json .}}": json.dumps(document),
+        "{{.Id}}": _id(value),
+        "{{len .RootFS.Layers}}": str(len(layers)),
+        "{{json .RepoDigests}}": "[]",
+    }
+    label = _LABEL_OF_IMAGE.fullmatch(template or "")
+    if label:
+        answers[template] = config["Labels"].get(label.group(1), "<no value>")
+    return answers
+
+
 def _inspect(state: _State, args: list[str]) -> _Result:
     template = None
     for flag in ("--format", "-f"):
@@ -58,26 +119,12 @@ def _inspect(state: _State, args: list[str]) -> _Result:
         return 1, "", f"Error response from daemon: invalid reference format: {reference}\n"
     containers = args[0] == "container"
     values = state["containers" if containers else "images"]
-    key = reference if containers and reference in values else None
-    key = key if containers else _find(values, reference)
+    key = (_container if containers else _find)(values, reference)
     if key is None:
         return 1, "", f"Error: No such {'container' if containers else 'image'}: {reference}\n"
-    value = values[key]
-    if containers and template == "{{.Image}}":
-        return 0, (value if isinstance(value, str) else value["Image"]) + "\n", ""
-    if not containers:
-        record = {} if isinstance(value, str) else value
-        layers = _layers(value)
-        config = {"Labels": record.get("Labels", {}), "Env": record.get("Env", [])}
-        document = {"Id": _id(value), "Config": config, "RootFS": {"Layers": layers}}
-        answers = {
-            None: json.dumps([document]),
-            "{{.Id}}": _id(value),
-            "{{len .RootFS.Layers}}": str(len(layers)),
-            "{{json .RepoDigests}}": "[]",
-        }
-        if template in answers:
-            return 0, answers[template] + "\n", ""
+    answers = (_container_answers if containers else _image_answers)(key, values[key], template)
+    if template in answers:
+        return 0, answers[template] + "\n", ""
     return 2, "", f"fake docker: unsupported {args[0]} inspect template: {template}\n"
 
 
@@ -113,31 +160,126 @@ def _list_images(state: _State, args: list[str]) -> _Result:
     return 0, out, ""
 
 
-def _list_named(state: _State, args: list[str]) -> _Result:
-    """``container ls``, ``volume ls`` and ``network ls`` with label and volume filters."""
-    kind = args[0]
+def _matching(state: _State, kind: str, args: list[str]) -> list[tuple[str, _State]] | _Result:
+    """The ``kind`` records the ``--filter`` words select, or the failure answer."""
     filters = [args[at + 1] for at, word in enumerate(args) if word == "--filter"]
-    names = []
+    found = []
     for name, value in state[kind + "s"].items():
         if kind == "container":
-            record = {} if isinstance(value, str) else value
-            if "--all" not in args and not record.get("Running", True):
+            record = _record(value)
+            if not {"-a", "--all"} & set(args) and not record.get("Running", True):
                 continue
         else:
-            record = {"Labels": value}
+            record = _network(value) if kind == "network" else {"Labels": value}
         matches = True
         for text in filters:
             key, _, wanted = text.partition("=")
             if key == "label":
-                label, _, expected = wanted.partition("=")
-                matches &= record.get("Labels", {}).get(label) == expected
+                label, equals, expected = wanted.partition("=")
+                labels = record.get("Labels", {})
+                matches &= label in labels and (not equals or labels[label] == expected)
             elif key == "volume":
                 matches &= wanted in record.get("Volumes", ())
             else:
                 return 2, "", f"fake docker: unsupported filter: {text}\n"
         if matches:
-            names.append(name)
-    return 0, "".join(name + state["eol"] for name in names), ""
+            found.append((name, record))
+    return found
+
+
+def _list_named(state: _State, args: list[str]) -> _Result:
+    """``container ls``, ``volume ls`` and ``network ls`` with label and volume filters."""
+    found = _matching(state, args[0], args)
+    if isinstance(found, tuple):
+        return found
+    return 0, "".join(name + state["eol"] for name, _ in found), ""
+
+
+def _list_processes(state: _State, args: list[str]) -> _Result:
+    """``ps``: the ``{{.ID}}``, ``{{.Names}}``, ``{{.State}}`` and ``{{.Label}}`` fields."""
+    found = _matching(state, "container", args)
+    if isinstance(found, tuple):
+        return found
+    out = ""
+    for name, record in sorted(found):
+        status = record.get("State") or ("running" if record.get("Running", True) else "exited")
+        line = args[args.index("--format") + 1]
+        for field, text in (("ID", record.get("Id", name)), ("Names", name), ("State", status)):
+            line = line.replace("{{." + field + "}}", text)
+        for label in _LABEL_FIELD.findall(line):
+            line = line.replace(
+                f'{{{{.Label "{label}"}}}}', record.get("Labels", {}).get(label, "")
+            )
+        out += line + state["eol"]
+    return 0, out, ""
+
+
+def _pairs(args: list[str], flag: str) -> dict[str, str]:
+    """The ``key=value`` words that follow each *flag*."""
+    return dict(a.split("=", 1) for p, a in itertools.pairwise(args) if p == flag)
+
+
+def _run(state: _State, args: list[str]) -> _Result:
+    key = _find(state["images"], args[-1])
+    if key is None:
+        return 1, "", f"Unable to find image {args[-1]!r} locally\n"
+    networks = [args[at + 1] for at, word in enumerate(args) if word == "--network"]
+    record = {"Image": _id(state["images"][key]), "Labels": _pairs(args, "--label")}
+    state["containers"][args[args.index("--name") + 1]] = record | {"Networks": networks}
+    return 0, "", ""
+
+
+def _change_container(state: _State, args: list[str]) -> _Result:
+    """``rm [-f]``, ``start`` and ``stop`` of one container."""
+    name = _container(state["containers"], args[-1])
+    if name is None:
+        return 1, "", f"Error: No such container: {args[-1]}\n"
+    if args[0] == "rm":
+        del state["containers"][name]
+    else:
+        record = _record(state["containers"][name]) | {"Running": args[0] == "start"}
+        state["containers"][name] = record
+    return 0, args[-1] + "\n", ""
+
+
+def _network_command(state: _State, args: list[str]) -> _Result:
+    """``network create``, ``rm``, ``connect`` and ``inspect``."""
+    verb, networks = args[1], state["networks"]
+    name = args[-1]
+    if verb == "create":
+        record = {"Internal": "--internal" in args, "Options": _pairs(args, "--opt")}
+        networks[name] = record | {"Labels": _pairs(args, "--label")}
+        return 0, name + "\n", ""
+    if verb == "connect":
+        name = args[-2]
+    elif verb == "inspect":
+        name = next(word for word in args[2:] if not word.startswith("-"))
+    if name not in networks:
+        return 1, "", f"Error response from daemon: network {name} not found\n"
+    if verb == "rm":
+        del networks[name]
+    elif verb == "connect":
+        container = _record(state["containers"][args[-1]])
+        container["Networks"] = [*container.get("Networks", []), name]
+        state["containers"][args[-1]] = container
+    else:
+        record = _network(networks[name])
+        attached = {
+            f"id-{n}": {"Name": n}
+            for n, value in state["containers"].items()
+            if _record(value).get("Running", True) and name in _record(value).get("Networks", [])
+        }
+        document = {"Internal": record.get("Internal", False), "Containers": attached}
+        document["Options"] = record.get("Options", {})
+        return 0, json.dumps(document) + "\n", ""
+    return 0, "", ""
+
+
+def _pull(state: _State, args: list[str]) -> _Result:
+    if args[-1] not in state["images"]:
+        state["counter"] += 1
+        state["images"][args[-1]] = f"sha256:image-{state['counter']}"
+    return 0, "", ""
 
 
 def _tag(state: _State, args: list[str]) -> _Result:
@@ -168,7 +310,7 @@ def _remove(state: _State, args: list[str]) -> _Result:
 
 def _build(state: _State, args: list[str]) -> _Result:
     images = state["images"]
-    labels = dict(a.split("=", 1) for a, p in zip(args[1:], args, strict=False) if p == "--label")
+    labels = _pairs(args, "--label")
     output = args[args.index("-t") + 1]
     recipe = Path(args[args.index("-f") + 1]).read_text(encoding="utf-8")
     parent = next(line.split()[1] for line in recipe.splitlines() if line.startswith("FROM "))
@@ -211,8 +353,18 @@ _VERBS = {
     ("image", "rm"): _remove,
     ("volume", "rm"): _remove_volume,
     ("system", "df"): _disk_usage,
+    ("network", "create"): _network_command,
+    ("network", "rm"): _network_command,
+    ("network", "connect"): _network_command,
+    ("network", "inspect"): _network_command,
     ("tag",): _tag,
     ("build",): _build,
+    ("pull",): _pull,
+    ("ps",): _list_processes,
+    ("run",): _run,
+    ("rm",): _change_container,
+    ("start",): _change_container,
+    ("stop",): _change_container,
 }
 
 
@@ -265,8 +417,9 @@ def _serve_call(here: Path, command: list[str]) -> int:
     if pause:
         state["pause"] = []
     state_path.write_bytes(json.dumps(state).encode("utf-8"))
-    sys.stdout.buffer.write(out.encode("utf-8"))  # bytes: Docker's line ends on Windows too
-    sys.stderr.buffer.write(err.encode("utf-8"))
+    # bytes: Docker's line ends on Windows too, and a reply may hold a byte that is not UTF-8
+    sys.stdout.buffer.write(out.encode("utf-8", "surrogateescape"))
+    sys.stderr.buffer.write(err.encode("utf-8", "surrogateescape"))
     if state["remove_after"] and _holds(state["remove_after"], command):
         for name in ("docker", "docker.cmd"):
             (here / name).unlink(missing_ok=True)
@@ -337,10 +490,12 @@ class FakeDocker:
     """The installed fake: its program name and path, state, reply rules and call log."""
 
     images = _state_section("images")  # reference or ID -> ID, or an inspect record
-    containers = _state_section("containers")  # name -> image ID, or Image/Running/Labels/Volumes
-    networks = _state_section("networks")  # name -> labels
+    # name -> image ID, or Image/Running/Labels/Volumes/Networks/State/Id/Mounts/Inspect
+    containers = _state_section("containers")
+    networks = _state_section("networks")  # name -> labels, or Labels/Internal/Options
     volumes = _state_section("volumes")  # name -> labels
     eol = _setting("eol")  # the line end of every listing
+    after_build = _setting("after_build")  # edits applied once after the next build
     remove_after = _setting("remove_after")  # words of the last call before the CLI is gone
 
     def __init__(self, path: Path) -> None:
@@ -360,6 +515,9 @@ class FakeDocker:
     @property
     def built(self) -> bool:
         return self.build_marker.exists()
+
+    def forget_calls(self) -> None:
+        (self.path.parent / "fake_docker_calls.jsonl").write_bytes(b"")
 
     def removals(self) -> list[list[str]]:
         return [call for call in self.calls if call[:2] == ["image", "rm"]]
@@ -421,7 +579,7 @@ def _find_launcher_as_posix_does(monkeypatch: pytest.MonkeyPatch, launcher: Path
             if isinstance(args, list) and args[:1] == ["docker"] and not kwargs.get("executable"):
                 env = kwargs.get("env")
                 path = (os.environ if env is None else env).get("PATH", "")
-                found = shutil.which("docker", path=path)
+                found = _which("docker", path=path)
                 if found is None:
                     raise FileNotFoundError(2, "No such file or directory", "docker")
                 # str: a test may patch normcase with a function that refuses a Path.
@@ -451,6 +609,9 @@ def install_fake_docker(
     ``images`` (reference or ID -> image ID, or ``{"Id", "Labels", "Layers", "Env",
     "Size"}``) makes the fake store-backed: calls no reply covers are served from the
     state like Docker serves them, and a command the state does not model exits 2.
+    The state serves image ``inspect``/``ls``/``tag``/``rm``/``pull``, ``build``, ``ps``,
+    container ``inspect``/``ls``/``run``/``rm``/``start``/``stop``, network ``create``/``rm``/
+    ``connect``/``inspect``/``ls``, volume ``ls``/``rm`` and ``system df``.
     ``after_build`` (reference -> fields, ``"<output>"``
     for the built image) edits images once after the next build; after a call holding the
     ``remove_after`` words the program deletes itself, so later calls find no Docker CLI.
