@@ -124,7 +124,7 @@ capture_source() {
   local expected_digest="${reference##*@}"
   local digests
 
-  docker pull "${reference}" > "${EVIDENCE_DIR}/${label}-source-pull.log"
+  bash "$(dirname "$0")/retry.sh" docker pull "${reference}" > "${EVIDENCE_DIR}/${label}-source-pull.log"
   docker image inspect "${reference}" > "${EVIDENCE_DIR}/${label}-source-inspect.json"
   digests="$(docker image inspect --format '{{join .RepoDigests " "}}' "${reference}")"
   printf '%s\t%s\t%s\n' "${label}" "${reference}" "${digests}" \
