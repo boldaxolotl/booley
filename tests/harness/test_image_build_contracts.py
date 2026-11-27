@@ -386,6 +386,8 @@ from booley.runtime import image_lifecycle as lifecycle
 from booley.runtime.image_build_contracts import expected_image_build_contracts
 from booley.runtime.image_identity import ImageMetadata
 
+# DockerPort and BuildPort stand-ins: the logic above them under test is planning and
+# preparing the hybrid image graph from an installed wheel.
 class Docker:
     def __init__(self): self.images = {}
     def image_id(self, ref): return self.images.get(ref, (None, {}))[0]
