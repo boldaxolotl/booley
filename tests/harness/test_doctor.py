@@ -76,6 +76,7 @@ from tests.docker_cli_guard import (
 )
 from tests.docker_host_support import fake_docker_host
 from tests.harness import test_session_runtime as resolution_fixtures
+from tests.harness.agent_auth_support import pin_venue
 from tests.runtime.test_sandbox_remedy_workflows import (
     EXTERNAL,
     HEADLESS_REFRESH,
@@ -4161,8 +4162,9 @@ class TestSubscriptionCredsHealth:
         monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+04:00")
         monkeypatch.setattr(doctor, "wall_clock", lambda: now)
         # Private: these stubs isolate the expiry display from the other credential checks (not yet moved onto the public run).
-        monkeypatch.setattr(doctor, "_configured_provider", lambda _: auth_token.APP_CLAUDE)
-        monkeypatch.setattr(doctor, "_configured_auth_policy", lambda *_: auth_token.VISITOR_AUTH)
+        pin_venue(monkeypatch, inside=True)
+        monkeypatch.setenv("BOOLEY_AGENT_APP", auth_token.APP_CLAUDE)
+        monkeypatch.delenv("BOOLEY_AGENT_CLIS", raising=False)
         monkeypatch.setattr(doctor, "_check_agent_auth_token", lambda *_a, **_k: None)
         monkeypatch.setattr(doctor, "_check_oauth_token", lambda *_a, **_k: None)
         monkeypatch.setattr(doctor, "_check_auth_recorded", lambda *_a: None)
@@ -4176,7 +4178,10 @@ class TestSubscriptionCredsHealth:
             path.write_text(json.dumps({"claudeAiOauth": {"expiresAt": expiry * 1000}}))
             # Private: the expiry transcript needs the stubs above, which a whole run cannot isolate.
             reporter = doctor._Reporter.create()
-            doctor._run_agent_credential_checks(SimpleNamespace(booley_toml={}), reporter)
+            doctor._run_agent_credential_checks(
+                SimpleNamespace(booley_toml={"agent": {"default": "claude", "auth": "visitor"}}),
+                reporter,
+            )
             result = reporter.result(0)
             legacy = f"{hour + 4:02d}:00 · 08 OCT 2026"
             expected = (
@@ -4899,7 +4904,7 @@ def test_seed_mount_policy_uses_same_project_policy_as_credential_report(tmp_pat
         first_target="",
     )
     # Private: pins the audited policy name the credential report renders; not yet moved onto the public run.
-    assert doctor._configured_auth_policy(audit) == "api_key"
+    assert doctor._agent_audit(audit, None).policy("claude") == "api_key"
 
 
 def _seed_mount_policy_project(tmp_path, monkeypatch, app, policy):
