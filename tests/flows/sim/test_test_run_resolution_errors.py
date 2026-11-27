@@ -87,3 +87,8 @@ def test_a_resume_hint_names_every_frozen_run_when_the_plan_cannot_be_built(tmp_
     (tmp_path / "unnamed").mkdir()
     unnamed = _hdl_plan(tmp_path / "unnamed", ((build_test_run(None, seed=7),),), ()).manifest
     assert flow._frozen_test_run_options(unnamed, "sim") == " --seed 7"
+    # Without a plan, nothing shows the Target registers Tests now.
+    assert not flow._unnamed_run_is_replaced(unnamed, "sim")
+    (tmp_path / "unseeded").mkdir()
+    unseeded = _hdl_plan(tmp_path / "unseeded", ((build_test_run(None),),), ()).manifest
+    assert flow._frozen_test_run_options(unseeded, "sim") == ""

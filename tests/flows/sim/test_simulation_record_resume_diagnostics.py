@@ -165,6 +165,15 @@ def test_resume_of_a_default_invocation_record_refuses_tests_added_to_its_target
 
     assert result.exit_code == 2
     assert result.outcome.detail["mismatches"] == ["test suite"]
+    # --test cannot name the frozen unnamed run, so the refusal says how to repeat it.
+    (command,) = [
+        line.strip()
+        for line in result.outcome.report_text.splitlines()
+        if line.strip().startswith("booley flow sim --target sim_0")
+    ]
+    rerun = parse_request(SimulateFlow(), shlex.split(command)[3:])
+    assert (rerun.test, rerun.seed) == (None, 1)
+    assert "remove them from tests.toml first" in result.outcome.report_text
     assert len(executions) == 1
     assert _snapshot(manifest.parent) == before
 

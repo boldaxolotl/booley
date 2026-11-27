@@ -501,9 +501,8 @@ booley flow sim --resume-from <manifest.json>
 - A test with a recorded result is finished, even if it failed. Resume never
   re-runs failures; start a new run for that.
 - Resume refuses (exit `2`) when the Target's sources, Tests or simulation
-  settings have changed since the original run. The refusal names what changed,
-  for example the source closures or the test suite, and prints the command for
-  a new run with the same Test Runs and seeds.
+  settings have changed since the original run. The refusal names what changed
+  and, like the coverage refusal above, prints the command for a new run.
 - Don't edit Simulation Record files by hand: resume checks that they are
   intact.
 

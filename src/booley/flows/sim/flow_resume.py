@@ -240,7 +240,13 @@ class SimulationRecordResumeMixin:
             f"booley flow sim --target {shlex.quote(selector)}{tests or ''}{coverage}"
             f"{trace}{no_waivers}{self._recorded_report_dir_option(validated)}"
         )
-        if tests is None:
+        if self._unnamed_run_is_replaced(validated.manifest, selector):
+            note = (
+                "This Simulation Record froze the unnamed run of a Target without registered "
+                "Tests. The Target registers Tests now: remove them from tests.toml first, or "
+                "the command runs them instead."
+            )
+        elif tests is None:
             note = "Add the original --test/--tests-file selection if you used one."
         elif tests:
             note = (
@@ -268,14 +274,28 @@ class SimulationRecordResumeMixin:
             pass  # the default is unknown, so the command names the root
         return f" --report-dir {shlex.quote(str(root))}"
 
+    def _unnamed_run_is_replaced(self, manifest: SimulationRecordManifest, selector: str) -> bool:
+        """Whether the record froze the unnamed run and the Target now registers Tests.
+
+        ``--test`` cannot name that run, so no command repeats it while they exist.
+        """
+        try:
+            runs = [run for group in _manifest_run_groups(manifest) for run in group]
+            return [run.test for run in runs] == [None] and bool(
+                self._target_test_plan(selector).tests
+            )
+        except (fusesoc_registry.FuseSocError, ValueError):
+            return False
+
     def _frozen_test_run_options(
         self, manifest: SimulationRecordManifest, selector: str
     ) -> str | None:
         """``--test`` options that repeat the record's Test Runs in a new run.
 
         None when the manifest's Test Runs cannot be read.  Empty when the
-        frozen Test Runs are the Target's whole default suite: the plain
-        selection then resolves to the same runs.  Any other record (a subset,
+        frozen Test Runs are the Target's whole default suite (the plain
+        selection then resolves to the same runs) or the unseeded unnamed
+        invocation.  Any other record (a subset,
         a Test Variant, a pinned or drawn seed, a default that has since
         changed) is named run by run, so a new run draws and resolves nothing
         again; the unnamed invocation is repeated by its ``--seed``.
