@@ -26,7 +26,6 @@ from booley.measurement import metrics_file
 from booley.measurement.run_key import resolve_measurement_key
 from booley.measurement.run_store import MeasurementStore
 from booley.runtime import job_records
-from booley.runtime.runtime_context import RuntimeLocation
 from tests.harness.test_checkout_flow import (
     FLOW,
     World,
@@ -40,7 +39,6 @@ from tests.harness.test_measure_children_flows import (
     declare_stub_metrics,
     started_targets,
 )
-from tests.sandbox_venue_fake import place
 from tests.time_budget import hang_guard_s
 
 __all__ = ["make_world"]
@@ -89,7 +87,6 @@ def _stub_tables(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def measure(monkeypatch: pytest.MonkeyPatch, world: World, *arguments: str) -> int:
     """Run ``booley -C <live Project> measure <arguments>`` in a Sandbox."""
-    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setattr(sys, "argv", ["booley", "-C", str(world.live), "measure", *arguments])
     monkeypatch.setattr(sys, "excepthook", sys.excepthook)  # main() quiets a Ctrl-C's traceback
     return cli.main()

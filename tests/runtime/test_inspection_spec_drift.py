@@ -530,7 +530,7 @@ def test_retired_auth_skips_the_drift_check_with_a_note(
 
 @pytest.mark.parametrize("case", ["auto", "claude-spec", "missing-spec"])
 def test_hand_written_spec_is_not_compared(
-    project: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest, case: str
+    project: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     spec = _seed(project, dc.APP_CLAUDE)
     spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "auto" if case == "auto" else "claude"
@@ -572,7 +572,6 @@ def test_hand_written_sandbox_unparseable_spec_names_no_init_rerun(
 def test_inconclusive_image_comparison_names_host_doctor_only_off_a_hand_written_sandbox(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
-    request: pytest.FixtureRequest,
     hand_written: bool,
 ) -> None:
     if hand_written:

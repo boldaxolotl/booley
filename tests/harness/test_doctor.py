@@ -1140,6 +1140,7 @@ def test_doctor_backend_hint_matches_mode(tmp_path, monkeypatch, capsys, deep):
     _patch_environment(monkeypatch, tmp_path, booley_dir)
     _healthy_doctor_backend(monkeypatch)
     _set_venue(monkeypatch, True)
+    monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
     rss_calls, model_calls = [], []
 
     def measure(root):
@@ -5411,6 +5412,7 @@ def test_init_fix_hints_name_where_to_run_init(
         toml="\n[stealth]\nenabled = true\n",
     )
     place(monkeypatch, RuntimeLocation[location])
+    monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
 
     result = _doctor_run(tmp_path)
 

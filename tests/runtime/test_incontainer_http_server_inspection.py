@@ -49,7 +49,6 @@ def test_not_serving_fails_with_log_tail_and_remedy(
     closed_port: int,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
-    request: pytest.FixtureRequest,
     hand_written: bool,
 ) -> None:
     if hand_written:

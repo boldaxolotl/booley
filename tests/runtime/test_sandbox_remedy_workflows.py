@@ -200,7 +200,6 @@ def test_own_image_named_like_the_generated_one_is_external(host: SimpleNamespac
 def test_inside_the_sandbox_lists_both_workflows(
     host: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
-    request: pytest.FixtureRequest,
     location: str,
 ) -> None:
     hand_written = location == "hand-written"

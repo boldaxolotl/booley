@@ -29,7 +29,7 @@ from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 from tests.docker_host_support import fake_docker_host
-from tests.sandbox_venue_fake import place
+from tests.sandbox_venue_fake import place, point_mounts
 from tests.subprocess_budget import run_bounded_child
 
 TICKETS_REL = Path(".booley") / "tickets"
@@ -696,18 +696,13 @@ class TestVersionCommitDate:
 # ===========================================================================
 
 
-def _host_venue(monkeypatch):
-    """Simulate the host: no env marker, no /.dockerenv-style probe hits."""
-    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
-    return patch.object(Path, "exists", lambda self: False)
-
-
 class TestEnforceVenue:
     @pytest.mark.parametrize("command", ["chat", "dashboard", "worktree", "flow", "specialist"])
     def test_container_only_command_refused_on_host(self, command, monkeypatch, capsys):
         """Workflow commands on the host -> exit 2 with the actionable fix."""
         monkeypatch.setattr(sys, "argv", ["booley", command])
-        with _host_venue(monkeypatch), pytest.raises(SystemExit) as exc:
+        place(monkeypatch, RuntimeLocation.HOST)
+        with pytest.raises(SystemExit) as exc:
             tlr._enforce_runtime_location(command)
         assert exc.value.code == 2
         err = capsys.readouterr().err
@@ -741,24 +736,21 @@ class TestEnforceVenue:
             assert message in capsys.readouterr().err
 
     @pytest.mark.parametrize(
-        ("mounts", "refused", "init_message"),
+        ("location", "refused", "init_message"),
         [
-            ("/", False, "host init reached"),
-            ("/work/.devcontainer", True, "cannot run inside a Booley-issued Sandbox"),
+            (RuntimeLocation.HOST, False, "host init reached"),
+            (RuntimeLocation.ISSUED_SANDBOX, True, "cannot run inside a Booley-issued Sandbox"),
         ],
         ids=["container-host", "issued-sandbox"],
     )
     def test_container_host_override_reaches_host_commands(
-        self, tmp_path, monkeypatch, capsys, mounts, refused, init_message
+        self, tmp_path, monkeypatch, capsys, location, refused, init_message
     ):
         """BOOLEY_CONTAINER=0 in a container runs host commands, except in an issued Sandbox."""
         from booley.harness import init_cmd
-        from booley.runtime import runtime_context
 
-        (tmp_path / "mountinfo").write_bytes(f"1 0 0:1 / {mounts} rw - ext4 /dev/x rw\n".encode())
-        monkeypatch.setattr(runtime_context, "_MOUNTINFO", tmp_path / "mountinfo")
-        monkeypatch.setenv("BOOLEY_CONTAINER", "0")
-        monkeypatch.setattr(Path, "exists", lambda self: self.as_posix() == "/.dockerenv")
+        place(monkeypatch, RuntimeLocation.HOST, container_host=True)
+        point_mounts(monkeypatch, location)
         # private: the first host-only step of run_init; reaching it proves the host dispatch.
         monkeypatch.setattr(
             init_cmd, "_check_init_layout", Mock(side_effect=OSError(init_message))
@@ -771,14 +763,14 @@ class TestEnforceVenue:
         assert init_message in output.out + output.err
 
     def test_init_allowed_on_host(self, monkeypatch):
-        with _host_venue(monkeypatch):
-            tlr._enforce_runtime_location("init")  # must not raise
+        place(monkeypatch, RuntimeLocation.HOST)
+        tlr._enforce_runtime_location("init")  # must not raise
 
     @pytest.mark.parametrize("command", ["cheat", "doctor", None])
     def test_dual_venue_commands_never_guarded(self, command, monkeypatch):
         """cheat/doctor (and no command at all) run on either side."""
-        with _host_venue(monkeypatch):
-            tlr._enforce_runtime_location(command)  # host: must not raise
+        place(monkeypatch, RuntimeLocation.HOST)
+        tlr._enforce_runtime_location(command)  # host: must not raise
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         tlr._enforce_runtime_location(command)  # container: must not raise
 

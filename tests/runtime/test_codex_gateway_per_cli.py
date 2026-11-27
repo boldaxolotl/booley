@@ -169,7 +169,7 @@ def test_issued_sandbox_routes_codex_through_gateway_and_never_claude(tmp_path, 
     host_env = {"BOOLEY_GATEWAY_URL": _GATEWAY_URL, "BOOLEY_GATEWAY_TOKEN": "SYNTHETIC_TOKEN"}
     for key, value in spec["remoteEnv"].items():
         monkeypatch.setenv(key, host_env.get(key, value) if "localEnv" in value else value)
-    # Only a Sandbox hides the gateway.
+    # Only a container hides the gateway.
     place(monkeypatch, RuntimeLocation.HOST, container_host=True)
     assert spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "subscription"
 
