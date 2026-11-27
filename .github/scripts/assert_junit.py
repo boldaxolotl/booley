@@ -34,14 +34,12 @@ def read_counts(path: Path) -> Counts:
     )
 
 
-def copy_if_flaky(junit: Path, directory: Path) -> bool:
+def copy_if_flaky(junit: Path, directory: Path) -> None:
     """Copy a report that records a fail-then-pass to *directory*/junit.xml."""
     cases = ElementTree.parse(junit).iter("testcase")
-    if not any(child.tag in FLAKY_TAGS for case in cases for child in case):
-        return False
-    directory.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(junit, directory / "junit.xml")
-    return True
+    if any(child.tag in FLAKY_TAGS for case in cases for child in case):
+        directory.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(junit, directory / "junit.xml")
 
 
 def summary_line(label: str, counts: Counts) -> str:

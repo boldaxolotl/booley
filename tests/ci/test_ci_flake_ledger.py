@@ -15,6 +15,8 @@ import pytest
 from tests.ci.gh_api_fake import GhApiFake
 from tests.path_tool_fake import PathToolFake
 
+from booley.runtime.timefmt import format_human_date
+
 sys.path.insert(0, str(Path(__file__).parents[2] / ".github/scripts"))
 
 _FIXTURES = Path(__file__).parent / "fixtures/flake_ledger"
@@ -36,7 +38,9 @@ def _marker(name: str = "flaky-a", fixture: str = "flaky.xml") -> tuple[str, byt
 
 
 def _job(pytest_step: str, publish: str) -> dict[str, Any]:
-    steps = [("Run tests", pytest_step), ("Publish pytest evidence", publish)]
+    # The skipped step is another mode of the test job, between pytest and publish.
+    steps = [("Run tests", pytest_step), ("Run other mode", "skipped")]
+    steps.append(("Publish pytest evidence", publish))
     return {"name": "test / x", "steps": [{"name": n, "conclusion": c} for n, c in steps]}
 
 
@@ -99,9 +103,10 @@ def test_hits_count_runs_not_jobs_or_attempts(
 
     assert _main(fake) == 0
     text = capsys.readouterr().out
+    window = f"{format_human_date(datetime(2026, 11, 20, 12, tzinfo=UTC))} to "
+    window += format_human_date(_NOW)
     assert text.startswith(
-        "Flake ledger 2026-11-20T12:00:00Z..2026-11-27T12:00:00Z (7 days): "
-        "2 Tests runs read, 2 test ids, 2 candidates\n"
+        f"Flake ledger {window} (7 days): 2 Tests runs read, 2 test ids, 2 candidates\n"
     )
     assert f"\n{_CLASS_ID}: 2 hits (candidate)\n" in text
 
@@ -226,12 +231,18 @@ def _bad_response(fake: GhApiFake) -> None:
     fake.artifacts[42].append({"name": "flaky-a"})
 
 
-def _lost_upload(fake: GhApiFake) -> None:
-    jobs = (_job("success", "failure"),)
-    fake.add_run(42, "2026-11-26T00:00:00Z", jobs=jobs, conclusion="failure")
+def _lost(
+    publish: str = "failure", conclusion: str = "failure", attempt: int = 1
+) -> Callable[[GhApiFake], None]:
+    def arrange(fake: GhApiFake) -> None:
+        jobs = (_job("success", publish),)
+        fake.add_run(42, "2026-11-26T00:00:00Z", jobs=jobs, conclusion=conclusion, attempt=attempt)
+
+    return arrange
 
 
 _UNREADABLE = "run 42: artifact flaky-a unreadable: "
+_LOST = "run 42: job test / x ran pytest but its evidence upload failed"
 
 
 @pytest.mark.parametrize(
@@ -250,7 +261,9 @@ _UNREADABLE = "run 42: artifact flaky-a unreadable: "
         (_too_many, ["Tests runs ", "more than 1000"]),
         (_truncated, ["run 42: listed 0 of 3 artifacts"]),
         (_bad_response, ["run 42: unreadable artifacts response"]),
-        (_lost_upload, ["run 42: job test / x ran pytest but its evidence upload failed"]),
+        pytest.param(_lost(), [_LOST], id="lost-upload"),
+        pytest.param(_lost("cancelled", "cancelled"), [_LOST], id="cancelled-upload"),
+        pytest.param(_lost(conclusion="success", attempt=2), [_LOST], id="earlier-attempt"),
     ],
     ids=lambda value: value.__name__.strip("_") if callable(value) else "message",
 )

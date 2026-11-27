@@ -36,7 +36,7 @@ from booley.core.boundary import (
     require_list,
     require_str,
 )
-from booley.runtime.timefmt import parse_timestamp, rfc3339_from_datetime
+from booley.runtime.timefmt import format_human_date, parse_timestamp, rfc3339_from_datetime
 
 MIN_HITS = 2
 MARKER_PREFIX = "flaky-"
@@ -46,6 +46,7 @@ _PAGE_SIZE = 100
 _MAX_ITEMS = 1000  # GitHub returns no more than this for a filtered run listing
 _GH_TIMEOUT_SECONDS = 120
 _PUBLISH_STEP = "Publish pytest evidence"
+_LOST_UPLOAD = ("failure", "cancelled")
 
 Gh = Callable[[list[str]], "subprocess.CompletedProcess[bytes]"]
 
@@ -61,6 +62,7 @@ class Run:
     created_at: datetime
     branch: str
     conclusion: str
+    attempt: int
 
 
 @dataclass(frozen=True)
@@ -144,6 +146,7 @@ def _run(item: dict[str, Any]) -> Run:
         parse_timestamp(require_str(item, "created_at")),
         str(item.get("head_branch") or ""),
         str(item.get("conclusion") or ""),
+        require_int(item.get("run_attempt"), field="run_attempt"),
     )
 
 
@@ -223,15 +226,18 @@ def _check_published(gh: Gh, run: Run) -> None:
     with _reading(where, "jobs"):
         for job in items:
             steps = [require_dict(step) for step in require_list(job.get("steps", []))]
-            # The composite action is one step, so the step before it ran pytest.
-            for tests, publish in pairwise(steps):
+            # The composite action is one step, so the step that ran before it ran pytest.
+            # The test job's unused modes are skipped steps between the two.
+            ran = [step for step in steps if step.get("conclusion") != "skipped"]
+            for tests, publish in pairwise(ran):
                 if (
                     publish.get("name") == _PUBLISH_STEP
-                    and publish.get("conclusion") == "failure"
+                    and publish.get("conclusion") in _LOST_UPLOAD
                     and tests.get("conclusion") == "success"
                 ):
                     raise LedgerError(
-                        f"{where}: job {job.get('name')} ran pytest but its evidence upload failed"
+                        f"{where}: job {job.get('name')} ran pytest but its evidence upload "
+                        "failed or was cancelled"
                     )
 
 
@@ -253,8 +259,8 @@ def collect(gh: Gh, start: datetime, end: datetime, root: Path) -> Report:
     per_run: list[dict[str, Hit]] = []
     for run in runs:
         per_run.append(run_hits(gh, run, root))
-        # A failed upload fails its job, so a successful run lost nothing.
-        if run.conclusion != "success":
+        # A failed upload fails its job, so only a successful first attempt lost nothing.
+        if run.conclusion != "success" or run.attempt > 1:
             _check_published(gh, run)
     return Report(start, end, (end - start).days, len(runs), build(per_run))
 
@@ -274,15 +280,14 @@ def _draft(entry: Entry, report: Report) -> tuple[str, str]:
     """The title and body of the ``flaky`` issue the issue pipeline may file."""
     lines = [
         f"`{entry.test_id}` failed then passed on rerun in {len(entry.hits)} `Tests` runs "
-        f"between {rfc3339_from_datetime(report.start)} and "
-        f"{rfc3339_from_datetime(report.end)}.",
+        f"between {format_human_date(report.start)} and {format_human_date(report.end)}.",
         "",
     ]
     for hit in entry.hits:
         # In a code span, an `@name` from a test message notifies nobody.
         message = hit.message.replace("`", "'")
         lines.append(
-            f"- {hit.run.url} ({rfc3339_from_datetime(hit.run.created_at)}, "
+            f"- {hit.run.url} ({format_human_date(hit.run.created_at)}, "
             f"branch `{hit.run.branch}`, jobs `{', '.join(hit.jobs)}`): `{message}`"
         )
     lines += [
@@ -323,8 +328,8 @@ def report_json(report: Report) -> str:
 def render_text(report: Report) -> str:
     candidates = sum(len(entry.hits) >= MIN_HITS for entry in report.ledger)
     lines = [
-        f"Flake ledger {rfc3339_from_datetime(report.start)}.."
-        f"{rfc3339_from_datetime(report.end)} ({report.days} days): "
+        f"Flake ledger {format_human_date(report.start)} to "
+        f"{format_human_date(report.end)} ({report.days} days): "
         f"{report.runs_read} Tests runs read, {len(report.ledger)} test ids, "
         f"{candidates} candidates"
     ]
@@ -332,7 +337,7 @@ def render_text(report: Report) -> str:
         mark = " (candidate)" if len(entry.hits) >= MIN_HITS else ""
         lines.append(f"{entry.test_id}: {len(entry.hits)} hits{mark}")
         lines += [
-            f"  run {hit.run.id} {rfc3339_from_datetime(hit.run.created_at)} "
+            f"  run {hit.run.id} {format_human_date(hit.run.created_at)} "
             f"{hit.run.branch} [{', '.join(hit.jobs)}] {hit.run.url}: {hit.message}"
             for hit in entry.hits
         ]

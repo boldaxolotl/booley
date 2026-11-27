@@ -29,11 +29,12 @@ class GhApiFake:
         artifacts: tuple[tuple[str, bytes, bool], ...] = (),
         jobs: tuple[dict[str, Any], ...] = (),
         conclusion: str = "success",
+        attempt: int = 1,
     ) -> None:
         url = f"https://github.com/o/r/actions/runs/{run_id}"
         self.runs.append(
             {"id": run_id, "html_url": url, "created_at": created_at}
-            | {"head_branch": branch, "conclusion": conclusion}
+            | {"head_branch": branch, "conclusion": conclusion, "run_attempt": attempt}
         )
         self.jobs[run_id] = list(jobs)
         listed = self.artifacts.setdefault(run_id, [])

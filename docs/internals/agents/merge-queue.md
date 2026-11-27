@@ -350,18 +350,17 @@ Read the Mergify check and the underlying Actions failure, then:
       the PR's owner; see
       [Rerun of failed tests](../../../.github/ci/README.md#rerun-of-failed-tests).
       The [flake ledger](../../../.github/ci/README.md#flake-ledger) counts
-      them, and the external issue pipeline files the `flaky` issue for a
-      test ID with 2 or more such runs in 7 days. A test that failed on its
-      rerun too, or a failure the step summary says was not rerun, follows
-      the rules here.
+      them, and the external issue pipeline files or comments on the `flaky`
+      issue for a test ID that reaches the ledger's threshold. A test that
+      failed on its rerun too, or a failure the step summary says was not
+      rerun, follows the rules here.
     - When no open issue covers the failure, first file one, scanned as
       `AGENTS.md` requires, with the run link and error: for a test ID, a
       `bug`, `ci`, `flaky`, `needs-triage` issue titled with that test ID;
       for a failure with no test ID, a `bug`, `ci`, `needs-triage` issue
       naming the job. When an open issue already covers the test ID, comment
       the run link and error there instead. One issue per test ID, as in
-      [Flaky-test issues](issue-tracker.md#flaky-test-issues), which also
-      covers issues filed from the flake ledger.
+      [Flaky-test issues](issue-tracker.md#flaky-test-issues).
     - When `main`'s latest run of that job (the latest nightly run, for jobs
       a `main` push skips) fails the same way, `main` has regressed: report
       it instead of requeueing.

@@ -161,10 +161,11 @@ per-test timeout, and time scale. The job passes only when every rerun passes.
 
 A green rerun hides a flake from the PR that hit it, so
 `.github/scripts/ci_flake_ledger.py` collects these passes across runs. The
-evidence action uploads a `flaky-<label>` artifact, a copy of `junit.xml`, only
-when that report holds a `flakyFailure` or `flakyError`. The script downloads
-only those artifacts, from the completed `Tests` runs created in the window, and
-rebuilds the ledger on every call without storing anything.
+`.github/actions/publish-pytest-evidence` action uploads a `flaky-<label>`
+artifact, a copy of `junit.xml`, only when that report holds a `flakyFailure` or
+`flakyError`. The script downloads only those artifacts, from the completed
+`Tests` runs created in the window, and rebuilds the ledger on every call
+without storing anything.
 
 ```bash
 PYTHONPATH=src python .github/scripts/ci_flake_ledger.py [--days N] [--json]
@@ -172,18 +173,19 @@ PYTHONPATH=src python .github/scripts/ci_flake_ledger.py [--days N] [--json]
 
 - Run it from a checkout, with `gh` signed in; the window is 7 days unless
   `--days` says otherwise.
-- A hit is one workflow run: several jobs or attempts of that run count once. A
-  test ID with 2 or more hits in the window is a filing candidate.
+- A hit is one test ID in one workflow run: several jobs or attempts of that run
+  count once. A test ID with 2 or more hits in the window is a filing candidate.
 - A test whose module no longer exists in the checkout is listed by its JUnit
   name, `<classname>::<name>`.
 - The default output is readable text. `--json` prints only a document with
   `window`, `min_hits`, `runs_read`, `ledger` (each `test_id` with its `hits`:
-  run ID and URL, date, branch, jobs, first failure message), and `candidates`,
-  which add a draft issue `title` and `body`.
+  run ID and URL, date, branch, jobs, first line of the failure message), and
+  `candidates`, which add a draft issue `title` and `body`.
 - It exits 1 with no ledger, naming the run or the run listing, when the API
   cannot be read in full, a `flaky-*` artifact is expired or unreadable, or a
-  job ran its tests but its evidence upload failed. A job that published
-  nothing because its pytest step failed or timed out counts as having no hit.
+  job ran its tests but its evidence upload failed or was cancelled. A job that
+  published nothing because its pytest step failed or timed out counts as having
+  no hit.
 - In-progress runs are not read. Runs of a commit without the `flaky-<label>`
   upload carry no marker, so their passes on rerun are not counted.
 - No workflow here runs the script or files issues. The external issue pipeline
