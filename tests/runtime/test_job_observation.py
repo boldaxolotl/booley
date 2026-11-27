@@ -8,11 +8,17 @@ import os
 from pathlib import Path
 
 import pytest
-from tests.runtime.test_job_artifacts import progress, spy
+from tests.runtime.test_job_artifacts import artifact_reads, progress
+from tests.sharing_error_support import hold_opens
 
 from booley.runtime import job_records, job_slots
-from booley.runtime.job_observation import JobObserver, _artifacts, _observer
-from booley.runtime.pid import ProcessIdentity, ProcessObservation, ProcessState
+
+# private: _observer is imported only to lower its record bounds and set its clock (see uses).
+from booley.runtime.job_observation import JobObserver, _observer
+from booley.runtime.pid import ProcessIdentity, capture_process_identity
+
+# A PID above the kernel limit, absent from the empty proc root the tests pass.
+DEAD = ProcessIdentity(4_194_310, "boot", 1)
 
 
 def write_job(root: Path, run_id: str, **kwargs) -> Path:
@@ -24,6 +30,67 @@ def write_job(root: Path, run_id: str, **kwargs) -> Path:
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text(json.dumps({"run_id": run_id, "passed": True}))
     return report
+
+
+def rec(run="one", **kwargs):
+    return job_records.JobRecord(run, "sim", "2026-10-08T10:00:00Z", 60, **kwargs)
+
+
+def files(root):
+    return {
+        str(path.relative_to(root)): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
+def stamps(*paths):
+    return [(path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_size) for path in paths]
+
+
+@pytest.fixture
+def me() -> ProcessIdentity:
+    """The test process: a real, live Job owner on every platform."""
+    identity = capture_process_identity(os.getpid())
+    assert identity is not None
+    return identity
+
+
+def own(**extra):
+    """A claim Job admission writes for the Job's own process, labelled with its run ID."""
+    return {"job": job_slots.JobLabel("one", "sim", "a").to_payload(), **extra}
+
+
+def mem(mib):
+    return job_slots.MemoryClaim(1000.0, reservation_mb=mib).to_payload()
+
+
+def holding(mib, run):
+    label = job_slots.JobLabel(run, "synth", "a").to_payload()
+    return {"created_at": "2026-10-08T10:00:00Z", "memory": mem(mib), "job": label}
+
+
+def claims(tmp_path, me, entries, **record):
+    """Observe the Job of *me* beside memory-class *entries* ``(kind, pid, payload)``.
+
+    A ``None`` PID is an entry of the Job's own process. The read must change no file.
+    """
+    root = tmp_path / "jobs"
+    job_records.write_record(rec(pid=me.pid, process_identity=me.to_payload(), **record), root)
+    memory = tmp_path / "slots/memory"
+    memory.mkdir(parents=True)
+    mine = {"owner_identity": me.to_payload()}
+    for seq, (kind, other, entry) in enumerate(entries, 1):
+        pid, payload = (me.pid, {**mine, **entry}) if other is None else (other, entry)
+        # private: entry names are the slot store's on-disk format, and SlotStore.submit
+        # admits, reaps and refuses the corrupt, unlabelled and foreign entries these cases
+        # need, so no public call writes them.
+        name = job_slots._entry_name(kind, 1, seq, pid, 0)
+        (memory / name).write_text(json.dumps(payload), encoding="utf-8")
+    before = files(tmp_path)
+    view = JobObserver(tmp_path, slots_root=memory.parent).read((root,)).jobs[0]
+    assert files(tmp_path) == before
+    return view
 
 
 def test_only_explicit_roots_are_observed_and_repeated_roots_keep_one_identity(tmp_path):
@@ -41,106 +108,74 @@ def test_only_explicit_roots_are_observed_and_repeated_roots_keep_one_identity(t
 
 def test_record_finished_after_listing_is_not_orphaned(tmp_path, monkeypatch):
     root = tmp_path / "jobs"
-    identity = ProcessIdentity(4242, "boot", 1)
-    running = job_records.JobRecord(
-        "one",
-        "sim",
-        "2026-10-08T10:00:00Z",
-        60,
-        pid=identity.pid,
-        process_identity=identity.to_payload(),
-    )
-    job_records.write_record(running, root)
+    job_records.write_record(rec(pid=DEAD.pid, process_identity=DEAD.to_payload()), root)
+    stat = tmp_path / "proc" / str(DEAD.pid) / "stat"
+    read_text = Path.read_text
 
-    def owner_finishes_then_reads_dead(_identity, *, proc_root):
+    def owner_exits_as_observed(path, *args, **kwargs):
+        if path != stat:
+            return read_text(path, *args, **kwargs)
         done = job_records.read_record("one", root)
         assert done is not None
         done.status, done.exit_code, done.ended_at = "done", 0, "2026-10-08T10:00:05Z"
         job_records.write_record(done, root)
-        return ProcessObservation(ProcessState.DEAD)
+        raise FileNotFoundError(path)
 
-    monkeypatch.setattr(_observer, "observe_process", owner_finishes_then_reads_dead)
+    monkeypatch.setattr(Path, "read_text", owner_exits_as_observed)
 
-    snapshot = JobObserver(tmp_path).read((root,))
+    snapshot = JobObserver(tmp_path, proc_root=tmp_path / "proc").read((root,))
 
     assert [(job.record.status, job.state) for job in snapshot.jobs] == [("done", "completed")]
-
-
-def test_record_still_running_after_a_dead_observation_stays_orphaned(tmp_path, monkeypatch):
-    root = tmp_path / "jobs"
-    identity = ProcessIdentity(4242, "boot", 1)
-    job_records.write_record(
-        job_records.JobRecord(
-            "one",
-            "sim",
-            "2026-10-08T10:00:00Z",
-            60,
-            pid=identity.pid,
-            process_identity=identity.to_payload(),
-        ),
-        root,
-    )
-    monkeypatch.setattr(
-        _observer,
-        "observe_process",
-        lambda _identity, *, proc_root: ProcessObservation(ProcessState.DEAD),
-    )
-
-    snapshot = JobObserver(tmp_path).read((root,))
-
-    assert [job.state for job in snapshot.jobs] == ["orphaned"]
 
 
 def test_metadata_validator_rejects_before_artifact_io_and_isolates_the_record(
     tmp_path, monkeypatch
 ):
     accepted, rejected = (tmp_path / name / "jobs" for name in ("accepted", "rejected"))
-    write_job(accepted, "good")
+    allowed = write_job(accepted, "good")
     forbidden = write_job(rejected, "bad")
-    original = _artifacts.read_file_bytes
-
-    def read_bytes(path):
-        assert path != forbidden, "rejected metadata reached artifact observation"
-        return original(path)
+    reads = artifact_reads(monkeypatch)
 
     def validate(record):
         if record.run_id == "bad":
             raise ValueError("invalid context metadata")
 
-    monkeypatch.setattr(_artifacts, "read_file_bytes", read_bytes)
     snapshot = JobObserver(tmp_path, validate_record=validate).read((accepted, rejected))
 
     assert [job.record.run_id for job in snapshot.jobs] == ["good"]
     assert snapshot.diagnostics == (f"Job record unavailable: {rejected / 'bad.json'}",)
+    assert allowed in reads and forbidden not in reads, "rejected metadata reached artifacts"
 
 
-@pytest.mark.parametrize("error", [OSError, job_records.JobRecordError, RuntimeError])
-def test_unexpected_metadata_validator_errors_abort_the_refresh(tmp_path, monkeypatch, error):
+@pytest.mark.parametrize("error", [None, OSError, job_records.JobRecordError, RuntimeError])
+def test_only_a_successful_refresh_commits_its_artifact_generation(tmp_path, monkeypatch, error):
     roots = [tmp_path / str(number) / "jobs" for number in range(2)]
-    for number, root in enumerate(roots):
-        write_job(root, str(number))
-    failing = False
+    reports = [write_job(root, str(number)) for number, root in enumerate(roots)]
+    before = stamps(*reports)
+    failing = []
 
     def validate(_record):
         if failing:
-            raise error("metadata adapter failed")
+            raise failing[0]("metadata adapter failed")
 
     observer = JobObserver(tmp_path, validate_record=validate)
     observer.read(roots)
-    failing = True
-
-    with pytest.raises(error, match="metadata adapter failed"):
+    if error is None:
         observer.read(roots[:1])
+    else:
+        failing.append(error)
+        with pytest.raises(error, match="metadata adapter failed"):
+            observer.read(roots[:1])
+        failing.clear()
 
-    failing = False
-    monkeypatch.setattr(
-        _artifacts,
-        "read_file_bytes",
-        lambda _: pytest.fail("failed validator committed an empty generation"),
-    )
+    reads = artifact_reads(monkeypatch)
     restored = observer.read(roots)
+
     assert len(restored.jobs) == 2
     assert all(job.report is not None for job in restored.jobs)
+    # A successful refresh retired the unselected root's parse; a failed one committed nothing.
+    assert reads == ([reports[1]] if error is None else [])
+    assert stamps(*reports) == before, "a refresh repaired or touched a report"
 
 
 def test_partial_refresh_preserves_committed_parses(tmp_path, monkeypatch):
@@ -153,11 +188,9 @@ def test_partial_refresh_preserves_committed_parses(tmp_path, monkeypatch):
     failing_report = write_job(later, "later")
     observer = JobObserver(tmp_path)
     assert len(observer.read((root,)).jobs) == 2
-    original_read, original_stat = _artifacts.read_file_bytes, Path.lstat
-    before = [
-        (p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_size) for p in (report_a, report_b)
-    ]
-    reads, inspected = [], []
+    before = stamps(report_a, report_b)
+    original_open, original_stat = Path.open, Path.lstat
+    inspected = []
 
     def lstat(path, *args, **kwargs):
         if path == report_b:
@@ -165,66 +198,26 @@ def test_partial_refresh_preserves_committed_parses(tmp_path, monkeypatch):
             raise OSError("temporarily hidden report")
         return original_stat(path, *args, **kwargs)
 
-    def read(path):
-        reads.append(path)
+    def opening(path, *args, **kwargs):
         if path == failing_report:
             assert inspected, "first endpoint was not indexed before failure"
             raise RuntimeError("interrupted refresh")
-        return original_read(path)
+        return original_open(path, *args, **kwargs)
 
-    monkeypatch.setattr(_artifacts, "read_file_bytes", read)
     with monkeypatch.context() as fault:
         fault.setattr(Path, "lstat", lstat)
+        fault.setattr(Path, "open", opening)
         with pytest.raises(RuntimeError, match="interrupted refresh"):
             observer.read((root, later))
-    reads.clear()
+    reads = artifact_reads(monkeypatch)
     restored = observer.read((root,))
     assert sorted(job.record.run_id for job in restored.jobs) == ["A", "B"]
     assert all(job.report is not None for job in restored.jobs)
     assert reads == [], "failed partial refresh discarded committed parses"
-    assert [
-        (original_read(p), p.stat().st_mtime_ns, p.stat().st_size) for p in (report_a, report_b)
-    ] == before
+    assert stamps(report_a, report_b) == before
 
 
-def test_successful_refresh_retires_absent_history_without_repair_or_deletion(
-    tmp_path, monkeypatch
-):
-    roots = [tmp_path / str(number) / "jobs" for number in range(2)]
-    reports = [write_job(root, str(number)) for number, root in enumerate(roots)]
-    before = [(p.read_bytes(), p.stat().st_mtime_ns, p.stat().st_size) for p in reports]
-    observer = JobObserver(tmp_path)
-    observer.read(roots)
-    observer.read(roots[:1])
-    original = Path.read_bytes
-    reads = spy(monkeypatch, _artifacts, "read_file_bytes")
-    restored = observer.read(roots)
-
-    assert len(restored.jobs) == 2
-    assert reads == [reports[1]]
-    assert [(original(p), p.stat().st_mtime_ns, p.stat().st_size) for p in reports] == before
-
-
-def rec(run="one", **kwargs):
-    return job_records.JobRecord(run, "sim", "2026-10-08T10:00:00Z", 60, **kwargs)
-
-
-def own_claim(identity: ProcessIdentity, run="one", **extra) -> str:
-    """An entry as Job admission writes it: the process's claim, labelled with its Job's run ID."""
-    label = job_slots.JobLabel(run, "sim", "a").to_payload()
-    return json.dumps({"owner_identity": identity.to_payload(), "job": label, **extra})
-
-
-def files(root):
-    return {
-        str(path.relative_to(root)): path.read_bytes()
-        for path in root.rglob("*")
-        if path.is_file()
-    }
-
-
-def test_multi_roots_duplicate_ids_disconnected_history_and_byte_identity(tmp_path, monkeypatch):
-
+def test_multi_roots_duplicate_ids_disconnected_history_and_byte_identity(tmp_path):
     roots = [
         tmp_path / name / "jobs"
         for name in ("interactive", "active1", "active2", "finished", "abandoned")
@@ -238,14 +231,8 @@ def test_multi_roots_duplicate_ids_disconnected_history_and_byte_identity(tmp_pa
             ),
             root,
         )
-    monkeypatch.setattr(
-        job_slots.SlotStore, "reap", lambda *_a: pytest.fail("observational read reaped work")
-    )
-    monkeypatch.setattr(
-        job_slots.SlotStore, "snapshot", lambda *_a: pytest.fail("used mutating snapshot")
-    )
     before = files(tmp_path)
-    snapshot = JobObserver(tmp_path, slots_root=tmp_path / "slots").read(roots)
+    snapshot = JobObserver(tmp_path).read(roots)
     assert len(snapshot.jobs) == 5
     assert len({job.key for job in snapshot.jobs}) == 5
     assert all(job.record.session_key == "codex:expired" for job in snapshot.jobs)
@@ -273,218 +260,101 @@ def test_job_states_without_lifecycle_mutation(tmp_path, status, pid, identity, 
 
 
 @pytest.mark.parametrize("slot,state", [("w", "queued"), ("h", "running")])
-def test_observational_slot_state_and_corrupt_entry_isolation(tmp_path, monkeypatch, slot, state):
-    from booley.runtime.pid import ProcessObservation, ProcessState
-
-    identity = ProcessIdentity(99, "fixture", 101)
-    root = tmp_path / "jobs"
-    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    slots = tmp_path / "slots/memory"
-    slots.mkdir(parents=True)
-    token = slots / job_slots._entry_name(slot, 1, 1, 99, 0)
-    token.write_text(own_claim(identity))
-    (slots / job_slots._entry_name("h", 1, 2, 100, 0)).write_text("[]")
-    monkeypatch.setattr(
-        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
-    )
-    monkeypatch.setattr(job_slots.SlotStore, "reap", lambda *_: pytest.fail("reaped a stale slot"))
-    before = files(tmp_path)
-    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
-    assert view.state == state
-    assert files(tmp_path) == before
-
-
-def test_observer_reports_queued_memory_claim(tmp_path, monkeypatch):
-    from booley.runtime.pid import ProcessObservation, ProcessState
-
-    identity = ProcessIdentity(99, "fixture", 101)
-    root = tmp_path / "jobs"
-    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    slots = tmp_path / "slots/memory"
-    slots.mkdir(parents=True)
-    token = slots / job_slots._entry_name("w", 1, 1, 99, 0)
-    token.write_text(own_claim(identity))
-    monkeypatch.setattr(
-        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
-    )
-    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
-    assert view.state == "queued"
-
-
-def _memory_entry(slots: Path, kind: str, seq: int, pid: int, payload: dict) -> None:
-    (slots / job_slots._entry_name(kind, 1, seq, pid, 0)).write_text(json.dumps(payload))
-
-
-def test_observer_reports_the_memory_wait_of_a_queued_claim(tmp_path, monkeypatch):
-    identity = ProcessIdentity(99, "fixture", 101)
-    root = tmp_path / "jobs"
-    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    slots = tmp_path / "slots/memory"
-    slots.mkdir(parents=True)
-    stamp = "2026-10-08T10:00:00Z"
-    for seq, pid, mib, run_id in ((1, 7, 200.0, "run-1"), (2, 8, 500.0, "run-2")):
-        _memory_entry(
-            slots,
-            "h",
-            seq,
-            pid,
-            {
-                "created_at": stamp,
-                "memory": job_slots.MemoryClaim(1000.0, reservation_mb=mib).to_payload(),
-                "job": job_slots.JobLabel(run_id, "synth", "a").to_payload(),
-            },
-        )
-    _memory_entry(
-        slots,
-        "w",
-        3,
-        99,
-        json.loads(
-            own_claim(
-                identity, memory=job_slots.MemoryClaim(1000.0, reservation_mb=400.0).to_payload()
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
-    )
-    before = files(tmp_path)
-
-    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
-
-    assert view.state == "queued"
-    assert view.queue_position == 1
-    assert view.queue == (
-        "position 1: needs 400 MiB; 300 MiB free of the 1,000 MiB Memory Budget; "
-        "largest holders: run-2 (synth, a) 500 MiB, run-1 (synth, a) 200 MiB"
-    )
-    assert files(tmp_path) == before
-
-
-def test_observer_reports_the_queue_order_wait_of_a_claim_that_fits(tmp_path, monkeypatch):
-    identity = ProcessIdentity(99, "fixture", 101)
-    root = tmp_path / "jobs"
-    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    slots = tmp_path / "slots/memory"
-    slots.mkdir(parents=True)
-    stamp = "2026-10-08T10:00:00Z"
-    claims = (("h", 1, 7, 700.0, "run-1"), ("w", 2, 8, 400.0, "run-2"))
-    for kind, seq, pid, mib, run_id in claims:
-        _memory_entry(
-            slots,
-            kind,
-            seq,
-            pid,
-            {
-                "created_at": stamp,
-                "memory": job_slots.MemoryClaim(1000.0, reservation_mb=mib).to_payload(),
-                "job": job_slots.JobLabel(run_id, "synth", "a").to_payload(),
-            },
-        )
-    _memory_entry(
-        slots,
-        "w",
-        3,
-        99,
-        json.loads(
-            own_claim(
-                identity, memory=job_slots.MemoryClaim(1000.0, reservation_mb=100.0).to_payload()
-            )
-        ),
-    )
-    monkeypatch.setattr(
-        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
-    )
-
-    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
-
-    assert view.queue_position == 2
-    assert view.queue == (
-        "position 2: waits in queue order behind run-2 (synth, a); "
-        "needs 100 MiB; 300 MiB free of the 1,000 MiB Memory Budget; "
-        "largest holders: run-1 (synth, a) 700 MiB"
-    )
-
-
-def test_slot_queued_job_has_no_queue_detail(tmp_path, monkeypatch):
-    identity = ProcessIdentity(99, "fixture", 101)
-    root = tmp_path / "jobs"
-    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    slots = tmp_path / "slots/memory"
-    slots.mkdir(parents=True)
-    _memory_entry(slots, "w", 1, 99, json.loads(own_claim(identity)))
-    monkeypatch.setattr(
-        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
-    )
-
-    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
-
-    assert (view.state, view.queue) == ("queued", "")
-
-
-def test_child_lane_claims_under_the_jobs_pid_do_not_make_its_state_unavailable(
-    tmp_path, monkeypatch
-):
-    from booley.runtime.pid import ProcessObservation, ProcessState
-
-    identity = ProcessIdentity(99, "fixture", 101)
-    root = tmp_path / "jobs"
-    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    slots = tmp_path / "slots/memory"
-    slots.mkdir(parents=True)
-    owner = {"owner_identity": identity.to_payload()}
-    (slots / job_slots._entry_name("h", 1, 1, 99, 0)).write_text(own_claim(identity))
-    # A work item's own claim: same PID, but a child execution of the Job.
-    child = {**owner, "owner_kind": "execution"}
-    (slots / job_slots._entry_name("w", 1, 2, 99, 1)).write_text(json.dumps(child))
-    monkeypatch.setattr(
-        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
-    )
-    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
-    assert view.state == "running"
-
-
-_ITEM_LABEL = {"run_id": "one", "flow": "sim", "target": "a", "test": "alpha", "work_item": True}
+def test_observational_slot_state_and_corrupt_entry_isolation(tmp_path, me, slot, state):
+    gone = ProcessIdentity(4_194_305, "fixture", 101).to_payload()
+    entries = [
+        (slot, None, own()),
+        ("h", 100, []),
+        # A reaping read would delete this dead owner's entry.
+        ("h", 4_194_305, {"owner_identity": gone}),
+    ]
+    view = claims(tmp_path, me, entries)
+    assert (view.state, view.queue) == (state, "")
 
 
 @pytest.mark.parametrize(
-    ("item_kind", "state", "item_label"),
+    "entries,position,queue",
     [
-        ("h", "running", None),
-        ("w", "queued", None),
-        ("h", "running", _ITEM_LABEL),
-        ("w", "queued", _ITEM_LABEL),
+        (
+            [
+                ("h", 7, holding(200.0, "run-1")),
+                ("h", 8, holding(500.0, "run-2")),
+                ("w", None, own(memory=mem(400.0))),
+            ],
+            1,
+            "position 1: needs 400 MiB; 300 MiB free of the 1,000 MiB Memory Budget; "
+            "largest holders: run-2 (synth, a) 500 MiB, run-1 (synth, a) 200 MiB",
+        ),
+        (
+            [
+                ("h", 7, holding(700.0, "run-1")),
+                ("w", 8, holding(400.0, "run-2")),
+                ("w", None, own(memory=mem(100.0))),
+            ],
+            2,
+            "position 2: waits in queue order behind run-2 (synth, a); "
+            "needs 100 MiB; 300 MiB free of the 1,000 MiB Memory Budget; "
+            "largest holders: run-1 (synth, a) 700 MiB",
+        ),
     ],
-    ids=["item-holds", "item-waits", "labelled-item-holds", "labelled-item-waits"],
+    ids=["memory", "queue-order"],
 )
-def test_a_held_slot_beside_work_item_memory_claims_is_the_job_not_unavailable(
-    tmp_path, monkeypatch, item_kind, state, item_label
-):
-    identity = ProcessIdentity(99, "fixture", 101)
-    root = tmp_path / "jobs"
-    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    # A work item's claim carries its Job's run ID and says it is a work item (or no label).
-    owner = json.dumps(
-        {
-            "owner_identity": identity.to_payload(),
-            **({} if item_label is None else {"job": item_label}),
-        }
-    )
-    memory = tmp_path / "slots/memory"
-    memory.mkdir(parents=True)
-    # A mutation coordinator: a memory-class companion claim reserving nothing.
-    companion = {"budget_mb": 1000, "reservation_mb": 0, "companion": True}
-    coordinator = own_claim(identity, memory=companion)
-    (memory / job_slots._entry_name("h", 1, 1, 99, 0)).write_text(coordinator)
-    (memory / job_slots._entry_name(item_kind, 1, 2, 99, 0)).write_text(owner)
-    monkeypatch.setattr(
-        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
-    )
-    view = JobObserver(tmp_path, slots_root=memory.parent).read((root,)).jobs[0]
-    assert view.state == state
+def test_queued_job_reports_its_wait(tmp_path, me, entries, position, queue):
+    view = claims(tmp_path, me, entries)
+    assert (view.state, view.queue_position, view.queue) == ("queued", position, queue)
 
 
-def test_snapshot_indexes_reports_and_progress_through_parent_link(tmp_path, monkeypatch):
+# A work item's claim carries its Job's run ID and says it is a work item (or no label).
+_ITEM_LABEL = {"run_id": "one", "flow": "sim", "target": "a", "test": "alpha", "work_item": True}
+# A mutation coordinator: a memory-class companion claim reserving nothing.
+_COORDINATOR = ("h", None, own(memory={"budget_mb": 1000, "reservation_mb": 0, "companion": True}))
+# `booley session enter` exports the execution ID, so a CLI Job's own claim is execution-owned.
+_EXECUTION = {"owner_kind": "execution", "execution_id": "a1" * 16}
+# The item's claim is unlabelled: it inherits the session's execution ID too.
+CLI_CAMPAIGN_ITEM_WAITS = [
+    ("h", None, own(**_EXECUTION, memory=_COORDINATOR[2]["memory"])),
+    ("w", None, {**_EXECUTION, "memory": mem(400.0)}),
+]
+
+
+def _beside_other_holder(kind):
+    mine = own(**_EXECUTION, memory=mem(400.0))
+    other = {"created_at": "2026-10-08T10:00:00Z", "memory": mem(500.0)}
+    return [("h", 7, other), (kind, None, mine)]
+
+
+@pytest.mark.parametrize(
+    "entries,state,position",
+    [
+        # A work item's own claim: same PID, but a child execution of the Job.
+        ([("h", None, own()), ("w", None, {"owner_kind": "execution"})], "running", None),
+        ([_COORDINATOR, ("h", None, {})], "running", None),
+        ([_COORDINATOR, ("w", None, {})], "queued", None),
+        ([_COORDINATOR, ("h", None, {"job": _ITEM_LABEL})], "running", None),
+        ([_COORDINATOR, ("w", None, {"job": _ITEM_LABEL})], "queued", None),
+        (_beside_other_holder("w"), "queued", 1),
+        (_beside_other_holder("h"), "running", None),
+        (CLI_CAMPAIGN_ITEM_WAITS, "queued", 1),
+    ],
+    ids=[
+        "child-lane-claims",
+        "item-holds",
+        "item-waits",
+        "labelled-item-holds",
+        "labelled-item-waits",
+        "own-execution-waits",
+        "own-execution-holds",
+        "cli-campaign-item-waits",
+    ],
+)
+def test_job_state_follows_the_claim_that_speaks_for_it(tmp_path, me, entries, state, position):
+    # A waiting claim must outrank a record that says the run already started.
+    started = "2026-10-08T10:00:01Z" if state == "queued" else None
+    view = claims(tmp_path, me, entries, run_started_at=started)
+    assert (view.state, view.queue_position) == (state, position)
+
+
+def test_snapshot_indexes_reports_and_progress_through_parent_link(tmp_path):
     real = tmp_path / "real"
     project = real / "project"
     root = project / "logs/.runtime/jobs"
@@ -499,36 +369,6 @@ def test_snapshot_indexes_reports_and_progress_through_parent_link(tmp_path, mon
     assert files(real) == before
 
 
-def test_snapshot_missing_progress_reuses_unrelated_checkpoint(tmp_path, monkeypatch):
-    root = tmp_path / "jobs"
-    job_records.write_record(rec("absent", status="done"), root)
-    path = root.parent / "flow-reports/sim/1/progress.json"
-    path.parent.mkdir(parents=True)
-    progress(path, "other")
-    reads = spy(monkeypatch, _artifacts, "read_file_bytes")
-    observer = JobObserver(tmp_path)
-    observer.read((root,))
-    reads.clear()
-    observer.read((root,))
-    assert reads == []
-
-
-def test_snapshot_shared_artifact_directory_checked_once(tmp_path, monkeypatch):
-    from dataclasses import replace
-    from pathlib import Path
-
-    root = tmp_path / "logs/.runtime/jobs"
-    for endpoint in ("sim", "lint"):
-        job_records.write_record(replace(rec(endpoint, status="done"), endpoint=endpoint), root)
-        path = root.parent / "flow-reports" / endpoint / "1/report.json"
-        path.parent.mkdir(parents=True)
-        path.write_text(json.dumps({"run_id": endpoint, "passed": True}))
-    namespace = root.parent / "flow-reports"
-    checks = spy(monkeypatch, Path, "lstat")
-    JobObserver(tmp_path).read((root,))
-    assert checks.count(namespace) == 1
-
-
 def test_outside_project_interactive_job_remains_observable_without_artifacts(tmp_path):
     root = tmp_path / "outside/jobs"
     project = tmp_path / "project"
@@ -541,8 +381,6 @@ def test_outside_project_interactive_job_remains_observable_without_artifacts(tm
 
 
 def test_job_history_keeps_the_newest_records_and_reports_truncation(tmp_path, monkeypatch):
-    import os
-
     roots = [tmp_path / name / "jobs" for name in ("first", "second")]
     # The oldest records sit in the root that is scanned first.
     for root, run in (
@@ -559,6 +397,7 @@ def test_job_history_keeps_the_newest_records_and_reports_truncation(tmp_path, m
     full = JobObserver(tmp_path).read(roots)
     assert len(full.jobs) == 4
     assert not any("truncated" in line for line in full.diagnostics)
+    # private: the bounds are 4,096 and 16,384 records, too many to write per test.
     monkeypatch.setattr(_observer, "MAX_JOBS", 2)
     cut = JobObserver(tmp_path).read(roots)
     assert {job.record.run_id for job in cut.jobs} == {"new", "newest"}
@@ -571,32 +410,21 @@ def test_job_history_keeps_the_newest_records_and_reports_truncation(tmp_path, m
     ) in bounded.diagnostics
 
 
-def _running(run_id: str, **kwargs) -> job_records.JobRecord:
-    return job_records.JobRecord(run_id, "sim", "2026-10-08T10:00:00Z", 60, **kwargs)
-
-
 def test_history_cuts_never_drop_unfinished_records(tmp_path, monkeypatch):
-    import os
-
     root_a, root_b = tmp_path / "a/jobs", tmp_path / "b/jobs"
-    dead = ProcessIdentity(4_194_310, "boot", 1)
     records = (
-        (root_a, _running("fin-new", status="done"), 400),
-        (root_a, _running("fin-old", status="done"), 300),
-        (root_a, _running("orphan", pid=dead.pid, process_identity=dead.to_payload()), 150),
-        (root_a, _running("spawn-a"), 100),
-        (root_b, _running("spawn-b"), 50),
+        (root_a, rec("fin-new", status="done"), 400),
+        (root_a, rec("fin-old", status="done"), 300),
+        (root_a, rec("orphan", pid=DEAD.pid, process_identity=DEAD.to_payload()), 150),
+        (root_a, rec("spawn-a"), 100),
+        (root_b, rec("spawn-b"), 50),
     )
     for root, record, stamp in records:
         job_records.write_record(record, root)
         os.utime(root / f"{record.run_id}.json", (stamp, stamp))
+    # private: the bounds are 4,096 and 16,384 records, too many to write per test.
     monkeypatch.setattr(_observer, "MAX_JOBS", 2)
     monkeypatch.setattr(_observer, "MAX_SCANNED_JOBS", 4)
-    monkeypatch.setattr(
-        _observer,
-        "observe_process",
-        lambda _identity, *, proc_root: ProcessObservation(ProcessState.DEAD),
-    )
     empty = tmp_path / "proc"
     empty.mkdir()
 
@@ -614,9 +442,6 @@ def test_history_cuts_never_drop_unfinished_records(tmp_path, monkeypatch):
     ) in snapshot.diagnostics
 
 
-_UNFINISHED = "booley.runtime.job_observation._unfinished"
-
-
 _AGES = itertools.count(1_000)
 
 
@@ -632,29 +457,21 @@ def _age(root: Path) -> None:
 
 def test_unfinished_index_sees_new_records_and_retries_unreadable_ones(tmp_path, monkeypatch):
     root = tmp_path / "old/jobs"
-    job_records.write_record(_running("done", status="done"), root)
+    job_records.write_record(rec("done", status="done"), root)
     _age(root)
     observer = JobObserver(tmp_path)
     assert observer.read((), unfinished_roots=(root,)).jobs == ()
 
-    job_records.write_record(_running("first"), root)
+    job_records.write_record(rec("first"), root)
     _age(root)
     assert [job.record.run_id for job in observer.read((), unfinished_roots=(root,)).jobs] == [
         "first"
     ]
 
-    job_records.write_record(_running("second"), root)
+    job_records.write_record(rec("second"), root)
     _age(root)
-    parse = _observer._parse_job
-    failures = [root / "second.json"]
-
-    def flaky(path):
-        if path in failures:
-            failures.remove(path)
-            raise OSError("unreadable")
-        return parse(path)
-
-    monkeypatch.setattr(_observer, "_parse_job", flaky)
+    # A sharing error that outlasts the read retries once.
+    hold_opens(monkeypatch, {root / "second.json": 2})
     assert [job.record.run_id for job in observer.read((), unfinished_roots=(root,)).jobs] == [
         "first"
     ]
@@ -668,18 +485,21 @@ def test_unfinished_index_sees_new_records_and_retries_unreadable_ones(tmp_path,
 
 def test_recently_changed_root_is_relisted(tmp_path, monkeypatch):
     root = tmp_path / "old/jobs"
-    job_records.write_record(_running("done", status="done"), root)
+    job_records.write_record(rec("done", status="done"), root)
     _age(root)
     stamp = root.stat().st_mtime_ns
     listed = []
     scandir = os.scandir
 
     def spy(path):
-        listed.append(Path(path))
+        if path == root:
+            listed.append(path)
         return scandir(path)
 
-    monkeypatch.setattr(f"{_UNFINISHED}.os.scandir", spy)
+    monkeypatch.setattr(os, "scandir", spy)
     observer = JobObserver(tmp_path)
+    # private: time_ns is the clock name the observer module owns (principle 16), and only a
+    # clock just past the mtime pins the QUIET_NS margin.
     monkeypatch.setattr(_observer, "time_ns", lambda: stamp + 1_000_000_000)
     observer.read((), unfinished_roots=(root,))
     observer.read((), unfinished_roots=(root,))
@@ -692,86 +512,20 @@ def test_recently_changed_root_is_relisted(tmp_path, monkeypatch):
 
 def test_failed_directory_listing_is_retried_not_cached_as_empty(tmp_path, monkeypatch):
     root = tmp_path / "old/jobs"
-    job_records.write_record(_running("first"), root)
+    job_records.write_record(rec("first"), root)
     _age(root)
     scandir = os.scandir
     failing = [True]
 
     def flaky(path):
-        if failing:
+        if failing and path == root:
             failing.clear()
             raise OSError("too many open files")
         return scandir(path)
 
-    monkeypatch.setattr(f"{_UNFINISHED}.os.scandir", flaky)
+    monkeypatch.setattr(os, "scandir", flaky)
     observer = JobObserver(tmp_path)
     assert observer.read((), unfinished_roots=(root,)).jobs == ()
     assert [job.record.run_id for job in observer.read((), unfinished_roots=(root,)).jobs] == [
         "first"
     ]
-
-
-_EXECUTION_ID = "a1" * 16
-
-
-@pytest.mark.parametrize(
-    ("kind", "state", "position"), [("w", "queued", 1), ("h", "running", None)]
-)
-def test_job_state_follows_its_own_execution_owned_claim(
-    tmp_path, monkeypatch, kind, state, position
-):
-    # `booley session enter` exports the execution ID, so a CLI Job's own claim is execution-owned.
-    identity = ProcessIdentity(99, "fixture", 101)
-    root = tmp_path / "jobs"
-    job_records.write_record(
-        rec(pid=99, process_identity=identity.to_payload(), run_started_at="2026-10-08T10:00:01Z"),
-        root,
-    )
-    slots = tmp_path / "slots/memory"
-    slots.mkdir(parents=True)
-    stamp = "2026-10-08T10:00:00Z"
-    _memory_entry(
-        slots,
-        "h",
-        1,
-        7,
-        {
-            "created_at": stamp,
-            "memory": job_slots.MemoryClaim(1000.0, reservation_mb=500.0).to_payload(),
-        },
-    )
-    claim = job_slots.MemoryClaim(1000.0, reservation_mb=400.0).to_payload()
-    mine = own_claim(identity, owner_kind="execution", execution_id=_EXECUTION_ID, memory=claim)
-    _memory_entry(slots, kind, 2, 99, json.loads(mine))
-    monkeypatch.setattr(
-        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
-    )
-
-    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
-
-    assert (view.state, view.queue_position) == (state, position)
-
-
-def test_a_cli_campaign_waiting_for_an_item_claim_is_queued(tmp_path, monkeypatch):
-    identity = ProcessIdentity(99, "fixture", 101)
-    root = tmp_path / "jobs"
-    job_records.write_record(rec(pid=99, process_identity=identity.to_payload()), root)
-    slots = tmp_path / "slots/memory"
-    slots.mkdir(parents=True)
-    execution = {"owner_kind": "execution", "execution_id": _EXECUTION_ID}
-    companion = {"budget_mb": 1000, "reservation_mb": 0, "companion": True}
-    _memory_entry(
-        slots, "h", 1, 99, json.loads(own_claim(identity, **execution, memory=companion))
-    )
-    # The item's claim is unlabelled: it inherits the session's execution ID too.
-    wants = job_slots.MemoryClaim(1000.0, reservation_mb=400.0).to_payload()
-    item = {"owner_identity": identity.to_payload(), "memory": wants, **execution}
-    _memory_entry(slots, "w", 2, 99, item)
-    monkeypatch.setattr(
-        _observer, "observe_process", lambda *_a, **_k: ProcessObservation(ProcessState.RUNNING)
-    )
-
-    view = JobObserver(tmp_path, slots_root=slots.parent).read((root,)).jobs[0]
-
-    assert view.state == "queued"
-    assert view.queue_position == 1
