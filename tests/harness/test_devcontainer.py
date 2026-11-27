@@ -593,15 +593,16 @@ class TestConfigSeed:
         assert f"target={dc.AGENT_HOME}/.claude/" not in seed
 
     def test_state_volume_still_last_with_seed(self):
-        # Ordering contract: the persisted state volume stays the final mount so
-        # it nests under the deeper auth bind.
+        # Ordering contract: the persisted state volumes stay after the seeds,
+        # the CLI's first, then T3 Code's.
         spec = build_spec(
             dc.APP_CLAUDE,
             login_source="/home/u/.claude/.credentials.json",
             config_source=self._SRC,
         )
-        assert "type=volume" in spec["mounts"][-1]
-        assert f"{dc.AGENT_HOME}/.claude" in dc.spec_volume_targets(spec)
+        vol, t3 = spec["mounts"][-2:]
+        assert f"target={dc.AGENT_HOME}/.claude,type=volume" in vol
+        assert t3 == dc.t3_state_volume_mount("${localWorkspaceFolderBasename}")
 
     def test_postcreate_seeds_before_registrar(self):
         # cp must precede the registrar so upsert_claude merges into the
