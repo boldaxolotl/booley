@@ -64,7 +64,7 @@ class RunRootWatchdog:
             if removed is None:
                 continue
             self.removed = removed
-            logger.warning("%s was removed; stopping the run", removed)
+            logger.warning("Stopping the run: its %s is gone", removed)
             # Find the tools before the interrupt lets the run reap them.
             self._find_tool_groups()
             if self._interrupts:
