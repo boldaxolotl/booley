@@ -401,6 +401,7 @@ class TestTargetsDetail:
         out = capsys.readouterr().out
         assert "Resolved view unavailable" in out
         assert "booley session enter -- booley targets sim" in out
+        assert "booley session up" in out and "T3 Code thread's terminal" in out
 
     def test_help_advertises_targets(self):
         parser = tlr._build_parser()

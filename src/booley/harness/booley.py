@@ -998,6 +998,12 @@ def _add_commit_subparsers(sub) -> None:
     _add_review_subparser(sub)
 
 
+_ENTER_HELP = (
+    "From a host shell, open a shell in the Sandbox or run `-- <cmd>` in it; "
+    "in T3 Code, use a thread's terminal"
+)
+
+
 def _add_session_subparser(sub) -> None:
     """Add lifecycle controls for the Sandbox."""
     from booley.flows.cli_arguments import add_project_root_alias
@@ -1028,7 +1034,7 @@ def _add_session_subparser(sub) -> None:
     session_sub.add_parser("pair", help="Print a new T3 Code pairing link for the running Sandbox")
     enter_p = session_sub.add_parser(
         "enter",
-        help="Open a shell in the Sandbox, or run `-- <cmd>` in it",
+        help=_ENTER_HELP,
     )
     enter_p.add_argument(
         "exec_cmd",
@@ -1164,7 +1170,8 @@ def _normalize_args(
         if not runtime_context.inside_session_runtime():
             getting_started = (
                 "Getting started: run `booley bootstrap`, then `booley init` in your RTL "
-                "repo, and open the Project in its devcontainer. "
+                "repo, then `booley session up`; open the pairing link it prints and work in "
+                "a T3 Code thread. "
                 f"See `booley --help` and {docs_url('SETUP.md')}"
             )
             print("\n" + "\n".join(_wrap(getting_started, _help_width())))
@@ -1399,7 +1406,11 @@ def _session_up(args: argparse.Namespace, project_root: Path) -> int:
     if result.relay is not None:
         _report_relay(result.relay)
         _report_pairing(name, result.relay.port)
-    print("  enter it with: booley session enter")
+        print(
+            "  work in a T3 Code thread and its terminal; from a host shell: booley session enter"
+        )
+    else:
+        print("  enter it with: booley session enter")
     return 0
 
 

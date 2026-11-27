@@ -193,16 +193,19 @@ def test_bare_host_help_precedes_project_and_runtime_work(
     assert error.value.code == 0
     output = capsys.readouterr()
     assert output.err == ""
+    help_text = " ".join(output.out.split())  # the hint wraps to the terminal width
     for text in (
         "usage: booley",
         "board",
         "doctor",
         "booley bootstrap",
         "booley init",
-        "devcontainer",
+        "booley session up",
+        "T3 Code thread",
         f"{SITE_URL}docs/setup/",
     ):
-        assert text in output.out
+        assert text in help_text
+    assert "devcontainer" not in help_text
 
 
 @pytest.mark.parametrize("inside", [False, True])

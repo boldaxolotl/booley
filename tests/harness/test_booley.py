@@ -95,6 +95,12 @@ def test_bare_booley_in_the_sandbox_prints_help(monkeypatch, capsys):
     assert "Getting started" not in out
 
 
+def test_session_enter_help_names_the_t3_code_terminal(monkeypatch, capsys):
+    with pytest.raises(SystemExit):
+        _parse_argv(monkeypatch, "session", "-h")
+    assert "in T3 Code, use a thread's terminal" in " ".join(capsys.readouterr().out.split())
+
+
 @pytest.mark.parametrize(
     ("argv", "message"),
     [
@@ -630,7 +636,7 @@ class TestEnforceVenue:
         err = capsys.readouterr().err
         assert f"booley {command}" in err
         assert "Sandbox" in err
-        assert "Reopen in Container" in err  # names the fix, not just the rule
+        assert "booley session up" in err  # names the fix, not just the rule
 
     @pytest.mark.parametrize("command", ["dashboard", "worktree", "flow", "specialist"])
     def test_container_only_command_allowed_in_container(self, command, monkeypatch):
