@@ -242,7 +242,9 @@ def test_headlines_aggregate_over_every_target():
     assert "2/3 Targets passed" in result.flow_result.value
 
 
-@pytest.mark.parametrize("endpoint", ["lint", "reviewer", "mutation", "coverage_analyst"])
+@pytest.mark.parametrize(
+    "endpoint", ["sim", "synth", "lint", "reviewer", "mutation", "coverage_analyst"]
+)
 @pytest.mark.parametrize(
     "detail",
     [{"eda_tool_error": "launch failed"}, {"total_warnings": {"bad": 1}}, {"issues": None}],
