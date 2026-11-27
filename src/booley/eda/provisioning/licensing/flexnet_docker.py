@@ -816,7 +816,8 @@ def _validate_network_endpoints(
             raise RelayDockerError("license private network has unauthorized endpoints")
     else:
         for client in clients:
-            labels = _label_set(run, "container", client)
+            # A client carries its image's labels, which may have empty values.
+            labels = _label_set(run, "container", client, allow_empty=True)
             expected = {f"{docker_cli.ROLE_LABEL}=interactive", *issuance_labels}
             if not expected.issubset(labels):
                 raise RelayDockerError("license private network has unauthorized endpoints")
@@ -846,9 +847,13 @@ def _network_endpoint_names(run: docker_cli.Runner, network: str) -> set[str]:
     return names
 
 
-def _label_set(run: docker_cli.Runner, kind: str, name: str) -> set[str]:
+def _label_set(
+    run: docker_cli.Runner, kind: str, name: str, *, allow_empty: bool = False
+) -> set[str]:
     try:
-        labels = docker_cli.inspect_labels(run, kind, name, timeout=DOCKER_TIMEOUT)
+        labels = docker_cli.inspect_labels(
+            run, kind, name, timeout=DOCKER_TIMEOUT, allow_empty=allow_empty
+        )
     except docker_cli.InspectError as exc:
         message = f"Docker returned invalid labels for {kind} {name}"
         raise _relay_inspect_error(exc, kind, name, message) from exc

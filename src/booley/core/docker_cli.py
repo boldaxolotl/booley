@@ -43,22 +43,24 @@ def inspect(
         raise InspectError(f"invalid inspection of {kind} {name}") from exc
 
 
-def inspect_labels(run: Runner, kind: str, name: str, *, timeout: int) -> dict[str, str]:
+def inspect_labels(
+    run: Runner, kind: str, name: str, *, timeout: int, allow_empty: bool = False
+) -> dict[str, str]:
     """Return the validated labels of one network, container, or image."""
     template = "{{json .Labels}}" if kind == "network" else "{{json .Config.Labels}}"
     document = inspect(run, kind, name, timeout=timeout, template=template)
     try:
-        return labels(document)
+        return labels(document, allow_empty=allow_empty)
     except BoundaryError as exc:
         raise InspectError(f"invalid labels on {kind} {name}") from exc
 
 
-def labels(raw: object) -> dict[str, str]:
-    """Validate a Docker ``Labels`` mapping: every key and value a non-empty string."""
+def labels(raw: object, *, allow_empty: bool = False) -> dict[str, str]:
+    """Validate a Docker ``Labels`` mapping of non-empty strings; *allow_empty* frees values."""
     values = require_dict(raw, field="Config.Labels")
     return {
         require_str_value(key, field="Config.Labels key"): require_str_value(
-            value, field=f"Config.Labels[{key!r}]"
+            value, field=f"Config.Labels[{key!r}]", allow_empty=allow_empty
         )
         for key, value in values.items()
     }

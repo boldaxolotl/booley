@@ -235,6 +235,7 @@ def test_image_build_uses_packaged_dockerfile_and_relay_only_context() -> None:
     [
         ((_RELAY, ".Config.Labels}}"), 1, "daemon busy", "cannot inspect container .*daemon busy"),
         ((_PRIVATE, ".Labels}}"), 0, "null", "invalid labels for network"),
+        ((_PRIVATE, ".Labels}}"), 0, '{"note": ""}', "invalid labels for network"),
         ((_PRIVATE, ".Options}}"), 0, "[]", "invalid options for network"),
         ((_RELAY, "{{json .NetworkSettings.Networks}}"), 0, "{", "invalid network state"),
     ],
@@ -242,10 +243,17 @@ def test_image_build_uses_packaged_dockerfile_and_relay_only_context() -> None:
 def test_validation_keeps_its_messages_for_untrusted_inspection(
     docker: FakeDocker, words: tuple[str, str], code: int, output: str, message: str
 ) -> None:
-    docker.answer("inspect", *words, code=code, stdout=output, stderr=output if code else "")
+    docker.answer("inspect", *words, code=code, stdout=output)
 
     with pytest.raises(RelayDockerError, match=message):
         _validate(docker)
+
+
+def test_validation_accepts_an_empty_foreign_label_on_a_client(docker: FakeDocker) -> None:
+    labels = json.dumps({"booley.role": "interactive", "image.note": ""})
+    docker.answer("inspect", SESSION_CONTAINER, ".Config.Labels}}", stdout=labels)
+
+    validate_relay(_RESOURCES, None, _profile(), issuance_labels=(), runner=docker.runner)
 
 
 def test_image_build_failure_is_actionable(docker: FakeDocker) -> None:
