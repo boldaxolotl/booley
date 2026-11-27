@@ -322,7 +322,7 @@ class FlowMechanics:
         """Run locally and reap the whole process tree on timeout or interruption.
 
         *cwd* defaults to :meth:`_get_cwd`; a caller running another checkout
-        (a Cycle Count baseline) names that checkout.
+        names that checkout.
         """
         import sys as _sys
 
@@ -541,9 +541,6 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         EndpointState.__init__(self)  # new invocation id, display identity, ...
         self._args = request
         self.publication_resources = contextlib.ExitStack()
-        # Baseline worktrees held open in `publication_resources`, by revision; each
-        # revision is materialized once per invocation and shared (#1959).
-        self.baseline_worktrees: dict[str, Path] = {}
         self.reset_report_metadata()
         job_resources.clear_label()  # a stage label must not outlive its invocation
 

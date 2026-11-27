@@ -102,16 +102,13 @@ component):
     coverage.json                      coverage runs only: the Coverage Record reference
 ```
 
-Three cases add to this layout:
+Two cases add to this layout:
 
 - **Coverage** nests a Coverage Record inside one attempt (see
   [Coverage Record files](#coverage-record-files)).
 - **Resume** takes a new run number for its own `report.json` and
   `progress.json`, but writes results into the original run's `record/`
   directory, so one Record stays in one place.
-- **A Cycle Count baseline** gets its own Target directory beside the
-  candidate's, for the selector `<target>@baseline-<first 12 characters of the
-  baseline revision>`.
 
 ### Attempt files
 

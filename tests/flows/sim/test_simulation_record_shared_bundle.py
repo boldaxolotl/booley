@@ -32,17 +32,11 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
-    ResumeSimulationRecordRunRequest,
     SimulationRecord,
     SimulationRecordPolicy,
 )
 from booley.flows.sim.record.model import create_simulation_record_plan
-from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
-from booley.flows.sim.record.resume import (
-    ValidatedManifestNode,
-    ValidatedResumeManifest,
-    ValidatedTargetBinding,
-)
+from booley.flows.sim.record.planning import finalize_manifest
 from booley.flows.sim.record.serial_execution import (
     OrdinaryHdlSerialExecutor,
     capture_private_image,
@@ -78,6 +72,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _TestExecution,
     _two_item_manifest,
     _write,
+    _write_cocotb_core,
 )
 from tests.flows.sim.test_simulation_record_manifest_codec import _selection_test_runs, _sha
 
@@ -183,26 +178,26 @@ def test_recovered_failed_shared_build_blocks_each_pending_item_with_its_own_sel
     plan = create_simulation_record_plan(manifest)  # type: ignore[arg-type]
     project = tmp_path / "project"
     project.mkdir()
-    handle = _handle(project)
+    _write_cocotb_core(project)
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
     store = SimulationRecordStore(invocation / "targets/sim/record")
-    _, seed_counters, validated = _seed_failed_simulation_record(
-        store, manifest, project, handle, tmp_path / "seed-build"
+    _, seed_counters = _seed_failed_simulation_record(
+        store, manifest, project, tmp_path / "seed-build"
     )
     resumed_counters = {"compile": 0, "launch": 0}
 
     outcome = SimulationRecord(
         _failed_shared_executor(tmp_path / "resumed-build", resumed_counters)
     ).run(
-        ResumeSimulationRecordRunRequest(
-            validated,
+        NewSimulationRecordRunRequest(
             plan,
             project,
             invocation.parent,
             SimulationRecordPolicy(),
-            invocation,
-            _admission(),
+            record_directory=store.root,
+            invocation_directory=invocation,
+            admission=_admission(),
         )
     )
 
@@ -251,21 +246,14 @@ def test_shared_build_failure_preserves_each_selection_identity(
     assert [item["test"] for item in result["observations"]] == expected
 
 
-def _seed_failed_simulation_record(store, manifest, project, handle, build_root):
+def _seed_failed_simulation_record(store, manifest, project, build_root):
     store.publish_manifest(manifest)
     items = manifest.document["work_items"]
     counters = {"compile": 0, "launch": 0}
     request = _request(store, manifest, items[0], project, invocation=1)
     result = _failed_shared_executor(build_root, counters).execute(request)
     store.publish_result(items[0]["work_item_id"], result)
-    node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
-    validated = ValidatedResumeManifest(
-        node,
-        (),
-        (handle,),
-        (ValidatedTargetBinding(node, project.resolve(), handle),),
-    )
-    return items, counters, validated
+    return items, counters
 
 
 def _assert_shared_simulation_record(
@@ -816,19 +804,15 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     invocation = tmp_path / "reports" / "000001"
     _assert_private_legacy_results(outcome, store, counters, hooks, launched)
     if mapped:
-        from booley.flows.sim.record.coordinator import ResumeSimulationRecordRunRequest
-        from tests.flows.sim.simulation_record_test_support import _validated_simulation_record
-
-        validated = _validated_simulation_record(store, manifest, project, _handle(project))
         resumed = SimulationRecord(_executor(build_root, counters, disclosures=disclosures)).run(
-            ResumeSimulationRecordRunRequest(
-                validated,
+            NewSimulationRecordRunRequest(
                 plan,
                 project,
                 invocation.parent,
                 SimulationRecordPolicy(),
-                invocation,
-                _admission(),
+                record_directory=store.root,
+                invocation_directory=invocation,
+                admission=_admission(),
             )
         )
         assert resumed.complete
@@ -1113,7 +1097,7 @@ def test_forty_test_runs_configure_their_shared_build_once(tmp_path: Path, monke
 
 def test_resume_configures_its_recovered_shared_build_once(tmp_path: Path, monkeypatch) -> None:
     """A build recovered from disk is configured by the first lane that needs it only."""
-    for module in ("flow", "flow_resume", "record.resume"):
+    for module in ("flow", "record.resume"):
         monkeypatch.setattr(f"booley.flows.sim.{module}.git_full_sha", lambda *_a: "a" * 40)
 
     def interrupt_at_t1(launch: Launch) -> SubprocessResult:

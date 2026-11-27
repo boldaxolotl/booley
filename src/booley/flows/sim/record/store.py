@@ -61,7 +61,6 @@ from .codec import (
     encode_simulation_attempt,
     encode_simulation_record_manifest,
     encode_simulation_result,
-    linked_manifest_path,
     reads_simulation_record_documents,
     refuse_retired_document,
     validate_relative_path,
@@ -719,9 +718,6 @@ class SimulationRecordStore:
         return json.loads(raw)
 
 
-_PRE_SIM_DAG_BOUND = 4096
-
-
 def collect_pre_sim_firings(
     *manifest_paths: Path,
     booley_dir: Path | None = None,
@@ -729,12 +725,10 @@ def collect_pre_sim_firings(
 ) -> tuple[PreSimFiring, ...]:
     """Read Pre-Sim firings; the only entry that does, in one of two modes.
 
-    With ``manifest_paths``, read every root's prerequisite DAG once and
-    deduplicate by full firing identity.  The key ``(campaign_id, work_item_id,
-    attempt_id, ordinal)`` keeps Candidate and Cycle Count baseline firings
-    distinct.  Each distinct manifest path is scanned once.  Prerequisite
-    references repeated by many work items count once per ancestor chain toward
-    the bound.
+    With ``manifest_paths``, read each named record's own firings and
+    deduplicate by full firing identity ``(campaign_id, work_item_id,
+    attempt_id, ordinal)``.  Each distinct manifest path is scanned once, in the
+    order given.
 
     With ``prior`` (and no paths), freshly reread earlier-authenticated firings,
     one read per attempt.  No scan runs and no terminal record is consulted, so
@@ -744,45 +738,16 @@ def collect_pre_sim_firings(
     """
     if prior:
         return _reread_prior(prior, booley_dir)
-    pending: list[tuple[Path, str | None, frozenset[str]]] = [
-        (Path(path).absolute(), None, frozenset()) for path in reversed(manifest_paths)
-    ]
-    queued: set[tuple[Path, str, frozenset[str]]] = set()
-    visited: set[Path] = set()
     firings = {}
-    allowed_pops = len(manifest_paths) + _PRE_SIM_DAG_BOUND
-    while pending:
-        if allowed_pops == 0:
-            raise SimulationRecordIntegrityError("prerequisite hook evidence exceeds DAG bound")
-        allowed_pops -= 1
-        path, expected, ancestors = pending.pop()
+    for path in dict.fromkeys(Path(path).absolute() for path in manifest_paths):
         refuse_older_manifest_path(path)
         if path.name != "manifest.json" or path.parent.name != RECORD_DIRECTORY:
             raise SimulationRecordIntegrityError("expected exact Simulation Record manifest path")
         store = SimulationRecordStore(path.parent, booley_dir=booley_dir)
         manifest = store.load_manifest()
-        digest = manifest_digest(manifest)
-        if expected is not None and digest != expected:
-            raise SimulationRecordIntegrityError("prerequisite hook manifest digest disagrees")
-        simulation_record_id = str(manifest.document["simulation_record_id"])
-        if simulation_record_id in ancestors:
-            raise SimulationRecordIntegrityError("cyclic prerequisite hook evidence")
-        if path in visited:
-            continue
-        visited.add(path)
-        for firing in store._simulation_record_firings(manifest, store.scan(manifest, digest)):
+        recovery = store.scan(manifest, manifest_digest(manifest))
+        for firing in store._simulation_record_firings(manifest, recovery):
             firings[firing.key] = firing
-        # The codec's _read_manifest reads the prerequisites list.
-        prerequisites = cast(
-            tuple[Mapping[str, Mapping[str, str]], ...], manifest.document["prerequisites"]
-        )
-        for entry in prerequisites:
-            reference = entry["manifest"]
-            edge = (linked_manifest_path(store.root.parents[2], reference), reference["sha256"])
-            chain = ancestors | {simulation_record_id}
-            if (*edge, chain) not in queued:
-                queued.add((*edge, chain))
-                pending.append((*edge, chain))
     return tuple(firings.values())
 
 
