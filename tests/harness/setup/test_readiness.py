@@ -113,9 +113,7 @@ def test_stealth_cores_live_only_in_booley_cores(
     if stealth:
         (root / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
         core_projection.reconcile_projected_cores(root)
-    audit = readiness.ProjectAudit(
-        root, root / ".booley", {"stealth": {"enabled": stealth}}, {}, ""
-    )
+    audit = readiness.ProjectAudit(root, root / ".booley", {"stealth": {"enabled": stealth}}, "")
 
     report = readiness.check_stealth_cores(audit)
 
@@ -142,7 +140,7 @@ def _commit_all(root: Path) -> None:
 
 
 def _scaffold_core_findings(root: Path):
-    audit = readiness.ProjectAudit(root, root / ".booley", {"stealth": {"enabled": True}}, {}, "")
+    audit = readiness.ProjectAudit(root, root / ".booley", {"stealth": {"enabled": True}}, "")
     report = readiness.check_stealth_cores(audit)
     return [f for f in report.findings if f.check_id == _SCAFFOLD_CHECK]
 
@@ -275,7 +273,7 @@ def test_guidance_must_scope_booley_tools_to_the_sandbox(
     if links:
         ensure_guidance_links(tmp_path, booley_dir)
 
-    report = readiness.check_guidance(readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, ""))
+    report = readiness.check_guidance(readiness.ProjectAudit(tmp_path, booley_dir, {}, ""))
 
     assert [f.check_id for f in report.findings if f.severity is not Severity.PASS] == warnings
     assert all(f.severity in (Severity.PASS, Severity.WARN) for f in report.findings)

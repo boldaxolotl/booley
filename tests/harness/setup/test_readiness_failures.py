@@ -15,10 +15,9 @@ from tests.harness.test_doctor import _write_project
     ("filename", "text", "message"),
     [
         ("booley.toml", "[broken", "booley.toml does not parse"),
-        ("configs.toml", "[broken", "configs.toml does not parse"),
         ("booley.toml", None, "unsupported EDA"),
     ],
-    ids=["malformed-booley-toml", "malformed-configs-toml", "unsupported-eda"],
+    ids=["malformed-booley-toml", "unsupported-eda"],
 )
 def test_project_load_fails_on_bad_configuration_and_keeps_the_directory(
     tmp_path, filename, text, message
@@ -26,12 +25,16 @@ def test_project_load_fails_on_bad_configuration_and_keeps_the_directory(
     booley_dir = _write_project(tmp_path)
     config = booley_dir / filename
     config.write_text(text or config.read_text() + "\n[eda.unknown]\n")
+    (booley_dir / "configs.toml").write_text("[broken", encoding="utf-8")
     result = readiness.load_project(tmp_path)
     assert result.project is None
     assert result.booley_dir == booley_dir
     assert any(
         f.severity is Severity.FAIL and message in f.message for f in result.report.findings
     )
+    assert [f.check_id for f in result.report.findings if "configs.toml" in f.message] == [
+        "config.configs-toml-ignored"
+    ]
 
 
 def test_project_load_reports_unreadable_configuration(tmp_path, monkeypatch):
@@ -52,12 +55,12 @@ def test_project_load_reports_unreadable_configuration(tmp_path, monkeypatch):
     )
 
 
-def test_project_load_keeps_legacy_target_fallback_when_no_core_is_available(tmp_path):
+def test_project_load_has_no_first_target_when_no_core_is_available(tmp_path):
     _write_project(tmp_path)
     (tmp_path / "unit.core").unlink()
     result = readiness.load_project(tmp_path)
     assert result.project is not None
-    assert result.project.first_target == "fast"
+    assert result.project.first_target == ""
 
 
 def test_guidance_read_error_retains_scope_warning_identity(tmp_path, monkeypatch):

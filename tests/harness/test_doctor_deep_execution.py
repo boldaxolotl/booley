@@ -86,7 +86,7 @@ def _alias_doctor_project(flow_project, tmp_path, monkeypatch, host, sim=""):
     shutil.copytree(data, flow_project / ".booley", dirs_exist_ok=True)
     _git_init(flow_project)
     _git_init(data)
-    audit = ProjectAudit(flow_project, data, tomllib.loads(config.read_text()), {}, "sim")
+    audit = ProjectAudit(flow_project, data, tomllib.loads(config.read_text()), "sim")
     monkeypatch.setattr(doctor.dc, "BOOLEY_DIR_TARGET", str(alias))
     from tests.runtime.test_sandbox_layout import configure_project_alias
 
@@ -702,7 +702,7 @@ def _qualification_project(tmp_path, monkeypatch, policy, missing, health_failur
     config["flows"]["lint"]["enabled"] = False
     config["flows"]["synth"]["enabled"] = False
     config["flows"]["sim"]["enabled"] = True
-    audit = readiness.ProjectAudit(tmp_path, directory, config, {}, "sim_fast")
+    audit = readiness.ProjectAudit(tmp_path, directory, config, "sim_fast")
     overlay = directory / "selftest" / "sim" / "bad-overlay"
     overlay.mkdir(parents=True)
     (overlay / "bad.sv").write_text("invalid fixture for boundary transport\n")

@@ -751,7 +751,6 @@ def test_core_audit_stops_when_targets_cannot_be_enumerated(tmp_path, monkeypatc
         project_root=tmp_path,
         booley_dir=booley_dir,
         booley_toml={},
-        configs_toml={"x": {}},
         first_target="x",
     )
     if case == "no-core":

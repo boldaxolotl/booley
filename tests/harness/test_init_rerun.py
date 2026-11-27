@@ -1207,7 +1207,6 @@ def test_scaffold_after_plain_init_opens_hidden_layout(repo, monkeypatch, capsys
         repo,
         repo / ".booley",
         parsed,
-        tomllib.loads((repo / ".booley/tests.toml").read_text(encoding="utf-8")),
         "sim",
     )
     reporter = doctor._Reporter.create()

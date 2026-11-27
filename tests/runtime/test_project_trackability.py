@@ -85,6 +85,13 @@ def test_negations_and_tracked_inputs(project):
     assert "new/untracked" in result.ignored[0].message
 
 
+def test_ignored_configs_toml_is_not_an_audited_input(project):
+    root, selected = project
+    (selected / "configs.toml").write_text("ignored by Booley")
+    (root / ".gitignore").write_text("configs.toml\n")
+    assert not pt.inspect_project_trackability(root, selected).ignored
+
+
 def test_ignored_ancestor_grouping_and_bounded_preview(project):
     root, selected = project
     inputs = selected / "cores"
@@ -121,7 +128,6 @@ def test_audited_inputs_and_transient_pruning(project, monkeypatch):
         "generators/gen.py",
         "mcp_tools/check.py",
         "selftest/check.py",
-        "configs.toml",
         "pipeline.toml",
         "criteria.toml",
         "doctor-waivers.toml",

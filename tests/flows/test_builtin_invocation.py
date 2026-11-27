@@ -189,11 +189,21 @@ def test_malformed_configured_timeout_is_a_boundary_error(value: str, tmp_path: 
         resolve_timeout_ms("lint", tmp_path, None)
 
 
+@pytest.mark.parametrize(
+    ("knob", "line", "message"),
+    [
+        ("timeout_ms", 'timeout_ms = "invalid"', "timeout_ms must be an integer"),
+        ("enabled", 'enabled = "false"', "must be a boolean"),
+    ],
+)
 def test_builtin_pre_state_gate_validates_timeout_before_dry_run(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    knob: str,
+    line: str,
+    message: str,
 ) -> None:
-    _write_config(tmp_path, '[flows.lint]\ntimeout_ms = "invalid"\n')
+    _write_config(tmp_path, f"[flows.lint]\n{line}\n")
     monkeypatch.setattr(
         "booley.flows.base.runtime_context.container_only_error",
         lambda _command: None,
@@ -202,7 +212,8 @@ def test_builtin_pre_state_gate_validates_timeout_before_dry_run(
     result = LintFlow().execute_cli(["--target", "demo", "--work-dir", str(tmp_path), "--dry-run"])
 
     assert result.exit_code == 2
-    assert "timeout_ms must be an integer" in result.outcome.report_text
+    assert f"[flows.lint].{knob}" in result.outcome.report_text
+    assert message in result.outcome.report_text
 
 
 class _CustomTimeoutFlow(BooleyFlow):
