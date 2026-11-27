@@ -1,4 +1,4 @@
-"""The ``sandbox_only`` marker: Sandbox-only tests skip on Windows and run everywhere else."""
+"""The registry markers: each selects its modules; Sandbox-only tests skip on Windows."""
 
 from __future__ import annotations
 
@@ -8,13 +8,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tests.subprocess_budget import run_nested_pytest
 
 _ROOT = Path(__file__).parents[1]
 # A Sandbox-only module that stays cheap (the nested run must finish well inside the 30 s
 # subprocess budget even under the broad suite's coverage) and never reaches a host command.
 _MARKED_MODULE = "tests/mcp_tools/test_report_encoding.py"
-# A neighbouring module that covers host code and must stay unmarked.
+# A neighbouring module that covers host code and is in neither registry.
 _HOST_MODULE = "tests/harness/test_cheatsheet.py"
 
 
@@ -30,19 +32,18 @@ def _pytest(tmp_path: Path, *arguments: str) -> subprocess.CompletedProcess[str]
     )
 
 
-def test_registry_marks_only_sandbox_only_modules(tmp_path: Path) -> None:
-    result = _pytest(
-        tmp_path,
-        "--collect-only",
-        "-q",
-        "-m",
-        "sandbox_only",
-        _MARKED_MODULE,
-        _HOST_MODULE,
-    )
+@pytest.mark.parametrize(
+    ("marker", "marked"),
+    [
+        pytest.param("sandbox_only", _MARKED_MODULE, id="sandbox_only"),
+        pytest.param("os_specific", "tests/runtime/test_pipe.py", id="os_specific"),
+    ],
+)
+def test_registry_marks_only_registered_modules(tmp_path: Path, marker: str, marked: str) -> None:
+    result = _pytest(tmp_path, "--collect-only", "-q", "-m", marker, marked, _HOST_MODULE)
 
     modules = {line.partition("::")[0] for line in result.stdout.splitlines() if "::" in line}
-    assert modules == {_MARKED_MODULE}, f"sandbox_only selected {sorted(modules)}"
+    assert modules == {marked}, f"{marker} selected {sorted(modules)}"
 
 
 def test_sandbox_only_tests_skip_only_on_windows(tmp_path: Path) -> None:
