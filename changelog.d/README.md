@@ -1,12 +1,12 @@
 # Changelog fragments
 
 A contributor records a user-visible change's changelog entry as one new file
-in this directory. It does not edit `CHANGELOG.md` or its packaged copy, so
-unrelated pull requests never touch the same lines. At release time
+in this directory. It does not edit `CHANGELOG.md`, so unrelated pull requests
+never touch the same lines. At release time
 `python3 .github/scripts/release_changelog.py cut --target X.Y.Z` writes the
 dated entry for that release directly below `## Unreleased`, sorted into
-sections by kind, deletes the fragments it used, and brings the packaged copy
-in line. Only release preparation edits `CHANGELOG.md` directly.
+sections by kind, and deletes the fragments it used. Only release preparation
+edits `CHANGELOG.md` directly.
 
 ## Name
 

@@ -47,7 +47,6 @@ SEED = {
     "docs/user/CLI-REFERENCE.md": _CLI,
     "docs/user/CONFIG.md": _CONFIG,
     "CHANGELOG.md": "# Changelog\n",
-    "src/booley/data/refs/CHANGELOG.md": "# Changelog\n",
     "src/booley/x.py": "x = 1\n",
 }
 
@@ -274,10 +273,6 @@ _POSTREVIEW_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, s
 
 _NONE_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, str]]]] = {
     "changelog": (_append("CHANGELOG.md", "x\n"), {"CHANGELOG.md": ("none", "changelog")}),
-    "packaged-changelog": (
-        _append("src/booley/data/refs/CHANGELOG.md", "x\n"),
-        {"src/booley/data/refs/CHANGELOG.md": ("none", "changelog")},
-    ),
     "code-only": (_append("src/booley/x.py", "y = 2\n"), {}),
 }
 

@@ -76,7 +76,6 @@ def test_generator_and_test_owned_markdown_is_not_checked(repo: Path) -> None:
     git(repo, "switch", "-q", "-c", "codex/feature")
     owned = [
         "CHANGELOG.md",
-        "src/booley/data/refs/CHANGELOG.md",
         "changelog.d/1.fix.md",
         "tests/fixtures/ticket_guidance/x.md",
     ]
