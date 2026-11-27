@@ -2,26 +2,34 @@
 """Run pytest, then rerun its few failed tests once, serially, in a new process.
 
 Usage: ``ci_pytest_rerun.py --junitxml J --basetemp B [--coverage-file F] pytest <args>``.
-The wrapper owns ``--junitxml`` and ``--basetemp`` for both runs. The rerun
-passes only when every failed test passes again; see ``.github/ci/README.md``.
+The wrapper owns ``--junitxml`` and ``--basetemp`` for both runs. The step
+passes only when every failed test passes again or is quarantined in
+``tests/flaky_quarantine.py``; see ``.github/ci/README.md``.
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import runpy
 import subprocess
 import sys
+from collections.abc import Collection
 from pathlib import Path
 from xml.etree import ElementTree
 
 #: A run with more failed tests than this is a likely deterministic break: no rerun.
 MAX_RERUN_FAILURES = 5
+#: The one list of quarantined tests, relative to the checkout root.
+QUARANTINE_REGISTRY = Path("tests/flaky_quarantine.py")
 
 _FAILURE_TAGS = {"failure": "flakyFailure", "error": "flakyError"}
 _RERUN_TAGS = {"failure": "rerunFailure", "error": "rerunError"}
 #: The children of a ``testcase`` that record a failure which passed on the rerun.
 FLAKY_TAGS = frozenset(_FAILURE_TAGS.values())
+_QUARANTINED_TAGS = {"failure": "quarantinedFailure", "error": "quarantinedError"}
+#: Every child the flake ledger counts as a hit.
+HIT_TAGS = FLAKY_TAGS | frozenset(_QUARANTINED_TAGS.values())
 _Key = tuple[str, str]
 
 
@@ -31,6 +39,19 @@ class RerunRefusedError(Exception):
 
 def _failure_children(case: ElementTree.Element) -> list[ElementTree.Element]:
     return [child for child in case if child.tag in _FAILURE_TAGS]
+
+
+def load_quarantine(root: Path) -> tuple[object, ...]:
+    """The unchecked entries of the quarantine registry in the checkout at *root*."""
+    return tuple(runpy.run_path(str(root / QUARANTINE_REGISTRY))["QUARANTINE"])
+
+
+def quarantine_entry(entry: object) -> tuple[str, int] | None:
+    """``(test id, owner issue number)``, or None for an entry without an owner."""
+    match entry:
+        case (str(test_id), int(issue)) if issue > 0 and not isinstance(issue, bool):
+            return test_id, issue
+    return None
 
 
 def node_id(classname: str, name: str, root: Path) -> str:
@@ -126,10 +147,7 @@ def merge_rerun(first: Path, rerun: Path, keys: dict[_Key, str]) -> tuple[list[s
                 continue
             reruns = after.get(key, [])
             if reruns and not any(c.tag in {*_FAILURE_TAGS, "skipped"} for r in reruns for c in r):
-                for child in _failure_children(case):
-                    counter = "errors" if child.tag == "error" else "failures"
-                    suite.set(counter, str(int(suite.get(counter, 0)) - 1))
-                    child.tag = _FAILURE_TAGS[child.tag]
+                _relabel(suite, case, _FAILURE_TAGS)
             else:
                 _append_rerun_results(case, reruns)
     for key, node_id in keys.items():
@@ -137,6 +155,24 @@ def merge_rerun(first: Path, rerun: Path, keys: dict[_Key, str]) -> tuple[list[s
         (again if again_here else passed).append(node_id)
     tree.write(first, encoding="utf-8", xml_declaration=True)
     return passed, again
+
+
+def _relabel(suite: ElementTree.Element, case: ElementTree.Element, tags: dict[str, str]) -> None:
+    """Rename the failure children of *case* and take them off the suite's counters."""
+    for child in _failure_children(case):
+        counter = "errors" if child.tag == "error" else "failures"
+        suite.set(counter, str(int(suite.get(counter, 0)) - 1))
+        child.tag = tags[child.tag]
+
+
+def quarantine_failures(junit: Path, keys: dict[_Key, str], held: Collection[str]) -> None:
+    """Record the failures of the *held* node ids as quarantined in the merged report."""
+    tree = ElementTree.parse(junit)
+    for suite in tree.iter("testsuite"):
+        for case in suite.iter("testcase"):
+            if keys.get((case.get("classname", ""), case.get("name", ""))) in held:
+                _relabel(suite, case, _QUARANTINED_TAGS)
+    tree.write(junit, encoding="utf-8", xml_declaration=True)
 
 
 def _still_failing(tree: ElementTree.ElementTree, key: _Key) -> bool:
@@ -177,6 +213,34 @@ def _say(text: str) -> None:
             stream.write(text + "\n")
 
 
+def _warn(test_id: str, issue: int) -> None:
+    _say(f"Quarantined test failed again: `{test_id}` (owner issue #{issue})")
+    # A workflow command puts the warning on the run page; "%" starts its escapes.
+    message = f"{test_id} failed again; owner issue #{issue}".replace("%", "%25")
+    print(f"::warning title=Quarantined test::{message}", flush=True)
+
+
+def _settle(
+    junit: Path, ids: dict[_Key, str], passed: list[str], again: list[str]
+) -> tuple[list[str], bool]:
+    """Report the rerun; return the ids that still block and whether any is quarantined."""
+    owners: dict[str, int] = {}
+    if again:
+        entries = map(quarantine_entry, load_quarantine(Path.cwd()))
+        owners = dict(entry for entry in entries if entry is not None)
+    held = {test_id: owners[test_id] for test_id in again if test_id in owners}
+    if held:
+        quarantine_failures(junit, ids, held)
+    for test_id in passed:
+        _say(f"Passed on rerun: `{test_id}`")
+    for test_id in again:
+        if test_id in held:
+            _warn(test_id, held[test_id])
+        else:
+            _say(f"Failed again: `{test_id}`")
+    return [test_id for test_id in again if test_id not in held], bool(held)
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = sys.argv[1:] if argv is None else argv
     split = arguments.index("pytest")
@@ -208,17 +272,16 @@ def main(argv: list[str] | None = None) -> int:
         ["pytest", *rerun_args, "--junitxml", str(rerun_junit), "--basetemp", base], env
     )
     passed, again = merge_rerun(junit, rerun_junit, ids)
-    for node_id in passed:
-        _say(f"Passed on rerun: `{node_id}`")
-    for node_id in again:
-        _say(f"Failed again: `{node_id}`")
+    blocking, quarantined = _settle(junit, ids, passed, again)
     if own.coverage_file is not None:
         # A killed rerun leaves no data file, so report its results before combining.
         combine = ["coverage", "combine", "--append", f"--data-file={own.coverage_file}"]
         if _run([*combine, env["COVERAGE_FILE"]]) != 0:
             _say("Coverage data of the rerun could not be combined; failing the job.")
             return code
-    return 0 if rerun_code == 0 and not again else rerun_code or 1
+    # Exit 1 is "tests failed", which a quarantined failure alone explains.
+    green = not blocking and (rerun_code == 0 or (rerun_code == 1 and quarantined))
+    return 0 if green else rerun_code or 1
 
 
 if __name__ == "__main__":

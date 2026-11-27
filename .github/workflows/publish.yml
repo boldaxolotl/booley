@@ -21,6 +21,7 @@ jobs:
     permissions:
       actions: read
       contents: read
+      issues: read
       packages: read
       # GitHub validates permissions even for jobs skipped on tags.
       pull-requests: read

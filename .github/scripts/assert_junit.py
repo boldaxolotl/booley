@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree
 
-from ci_pytest_rerun import FLAKY_TAGS
+from ci_pytest_rerun import HIT_TAGS
 
 
 @dataclass(frozen=True)
@@ -35,9 +35,9 @@ def read_counts(path: Path) -> Counts:
 
 
 def copy_if_flaky(junit: Path, directory: Path) -> None:
-    """Copy a report that records a fail-then-pass to *directory*/junit.xml."""
+    """Copy a report that records a flake-ledger hit to *directory*/junit.xml."""
     cases = ElementTree.parse(junit).iter("testcase")
-    if any(child.tag in FLAKY_TAGS for case in cases for child in case):
+    if any(child.tag in HIT_TAGS for case in cases for child in case):
         directory.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(junit, directory / "junit.xml")
 

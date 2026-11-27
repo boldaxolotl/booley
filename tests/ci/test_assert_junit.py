@@ -58,8 +58,9 @@ def test_rejects_required_suite_without_tests_or_with_skips(
         (None, "4 collected, 1 skipped, 0 failed", False),
         ("flaky.xml", "3 collected, 0 skipped, 0 failed", True),
         ("failed_again.xml", "1 collected, 0 skipped, 1 failed", False),
+        ("quarantined.xml", "1 collected, 0 skipped, 0 failed", True),
     ],
-    ids=["no-flaky", "flaky", "failed-again"],
+    ids=["no-flaky", "flaky", "failed-again", "quarantined"],
 )
 def test_valid_junit_file_prints_summary_and_passes(
     tmp_path: Path,
