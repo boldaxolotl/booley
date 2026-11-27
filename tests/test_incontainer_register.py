@@ -326,6 +326,65 @@ def test_ensure_t3_server_registers_the_project_under_its_name(
     assert "boom" not in err and err.count("\n") == lines
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="NTFS would allocate the sparse log files")
+def test_t3_code_restarts_with_its_logs_cut_to_the_cap(tmp_path, monkeypatch, capsys):
+    volume = tmp_path / "t3-volume"
+    t3 = _t3_code(monkeypatch, volume=volume)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    userdata = volume / "userdata"
+    logs = userdata / "logs"
+    data = ["statev2.sqlite", "statev2.sqlite-wal", "statev2.sqlite-shm", "secrets/pairing"]
+    data = [userdata / name for name in data]
+    for path in data:
+        _write_dated(path, 0, path.name.encode())
+
+    assert reg.ensure_t3_server(tmp_path) == "started"  # no log directory yet
+    assert "not pruned" not in capsys.readouterr().err
+
+    t3.running = False  # the container stopped
+    snapshot = logs / "server-1-0.heapsnapshot"
+    _write_dated(snapshot, 0, b"heap")
+    oldest = logs / "provider" / "events.thread-a.log.1"
+    newest = ["server.trace.ndjson.1", "terminals/term.log", "server.trace.ndjson"]
+    newest = [logs / name for name in newest]
+    for mtime, path in enumerate([oldest, *newest], start=1):
+        _write_dated(path, mtime, size=60_000_000)
+
+    assert reg.ensure_t3_server(tmp_path) == "started"
+    assert {path for path in logs.rglob("*") if path.is_file()} == {*newest, snapshot}
+    assert sum(path.stat().st_size for path in newest) <= 200_000_000
+    assert [path.read_bytes() for path in data] == [path.name.encode() for path in data]
+    assert snapshot.read_bytes() == b"heap"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs a POSIX directory mode that stops the deletion",
+)
+def test_t3_code_starts_when_its_logs_cannot_be_pruned(tmp_path, monkeypatch, capsys):
+    volume = tmp_path / "t3-volume"
+    _t3_code(monkeypatch, volume=volume)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    logs = volume / "userdata" / "logs"
+    _write_dated(logs / "server.trace.ndjson", 1, size=250_000_000)
+    logs.chmod(0o500)
+    try:
+        assert reg.ensure_t3_server(tmp_path) == "started"
+    finally:
+        logs.chmod(0o700)
+    assert "T3 Code logs not pruned" in capsys.readouterr().err
+
+
+def _write_dated(path: Path, mtime: int, content: bytes = b"", *, size: int | None = None) -> None:
+    """Write *path* with a fixed modification time; *size* extends it sparsely."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as file:
+        file.write(content)
+        if size is not None:
+            file.truncate(size)
+    os.utime(path, (mtime, mtime))
+
+
 @pytest.mark.parametrize(
     ("listener", "pid", "port_offset", "status"),
     [

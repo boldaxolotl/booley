@@ -40,6 +40,7 @@ import http.client
 import io
 import json
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -86,6 +87,8 @@ NO_UI_ENV = "BOOLEY_NO_UI"  # "1" in a hook's environment: start no T3 Code
 _T3_SERVER_NOT_READY = 78  # `t3 project add` before the server published its runtime record
 _T3_IDENTITY_TIMEOUT_SECONDS = 1.0  # the whole descriptor exchange
 _T3_DESCRIPTOR_LIMIT = 1 << 20  # reply bytes
+T3_LOG_CAP_BYTES = 200_000_000  # decimal MB, so the cap also holds read as MiB
+_T3_LOG_NAME = re.compile(r"\.(?:log|ndjson)(?:\.\d+)?$")  # T3 Code's logs and rotations
 T3_PORT_TAKEN = "port-taken"
 T3_PORT_TAKEN_MESSAGE = (
     f"127.0.0.1:{T3_PORT} in the Sandbox is held by another process; "
@@ -354,7 +357,7 @@ def ensure_t3_server(project_root: Path) -> str:
     ``"started"``, ``"unregistered"`` (serving, but the Project is not
     registered), ``"policy-rejected"`` (``t3 policy check`` did not accept the
     policy, so nothing is started), or ``"failed"``. Never raises, so MCP
-    registration still runs.
+    registration still runs. T3 Code's logs are pruned just before it starts.
     """
     state = t3_state()
     if state == "running":
@@ -362,7 +365,36 @@ def ensure_t3_server(project_root: Path) -> str:
     if state == T3_PORT_TAKEN:
         print(f"T3 Code not started: {T3_PORT_TAKEN_MESSAGE}", file=sys.stderr)
         return state
-    return _serve_t3(project_root) if _t3_policy_accepted() else "policy-rejected"
+    if not _t3_policy_accepted():
+        return "policy-rejected"
+    prune_t3_logs(Path(T3_BASE_DIR))
+    return _serve_t3(project_root)
+
+
+def prune_t3_logs(base: Path) -> None:
+    """Delete T3 Code's oldest logs until they total at most ``T3_LOG_CAP_BYTES``.
+
+    Call it before ``t3 serve`` starts, while nothing writes them. Only regular
+    files under ``userdata/logs`` with a log name count; T3 Code keeps its
+    database, WAL files and pairing state under other names. An ``OSError`` is
+    reported, not raised.
+    """
+    logs: list[tuple[int, Path, int]] = []
+    try:
+        for folder, _, names in os.walk(base / "userdata" / "logs"):
+            for name in filter(_T3_LOG_NAME.search, names):
+                path = Path(folder, name)
+                info = path.lstat()
+                if stat.S_ISREG(info.st_mode):
+                    logs.append((info.st_mtime_ns, path, info.st_size))
+        total = sum(size for _, _, size in logs)
+        for _, path, size in sorted(logs):
+            if total <= T3_LOG_CAP_BYTES:
+                break
+            path.unlink()
+            total -= size
+    except OSError as exc:
+        print(f"T3 Code logs not pruned: {exc}", file=sys.stderr)
 
 
 def _serve_t3(project_root: Path) -> str:
