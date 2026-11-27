@@ -183,7 +183,13 @@ class BoundedSimulationRecordScheduler:
         self._lanes_exited.clear()
         with self._capacity.outer_permit():
             lanes = self._start_lanes(ready, child_count)
-            self._await_lanes(lanes, self._lanes_exited)
+            try:
+                self._await_lanes(lanes, self._lanes_exited)
+            except SimulationRecordSchedulingError:
+                raise  # the bounded shutdown already ran and kept the outer slot
+            except BaseException:
+                self._shut_down(lanes)
+                raise
             self._stop.set()
         if not self._errors.empty():
             raise self._errors.get()
@@ -211,11 +217,15 @@ class BoundedSimulationRecordScheduler:
             # Lanes that never started cannot report their exit.
             for _ in range(len(specs) - len(lanes)):
                 self._lane_exited()
-            self._stop.set()
-            self._capacity.cancel_waiters()
-            self._await_lanes(lanes, self._lanes_exited)
+            self._shut_down(lanes)
             raise
         return lanes
+
+    def _shut_down(self, lanes: Sequence[threading.Thread]) -> None:
+        """Stop the record and wait, within the bound, for *lanes* to exit."""
+        self._stop.set()
+        self._capacity.cancel_waiters()
+        self._await_lanes(lanes, self._lanes_exited)
 
     @staticmethod
     def _thread(target, args, suffix: str) -> threading.Thread:
