@@ -327,7 +327,7 @@ def test_sandbox_init_check_only_writes_nothing(
     assert not (project / ".vscode").exists()
 
 
-def test_sandbox_init_stops_for_a_pending_directory_migration(
+def test_sandbox_init_refuses_a_0_3_leftover(
     project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     (project / ".booley").rename(project / ".booley_project")  # the retired layout
@@ -335,7 +335,7 @@ def test_sandbox_init_stops_for_a_pending_directory_migration(
 
     assert _booley_init(project, monkeypatch) == 2
 
-    assert "run `booley init` on the host" in capsys.readouterr().out
+    assert "upgrade through Booley 0.4.x" in capsys.readouterr().out
     assert _repository_state(project) == before
 
 

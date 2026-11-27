@@ -24,7 +24,6 @@ from booley.harness import bootstrap, doctor, sandbox, sandbox_stop_warning
 from booley.harness.setup import docker_image, readiness
 from booley.mcp import server_inspection
 from booley.runtime import (
-    booley_dir_migration,
     docker_capacity,
     host_base_acquisition,
     host_docker,
@@ -129,7 +128,6 @@ HOST_DOCKER_MODULES = (
     sandbox_stop_warning,
     server_inspection,
     vivado_startup,
-    booley_dir_migration,
     docker_capacity,
     host_base_acquisition,
     image_lifecycle,

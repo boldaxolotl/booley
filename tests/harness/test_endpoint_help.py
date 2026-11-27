@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -42,11 +41,6 @@ def test_host_refusal_precedes_execution_admission(
     monkeypatch: pytest.MonkeyPatch,
     cli_exit,
 ) -> None:
-    import booley.runtime.layout_consumers as consumers
-
-    monkeypatch.setattr(
-        consumers, "directory_consumer", lambda *_a: pytest.fail("execution admission")
-    )
     route = [command] if not tail else [command, name, *tail]
     captured = cli_exit(["booley", *route], code=2)
     assert "runs inside the Booley Sandbox" in captured.err
@@ -145,30 +139,6 @@ def test_custom_exit_is_not_help(
     assert captured.out == ""
     assert "runs inside the Booley Sandbox" in captured.err
     assert calls == ["version"]
-
-
-def test_named_help_retains_metadata_admission(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cli_exit,
-) -> None:
-    import booley.runtime.layout_consumers as consumers
-
-    events = []
-
-    @contextmanager
-    def lease(root):
-        assert root == project
-        events.append("admitted")
-        try:
-            yield
-        finally:
-            events.append("released")
-
-    monkeypatch.setattr(consumers, "directory_consumer", lease)
-    captured = cli_exit(["booley", "flow", "lint", "--target", "demo", "--help"], code=0)
-    assert "usage: booley flow lint" in captured.out
-    assert events == ["admitted", "released"]
 
 
 def test_override_cannot_run_through_host_help(

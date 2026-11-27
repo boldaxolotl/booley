@@ -1011,8 +1011,6 @@
     "tests/test_timeout_evidence.py::test_thread_timeout_retains_evidence_after_process_exit[1]": 1.885648,
     "tests/test_timeout_headroom.py::test_passing_test_over_headroom_fails_with_actionable_message[1-False]": 1.109053,
     "tests/test_timeout_headroom.py::test_passing_test_over_headroom_fails_with_actionable_message[1-True]": 1.807098,
-    "tests/test_timeout_headroom.py::test_test_within_headroom_passes_and_is_counted[1]": 1.366302,
-    "tests/test_worktree_relocation.py::test_relocation_preserves_relative_registration": 1.241293,
-    "tests/test_worktree_relocation.py::test_relocation_replay_is_idempotent": 1.01
+    "tests/test_timeout_headroom.py::test_test_within_headroom_passes_and_is_counted[1]": 1.366302
   }
 }

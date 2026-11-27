@@ -1102,7 +1102,7 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
     its commits read the copy's live files instead of versioned ones.
     """
     from booley.core.booley_layout import BooleyLayoutError
-    from booley.runtime.directory_migration_git import primary_checkout
+    from booley.runtime.primary_checkout import primary_checkout
 
     local = own_booley_dir(project_root)
     is_copy = local.is_dir() and not local.is_symlink() and not (local / ".git").exists()
@@ -1137,7 +1137,7 @@ def _check_common_state_in_worktrees(project_root: Path, reporter: _Reporter) ->
     it. Paths Git tracks there arrive by checkout and are not reported.
     """
     from booley.core.booley_layout import BooleyLayoutError
-    from booley.runtime.directory_migration_git import primary_checkout
+    from booley.runtime.primary_checkout import primary_checkout
     from booley.runtime.worktrees import list_worktrees
 
     try:

@@ -3392,9 +3392,6 @@ def _linked_project(tmp_path, monkeypatch, *, external=False, sandbox_pointer=Fa
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     monkeypatch.setattr(cli, "_host_install_authority_error", lambda *_: None)
-    monkeypatch.setattr(
-        "booley.runtime.layout_consumers.directory_consumer", lambda *_: nullcontext()
-    )
     monkeypatch.setattr(sr, "_recover_before_lifecycle", lambda *_: None)
     monkeypatch.setattr(
         "booley.runtime.lifecycle_lock.host_lifecycle_lock", lambda *_: nullcontext()

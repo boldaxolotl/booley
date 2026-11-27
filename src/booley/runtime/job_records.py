@@ -332,28 +332,6 @@ def validate_record(record: JobRecord, *, now: float | None = None) -> None:
             raise BoundaryError("Job run_started_at precedes started_at")
 
 
-def strict_records(root: Path | None) -> list[JobRecord]:
-    """Read every record or fail closed when any durable entry is malformed."""
-    if root is None or not root.is_dir():
-        return []
-    records: list[JobRecord] = []
-    malformed: list[str] = []
-    for path in root.glob("*.json"):
-        try:
-            record = read_record(path.stem, root)
-            if record is None:
-                raise BoundaryError("record is unreadable")
-            validate_record(record)
-        except (BoundaryError, JobRecordError, OSError, TypeError, ValueError) as exc:
-            malformed.append(f"{path.name}: {exc}")
-        else:
-            records.append(record)
-    if malformed:
-        detail = "; ".join(sorted(malformed))
-        raise JobRecordError(f"malformed Job records require repair or removal: {detail}")
-    return records
-
-
 def _proc_cmdline(pid: int) -> list[str] | None:
     """argv of a live process from /proc, or None when unavailable.
 

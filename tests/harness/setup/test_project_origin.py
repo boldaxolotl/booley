@@ -4,7 +4,7 @@ import argparse
 import subprocess
 
 from booley.harness import init_cmd
-from booley.harness.setup import directory_migration, project_origin, scaffold
+from booley.harness.setup import project_origin, scaffold
 from booley.harness.setup.common import InitContext
 from booley.harness.setup.plan import InitPreconditionError
 from booley.runtime import issuance_invalidation
@@ -44,19 +44,11 @@ def test_scaffold_check_and_interrupted_apply_publish_no_origin(tmp_path, monkey
     assert project_origin.read_project_origin(tmp_path / ".booley/booley.toml") is None
 
 
-def test_early_check_recovery_and_migration_verdicts(tmp_path, monkeypatch, capsys):
+def test_early_check_recovery_verdict(tmp_path, monkeypatch, capsys):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    for recovery, migration in ((True, None), (False, object()), (True, object())):
-        monkeypatch.setattr(directory_migration, "inspect_migration", lambda _root, m=migration: m)
-        monkeypatch.setattr(
-            issuance_invalidation,
-            "shared_recovery_blocks_command",
-            lambda current=recovery, **_k: current,
-        )
-        assert init_cmd.run_init(argparse.Namespace(check_only=True), tmp_path) == 2
-        final = capsys.readouterr().out.splitlines()[-1]
-        assert "Checked initialization: failed" in final
-        if recovery:
-            assert "recovery" in final
-        if migration:
-            assert "migration" in final
+    monkeypatch.setattr(issuance_invalidation, "shared_recovery_blocks_command", lambda **_k: True)
+
+    assert init_cmd.run_init(argparse.Namespace(check_only=True), tmp_path) == 2
+
+    final = capsys.readouterr().out.splitlines()[-1]
+    assert "Checked initialization: failed" in final and "recovery" in final

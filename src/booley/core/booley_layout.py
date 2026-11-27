@@ -1,4 +1,4 @@
-"""Read-only layout/refusal boundary for the Booley Directory transition."""
+"""Read-only layout and refusal boundary for the Booley Directory."""
 
 from __future__ import annotations
 
@@ -15,6 +15,9 @@ from booley.core.user_paths import config_dir
 BOOLEY_DIR_NAME = ".booley"
 RETIRED_DIR_NAME = ".booley_project"
 RETIRED_ENV = "BOOLEY_PROJECT_DIR"
+UPGRADE_THROUGH_0_4 = (
+    "upgrade through Booley 0.4.x and run its `booley init` first, then upgrade to this release"
+)
 # Doctor's scratch root inside the Booley Directory; deep checks write Flow reports below it.
 DOCTOR_TMP_DIR = Path("tmp") / "doctor"
 # Job logs inside the Booley Directory: one subdirectory per MCP session, whose Flow
@@ -39,26 +42,31 @@ class BooleyLayoutError(RuntimeError):
     """Project layout requires explicit initialization or human reconciliation."""
 
 
+def retired_layout_error(subject: str) -> BooleyLayoutError:
+    """The one refusal for a Booley 0.3.x leftover, which this release does not migrate."""
+    return BooleyLayoutError(
+        f"{subject} is retired: this release does not migrate Booley 0.3.x "
+        f"Projects; {UPGRADE_THROUGH_0_4}"
+    )
+
+
 class Layout(StrEnum):
     """The observed local directory arrangement, without following links."""
 
     ABSENT = "absent"
     CURRENT = "current"
-    RETIRED = "migration-needed"
 
 
 def validate_environment() -> None:
     """Reject the obsolete selection variable even when it is empty."""
     if RETIRED_ENV in os.environ:
-        raise BooleyLayoutError(f"{RETIRED_ENV} is retired; unset it and use BOOLEY_DIR")
+        raise retired_layout_error(RETIRED_ENV)
 
 
 def reject_retired_path(path: Path) -> None:
     """An explicit selection cannot bypass the hard cut."""
     if RETIRED_DIR_NAME in path.parts:
-        raise BooleyLayoutError(
-            f"{path} needs migration to {BOOLEY_DIR_NAME}; run `booley init` from its Project Root"
-        )
+        raise retired_layout_error(str(path))
     if any(
         a == BOOLEY_DIR_NAME and b == "project"
         for a, b in zip(path.parts, path.parts[1:], strict=False)
@@ -76,33 +84,25 @@ def _safe_directory(path: Path) -> None:
 
 
 def classify_layout(root: Path) -> Layout:
-    """Classify a checkout; collisions and unsupported layouts always refuse."""
-    current, retired = root / BOOLEY_DIR_NAME, root / RETIRED_DIR_NAME
+    """Classify a checkout's Booley Directory; unsupported layouts refuse."""
+    current = root / BOOLEY_DIR_NAME
     if not current.is_symlink():
         _safe_directory(current)
-    _safe_directory(retired)
-    if _present(current) and _present(retired):
-        raise BooleyLayoutError(
-            f"both Booley Directories exist: {retired} and {current}; preserve both trees. "
-            "Run migration before pulling a tracked rename; do not `git add -A` local "
-            "runtime state. See the changelog's manual recovery procedure."
-        )
     if current.is_dir():
         if _present(current / "project") or is_booley_source_checkout(current):
             raise BooleyLayoutError(f"unsupported older Booley source/project layout at {current}")
         return Layout.CURRENT
-    return Layout.RETIRED if retired.is_dir() else Layout.ABSENT
+    return Layout.ABSENT
 
 
 def require_current_layout(root: Path) -> None:
-    """Diagnose local old-only Projects before ancestor/config/cache fallbacks."""
-    if pending_journal(root) is not None:
-        raise BooleyLayoutError(f"interrupted directory migration at {root}; run `booley init`")
-    if classify_layout(root) is Layout.RETIRED:
-        raise BooleyLayoutError(
-            f"{root / RETIRED_DIR_NAME} needs migration to {root / BOOLEY_DIR_NAME}; "
-            "run `booley init` from the Project Root"
-        )
+    """Refuse 0.3.x leftovers before ancestor/config/cache fallbacks."""
+    journal = pending_journal(root)
+    if journal is not None:
+        raise retired_layout_error(f"the interrupted migration journal {journal}")
+    if _present(root / RETIRED_DIR_NAME):
+        raise retired_layout_error(str(root / RETIRED_DIR_NAME))
+    classify_layout(root)
 
 
 def validate_selection(path: Path) -> None:
@@ -123,9 +123,7 @@ def git_common_directory(root: Path) -> Path | None:
         admin = Path(raw.removeprefix("gitdir: "))
         marker = admin if admin.is_absolute() else root / admin
         if not marker.is_dir() and RETIRED_DIR_NAME in marker.parts:
-            raise BooleyLayoutError(
-                "interrupted directory migration left a retired Git pointer; run `booley init` from the primary Project Root"
-            )
+            raise retired_layout_error(f"the Git pointer {root / '.git'}")
         common = marker / "commondir"
         if common.is_file():
             marker = (marker / common.read_text(encoding="utf-8").strip()).resolve()
@@ -135,7 +133,7 @@ def git_common_directory(root: Path) -> Path | None:
 
 
 def layout_metadata(root: Path) -> Path:
-    """Stable coordination state outside the moved directory and non-Git RTL trees."""
+    """Coordination state beside the Git common directory, or in host config outside Git."""
     common = git_common_directory(root)
     if common is not None:
         return common / "booley"
@@ -148,14 +146,14 @@ def ensure_layout_metadata(root: Path) -> Path:
     directory = layout_metadata(root)
     if git_common_directory(root) is None:
         return PrivateStore(
-            directory, config_dir().parent, "directory migration", BooleyLayoutError
+            directory, config_dir().parent, "Project coordination", BooleyLayoutError
         ).ensure_directory()
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 
 
 def pending_journal(root: Path) -> Path | None:
-    """Find a pending migration without invoking Git or creating files."""
+    """Find an unfinished 0.4.x migration journal without invoking Git or creating files."""
     journal = layout_metadata(root) / "directory-migration.json"
     return journal if journal.is_file() else None
 

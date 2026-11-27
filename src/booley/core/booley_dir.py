@@ -263,7 +263,7 @@ def _main_checkout_root(checkout: Path) -> Path | None:
     """Return the main checkout of *checkout*'s repository, or ``None`` if unreadable.
 
     A bare repository, submodule or separate git dir has no ``.git`` directory
-    to take the main checkout from. A malformed marker or retired migration
+    to take the main checkout from. A malformed marker or retired Git
     pointer raises ``BooleyLayoutError``.
     """
     try:

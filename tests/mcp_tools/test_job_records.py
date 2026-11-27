@@ -57,7 +57,6 @@ class TestRecordRoundTrip:
         assert historical.run_id == rec.run_id
         assert historical.argv == rec.argv
         assert jobrec.list_records(_jobs_env) == [historical]
-        assert jobrec.strict_records(_jobs_env) == [historical]
         assert "lease_id" not in new_payload
 
     def test_read_missing_returns_none(self, _jobs_env):
@@ -90,10 +89,8 @@ class TestRecordRoundTrip:
         monkeypatch.setattr(Path, "open", held_open)
         with pytest.raises(PermissionError):
             jobrec.read_record("sim-held-1", root=_jobs_env)
-        # Listing keeps its skip semantics; the Finish fence fails closed with the cause.
+        # Listing keeps its skip semantics.
         assert jobrec.list_records(_jobs_env) == []
-        with pytest.raises(jobrec.JobRecordError, match=r"sim-held-1\.json"):
-            jobrec.strict_records(_jobs_env)
 
     def test_write_record_survives_a_transient_windows_reader(
         self, _jobs_env, monkeypatch: pytest.MonkeyPatch
@@ -444,8 +441,6 @@ def test_malformed_routing_envelope_is_job_error(tmp_path, field, value):
     (root / "bad-envelope.json").write_text(json.dumps(raw))
     with pytest.raises(jobrec.JobRecordError, match=field):
         jobrec.read_record("bad-envelope", root)
-    with pytest.raises(jobrec.JobRecordError, match=field):
-        jobrec.strict_records(root)
 
 
 def test_owner_and_read_at_round_trip_and_legacy_load(tmp_path: Path) -> None:

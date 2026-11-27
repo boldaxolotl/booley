@@ -7,6 +7,8 @@ import os
 import shlex
 import shutil
 import subprocess
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -17,7 +19,7 @@ from booley.runtime import runtime_context, worktree_paths
 from tests.docs.test_sandbox_doc_citations import citation_problems
 from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
 from tests.subprocess_budget import run_bounded_child
-from tests.time_budget import scaled
+from tests.time_budget import hang_guard_s, scaled
 
 _REMOVAL_CITATION = '/booley-docs/WORKTREES.md → "Removing a worktree"'
 
@@ -711,9 +713,8 @@ def _row_sample(pattern: str) -> str:
 
 
 # Rows whose sample the harness cannot plant: a `.booley/.git` makes creation refuse or
-# pair (project_worktree_pairing), the layout lock and relocation record belong to the
-# layout gate that wraps `booley worktree new`.
-_UNPLANTABLE_ROWS = {".git/", "directory-layout.lock", ".directory-relocation.json"}
+# pair (project_worktree_pairing).
+_UNPLANTABLE_ROWS = {".git/"}
 
 
 @_real_script
@@ -1053,21 +1054,52 @@ def test_no_hook_prints_only_the_submodule_progress_line(versioned_project, pyth
     assert not _hook_log(versioned_project, "plain").exists()
 
 
-def test_post_setup_hook_runs_outside_the_layout_gate(
+def test_post_setup_hook_runs_outside_the_worktree_lock(
     versioned_project, python_outer, monkeypatch
 ):
-    from booley.core.layout_lock import layout_gate
+    from booley.core.worktree_lock import worktree_mutation_lock
 
     _commit_hook(versioned_project / ".booley", "print('unused')\n")
     entered = []
 
     def probe(root, worktree, name):
-        with layout_gate(root, timeout_s=scaled(1)):  # raises if the creation still holds the gate
+        with worktree_mutation_lock(root, timeout_s=scaled(1)):  # raises if creation holds it
             entered.append(name)
 
     monkeypatch.setattr(worktree_cmd, "_run_post_setup", probe)
     assert _new("gate-free", versioned_project) == 0
     assert entered == ["gate-free"]
+
+
+@pytest.mark.parametrize("operation", ["new", "rm"])
+def test_worktree_changes_of_one_project_wait_for_each_other(
+    versioned_project, python_outer, caplog, operation
+):
+    from booley.core import worktree_lock
+    from booley.harness import worktree_rm
+
+    root = versioned_project
+    name = "waiting" if operation == "new" else "existing"
+    if operation == "rm":
+        assert worktree_cmd.create_worktree(root, name) is not None
+    worktree = worktree_cmd.worktree_path(root, name)
+
+    def change() -> object:
+        if operation == "new":
+            return worktree_cmd.create_worktree(root, name)
+        return worktree_rm.remove_worktree(root, name, force=False)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        with worktree_lock.worktree_mutation_lock(root):
+            pending = pool.submit(change)
+            deadline = time.monotonic() + hang_guard_s()
+            while "waiting up to" not in caplog.text:
+                assert not pending.done() and time.monotonic() < deadline
+                time.sleep(0.01)
+            assert worktree.exists() == (operation == "rm")
+        pending.result(timeout=hang_guard_s())
+
+    assert worktree.exists() == (operation == "new")
 
 
 def test_failing_post_setup_hook_rolls_back_and_names_the_log(
@@ -1106,11 +1138,11 @@ def test_hook_flow_config_error_rolls_back(versioned_project, python_outer, monk
 def test_failed_regate_during_hook_rollback_is_reported(
     versioned_project, python_outer, monkeypatch, capsys
 ):
-    from booley.core import layout_lock
+    from booley.core import worktree_lock
     from booley.core.file_lock import LockTimeoutError
 
     _commit_hook(versioned_project / ".booley", "import sys\nsys.exit(1)\n")
-    real_gate = layout_lock.layout_gate
+    real_gate = worktree_lock.worktree_mutation_lock
     calls = []
 
     def gate(root, **kwargs):
@@ -1119,7 +1151,7 @@ def test_failed_regate_during_hook_rollback_is_reported(
             raise LockTimeoutError("gate busy")
         return real_gate(root, **kwargs)
 
-    monkeypatch.setattr(layout_lock, "layout_gate", gate)
+    monkeypatch.setattr(worktree_lock, "worktree_mutation_lock", gate)
     assert _new("busy-gate", versioned_project) == 1
     error = capsys.readouterr().err
     assert "outer rollback failed: gate busy" in error and "Remove the Paired Checkout" in error

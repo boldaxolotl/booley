@@ -27,7 +27,6 @@ import sys
 import textwrap
 import warnings
 from collections.abc import Callable
-from contextlib import nullcontext
 from datetime import UTC
 from enum import Enum
 from pathlib import Path
@@ -2362,9 +2361,17 @@ def _require_command_project(command: str, project_root: Path) -> None:
     if command == "init":
         return
     if command == "doctor":
-        from booley.core.booley_layout import require_current_layout
+        from booley.core.booley_layout import (
+            BooleyLayoutError,
+            require_current_layout,
+            validate_environment,
+        )
 
-        require_current_layout(project_root)
+        try:
+            validate_environment()
+            require_current_layout(project_root)
+        except BooleyLayoutError:
+            return  # run_doctor reports the refusal as a FAIL
     try:
         with warnings.catch_warnings():
             # Replace the stale-selection warning with the CLI's actionable error.
@@ -2575,7 +2582,7 @@ def _refuse_gated_command(command: str, project_root: Path) -> None:
 def _dispatch_selected(
     args: argparse.Namespace, command: str, project_root: Path | None, binding: ProjectBinding
 ) -> int:
-    """Dispatch an already validated selection under its host consumer admission."""
+    """Dispatch an already validated selection."""
     default_chat = getattr(args, "default_chat", False)
     if _endpoint_help_candidate(args):
         return _dispatch_help_candidate(args, project_root)
@@ -2613,28 +2620,18 @@ def _dispatch_selected(
 
     if _outer_endpoint_selection(args) and command in {"flow", "specialist"}:
         args._cli_endpoint_project = project_root
-    from booley.runtime.layout_consumers import directory_consumer
-
-    guarded = binding is ProjectBinding.REQUIRED and command not in {"init"}
-    scope = (
-        directory_consumer(project_root) if guarded and project_root is not None else nullcontext()
-    )
-    with scope:
-        early = _handle_early_exits(args, project_root)
+    early = _handle_early_exits(args, project_root)
     if early is not None:
         return early
     raise AssertionError(f"unhandled command: {command}")
 
 
 def _dispatch_help_candidate(args: argparse.Namespace, project_root: Path | None) -> int:
-    """Keep metadata admission while avoiding execution-path runtime setup."""
-    from booley.runtime.layout_consumers import directory_consumer
-
+    """Run endpoint help without execution-path runtime setup."""
     assert project_root is not None, "endpoint help applies to Project-bound commands"
     if _outer_endpoint_selection(args):
         args._cli_endpoint_project = project_root
-    with directory_consumer(project_root):
-        result = _handle_early_exits(args, project_root)
+    result = _handle_early_exits(args, project_root)
     assert result is not None, "endpoint help command has no handler"
     return result
 

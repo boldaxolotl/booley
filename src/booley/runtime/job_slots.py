@@ -105,9 +105,6 @@ logger = logging.getLogger(__name__)
 
 # The one Job class (ADR 0028 Decision 5): admitted by Memory Reservation against a budget (ADR 0087).
 CLASS_MEMORY = "memory"
-# Class directories older versions wrote; nothing admits into them, but a live
-# holder there still blocks a legacy-directory migration.
-RETIRED_JOB_CLASSES = ("heavy", "light")
 
 # Requester roles → queue priority (lower sorts first). Interactive work
 # jumps ahead of other queued work; holders are never displaced.

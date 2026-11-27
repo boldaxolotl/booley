@@ -10,7 +10,7 @@ import pytest
 
 from booley.core.host_shell import quote_arg
 from booley.harness import doctor
-from booley.runtime import directory_migration_git
+from booley.runtime import primary_checkout
 from booley.runtime.worktree_evidence import tracked_booley_paths
 from tests.harness.doctor_host_support import serve_healthy_doctor_host
 from tests.harness.doctor_run_support import findings, run_doctor
@@ -324,7 +324,7 @@ def test_common_state_check_skips_when_listing_worktrees_fails(
     def fail(_root: Path) -> Path:
         raise _git_failure(stderr)
 
-    monkeypatch.setattr(directory_migration_git, "primary_checkout", fail)
+    monkeypatch.setattr(primary_checkout, "primary_checkout", fail)
 
     result = _doctor(monkeypatch, tmp_path / "project")
 

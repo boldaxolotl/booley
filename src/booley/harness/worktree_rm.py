@@ -40,7 +40,7 @@ from typing import Literal, cast, get_args
 
 from booley.core.booley_dir import resolve_common_booley_dir, resolve_main_checkout_root
 from booley.core.booley_layout import BooleyLayoutError
-from booley.core.layout_lock import layout_gate
+from booley.core.worktree_lock import worktree_mutation_lock
 from booley.harness.worktree_list import (
     Registration,
     WorktreeListError,
@@ -653,7 +653,7 @@ def remove_worktree(project_root: Path, name: str, *, force: bool) -> Removal:
     inside the worktree are refused regardless.
     """
     main = resolve_main_checkout_root(project_root)
-    with layout_gate(main):
+    with worktree_mutation_lock(main):
         target = _locate(project_root, main, name)
         _refuse_nested(target)
         _refuse_foreign_booley_dir(target)

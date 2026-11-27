@@ -253,7 +253,11 @@ Try:
 - Create a Project with the previous release, then install the candidate: a pending review
   (`booley upgrade status`) names both versions; after `/booley-heal` and
   `booley upgrade acknowledge`, nothing is pending and Doctor is clean.
-Look for: waivers that hide failures, a pending review that never clears.
+- A Project Root that still holds Booley 0.3.x's `.booley_project/`:
+  `booley init` and `booley doctor` refuse with one message to upgrade through
+  Booley 0.4.x first, and init creates no `.booley/`.
+Look for: waivers that hide failures, a pending review that never clears,
+a 0.3.x layout migrated or half-initialized.
 
 ### 12. host-policy — Host policy file (~25 min, optional follow-up)
 Follow `fixtures/host-policy/README.md`.
