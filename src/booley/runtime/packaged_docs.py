@@ -383,7 +383,6 @@ def write_packaged_changelog(root: Path) -> None:
     if not source.is_file():
         raise MissingShippedDocError(f"shipped doc source is missing: {CHANGELOG_SOURCE}")
     target = root / PACKAGED_CHANGELOG_RELATIVE_PATH
-    target.parent.mkdir(parents=True, exist_ok=True)
     _publish(target, source.read_bytes())
 
 

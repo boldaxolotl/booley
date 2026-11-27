@@ -11,7 +11,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from booley.core.atomic_files import Durability, atomic_write_text
-from booley.runtime.filesystem_utils import RemovedDirectoryError, make_directories
+from booley.runtime.filesystem_utils import RemovedDirectoryError
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +111,6 @@ def write_exception_diagnostic(
         else:
             return None
         diagnostic = _bounded_traceback(exc)
-        make_directories(path.parent)
         atomic_write_text(path, diagnostic, durability=Durability.FILE)
     except RemovedDirectoryError:
         print_exception_diagnostic(exc)

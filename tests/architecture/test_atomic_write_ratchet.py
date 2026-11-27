@@ -1,7 +1,7 @@
 """Ratchet on staged-write-then-rename code outside ``booley.core.atomic_files``.
 
-A site is a rename call in a scope (the module body or one function) that also
-writes a file. The count may only shrink.
+A site is a rename call in a scope (the module body, a class body, or one
+function) that also writes a file. The count may only shrink.
 """
 
 from __future__ import annotations
@@ -58,8 +58,8 @@ def _scope_calls(scope: ast.AST) -> Iterator[ast.Call]:
 
 def _staged_rename_lines(source: str) -> list[int]:
     tree = ast.parse(source)
-    functions = (ast.FunctionDef, ast.AsyncFunctionDef)
-    scopes: list[ast.AST] = [tree, *(n for n in ast.walk(tree) if isinstance(n, functions))]
+    nested = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+    scopes: list[ast.AST] = [tree, *(n for n in ast.walk(tree) if isinstance(n, nested))]
     lines: list[int] = []
     for scope in scopes:
         calls = list(_scope_calls(scope))
@@ -93,10 +93,19 @@ def test_staged_write_then_rename_sites_stay_at_the_ceiling() -> None:
             "def f():\n    t.write_text(x)\n    t.replace(p)\n    u.write_text(x)\n    u.rename(q)\n",
             2,
         ),
+        ("class C:\n    t.write_text(x)\n    t.replace(p)\n", 1),
         ("path.rename(other)\n", 0),
         ("t.write_text(x)\ntext.replace('a', 'b')\n", 0),
     ],
-    ids=["replace_file", "mkstemp", "target-keyword", "two-in-one", "lone-rename", "str-replace"],
+    ids=[
+        "replace_file",
+        "mkstemp",
+        "target-keyword",
+        "two-in-one",
+        "class-body",
+        "lone-rename",
+        "str-replace",
+    ],
 )
 def test_detector_counts_staged_write_then_rename(source: str, count: int) -> None:
     assert len(_staged_rename_lines(source)) == count

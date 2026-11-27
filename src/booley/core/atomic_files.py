@@ -50,7 +50,8 @@ def _staged_bytes(path: Path, content: bytes, *, mode: int | None, durability: D
 
     reject_retired_path(path.absolute())
     make_directories(path.parent)
-    # with_name keeps *path*'s own path class, so the replace is a call on that type.
+    # with_name keeps *path*'s own path class, so the replace and cleanup are calls on
+    # that type, which a test can schedule step by step.
     temporary = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
     # Mode 0o666 lets the kernel apply the umask, which cannot be read thread-safely.

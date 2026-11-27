@@ -23,10 +23,10 @@ a rule blocks an import, put the shared piece in the owner named here, not behin
 - Config, EDA, and Runtime (D18-D20, D23-D25): Config parses declarative values and builds nothing.
   EDA owns installation, License Profile registration, Project Grants, and host validation.
   Runtime builds the agent backend from `AgentSettings` and owns Sandbox Issuance. Both use the
-  neutral `core.private_store`, `core.atomic_files`, `core.file_lock`, `core.resources`,
-  `core.docker_cli`, and `core.user_paths`; D25 keeps these mechanisms free of caller policy. `eda.config`,
-  `runtime.file_lock`, and `runtime.paths.package_data_dir` only re-export; new code imports the
-  owner.
+  neutral `core.private_store`, `core.atomic_files`, `core.directories`, `core.file_lock`,
+  `core.resources`, `core.docker_cli`, and `core.user_paths`; D25 keeps these mechanisms free of
+  caller policy. `eda.config`, `runtime.file_lock`, and `runtime.paths.package_data_dir` only
+  re-export; new code imports the owner.
 - Targets and FuseSoC (D12, D13, D27, D28): `core.build_paths.work_root_for` owns the Edalize
   build directory name and `core.scope_matching` owns pure Scope matching, so neither package
   needs Runtime or Flows. Runtime keeps glob expansion and Git staging. These two packages are the
