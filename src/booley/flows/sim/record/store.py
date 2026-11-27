@@ -486,7 +486,7 @@ class SimulationRecordStore:
     def _simulation_record_firings(
         self, manifest: SimulationRecordManifest, recovery: SimulationRecordRecovery
     ) -> tuple[PreSimFiring, ...]:
-        """Read every retained attempt's firings against the scan's terminal results."""
+        """Read every retained attempt's firings, marking those the scan found terminal."""
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         firings: list[PreSimFiring] = []
         for item, recovered in zip(items, recovery.items, strict=True):

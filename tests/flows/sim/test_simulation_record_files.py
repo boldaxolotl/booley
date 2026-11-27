@@ -8,10 +8,6 @@ from types import ModuleType
 from booley.flows.sim.coverage_json import content_digest
 
 
-class _DomainError(Exception):
-    """Stands in for a caller's own domain error type."""
-
-
 def _simulation_record_files() -> ModuleType:
     return importlib.import_module("booley.flows.sim.record_files")
 

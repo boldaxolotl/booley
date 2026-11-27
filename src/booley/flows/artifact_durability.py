@@ -113,9 +113,9 @@ def discard_published_staging(destination: Path) -> None:
 
     A kill between the link and the unlink leaves the record complete under its
     final name with a second link; dropping it keeps a stray staged entry out
-    of the record directory. Safe without a lock: the writer of such a sibling has already published and only
-    unlinks it with ``missing_ok``. A missing destination is a no-op, so the
-    caller's own read reports it as usual.
+    of the record directory. Safe without a lock: the writer of such a sibling
+    has already published and only unlinks it with ``missing_ok``. A missing
+    destination is a no-op, so the caller's own read reports it as usual.
     """
     try:
         status = destination.lstat()

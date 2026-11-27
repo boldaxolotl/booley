@@ -506,13 +506,13 @@ class SimulateFlow(
         return self._attach_published_pre_sim(result)
 
     def _record_pre_sim_firing(self, key: tuple[str, str, str, int]) -> None:
-        """Record only authenticated firings durably published by this execution."""
+        """Record only the firings durably published by this execution."""
         self._current_published_pre_sim_keys.add(key)
 
     def _attach_published_pre_sim(
         self, result: EndpointOutcome, origin_manifest: Path | None = None
     ) -> EndpointOutcome:
-        """Attach authentic hook evidence even when no terminal Simulation Record outcome exists."""
+        """Attach hook evidence even when no terminal Simulation Record outcome exists."""
         from .record import collect_pre_sim_firings
 
         invocation = self._reserved_invocation_dir
@@ -562,7 +562,7 @@ class SimulateFlow(
             except (OSError, ValueError):
                 pass
         self._simulation_record_outcomes = ()
-        return _pre_sim_integrity_failure(result, error, retain_authenticated=retained)
+        return _pre_sim_integrity_failure(result, error, retain_hook_evidence=retained)
 
     def _prepare_simulation_record_targets(
         self,

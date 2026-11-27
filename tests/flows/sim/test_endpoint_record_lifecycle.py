@@ -22,6 +22,7 @@ from booley.flows.sim.record import collect_pre_sim_firings
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.runtime.runtime_context import RuntimeLocation
+from tests.conftest import symlink_or_skip
 from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_simulation_record_characterization import _AdapterAbortExecution, _plan
 from tests.sandbox_venue_fake import place
@@ -214,6 +215,47 @@ def test_downstream_integrity_failure_retains_authenticated_current_hook(
     assert len(result.detail["pre_sim_lines"]) == 1
     assert "rc=0" in result.detail["pre_sim_lines"][0]
     assert result.detail["pre_sim_runs"][0]["terminal"] is False
+
+
+@pytest.mark.parametrize(
+    ("corruption", "retained"),
+    [("truncated_sidecar", True), ("truncated_manifest", True), ("linked_sidecar", False)],
+)
+def test_scan_error_after_projection_retains_only_referencable_hooks(
+    tmp_path, monkeypatch, corruption, retained
+):
+    invocation, simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
+    flow = SimulateFlow()
+    flow._reserved_invocation_dir = invocation
+    flow._args = SimpleNamespace(target=["sim"])
+    # Private seams: the corruption must land between projection and attach, which no public
+    # run exposes.
+    firing = simulation_record.pre_sim_firings[0]
+    flow._current_published_pre_sim_keys = {firing.key}
+    result = flow._simulation_record_endpoint_outcome([simulation_record])
+    result = flow._attach_published_pre_sim(result)
+    assert "pre_run_commands" in result.report_text
+    references = [run["reference"] for run in result.detail["pre_sim_runs"]]
+    if corruption == "linked_sidecar":
+        copy = tmp_path / "sidecar-copy.json"
+        copy.write_bytes(firing.path.read_bytes())
+        firing.path.unlink()
+        symlink_or_skip(firing.path, copy)
+    else:
+        path = firing.path if corruption == "truncated_sidecar" else firing.manifest_path
+        path.chmod(0o600)
+        path.write_bytes(b"{")
+    result = flow._attach_published_pre_sim(result)
+    assert result.exit_code == 2
+    assert "Simulation Record integrity failure:" in result.report_text
+    assert ("pre_run_commands" in result.report_text) is retained
+    assert ("pre_sim_lines" in result.detail) is retained
+    if retained:
+        assert [run["terminal"] for run in result.detail["pre_sim_runs"]] == [False]
+        assert "pre_sim_unauthenticated_references" not in result.detail
+    else:
+        assert "pre_sim_runs" not in result.detail
+        assert result.detail["pre_sim_unauthenticated_references"] == references
 
 
 def test_scan_error_before_any_outcome_publishes_no_hook_lines(tmp_path, monkeypatch):
