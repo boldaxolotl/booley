@@ -1626,16 +1626,6 @@ def stale_icarus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> _StaleIcaru
     return _StaleIcarus(project, source)
 
 
-@pytest.fixture
-def reusable_icarus(stale_icarus: _StaleIcarus, monkeypatch: pytest.MonkeyPatch) -> _StaleIcarus:
-    # Private seam: the reuse closure hashes the installed Icarus tree (`<bin>/../lib/ivl`
-    # and ELF dependencies); the fake tools have none and no public input supplies one.
-    monkeypatch.setattr(
-        "booley.flows.sim.build_session._icarus_tool_identity", lambda: "test-tool-closure"
-    )
-    return stale_icarus
-
-
 def test_two_targets_never_launch_stale_image_after_equal_mtime_edit(
     stale_icarus: _StaleIcarus,
 ) -> None:
@@ -1653,107 +1643,33 @@ def test_two_targets_never_launch_stale_image_after_equal_mtime_edit(
     assert len(observed) == 2 and all("NEW" in item and "OLD" not in item for item in observed)
 
 
-@pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
-def test_matching_closed_icarus_inputs_reuse_verified_image(
-    reusable_icarus: _StaleIcarus,
-) -> None:
-    handle = reusable_icarus.select()
-    execution = reusable_icarus.execution()
+def test_identical_icarus_runs_both_build_fresh(stale_icarus: _StaleIcarus) -> None:
+    # A complete fake install (``<bin>/../lib/ivl``), so the old Icarus key would
+    # hash it and hit; a restored Icarus reuse path fails here.
+    ivl = stale_icarus.project.parent / "lib" / "ivl"
+    ivl.mkdir(parents=True)
+    (ivl / "system.vpi").write_bytes(b"module")
+    handle = stale_icarus.select()
+    execution = stale_icarus.execution()
     first = run_prepared_group(execution, handle, ("first",))
     second = run_prepared_group(execution, handle, ("second",))
     assert first.passed, first.infrastructure_failure
     assert second.passed, (second.builds, second.tests, second.infrastructure_failure)
-    assert reusable_icarus.builds() == 1
-    assert second.builds[0].ran is False
-    assert second.builds[0].cache_decision.startswith("hit;")
-
-
-@pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
-def test_isolated_icarus_identical_build_reuses_and_source_edit_rebuilds(
-    reusable_icarus: _StaleIcarus,
-) -> None:
-    """In an ``ignore_native_cores`` Project an identical build reuses; an edited source rebuilds."""
-    _isolate_native_cores(reusable_icarus.project, core="multi.core")
-    handle = reusable_icarus.select()
-    execution = reusable_icarus.execution()
-    first = run_prepared_group(execution, handle, ("first",))
-    second = run_prepared_group(execution, handle, ("second",))
-    assert first.passed, first.infrastructure_failure
-    assert second.passed, (second.builds, second.tests, second.infrastructure_failure)
-    assert first.builds[0].ran is True
-    assert second.builds[0].ran is False
-    assert second.builds[0].cache_decision.startswith("hit;")
-    assert reusable_icarus.builds() == 1
-
-    # The fake compiler writes the source's marker into the image, so NEW in the
-    # launched output proves the stale image never ran.
-    _edit_keeping_mtime(reusable_icarus.source, "module tb; // NEW\nendmodule\n")
-    third = run_prepared_group(execution, handle, ("third",))
-    assert third.passed, (third.builds, third.tests, third.infrastructure_failure)
-    assert third.builds[0].ran is True
-    assert third.builds[0].cache_decision.startswith("changed source, recipe, or tool;")
-    assert reusable_icarus.builds() == 2
-    assert "NEW" in reusable_icarus.launched[-1] and "OLD" not in reusable_icarus.launched[-1]
+    assert stale_icarus.builds() == 2
+    assert second.builds[0].ran is True
+    assert second.builds[0].cache_decision.startswith("reuse unsupported;")
 
 
 def test_changed_input_with_failed_rebuild_never_launches_prior_image(
-    reusable_icarus: _StaleIcarus,
+    stale_icarus: _StaleIcarus,
 ) -> None:
-    handle = reusable_icarus.select()
-    execution = reusable_icarus.execution()
+    handle = stale_icarus.select()
+    execution = stale_icarus.execution()
     assert run_prepared_group(execution, handle, ("smoke",)).passed
-    _edit_keeping_mtime(reusable_icarus.source, "module tb; // BAD\nendmodule\n")
+    _edit_keeping_mtime(stale_icarus.source, "module tb; // BAD\nendmodule\n")
     outcome = run_prepared_group(execution, handle, ("smoke",))
     assert not outcome.passed
-    assert len(reusable_icarus.launched) == 1
-
-
-@pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
-@pytest.mark.parametrize("tamper", ["image", "pointer"])
-def test_corrupt_cache_forces_fresh_build(reusable_icarus: _StaleIcarus, tamper: str) -> None:
-    handle = reusable_icarus.select()
-    execution = reusable_icarus.execution()
-    assert run_prepared_group(execution, handle, ("smoke",)).passed
-    slot = simulation_build_slot(handle)
-    pointer = json.loads((slot / "current.json").read_text(encoding="utf-8"))
-    if tamper == "image":
-        build_root = slot / "g" / pointer["generation"] / pointer["build_root"]
-        image = next(build_root.glob("*.scr")).with_suffix("")
-        image.write_text("[SIM_RESULT] PASSED\nSTALE\n", encoding="utf-8")
-    else:
-        pointer["build_root"] = "../outside"
-        (slot / "current.json").write_text(json.dumps(pointer), encoding="utf-8")
-    assert run_prepared_group(execution, handle, ("smoke",)).passed
-    assert reusable_icarus.builds() == 2
-
-
-@pytest.mark.skipif(os.name == "nt", reason="Icarus reuse closure runs in the Linux Sandbox")
-@pytest.mark.parametrize("record", ["pointer", "manifest"])
-def test_corrupt_retained_record_is_missing_provenance_and_rebuilds(
-    reusable_icarus: _StaleIcarus, record: str
-) -> None:
-    handle = reusable_icarus.select()
-    execution = reusable_icarus.execution()
-    assert run_prepared_group(execution, handle, ("smoke",)).passed
-    slot = simulation_build_slot(handle)
-    pointer_path = slot / "current.json"
-    if record == "pointer":
-        corrupt = pointer_path
-    else:
-        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-        corrupt = (
-            slot
-            / "g"
-            / pointer["generation"]
-            / pointer["build_root"]
-            / (".booley-build-manifest.json")
-        )
-    corrupt.write_text("{not json", encoding="utf-8")
-    second = run_prepared_group(execution, handle, ("smoke",))
-    assert second.passed
-    assert second.builds[0].ran is True
-    assert second.builds[0].cache_decision.startswith("missing provenance;")
-    assert reusable_icarus.builds() == 2
+    assert len(stale_icarus.launched) == 1
 
 
 def test_missing_new_image_refuses_the_build_and_never_launches(

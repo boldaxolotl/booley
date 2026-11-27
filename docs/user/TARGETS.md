@@ -108,8 +108,8 @@ override it. Untyped files count as `user`. Spell the types exactly as shown:
 - Give headers (`.vh`, `.svh`) the same type as their sources and mark them
   `is_include_file: true`, so they act as include paths.
 - Keep `SDC` and `xdc` files out of `tags: [tb]` filesets.
-- Use the unversioned `verilogSource` and `systemVerilogSource`. Coverage and
-  build reuse don't recognize version-suffixed names.
+- Use the unversioned `verilogSource` and `systemVerilogSource`. Coverage
+  doesn't recognize version-suffixed names.
 - SystemC, UHDM, VHDL, and Tcl filesets have no supported path through the
   built-in Flows; see the [EDA-tool matrix](SUPPORTED-EDA-TOOLS.md).
 

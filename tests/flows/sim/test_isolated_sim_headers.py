@@ -10,7 +10,6 @@ from the mirror, the dry-run preview and the unchanged non-isolated behavior.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -18,7 +17,6 @@ import pytest
 import yaml
 
 from booley.core.build_paths import work_root_for
-from booley.flows.sim import build_session
 from booley.flows.sim.build import (
     PreparedSimulationBuild,
     SimulationBuildPreparationError,
@@ -26,7 +24,6 @@ from booley.flows.sim.build import (
     simulation_setup_command,
 )
 from booley.flows.sim.build_reuse import stock_verilator_recipe
-from booley.flows.sim.build_session import SimulationBuildSession, snapshot_build_inputs
 from booley.flows.sim.coverage_overlay import write_coverage_overlay
 from booley.flows.sim.verilator_coverage import VERILATOR_COVERAGE_INSTRUMENTATION
 from booley.flows.sim.verilator_coverage_execution import prepare_coverage_collection
@@ -49,32 +46,25 @@ def _core(
     *,
     dependency: bool = False,
     absolute_include: Path | None = None,
-    user_files: bool = True,
     headers: bool = True,
-    icarus_options: dict[str, list[str]] | None = None,
-    extra_files: tuple[str, ...] = (),
 ) -> str:
     """The fixture core; every header sits in ``rtl/inc``, one with an ``include_path``."""
-    files: list = [
-        {"rtl/top.v": {"file_type": "verilogSource"}},
-        *({name: {"file_type": "verilogSource"}} for name in extra_files),
-    ]
+    files: list = [{"rtl/top.v": {"file_type": "verilogSource"}}]
     if headers:
         files += [
             {"rtl/inc/listed.vh": _HEADER},
             {"rtl/inc/keep.vh": {**_HEADER, "include_path": "rtl/inc"}},
         ]
-    if user_files:
-        files += [
-            {"data/plain.hex": {"file_type": "user"}},
-            {"data/copied.hex": {"file_type": "user", "copyto": "copied.hex"}},
-        ]
+    files += [
+        {"data/plain.hex": {"file_type": "user"}},
+        {"data/copied.hex": {"file_type": "user", "copyto": "copied.hex"}},
+    ]
     if absolute_include is not None:
         files.append({absolute_include.as_posix(): _HEADER})
     targets = {
         "sim_icarus": {
             "flow": "sim",
-            "flow_options": {"tool": "icarus", **(icarus_options or {})},
+            "flow_options": {"tool": "icarus"},
             "filesets": ["rtl"],
             "toplevel": "top",
         },
@@ -259,43 +249,10 @@ def test_isolated_absolute_include_keeps_reuse_off(tmp_path: Path) -> None:
     assert stock_verilator_recipe(prepared.build_root) is None
 
 
-def _write_project_core(root: Path, core_path: Path | None = None, **core_options: Any) -> None:
-    """Rewrite the Project core, by default the isolated one under ``.booley/cores``."""
-    path = core_path or root / ".booley" / "cores" / "design.core"
+def _write_project_core(root: Path, **core_options: Any) -> None:
+    """Rewrite the isolated Project core under ``.booley/cores``."""
+    path = root / ".booley" / "cores" / "design.core"
     path.write_text(_core(**core_options), encoding="utf-8")
-
-
-# The Icarus recipe check reads the Edalize command file with POSIX shell quoting, which
-# eats the backslashes of Windows file names, so Icarus reuse never keys there.
-icarus_reuse_posix_only = pytest.mark.skipif(
-    os.name == "nt", reason="Icarus build reuse declines Windows-spelled file names"
-)
-
-
-def _icarus_key(prepared: PreparedSimulationBuild, root: Path) -> str | None:
-    """The Icarus reuse key of one prepared build, with the host tool identity pinned."""
-    session = SimulationBuildSession(_handle(root, "sim_icarus"), wait_s=60)
-    return session.reusable_key(prepared, snapshot_build_inputs(prepared), hooks=False)
-
-
-@icarus_reuse_posix_only
-@pytest.mark.usefixtures("real_fusesoc")
-def test_isolated_icarus_reuse_key_is_stable_and_follows_edits(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """An isolated Icarus build keys the same across generations, with stock options, until an input changes."""
-    _stub_icarus_identity(monkeypatch)
-    root = _write_project(tmp_path / "proj")
-    options = {"iverilog_options": ["-g2012", "-DWIDTH=8"]}
-    _write_project_core(root, user_files=False, headers=False, icarus_options=options)
-    top = root / "rtl" / "top.v"
-    top.write_text("module top; endmodule\n", encoding="utf-8")
-    first = _icarus_key(_prepare(root, "sim_icarus", name="g1"), root)
-    assert first is not None
-    assert _icarus_key(_prepare(root, "sim_icarus", name="g2"), root) == first
-    top.write_text("module top; // edited\nendmodule\n", encoding="utf-8")
-    edited = _icarus_key(_prepare(root, "sim_icarus", name="g3"), root)
-    assert edited not in (None, first)
 
 
 @pytest.mark.parametrize(
@@ -397,109 +354,3 @@ def test_isolated_coverage_foreign_paths_cover_prepared_headers(
         # ``src/<core>/<Project-relative path>``
         assert request.target.foreign_paths[name] == name.split("/", 2)[2]
     assert any(f"-booley{'trace' if trace else ''}coverage" in name for name in headers)
-
-
-def _stub_icarus_identity(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin the host tool identities so the Icarus key is non-None without ``iverilog``.
-
-    Private seam: the Icarus key hashes the host iverilog install and Python recipe
-    sources; real FuseSoC preparation needs the real PATH, so no fake install can
-    stand in.
-    """
-    for name in ("EDALIZE_LAUNCHER", "MAKEFLAGS", "MFLAGS"):
-        monkeypatch.delenv(name, raising=False)
-    monkeypatch.setattr(build_session, "_icarus_tool_identity", lambda: "iverilog-test")
-    monkeypatch.setattr(build_session, "_python_recipe_identity", lambda: "recipe-test")
-
-
-def _unstock_options(lib: Path) -> dict[str, dict[str, list[str]]]:
-    """Option sets that make ``iverilog`` or Make read files the reuse key never hashes."""
-    return {
-        "y-attached": {"iverilog_options": [f"-y{lib}"]},
-        "extra-c": {"iverilog_options": ["-c", f"{lib / 'm.v'}"]},
-        "shell-expansion": {"iverilog_options": [f"-DX$${{IFS}}-y$${{IFS}}{lib}"]},
-        "newline-injection": {"iverilog_options": ["-g2012\nEDALIZE_LAUNCHER = sh -c"]},
-        "vvp-newline-injection": {"vvp_options": ["-n\nEDALIZE_LAUNCHER = sh -c"]},
-        "carriage-return": {"iverilog_options": [f"-DX=\rall: -y {lib}"]},
-        "unicode-line-break": {"iverilog_options": [f"-g2012\u2028;iverilog -y{lib}"]},
-        "duplicate-rule": {"iverilog_options": ["-g2012\npost_build: run"]},
-    }
-
-
-@icarus_reuse_posix_only
-@pytest.mark.usefixtures("real_fusesoc")
-@pytest.mark.parametrize("case", list(_unstock_options(Path("lib"))))
-def test_isolated_icarus_reuse_declines_option_operands(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, case: str
-) -> None:
-    """An unstock ``iverilog`` option or Makefile line keeps isolated Icarus reuse off."""
-    _stub_icarus_identity(monkeypatch)
-    root = _write_project(tmp_path / "proj")
-    lib = root.resolve() / "ext"
-    lib.mkdir()
-    (root / "rtl" / "top.v").write_text("module top; endmodule\n", encoding="utf-8")
-    _write_project_core(root, user_files=False, headers=False)
-    # Control: the stock recipe reuses, so a None key below comes from the option.
-    assert _icarus_key(_prepare(root, "sim_icarus", name="control"), root) is not None
-    _write_project_core(
-        root, user_files=False, headers=False, icarus_options=_unstock_options(lib)[case]
-    )
-    prepared = _prepare(root, "sim_icarus", name=case)
-    makefile = (prepared.build_root / "Makefile").read_bytes().decode("utf-8")
-    if case == "shell-expansion":
-        assert "$${IFS}" in makefile
-    if case == "carriage-return":
-        assert "\rall: -y" in makefile
-    if case in {"newline-injection", "vvp-newline-injection"}:
-        assert "\nEDALIZE_LAUNCHER = " in makefile
-    if case == "duplicate-rule":
-        assert "\npost_build: run\n" in makefile
-    assert _icarus_key(prepared, root) is None
-
-
-@icarus_reuse_posix_only
-@pytest.mark.usefixtures("real_fusesoc")
-@pytest.mark.parametrize(
-    "hidden",
-    ["rtl/.a-hidden.v", "rtl/run.log", "rtl/.booley-runtime-inputs/m.v", 'rtl/it"s.v'],
-    ids=["dot-file", "run-log", "runtime-inputs", "quote"],
-)
-def test_isolated_reuse_declines_source_named_like_a_booley_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hidden: str
-) -> None:
-    """A listed source the input snapshot skips (or a quote breaks) by name declines reuse."""
-    _stub_icarus_identity(monkeypatch)
-    root = _write_project(tmp_path / "proj")
-    (root / "rtl" / "top.v").write_text("module top; endmodule\n", encoding="utf-8")
-    _write_project_core(root, user_files=False, headers=False)
-    # Control: an ordinary name keys, so a None key below comes from the file name.
-    assert _icarus_key(_prepare(root, "sim_icarus", name="control"), root) is not None
-    (root / hidden).parent.mkdir(exist_ok=True)
-    (root / hidden).write_text("module m; endmodule\n", encoding="utf-8")
-    _write_project_core(root, user_files=False, headers=False, extra_files=(hidden,))
-    prepared = _prepare(root, "sim_icarus", name="hidden")
-    script = next(prepared.build_root.glob("*.scr")).read_text(encoding="utf-8")
-    assert any(line.endswith(hidden) for line in script.splitlines())
-    assert _icarus_key(prepared, root) is None
-
-
-@icarus_reuse_posix_only
-@pytest.mark.usefixtures("real_fusesoc")
-@pytest.mark.parametrize("variant", ["plain", "projected"])
-def test_unisolated_icarus_option_decision_unchanged(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, variant: str
-) -> None:
-    """AC4: without isolation an operand option still keys, exactly as before this change."""
-    _stub_icarus_identity(monkeypatch)
-    root = _write_project(tmp_path / "proj", variant)
-    lib = root.resolve() / "ext"
-    lib.mkdir()
-    (root / "rtl" / "top.v").write_text("module top; endmodule\n", encoding="utf-8")
-    _write_project_core(
-        root,
-        root / "design.core",
-        user_files=False,
-        headers=False,
-        icarus_options={"iverilog_options": [f"-y{lib}"]},
-    )
-    assert _icarus_key(_prepare(root, "sim_icarus"), root) is not None

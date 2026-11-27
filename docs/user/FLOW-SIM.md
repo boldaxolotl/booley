@@ -616,19 +616,10 @@ available.
 
 ## Build reuse
 
-A repeat run skips the build when nothing that goes into it has changed:
-sources, cores, toolchain, flags and environment. Each Target's result says
-why a build was or wasn't reused.
-
-<details markdown>
-<summary>With Icarus</summary>
-
-Booley reuses an Icarus build only for a run without `--trace`, on a Target
-built from one local `.core` with no dependency cores, generators, VPI
-modules or `user` files, whose sources are plain Verilog or SystemVerilog
-files without `` `include ``. Any other Icarus build is rebuilt on every run.
-
-</details>
+A repeat Verilator run skips the build when nothing that goes into it has
+changed: sources, cores, toolchain, flags and environment. Icarus builds
+again on every run, because its builds take seconds. Each Target's result
+says why a build was or wasn't reused.
 
 <details markdown>
 <summary>With a cocotb testbench</summary>
