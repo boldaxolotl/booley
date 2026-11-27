@@ -2,7 +2,8 @@
 
 It is patched where Memory Admission (``ADMISSION``) and the Booley Dashboard's web snapshot
 (``DASHBOARD``) import it. ``tests/conftest.py`` calls ``measure_or_fall_back`` for every test
-and wraps ``pin_budget`` as the ``pin_memory_budget`` fixture.
+and wraps ``pin_budget`` as the ``pin_memory_budget`` fixture. It is patched because no public
+input sets the budget: the real one comes from the host's cgroup and process memory.
 """
 
 from __future__ import annotations
