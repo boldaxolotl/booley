@@ -56,6 +56,7 @@ import os
 import re
 from pathlib import Path
 
+from booley.core.file_hash import file_sha256
 from booley.flows.artifact_durability import durable_copy, durable_create
 from booley.runtime.platform_paths import posix_relpath
 
@@ -108,11 +109,11 @@ def publish_file(
     before = source.stat()
     if not source.is_file() or source.is_symlink():
         raise ValueError(f"artifact source is not a regular file: {source}")
-    before_digest = _file_digest(source)
+    before_digest = file_sha256(source)
     destination = _destination(invocation_dir, components)
     durable_copy(source, destination, mode=0o644)
     after = source.stat()
-    destination_digest = _file_digest(destination)
+    destination_digest = file_sha256(destination)
     if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
         after.st_dev,
         after.st_ino,
@@ -122,14 +123,6 @@ def publish_file(
         destination.unlink(missing_ok=True)
         raise OSError(f"artifact source changed during publication: {source}")
     return posix_relpath(destination, work_dir)
-
-
-def _file_digest(path: Path) -> bytes:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(64 * 1024), b""):
-            digest.update(chunk)
-    return digest.digest()
 
 
 def relative(path: Path | str | None, work_dir: Path | str) -> str | None:

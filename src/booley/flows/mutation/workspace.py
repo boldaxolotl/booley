@@ -18,9 +18,10 @@ Layout under ``$BOOLEY_RUNTIME_DIR/mutation/campaign/``::
 
 from __future__ import annotations
 
-import hashlib
 import os
 from pathlib import Path
+
+from booley.core.file_hash import file_sha256
 
 # The scratch directory earlier releases used, before the Mutation Flow renamed it.
 LEGACY_RUNTIME_DIR = "mutation_tester"
@@ -107,15 +108,6 @@ def baseline_build_log_path(logs_dir: Path | str | None = None) -> Path:
     return workspace_dir(logs_dir) / "baseline-build.log"
 
 
-def _hash_file(path: Path) -> str:
-    """Return ``sha256:<hex>`` digest of *path* contents."""
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    return f"sha256:{h.hexdigest()}"
-
-
 def compute_scope_hashes(scope_files: list[str], work_dir: Path) -> dict[str, str]:
     """Compute sha256 digests for every scope file.
 
@@ -126,5 +118,5 @@ def compute_scope_hashes(scope_files: list[str], work_dir: Path) -> dict[str, st
     hashes: dict[str, str] = {}
     for rel in scope_files:
         p = Path(rel) if Path(rel).is_absolute() else work_dir / rel
-        hashes[rel] = _hash_file(p) if p.exists() else "sha256:MISSING"
+        hashes[rel] = f"sha256:{file_sha256(p)}" if p.exists() else "sha256:MISSING"
     return hashes

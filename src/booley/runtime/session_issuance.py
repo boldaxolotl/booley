@@ -42,6 +42,7 @@ from booley.core.boundary import (
 from booley.core.config_paths import BooleyTomlError, resolve_toml
 from booley.core.differences import format_differences
 from booley.core.egress_modes import declared_egress
+from booley.core.file_hash import file_sha256
 from booley.core.private_store import PrivateStore, ProjectStore
 from booley.core.project_identity import project_label_id
 from booley.core.user_paths import config_dir
@@ -59,7 +60,6 @@ from booley.runtime.devcontainer import (
 )
 from booley.runtime.filesystem_utils import (
     open_with_sharing_retry,
-    read_file_bytes,
     replace_file,
     unlink_file,
 )
@@ -2193,7 +2193,7 @@ def _require_string(spec: dict[str, Any], key: str) -> str:
 
 def _file_sha256(path: Path) -> str:
     try:
-        return hashlib.sha256(read_file_bytes(path)).hexdigest()
+        return file_sha256(path, retry_sharing=True)
     except OSError as exc:
         raise RuntimeSpecError(f"cannot hash generated Sandbox spec: {exc}") from exc
 

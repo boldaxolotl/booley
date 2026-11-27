@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import logging
 import os
 import threading
@@ -18,6 +17,7 @@ from typing import Any
 
 import anyio
 
+from booley.core.file_hash import file_sha256
 from booley.mcp.application import McpApplication
 from booley.mcp.catalog import GATED_MCP_TOOLS
 from booley.mcp.catalog_worker import run_schema_worker
@@ -52,7 +52,7 @@ def custom_directory(directory: Path | None) -> Path | None:
 
 def _file_digest(path: Path) -> str:
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        return file_sha256(path)
     except FileNotFoundError:
         return "missing"
 
