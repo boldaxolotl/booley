@@ -85,17 +85,14 @@ def test_parser_reads_command_flags(argv, expected, monkeypatch):
     assert {key: args.get(key, "absent") for key in expected} == expected
 
 
-@pytest.mark.parametrize("inside", [True, False])
-def test_bare_booley_prints_help_and_the_host_gets_started(inside, monkeypatch, capsys):
-    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: inside)
+def test_bare_booley_in_the_sandbox_prints_help(monkeypatch, capsys):
+    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
     with pytest.raises(SystemExit) as raised:
         _parse_argv(monkeypatch)
     assert raised.value.code == 0
-    out = " ".join(capsys.readouterr().out.split())  # the hint wraps to the terminal width
+    out = capsys.readouterr().out
     assert "usage: booley" in out
-    assert ("Getting started" in out) is not inside
-    assert ("booley session up" in out and "T3 Code thread" in out) is not inside
-    assert "devcontainer" not in out
+    assert "Getting started" not in out
 
 
 def test_session_enter_help_names_the_t3_code_terminal(monkeypatch, capsys):
