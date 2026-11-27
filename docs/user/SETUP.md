@@ -15,8 +15,6 @@ Setup has two parts:
    hands off to it (see [The `booley-setup` skill](#the-booley-setup-skill)
    below).
 
-Setup ends with [your first task](#your-first-task) in a T3 Code thread.
-
 Two paths, one sequence: Install, `booley init`, then `/booley-setup` on the
 host (`/booley-setup new` for a new IP). They differ only in the skill mode:
 
@@ -193,8 +191,8 @@ token instead of using your subscription.
 
 The saved login lives in `~/.config/booley/`, outside every project, so it can't
 be committed by accident. Booley passes it to every Sandbox on its own; a
-Sandbox that already runs picks it up once you apply the change as
-[Applying Sandbox changes](SANDBOX.md#applying-sandbox-changes) says.
+Sandbox that already runs picks it up after `booley session down` and
+`booley session up`.
 
 ### What `/booley-setup new` asks and writes
 
@@ -379,12 +377,17 @@ For the other `booley session` commands, see
 
 ### Your first task
 
+First commit what Setup wrote, along with your own changes: a new worktree
+starts from your last commit.
+
 Start each task in its own thread on a new worktree. T3 Code creates the
 worktree and its branch, and Booley prepares it before the thread's first turn,
 so agents working in parallel never overwrite each other. Then type the task,
 for example:
 
-> Run the `<target>` simulation and summarize the result.
+> Run the `<target>` simulation.
+
+Replace `<target>` with one of your simulation Targets.
 
 [Worktrees](WORKTREES.md) says what a new worktree gets, and
 [Usage](USAGE.md#what-you-can-ask-for) what else to ask for.

@@ -117,13 +117,15 @@ The PicoRV32 demo is a small RISC-V CPU already set up for Booley. After you
 
 After you [install Booley](#installation):
 
-1. Run `booley init` in your RTL repository. It makes it a Booley Project.
+1. Run `booley init` in your RTL repository to make it a Booley Project.
 2. Run `/booley-setup` in your Claude Code or Codex chat. It plans the setup
    with you.
 3. Run `booley session up`. It starts the Sandbox and prints a pairing link.
    Open it in your browser: T3 Code, Booley's user interface, shows your
-   Project. Run `/booley-setup` again in a thread there to finish.
-4. Start a thread in a new worktree and give the agent its first task.
+   Project. Run `/booley-setup` again in a thread on the main checkout to
+   finish.
+4. Commit what setup wrote. Then start a thread in a new worktree and give the
+   agent its first task.
 
 The [Setup guide](https://booley.dev/docs/setup/) has every step.
 
