@@ -44,7 +44,6 @@ class CallContext:
     logs_dir: Path | None
     runtime_dir: Path | None
     subprocess_env_overrides: Mapping[str, str]
-    session_key: str | None = None
 
     @property
     def work_dir(self) -> Path:

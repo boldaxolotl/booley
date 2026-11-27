@@ -129,8 +129,6 @@ class JobLifecycle:
         # run_id -> (exit_code, stdout, stderr, timed_out) once finished.
         self._results: dict[str, tuple[int, str, str, bool]] = {}
         self._counter = 0
-        # Whole seconds, like record stamps: a Job ended in this second counts as new.
-        self._started_at = float(int(time.time()))
         # Live records of the Jobs this server submitted (the supervising task mutates
         # them, so they are current even when persistence is off) and the run_ids whose
         # result the owner has read.
@@ -178,12 +176,11 @@ class JobLifecycle:
     @staticmethod
     def _stamp_context(rec: jobrec.JobRecord, context: CallContext) -> None:
         rec.work_dir = str(context.explicit_work_dir) if context.explicit_work_dir else None
-        rec.session_key = context.session_key
         from booley.runtime.booley_dir import resolve_common_booley_dir
 
         try:
             project = resolve_common_booley_dir()
-            register_job(project, rec.run_id, rec.endpoint, rec.session_key, work_dir=rec.work_dir)
+            register_job(project, rec.run_id, rec.endpoint)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Job handle Project unavailable for %s: %s", rec.run_id, exc)
 
@@ -615,21 +612,8 @@ class JobLifecycle:
         return owned
 
     def _is_unread(self, rec: jobrec.JobRecord) -> bool:
-        """Finished and not yet read by its owner.
-
-        Releases never stamped ``read_at``, and the Sandbox keeps every Job
-        record in the Project tree, so a record without an owner only counts when
-        this server could still be the one to deliver it: still unrecorded as
-        finished, or ended since the server started.
-        """
-        if rec.read_at is not None or rec.run_id in self._read:
-            return False
-        if rec.owner is not None:
-            return True
-        ended = jobrec.parse_stamp(rec.ended_at)
-        return rec.status == jobrec.STATUS_RUNNING or (
-            ended is not None and ended >= self._started_at
-        )
+        """Not yet read by its owner."""
+        return rec.read_at is None and rec.run_id not in self._read
 
     def _unread_of(
         self, owned: list[tuple[jobrec.JobRecord, bool]]

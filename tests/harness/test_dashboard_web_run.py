@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import re
 import shutil
-import time
 from html import escape
 from urllib.parse import parse_qs, urlparse
 
@@ -20,9 +19,7 @@ from booley.harness.dashboard.jobs import JobReader, JobSnapshot
 from booley.harness.dashboard.specialist_form import NO_COVERAGE_RECORDS
 from booley.harness.dashboard.targets import TargetsReader
 from booley.harness.standalone_job import standalone_jobs_dir
-from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime import job_records
-from booley.runtime.handles import reserve_session_handle
 from tests.harness import test_dashboard_run as run_tests
 from tests.harness import test_dashboard_run_specialist as specialist_tests
 from tests.harness import test_dashboard_web as web_tests
@@ -390,20 +387,6 @@ def test_a_malformed_or_unknown_run_is_refused_before_any_check(
     assert spawned == []
 
 
-def _connected_session(world):
-    """A session of this host connected to `world.wt`, handle S1."""
-    SessionRegistry(world.booley).upsert(
-        Attribution("codex:s1", "thread", str(world.wt), "repo:w", namespace=SCOPE),
-        "sim",
-        "completed",
-        now=time.time(),
-    )
-    reserve_session_handle(world.booley, "codex:s1")
-
-
-SCOPE = "pid:[17]"
-
-
 @pytest.mark.parametrize(
     ("body", "expected"),
     [
@@ -411,7 +394,6 @@ SCOPE = "pid:[17]"
             _run("lint"),
             [
                 ADMITTED_BY_MEMORY,
-                "Warning: session S1 Interactive is connected to this worktree",
                 "Warning: 2 unfinished Jobs in this worktree (run-r, run-q)",
                 "Warning: 1 uncommitted change in this worktree",
             ],
@@ -433,13 +415,10 @@ SCOPE = "pid:[17]"
 def test_check_returns_the_review_screen_lines(
     world, feature_flags, empty_home, monkeypatch, body, expected
 ):
-    # The session registry scopes rows by the host's PID namespace, which the test cannot join.
-    monkeypatch.setattr(model, "namespace", lambda: SCOPE)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
     write_config(world.wt, '[agent]\nauth = "api_key"\n')
     if body["name"] == "lint":
         _queued_world(world)
-        _connected_session(world)
         (world.wt / "notes.txt").write_bytes(b"draft\n")
     with _client(world, feature_flags) as client:
         answer = _post(client, "check", world.wt, body)
@@ -459,7 +438,7 @@ def test_unfinished_jobs_are_named_oldest_first_whatever_the_listing_order(world
     _queued_world(world)
     jobs = JobReader(world.booley, proc_root=world.proc).read().jobs
     listed = tuple(sorted(jobs, key=lambda job: job.record.run_id, reverse=reverse))
-    snapshot = model.DashboardSnapshot((), JobSnapshot(listed))
+    snapshot = model.DashboardSnapshot(JobSnapshot(listed))
 
     occupants = model.worktree_occupants(snapshot, world.wt)
 
@@ -496,7 +475,7 @@ def test_submit_starts_a_standalone_job_listed_under_now_as_yours(
     run_id, handle = answer.json()["run_id"], answer.json()["handle"]
     record = job_records.read_record(run_id, standalone_jobs_dir(world.booley))
     assert record is not None
-    assert (record.work_dir, record.session_key, record.argv) == (
+    assert (record.work_dir, record.client, record.argv) == (
         str(world.wt.resolve()),
         None,
         argv,
@@ -835,9 +814,7 @@ def test_flow_form_offers_the_api_choices_and_quotes_the_command(world, feature_
 def test_review_shows_the_checks_facts_and_submit_starts_the_job_listed_as_yours(
     world, feature_flags, spawned, monkeypatch, tmp_path
 ):
-    monkeypatch.setattr(model, "namespace", lambda: SCOPE)
     _queued_world(world)
-    _connected_session(world)
     (world.wt / "notes.txt").write_bytes(b"draft\n")
     synth = _run("synth", values={}, extra="")
     wrong = {**synth, "extra": "--no-such-option"}
@@ -884,7 +861,6 @@ def test_review_shows_the_checks_facts_and_submit_starts_the_job_listed_as_yours
     assert lines == [
         ADMITTED_BY_MEMORY,
         WORK_UNIT_TIMEOUT,
-        "Warning: session S1 Interactive is connected to this worktree",
         "Warning: 2 unfinished Jobs in this worktree (run-r, run-q)",
         "Warning: 1 uncommitted change in this worktree",
     ]

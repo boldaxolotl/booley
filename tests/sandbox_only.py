@@ -84,7 +84,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/mcp_tools/test_job_lifecycle.py",
     "tests/mcp_tools/test_live_catalog.py",
     "tests/mcp_tools/test_mcp_dispatch.py",
-    "tests/mcp_tools/test_nested_session_presence.py",
     "tests/mcp_tools/test_owned_job_poll.py",
     "tests/mcp_tools/test_peer_checkout.py",
     "tests/mcp_tools/test_report_encoding.py",
@@ -96,7 +95,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     # Dashboard and MCP probe commands: Sandbox commands.
     "tests/harness/test_dashboard_jobs.py",
     "tests/harness/test_dashboard_run.py",
-    "tests/harness/test_dashboard_sessions.py",
     "tests/harness/test_dashboard_targets.py",
     "tests/harness/test_mcp_probe.py",
     # In-Sandbox registrars, heartbeat, and MCP transport tests (root and runtime directories).

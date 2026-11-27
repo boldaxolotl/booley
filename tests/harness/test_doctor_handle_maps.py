@@ -1,4 +1,4 @@
-"""Doctor warns when a Project's display handle map nears its size cap (#1550)."""
+"""Doctor warns when a Project's Job handle map nears its size cap (#1550)."""
 
 import pytest
 
@@ -11,33 +11,27 @@ from tests.harness.test_doctor import _patch_environment, _write_project
 THRESHOLD = handles.MAX_MAP_BYTES * 3 // 4
 
 
-def _host_with_map(tmp_path, monkeypatch, *, size, jobs=False):
-    """Set up the host fixtures for a Project whose handle map is *size* bytes."""
+def _host_with_map(tmp_path, monkeypatch, *, size):
+    """Set up the host fixtures for a Project whose Job handle map is *size* bytes."""
     booley_dir = _write_project(tmp_path)
     _patch_environment(monkeypatch, tmp_path, booley_dir)
-    store = handles.HandleStore(booley_dir, jobs=jobs)
+    store = handles.HandleStore(booley_dir)
     store.root.mkdir(parents=True)
     with store.path.open("wb") as stream:
         stream.truncate(size)
 
 
-@pytest.mark.parametrize(
-    ("jobs", "excess"),
-    [(False, 0), (False, 1), (True, 0), (True, 1)],
-    ids=["session-at-threshold", "session-above", "job-at-threshold", "job-above"],
-)
+@pytest.mark.parametrize("excess", [0, 1], ids=["at-threshold", "above"])
 @pytest.mark.usefixtures("fake_sandbox_attachment")
-def test_handle_map_size_warns_only_above_three_quarters_of_cap(
-    tmp_path, monkeypatch, jobs, excess
-):
-    _host_with_map(tmp_path, monkeypatch, size=THRESHOLD + excess, jobs=jobs)
+def test_handle_map_size_warns_only_above_three_quarters_of_cap(tmp_path, monkeypatch, excess):
+    _host_with_map(tmp_path, monkeypatch, size=THRESHOLD + excess)
 
     rows = findings(run_doctor(tmp_path), "handles.map-size")
 
     if not excess:
         assert rows == []
         return
-    assert [row.subject for row in rows] == ["job" if jobs else "session"]
+    assert [row.subject for row in rows] == ["job"]
     assert "16 MiB" in rows[0].message
     assert rows[0].fix.startswith("restart the Sandbox so its MCP server prunes")
 

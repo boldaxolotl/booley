@@ -74,6 +74,7 @@ from booley.mcp import (
     measure_tool,
     peer_checkout,
     review_tool,
+    session_peer,
 )
 from booley.mcp.agent_thread import resolve_agent_thread
 from booley.mcp.application import (
@@ -102,14 +103,7 @@ from booley.mcp.live_catalog import (
 )
 from booley.mcp.peer_checkout import CallerCheckout
 from booley.mcp.report_encoding import ReportEncoder
-from booley.mcp.session_observer import SessionMaintenanceApp, SessionObserver
 from booley.mcp.session_peer import PeerBoundary
-from booley.mcp.session_registry import (
-    Attribution,
-    SessionRegistry,
-    canonical_attribution,
-    git_checkout_metadata,
-)
 from booley.mcp.tool_changes import ChangingToolsServer, ToolChanges
 from booley.measurement import mcp_job
 from booley.runtime import job_records as jobrec
@@ -119,12 +113,10 @@ from booley.runtime.booley_dir import (
     resolve_booley_dir,
     resolve_common_booley_dir,
 )
-from booley.runtime.bootstrap_mode import should_run_outer_bookkeeping
 from booley.runtime.build_metadata import format_status_line
 from booley.runtime.checkout_role import SourceCheckoutProjectError
 from booley.runtime.endpoint_execution import OOM_REQUEUE_REASON
 from booley.runtime.git import is_linked_worktree
-from booley.runtime.handles import HandleStore
 from booley.runtime.heartbeat import REAPER_HEARTBEAT_PATH, touch_reaper_heartbeat
 from booley.runtime.mcp_config import (
     DEFAULT_HTTP_PORT,
@@ -244,7 +236,6 @@ class _McpLifetime:
         now: Callable[[], float] = time.monotonic,
         heartbeat_path: str | None = None,
     ) -> None:
-        self.sessions = SessionObserver(writes=should_run_outer_bookkeeping())
         self.idle_timeout_seconds = idle_timeout_seconds
         self.max_age_seconds = max_age_seconds
         self._now = now
@@ -677,71 +668,27 @@ def _build_mcp_tool_index(
     return index
 
 
-_UNATTRIBUTED = (
-    "Session: unknown (Booley could not attribute this call)",
-    "Branch: unknown",
-    "Checkout: unknown",
-)
-_UNRECORDED = (
-    "Session: unknown (Booley has not recorded this session)",
-    "Branch: unknown",
-    "Checkout: unknown",
-)
-
-
-_UNREADABLE = (
-    "Session: unknown (Booley could not read its session state)",
-    "Branch: unknown",
-    "Checkout: unknown",
-)
-
-
-def _checkout_kind(path: str) -> str:
-    """Say whether *path* is in a main checkout or a linked worktree, as far as Git metadata shows."""
+def _checkout_lines(checkout: Path) -> tuple[str, str]:
+    """Branch and checkout lines of *checkout*, with what Git metadata cannot say as unknown."""
     try:
-        metadata = git_checkout_metadata(Path(path))
+        metadata = peer_checkout.git_checkout_metadata(checkout.resolve())
     except (OSError, ValueError, UnicodeError):
-        return "checkout kind unknown"
+        metadata = None
     if metadata is None:
-        return "checkout kind unknown"
-    return "main checkout" if metadata[1] == metadata[2] else "worktree"
-
-
-def _recorded_identity_lines(attribution: Attribution) -> tuple[str, ...]:
-    """Session, branch and checkout lines from the registry row of the calling session."""
-    try:
-        common = resolve_common_booley_dir()
-    except (SourceCheckoutProjectError, BooleyLayoutError, OSError):
-        return _UNRECORDED
-    key = canonical_attribution(attribution).key
-    row = next(
-        (r for r in SessionRegistry(common).snapshot().rows if r.attribution.key == key), None
-    )
-    if row is None:
-        return _UNRECORDED
-    labels, titles, _ = HandleStore(common).titled_snapshot()
-    facts = row.attribution
-    path = facts.work_dir or facts.default_work_dir
-    checkout = f"{path} ({_checkout_kind(path)})" if path else "unknown"
+        return "Branch: unknown", "Checkout: unknown"
+    root, git_dir, common_dir = metadata
+    kind = "main checkout" if git_dir == common_dir else "worktree"
     return (
-        f"Session: {titles.get(key) or labels.get(key) or 'unknown'}",
-        f"Branch: {facts.branch or 'unknown'}",
-        f"Checkout: {checkout}",
+        f"Branch: {peer_checkout.git_branch(git_dir) or 'unknown'}",
+        f"Checkout: {root} ({kind})",
     )
 
 
-def _session_identity_lines(attribution: Attribution | None) -> tuple[str, ...]:
-    """The calling session's handle, branch and checkout, with what is unknown said so."""
-    if attribution is None:
-        return _UNATTRIBUTED
-    try:
-        return _recorded_identity_lines(attribution)
-    except Exception:  # noqa: BLE001 — status must survive unreadable session state
-        return _UNREADABLE
+def _format_status_card(mcp_tool_names: list[str], checkout: Path | None) -> str:
+    """Return the concise user-facing Sandbox status card.
 
-
-def _format_status_card(mcp_tool_names: list[str], attribution: Attribution | None) -> str:
-    """Return the concise user-facing Sandbox status card."""
+    *checkout* is the caller's routed checkout; ``None`` is the server's own cwd.
+    """
     session_id = _interactive_session_id()
     mcp_tools_text = ", ".join(mcp_tool_names) if mcp_tool_names else "none"
     try:
@@ -750,7 +697,7 @@ def _format_status_card(mcp_tool_names: list[str], attribution: Attribution | No
         health = current_summary(Path.cwd())
     except Exception:  # noqa: BLE001 — status must survive corrupt/missing advisory state
         health = "Automatic Doctor status unavailable."
-    identity = "\n".join(_session_identity_lines(attribution))
+    identity = "\n".join(_checkout_lines(checkout or Path.cwd()))
     return (
         "```text\n"
         f"Booley ready. Sandbox container {session_id} is running.\n"
@@ -766,11 +713,11 @@ def _dispatch_status(
     mcp_tool_names: list[str], request_context: McpRequestContext | None
 ) -> list[TextContent]:
     """Handle the synthetic status MCP tool without spawning a subprocess."""
-    attribution = request_context.attribution if request_context is not None else None
+    checkout = request_context.checkout if request_context is not None else None
     return [
         TextContent(
             type="text",
-            text=_format_status_card(mcp_tool_names, attribution),
+            text=_format_status_card(mcp_tool_names, checkout),
         ),
     ]
 
@@ -1547,8 +1494,6 @@ async def _dispatch_booley_mcp_tool(
     if work_dir_error is not None:
         return _error_result(work_dir_error)
     context = resolve_call_context(arguments)
-    if request_context is not None and request_context.session_key() is not None:
-        context = replace(context, session_key=request_context.session_key())
 
     cmd = _endpoint_command(name, arguments, mcp_tool_def, mcp_tool_call_counts)
 
@@ -1813,8 +1758,6 @@ async def _dispatch_command_job(
     if work_dir_error is not None:
         return _error_result(work_dir_error)
     context = resolve_call_context(arguments)
-    if request_context is not None and request_context.session_key() is not None:
-        context = replace(context, session_key=request_context.session_key())
     return await _dispatch_async_job(
         endpoint,
         argv,
@@ -2155,7 +2098,6 @@ async def _call_application_tool(
     application: McpApplication,
     params: CallToolRequestParams,
     context: ServerRequestContext | None = None,
-    observer: SessionObserver | None = None,
 ) -> CallToolResult | InputRequiredResult:
     """Translate one application result or failure into MCP SDK types."""
     caller = await _caller_checkout(context, params)
@@ -2163,31 +2105,18 @@ async def _call_application_tool(
         return CallToolResult(
             content=[TextContent(type="text", text=caller.refusal)], is_error=True
         )
-    request = await _observed_request_context(context, params, observer, caller)
+    request = await _request_context(context, params, caller)
     try:
-        try:
-            if context is None and observer is None:
-                payload = await application.call_tool(params.name, params.arguments or {})
-            else:
-                payload = await application.call_tool(
-                    params.name, params.arguments or {}, request_context=request
-                )
-        except asyncio.CancelledError:
-            # The client went away mid-call: the call is over, not still running.
-            # record() queues the outcome before its first await, so the write
-            # survives a second cancel. A cancel after the call returned keeps
-            # its real outcome, so only the tool call itself is guarded here.
-            if observer is not None:
-                with contextlib.suppress(asyncio.CancelledError):
-                    await _record_presence(observer, request.attribution, params.name, "cancelled")
-            raise
-        payload = await _observe_tool_completion(payload, request, params.name, observer)
-        # Last, so the notice ends the response, after any shared-worktree warning.
+        if context is None:
+            payload = await application.call_tool(params.name, params.arguments or {})
+        else:
+            payload = await application.call_tool(
+                params.name, params.arguments or {}, request_context=request
+            )
+        # Last, so the notice ends the response.
         payload = application.finalize(payload, request)
         return _sdk_tool_result(payload)
     except UnknownMcpToolError as exc:
-        if observer is not None:
-            await _record_presence(observer, request.attribution, params.name, "unknown-tool")
         raise MCPError(
             INVALID_PARAMS,
             f"Unknown MCP tool: {exc.name}",
@@ -2195,41 +2124,9 @@ async def _call_application_tool(
     except MCPError:
         raise
     except Exception as exc:
-        if observer is not None:
-            await _record_presence(observer, request.attribution, params.name, "error")
         logger.exception("Unexpected MCP tool failure for %s", params.name)
         message = "Internal server error"
         raise MCPError(INTERNAL_ERROR, message) from exc
-
-
-async def _record_presence(
-    observer: SessionObserver,
-    facts: Attribution | None,
-    tool: str,
-    outcome: str,
-) -> None:
-    """Presence is advisory: storage defects never replace an application result."""
-    try:
-        await observer.record(facts, tool, outcome)
-    except Exception:
-        logger.debug("Session completion observation unavailable", exc_info=True)
-
-
-async def _observe_tool_completion(
-    payload: McpToolPayload | McpInputRequired,
-    request: McpRequestContext,
-    tool: str,
-    observer: SessionObserver | None,
-) -> McpToolPayload | McpInputRequired:
-    """Record the call outcome in the session registry; the payload is returned unchanged."""
-    if observer is not None:
-        outcome = (
-            "input-required"
-            if isinstance(payload, McpInputRequired)
-            else ("error" if payload.is_error else "completed")
-        )
-        await _record_presence(observer, request.attribution, tool, outcome)
-    return payload
 
 
 def _client_name_and_meta(
@@ -2248,8 +2145,8 @@ async def _caller_checkout(
 
     ``None`` means no lookup was made: no SDK request (stdio, stateless) or an
     explicit ``work_dir``. A Codex call whose metadata names no workspace comes
-    back with ``refusal`` set. Routing never depends on presentation, so this runs
-    outside the Session observer and its response budget.
+    back with ``refusal`` set. Routing runs apart from the caller's agent lookup, so
+    a failure there cannot change the checkout.
     """
     if context is None or context.request is None or (params.arguments or {}).get("work_dir"):
         return None
@@ -2263,50 +2160,31 @@ async def _caller_checkout(
         return None
 
 
-async def _observed_request_context(
+async def _request_context(
     context: ServerRequestContext | None,
     params: CallToolRequestParams,
-    observer: SessionObserver | None,
-    caller: CallerCheckout | None = None,
+    caller: CallerCheckout | None,
 ) -> McpRequestContext:
-    """Unexpected advisory failures cannot prevent application dispatch."""
-    try:
-        request = await _resolve_observed_request_context(context, params, observer, caller)
-    except Exception:
-        logger.debug("Session request observation unavailable", exc_info=True)
-        request = (
-            McpRequestContext()
-            if context is None
-            else _application_request_context(context, params)
-        )
-    if caller is not None and caller.checkout is not None:
-        request = replace(request, checkout=caller.checkout)
-    return request
+    """The request's verified inputs, its routed checkout and the agent behind it.
 
-
-async def _resolve_observed_request_context(
-    context: ServerRequestContext | None,
-    params: CallToolRequestParams,
-    observer: SessionObserver | None,
-    caller: CallerCheckout | None = None,
-) -> McpRequestContext:
+    The agent is advisory: an unexpected lookup failure cannot prevent dispatch.
+    """
     request = (
         McpRequestContext() if context is None else _application_request_context(context, params)
     )
-    if observer is None:
+    if caller is not None and caller.checkout is not None:
+        request = replace(request, checkout=caller.checkout)
+    try:
+        name, meta = _client_name_and_meta(context, params)
+        peer = None if caller is None else caller.peer
+        if peer is None and context is not None and context.request is not None:
+            # Also retries a boundary lookup that found no peer.
+            peer = await asyncio.to_thread(session_peer.observed_peer, context.request)
+        agent = await resolve_agent_thread(name, meta, peer)
+    except Exception:
+        logger.debug("Caller agent lookup unavailable", exc_info=True)
         return request
-    name, meta = _client_name_and_meta(context, params)
-    facts = await observer.attribution(
-        params.arguments or {},
-        meta,
-        name,
-        request=context.request if context is not None else None,
-        tool=params.name,
-        caller=caller,
-    )
-    facts = await observer.resolved(facts)
-    agent = await resolve_agent_thread(name, meta, facts)
-    return replace(request, attribution=facts, agent=agent)
+    return replace(request, agent=agent)
 
 
 def _application_request_context(
@@ -2353,7 +2231,7 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
             catalog = application.live_catalog
             if catalog is not None and catalog.needs_refresh(canonical(params.name)):
                 await catalog.refresh()
-            return await _call_application_tool(application, params, _ctx, lifetime.sessions)
+            return await _call_application_tool(application, params, _ctx)
         finally:
             lifetime.mark_mcp_endpoint_end()
 
@@ -2514,16 +2392,11 @@ async def _main() -> None:
                 server.create_initialization_options(),
             ),
         )
-        maintenance = asyncio.create_task(lifetime.sessions.maintenance_loop())
         watchdog_task = asyncio.create_task(lifetime.wait_until_stale())
         done, pending = await asyncio.wait(
             {run_task, watchdog_task},
             return_when=asyncio.FIRST_COMPLETED,
         )
-        lifetime.sessions.close()
-        maintenance.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await maintenance
         if run_task in done:
             watchdog_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -2557,7 +2430,6 @@ def _run_http(port: int) -> None:
     )
     handle_pruning.prune_at_start()
     app = _streamable_http_app(server)
-    app = SessionMaintenanceApp(app, lifetime.sessions)
     try:
         sock = loopback_http.listen(_HTTP_HOST, port)
     except loopback_http.PortUnavailableError as exc:

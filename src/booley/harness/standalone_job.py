@@ -258,9 +258,7 @@ class StandaloneJob:
             self._finished = True  # unrecorded: the signal handler must not write a record
             print(f"WARN: Standalone Job record unavailable: {exc}", file=sys.stderr)
             return None
-        register_job(
-            self._booley_dir, record.run_id, record.endpoint, None, work_dir=record.work_dir
-        )
+        register_job(self._booley_dir, record.run_id, record.endpoint)
         return log
 
     def _reconcile_dead_records(self) -> None:

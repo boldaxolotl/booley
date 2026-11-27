@@ -9,13 +9,18 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.mcp.session_registry import Attribution, codex_client
+from booley.mcp.peer_checkout import codex_client, process_client
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
-from booley.runtime.session_activity import valid_thread_id
 
 logger = logging.getLogger(__name__)
 
 T3_THREAD_ENV = "T3CODE_THREAD_ID"
+MAX_THREAD_ID = 1024
+
+
+def valid_thread_id(value: object) -> bool:
+    """Bound client metadata and reject controls or unencodable Unicode."""
+    return isinstance(value, str) and 0 < len(value) <= MAX_THREAD_ID and value.isprintable()
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,23 +34,25 @@ class AgentThread:
 async def resolve_agent_thread(
     client_name: str,
     metadata: Mapping[str, Any],
-    attribution: Attribution | None,
+    peer: ProcessIdentity | None,
     *,
     proc_root: Path = Path("/proc"),
 ) -> AgentThread | None:
     """The caller's client and thread, or ``None`` for a client that is neither Claude nor Codex.
 
-    Codex names its thread in ``_meta``, read here rather than from *attribution*.
-    A Claude caller's T3 Code thread is in the environment of its own process, read off
-    the event loop.
+    Codex names its thread in ``_meta``. A Claude caller's T3 Code thread is in the
+    environment of its own process, the call's loopback *peer*, read off the event loop.
     """
     if codex_client(client_name, metadata):
         thread = metadata.get("threadId")
         return AgentThread("codex", str(thread) if valid_thread_id(thread) else None)
     if "claude" not in client_name.lower():
         return None
-    process = attribution.process if attribution and attribution.kind == "process" else None
-    thread = None if process is None else await asyncio.to_thread(_t3_thread, process, proc_root)
+    thread = (
+        await asyncio.to_thread(_t3_thread, peer, proc_root)
+        if peer is not None and process_client(client_name, peer)
+        else None
+    )
     return AgentThread("claude", thread)
 
 

@@ -354,7 +354,7 @@ def test_malformed_link_journal_refuses_before_any_rename(tmp_path, monkeypatch)
 
 @pytest.mark.parametrize("promote", [True, False], ids=["holder", "waiter"])
 @pytest.mark.parametrize("retired", ["heavy", "light"])
-def test_live_job_without_session_registry_refuses_unchanged(tmp_path, retired, promote):
+def test_live_job_refuses_unchanged(tmp_path, retired, promote):
     import os
 
     from booley.runtime.job_slots import CLASS_MEMORY, MemoryClaim, SlotStore

@@ -22,6 +22,7 @@ import pytest
 from booley.harness.measure_children import ChildrenOutcome
 from booley.mcp import catalog, endpoint_process
 from booley.mcp import server as mcp_server
+from booley.mcp.agent_thread import AgentThread
 from booley.mcp.application import McpRequestContext
 from booley.mcp.server import _JobManager
 from booley.measurement.metrics_file import TableRules
@@ -192,10 +193,10 @@ def test_a_second_measure_never_attaches_to_a_live_one(
     assert "attached" not in second.lower() and len(spawned) == 2
 
 
-def test_the_measure_job_belongs_to_the_calling_session(
+def test_the_measure_job_records_the_calling_agent(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#5310: the Dashboard files the Job under the session that called, not as Standalone."""
+    """#5310: the Dashboard files the Job under the agent that called, not as Standalone."""
     monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
     monkeypatch.setattr(mcp_server, "_validate_work_dir", lambda _value: None)
 
@@ -204,7 +205,7 @@ def test_the_measure_job_belongs_to_the_calling_session(
 
     monkeypatch.setattr(mcp_server, "_run_subprocess", process)
     name = measure_tool().MEASURE_TOOL_NAME
-    attribution = SimpleNamespace(key="codex:t1", kind="thread", worktree_key="")
+    agent = AgentThread("codex", "t1")
 
     async def scenario() -> str:
         jobs = _JobManager(_FakeLifetime())
@@ -215,23 +216,24 @@ def test_the_measure_job_belongs_to_the_calling_session(
             jobs=jobs,
             status_mcp_tool_names=[],
             mcp_tool_call_counts={},
-            request_context=McpRequestContext(attribution=attribution),
+            request_context=McpRequestContext(agent=agent),
+            server_identity="server",
         )
         await asyncio.gather(*jobs._tasks.values())
         return _run_id_from(_all_text(result))
 
     record = jobrec.read_record(asyncio.run(scenario()), session_jobs_dir())
-    assert record is not None and record.session_key == "codex:t1"
+    assert record is not None and (record.client, record.thread) == ("codex", "t1")
 
 
-def test_the_measurement_flow_jobs_carry_the_session_of_its_job(
+def test_the_measurement_flow_jobs_carry_the_agent_of_its_job(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#5310: each Flow Job of the measurement is the measuring session's Job too."""
+    """#5310: each Flow Job of the measurement records the measuring agent too."""
     from booley.harness import measure_children
 
     project = committed_project(tmp_path, TWO_LINT_TABLES)
-    mcp_job_environment(monkeypatch, session_key="codex:t1")
+    mcp_job_environment(monkeypatch, client="codex", thread="t1")
     script_progress(monkeypatch, lambda: None, [0, 0])
     requests: list[Any] = []
 
@@ -245,7 +247,7 @@ def test_the_measurement_flow_jobs_carry_the_session_of_its_job(
     monkeypatch.setattr(measure_children, "prepare_checkout_flow", prepare)
 
     assert _measure(monkeypatch, project) == 0
-    assert [request.session_key for request in requests] == ["codex:t1", "codex:t1"]
+    assert [(request.client, request.thread) for request in requests] == [("codex", "t1")] * 2
 
 
 def test_an_unsupplied_option_adds_nothing_to_the_command() -> None:

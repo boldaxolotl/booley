@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import socket
 from types import SimpleNamespace
@@ -15,6 +16,7 @@ try:
 except ImportError:
     pytest.skip("mcp package not installed", allow_module_level=True)
 
+from booley.mcp.agent_thread import AgentThread
 from booley.mcp.application import McpRequestContext
 from booley.mcp.call_context import resolve_call_context
 from booley.runtime import job_records as jobrec
@@ -46,11 +48,11 @@ def _env(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_server, "is_pid_alive", lambda _pid: True)
 
 
-def _caller(thread: str = "t1", *, session_key: str | None = None):
+def _caller(thread: str = "t1"):
     """The caller of one agent tab: server identity plus its thread key."""
     from booley.mcp.job_ownership import Caller
 
-    return Caller(f"{SERVER}|codex:{thread}", session_key or f"codex:{thread}")
+    return Caller(f"{SERVER}|codex:{thread}")
 
 
 def _all_text(result) -> str:
@@ -222,13 +224,13 @@ def test_inline_completion_counts_as_read(monkeypatch):
 
 
 def test_foreign_and_nested_jobs_never_returned_or_listed():
-    me = _caller("t1", session_key="worktree:k")
+    me = _caller("t1")
     other_tab = f"{SERVER}|codex:t2"
     nested = "mcp-stdio:nested:pid:test:2:2"
     _write("other-run", owner=other_tab, status=jobrec.STATUS_RUNNING)
     _write("other-done", owner=other_tab, ended_at="2026-01-01T00:01:00Z")
     _write("nested-run", owner=nested, status=jobrec.STATUS_RUNNING)
-    _write("baseline", owner=None, endpoint="sim_baseline", session_key="worktree:k")
+    _write("baseline", owner=None, endpoint="sim_baseline")
 
     out = _all_text(asyncio.run(_poll(_JobManager(_FakeLifetime()), me)))
 
@@ -239,16 +241,12 @@ def test_foreign_and_nested_jobs_never_returned_or_listed():
 
 def test_job_owner_separates_tabs_and_scopes(monkeypatch):
     from booley.mcp import job_ownership
-    from booley.mcp.session_registry import Attribution
 
-    def attribution(key: str, kind: str) -> Attribution:
-        return Attribution(key=key, kind=kind, work_dir="/w", worktree_key="wk")
-
-    tab_1 = job_ownership.job_owner(SERVER, attribution("codex:t1", "thread"))
-    tab_2 = job_ownership.job_owner(SERVER, attribution("codex:t2", "thread"))
-    claude = job_ownership.job_owner(SERVER, attribution("pid:ns:7:9", "process"))
+    tab_1 = job_ownership.job_owner(SERVER, AgentThread("codex", "t1"))
+    tab_2 = job_ownership.job_owner(SERVER, AgentThread("codex", "t2"))
+    claude = job_ownership.job_owner(SERVER, AgentThread("claude", "t1"))
     assert len({tab_1, tab_2, claude, SERVER}) == 4
-    assert job_ownership.job_owner(SERVER, attribution("wk", "worktree")) == SERVER
+    assert job_ownership.job_owner(SERVER, AgentThread("claude", None)) == SERVER
     assert job_ownership.job_owner(SERVER, None) == SERVER
 
     developer = job_ownership.server_identity()
@@ -279,8 +277,7 @@ def test_adopted_job_keeps_owner_across_restart(monkeypatch):
     gates = {"a": asyncio.Event()}
     spawned = asyncio.Event()
     _gated(monkeypatch, gates, spawned)
-    attribution = SimpleNamespace(key="codex:t1", kind="thread", worktree_key="")
-    context = McpRequestContext(attribution=attribution)
+    context = McpRequestContext(agent=AgentThread("codex", "t1"))
 
     def caller_after_restart():
         return job_ownership.caller_for(job_ownership.server_identity(), context)
@@ -316,15 +313,11 @@ def test_adopted_job_keeps_owner_across_restart(monkeypatch):
 
 
 @pytest.mark.parametrize("client", ["claude", "codex"])
-def test_argument_free_poll_finds_the_threads_jobs_from_a_new_agent_process(monkeypatch, client):
-    from booley.mcp.agent_thread import AgentThread
+def test_argument_free_poll_finds_the_threads_jobs(monkeypatch, client):
     from booley.mcp.job_ownership import caller_for
-    from booley.mcp.session_registry import Attribution
 
-    def caller(thread: str, pid: int):
-        process = Attribution(f"pid:ns:{pid}:{pid}", "process", "/w", "wk")
-        agent = AgentThread(client, thread)
-        return caller_for(SERVER, McpRequestContext(attribution=process, agent=agent))
+    def caller(thread: str):
+        return caller_for(SERVER, McpRequestContext(agent=AgentThread(client, thread)))
 
     gates = {"a": asyncio.Event()}
     gates["a"].set()
@@ -332,9 +325,9 @@ def test_argument_free_poll_finds_the_threads_jobs_from_a_new_agent_process(monk
 
     async def scenario():
         jobs = _JobManager(_FakeLifetime())
-        run_id = await _submit(jobs, "a", caller("th-1", 1))
-        other_thread = _all_text(await _poll(jobs, caller("th-2", 3)))
-        return run_id, other_thread, _all_text(await _poll(jobs, caller("th-1", 2)))
+        run_id = await _submit(jobs, "a", caller("th-1"))
+        other_thread = _all_text(await _poll(jobs, caller("th-2")))
+        return run_id, other_thread, _all_text(await _poll(jobs, caller("th-1")))
 
     run_id, other_thread, same_thread = asyncio.run(scenario())
     assert "NOTHING TO WAIT FOR" in other_thread and run_id not in other_thread
@@ -350,7 +343,6 @@ def _stub_http_server(monkeypatch, build=None):
     monkeypatch.setattr(mcp_server, "_build_server", build or (lambda *_a, **_k: (object(), [])))
     monkeypatch.setattr(mcp_server.handle_pruning, "prune_at_start", lambda: None)
     monkeypatch.setattr(mcp_server, "_streamable_http_app", lambda _server: object())
-    monkeypatch.setattr(mcp_server, "SessionMaintenanceApp", lambda app, _sessions: app)
     return capture_serving(monkeypatch)
 
 
@@ -402,38 +394,31 @@ def test_http_server_on_a_held_port_exits_2_without_announcing(monkeypatch, capl
     assert served == []
 
 
-def test_legacy_record_falls_back_to_session_key():
-    _write("old-running", owner=None, status=jobrec.STATUS_RUNNING, session_key="worktree:k")
+def _write_pre_owner(**fields) -> None:
+    """A record as written before owners existed, still carrying the retired caller key."""
+    _write("old-job", owner=None, **fields)
+    path = session_jobs_dir() / "old-job.json"
+    record = json.loads(path.read_bytes())
+    path.write_bytes(json.dumps({**record, "session_key": "worktree:k"}).encode())
+
+
+def test_record_without_owner_is_reached_only_by_run_id():
+    from booley.mcp.job_ownership import caller_for
+
+    # The request presents the same retired key as the record; it must not match them.
+    request = SimpleNamespace(agent=None, attribution=None, session_key=lambda: "worktree:k")
+    me = caller_for(SERVER, request)
     jobs = _JobManager(_FakeLifetime())
+    _write_pre_owner(status=jobrec.STATUS_RUNNING)
 
-    mine = _all_text(asyncio.run(_poll(jobs, _caller(session_key="worktree:k"), wait=0)))
-    theirs = _all_text(asyncio.run(_poll(jobs, _caller(session_key="worktree:z"), wait=0)))
-    by_id = _all_text(asyncio.run(_poll(jobs, _caller(), run_id="old-running", wait=0)))
+    running = _all_text(asyncio.run(_poll(jobs, me, wait=0)))
+    by_id = _all_text(asyncio.run(_poll(jobs, me, run_id="old-job", wait=0)))
+    _write_pre_owner(ended_at=utc_now_rfc3339())
+    done = _all_text(asyncio.run(_poll(jobs, me, wait=0)))
 
-    assert "old-running" in mine
-    assert "NOTHING TO WAIT FOR" in theirs
-    assert "old-running" in by_id
-
-    _write(
-        "old-running",
-        owner=None,
-        exit_code=0,
-        session_key="worktree:k",
-        ended_at=utc_now_rfc3339(),
-    )
-    done = _all_text(asyncio.run(_poll(jobs, _caller(session_key="worktree:k"), wait=0)))
-    assert "Result of job old-running" in done
-
-
-def test_legacy_finished_before_start_not_returned():
-    _write("ancient", owner=None, session_key="worktree:k", ended_at="2020-01-01T00:00:00Z")
-
-    out = _all_text(
-        asyncio.run(_poll(_JobManager(_FakeLifetime()), _caller(session_key="worktree:k")))
-    )
-
-    assert "NOTHING TO WAIT FOR" in out
-    assert "ancient" not in out
+    assert "NOTHING TO WAIT FOR" in running
+    assert "old-job" in by_id
+    assert "NOTHING TO WAIT FOR" in done
 
 
 def test_run_id_poll_of_unowned_job_unchanged():

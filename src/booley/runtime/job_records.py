@@ -106,7 +106,6 @@ class JobRecord:
     run_started_at: str | None = None
     schema: int = 2
     work_dir: str | None = None
-    session_key: str | None = None
     process_identity: dict[str, Any] | None = None
     ended_at: str | None = None
     # The agent that started the Job (see ``booley.mcp.job_ownership``) and when
@@ -150,7 +149,7 @@ def _validate_envelope(data: dict[str, Any]) -> None:
     schema = data.get("schema", 1)
     if require_int(schema, field="Job schema") <= 0:
         raise BoundaryError("Job schema must be positive")
-    for key in ("work_dir", "session_key", "report_root", "client", "thread"):
+    for key in ("work_dir", "report_root", "client", "thread"):
         if data.get(key) is not None:
             require_str(data, key)
 

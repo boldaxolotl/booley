@@ -108,7 +108,6 @@ required_paths = [
   "/usr/local/share/verilator/include/verilated.h",
   "/usr/local/share/verilator/include/vltstd/vpi_user.h",
   "/usr/local/libexec/booley/base_package_inventory.py",
-  "/usr/local/libexec/booley/session_activity_hook.py",
   "/usr/local/libexec/booley/t3code-denied-tools.txt",
   "/usr/local/libexec/booley/t3code_tool_deny_hook.py",
   "/usr/local/share/booley/base-package-inventory.json",
@@ -120,6 +119,7 @@ absent_paths = [
   "/opt/or-tools/bin",
   "/opt/or-tools/include",
   "/usr/local/cargo",
+  "/usr/local/libexec/booley/session_activity_hook.py",
   "/usr/local/rustup",
   "/usr/local/lib/python3.14/dist-packages/claude_agent_sdk/_bundled/claude",
 ]

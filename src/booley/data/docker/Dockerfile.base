@@ -414,11 +414,6 @@ COPY src/booley/data/docker/t3code-policy.json /etc/t3code/policy.json
 RUN chmod 0755 /etc/t3code \
     && chmod 0644 /etc/t3code/policy.json \
     && t3 policy check /etc/t3code/policy.json
-# Both policy files also run this hook on client lifecycle events so the
-# Session Registry can read session activity (retired by ADR 0093). It is a
-# standalone standard-library script, not a `booley` import: the client waits
-# for it on every prompt and tool call.
-COPY src/booley/data/docker/session_activity_hook.py /usr/local/libexec/booley/session_activity_hook.py
 # Codex's requirements run this hook to block the T3 Code tools the list names.
 COPY src/booley/data/docker/t3code_tool_deny_hook.py /usr/local/libexec/booley/t3code_tool_deny_hook.py
 COPY src/booley/data/docker/t3code-denied-tools.txt /usr/local/libexec/booley/t3code-denied-tools.txt

@@ -2,7 +2,7 @@
 
 Used by simulator run-halves and the harness to print periodic progress updates
 so the terminal does not appear stuck. Each tick also refreshes the Sandbox
-activity heartbeat, so long-running Booley Flows count as session activity.
+activity heartbeat, so long-running Booley Flows count as activity.
 """
 
 from __future__ import annotations

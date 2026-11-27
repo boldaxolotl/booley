@@ -397,7 +397,8 @@ def _request_for(
     main_booley_dir: Path,
     report_dir: Path,
     timeout_s: float | None,
-    session_key: str | None,
+    client: str | None,
+    thread: str | None,
 ) -> CheckoutFlowRequest:
     """The clean-checkout run of one table: ``coverage`` is the ``sim`` Flow with coverage."""
     is_coverage = table.flow == _COVERAGE_TABLE
@@ -410,7 +411,8 @@ def _request_for(
         timeout_s=timeout_s,
         coverage=is_coverage,
         settings=table.settings,
-        session_key=session_key,
+        client=client,
+        thread=thread,
     )
 
 
@@ -421,7 +423,8 @@ def _prepare_all(
     main_booley_dir: Path,
     report_dir: Path,
     timeout_s: float | None,
-    session_key: str | None,
+    client: str | None,
+    thread: str | None,
 ) -> list[tuple[TableRules, PreparedChild]]:
     """Preflight every table in order; a refusal for any one discards the others' scratch."""
     prepared: list[tuple[TableRules, PreparedChild]] = []
@@ -434,7 +437,8 @@ def _prepare_all(
                 main_booley_dir=main_booley_dir,
                 report_dir=report_dir,
                 timeout_s=timeout_s,
-                session_key=session_key,
+                client=client,
+                thread=thread,
             )
             try:
                 prepared.append((table, prepare_checkout_flow(request)))
@@ -454,13 +458,14 @@ def prepare_children(
     main_booley_dir: Path,
     report_dir: Path,
     timeout_s: float | None,
-    session_key: str | None = None,
+    client: str | None = None,
+    thread: str | None = None,
 ) -> list[tuple[TableRules, PreparedChild]]:
     """Preflight every table, cheapest cost tier first; start no child.
 
     A refusal for any table discards the others' scratch, so a refusal starts none. A
     ``BaseException`` (a Ctrl-C) ends the running preflight and discards the same way.
-    Each child's Job belongs to the session *session_key* names; ``None`` is Standalone.
+    Each child's Job records the agent *client* and *thread*; ``None`` is Standalone.
 
     Raises:
         CheckoutFlowError: a table was refused; it names the table.
@@ -471,7 +476,8 @@ def prepare_children(
         main_booley_dir=main_booley_dir.resolve(),
         report_dir=report_dir,
         timeout_s=timeout_s,
-        session_key=session_key,
+        client=client,
+        thread=thread,
     )
 
 
