@@ -1,4 +1,7 @@
-"""Shared fakes for Reviewer tests: one scripted agent behind the public ``call_agent`` seam."""
+"""Shared fakes for Reviewer tests: one scripted agent behind the public ``call_agent`` seam.
+
+``install_agent`` also fakes the agent workspace snapshot (``specialist.isolated_agent_workspace``).
+"""
 
 from __future__ import annotations
 

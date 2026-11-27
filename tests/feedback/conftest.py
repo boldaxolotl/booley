@@ -1,4 +1,7 @@
-"""Fixtures shared by the feedback tests."""
+"""Fixtures shared by the feedback tests.
+
+``lock_wait_expires`` fakes the file-lock wait's clock.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,7 @@
-"""Exercise the installed agent CLIs and their managed web-isolation policies."""
+"""Exercise the installed agent CLIs and their managed web-isolation policies.
+
+A local server fakes the model provider API the agent CLIs call.
+"""
 
 from __future__ import annotations
 

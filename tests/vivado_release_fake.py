@@ -1,4 +1,4 @@
-"""A fake Xilinx release whose Vivado launcher answers the version probe."""
+"""A fake of the Vivado release boundary: a Xilinx release whose launcher answers the version probe."""
 
 from __future__ import annotations
 

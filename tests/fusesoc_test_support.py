@@ -1,4 +1,7 @@
-"""Shared FuseSoC core fixtures for adapter and Simulation tests."""
+"""Shared FuseSoC core fixtures for adapter and Simulation tests.
+
+``fusesoc_setup_runner`` fakes the ``fusesoc run --setup`` command.
+"""
 
 from __future__ import annotations
 
