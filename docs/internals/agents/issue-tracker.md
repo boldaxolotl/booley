@@ -143,9 +143,8 @@ it as a comment instead of opening another issue. A failure that names no test
 ID, such as a job that ran out of time, is tracked by its job instead, without
 `flaky`; see the known-flake rule in
 [Recover a dequeued PR](merge-queue.md#recover-a-dequeued-pr). Issues filed
-automatically from the per-test flake ledger
-([#4413](https://github.com/boldaxolotl/booley/issues/4413)) follow the same
-rule.
+from the [flake ledger](../../../.github/ci/README.md#flake-ledger) follow the
+same rule.
 
 An issue or PR whose only fix for a flaky test is a larger time budget or
 timeout closes as a duplicate of

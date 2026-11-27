@@ -4,9 +4,12 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from xml.etree import ElementTree
+
+from ci_pytest_rerun import FLAKY_TAGS
 
 
 @dataclass(frozen=True)
@@ -29,6 +32,16 @@ def read_counts(path: Path) -> Counts:
         errors=sum(int(suite.attrib.get("errors", 0)) for suite in suites),
         skipped=sum(int(suite.attrib.get("skipped", 0)) for suite in suites),
     )
+
+
+def copy_if_flaky(junit: Path, directory: Path) -> bool:
+    """Copy a report that records a fail-then-pass to *directory*/junit.xml."""
+    cases = ElementTree.parse(junit).iter("testcase")
+    if not any(child.tag in FLAKY_TAGS for case in cases for child in case):
+        return False
+    directory.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(junit, directory / "junit.xml")
+    return True
 
 
 def summary_line(label: str, counts: Counts) -> str:
@@ -54,6 +67,7 @@ def main() -> int:
     parser.add_argument("--min-tests", type=int, default=1)
     parser.add_argument("--max-skips", type=int)
     parser.add_argument("--summary", type=Path)
+    parser.add_argument("--flaky-copy", type=Path, metavar="DIR")
     args = parser.parse_args()
 
     try:
@@ -65,6 +79,9 @@ def main() -> int:
         ) from None
     except ElementTree.ParseError as exc:
         raise SystemExit(f"malformed JUnit file at {args.junit}: {exc}") from None
+    # Before validate, so a report that fails a floor still publishes its marker.
+    if args.flaky_copy is not None:
+        copy_if_flaky(args.junit, args.flaky_copy)
     line = summary_line(args.label, counts)
     print(line, end="")
     if args.summary is not None:

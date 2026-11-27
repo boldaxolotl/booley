@@ -11,6 +11,9 @@ import pytest
 from tests.subprocess_budget import run_bounded_child
 
 _SCRIPT = Path(__file__).parents[2] / ".github/scripts/assert_junit.py"
+_MARKERS = Path(__file__).parent / "fixtures/flake_ledger"
+# The script imports its sibling, as it does when CI runs it by path.
+sys.path.insert(0, str(_SCRIPT.parent))
 _SPEC = importlib.util.spec_from_file_location("assert_junit", _SCRIPT)
 assert _SPEC is not None and _SPEC.loader is not None
 assert_junit = importlib.util.module_from_spec(_SPEC)
@@ -49,23 +52,38 @@ def test_rejects_required_suite_without_tests_or_with_skips(
         )
 
 
+@pytest.mark.parametrize(
+    ("fixture", "counts", "marked"),
+    [
+        (None, "4 collected, 1 skipped, 0 failed", False),
+        ("flaky.xml", "3 collected, 0 skipped, 0 failed", True),
+        ("failed_again.xml", "1 collected, 0 skipped, 1 failed", False),
+    ],
+    ids=["no-flaky", "flaky", "failed-again"],
+)
 def test_valid_junit_file_prints_summary_and_passes(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fixture: str | None,
+    counts: str,
+    marked: bool,
 ) -> None:
     junit = tmp_path / "junit.xml"
     summary = tmp_path / "summary.md"
-    junit.write_text(
-        '<testsuite tests="4" failures="0" errors="0" skipped="1"/>', encoding="utf-8"
-    )
-    monkeypatch.setattr(
-        sys, "argv", ["assert_junit.py", str(junit), "--label", "demo", "--summary", str(summary)]
-    )
+    inline = b'<testsuite tests="4" failures="0" errors="0" skipped="1"/>'
+    junit.write_bytes((_MARKERS / fixture).read_bytes() if fixture else inline)
+    argv = ["assert_junit.py", str(junit), "--label", "demo", "--summary", str(summary)]
+    monkeypatch.setattr(sys, "argv", [*argv, "--flaky-copy", str(tmp_path / "flaky")])
 
     assert assert_junit.main() == 0
 
-    expected = "- demo: 4 collected, 1 skipped, 0 failed, 0 errors\n"
+    expected = f"- demo: {counts}, 0 errors\n"
     assert capsys.readouterr().out == expected
     assert summary.read_text(encoding="utf-8") == expected
+    copy = tmp_path / "flaky/junit.xml"
+    assert copy.exists() == marked
+    assert not marked or copy.read_bytes() == junit.read_bytes()
 
 
 def test_missing_junit_file_fails_with_one_line(tmp_path: Path) -> None:

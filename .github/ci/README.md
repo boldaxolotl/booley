@@ -2,9 +2,9 @@
 
 Why the `Tests` workflow (`.github/workflows/test.yml`) runs what it runs. The
 job selection itself is code: read `.github/scripts/ci_changes.py` (categories
-and `required_jobs`), `ci_flake_stress.py`, `ci_pytest_shard.py`, and
-`ci_pytest_rerun.py` for the mechanics. Local checks and the path from branch
-to `main` are in
+and `required_jobs`), `ci_flake_stress.py`, `ci_pytest_shard.py`,
+`ci_pytest_rerun.py`, and `ci_flake_ledger.py` for the mechanics. Local checks
+and the path from branch to `main` are in
 [CONTRIBUTING.md](../../docs/internals/CONTRIBUTING.md), the merge queue in
 [merge-queue.md](../../docs/internals/agents/merge-queue.md), Renovate in
 [dependency-updates.md](../../docs/internals/agents/dependency-updates.md), and
@@ -156,6 +156,39 @@ per-test timeout, and time scale. The job passes only when every rerun passes.
 - `flake-stress` never reruns: its job is to expose flakiness.
 - The rerun gets no extra time: it counts against the same step or job
   `timeout-minutes` as the first run.
+
+## Flake ledger
+
+A green rerun hides a flake from the PR that hit it, so
+`.github/scripts/ci_flake_ledger.py` collects these passes across runs. The
+evidence action uploads a `flaky-<label>` artifact, a copy of `junit.xml`, only
+when that report holds a `flakyFailure` or `flakyError`. The script downloads
+only those artifacts, from the completed `Tests` runs created in the window, and
+rebuilds the ledger on every call without storing anything.
+
+```bash
+PYTHONPATH=src python .github/scripts/ci_flake_ledger.py [--days N] [--json]
+```
+
+- Run it from a checkout, with `gh` signed in; the window is 7 days unless
+  `--days` says otherwise.
+- A hit is one workflow run: several jobs or attempts of that run count once. A
+  test ID with 2 or more hits in the window is a filing candidate.
+- A test whose module no longer exists in the checkout is listed by its JUnit
+  name, `<classname>::<name>`.
+- The default output is readable text. `--json` prints only a document with
+  `window`, `min_hits`, `runs_read`, `ledger` (each `test_id` with its `hits`:
+  run ID and URL, date, branch, jobs, first failure message), and `candidates`,
+  which add a draft issue `title` and `body`.
+- It exits 1 with no ledger, naming the run or the run listing, when the API
+  cannot be read in full, a `flaky-*` artifact is expired or unreadable, or a
+  job ran its tests but its evidence upload failed. A job that published
+  nothing because its pytest step failed or timed out counts as having no hit.
+- In-progress runs are not read. Runs of a commit without the `flaky-<label>`
+  upload carry no marker, so their passes on rerun are not counted.
+- No workflow here runs the script or files issues. The external issue pipeline
+  runs it and files or comments on `flaky` issues as in
+  [Flaky-test issues](../../docs/internals/agents/issue-tracker.md#flaky-test-issues).
 
 ## Test time budgets
 
