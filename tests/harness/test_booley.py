@@ -730,6 +730,7 @@ class TestEnforceVenue:
         for mount_point, message in cases:
             mountinfo = tmp_path / "mountinfo"
             mountinfo.write_text(f"1 0 0:1 / {mount_point} rw - ext4 /dev/x rw\n")
+            # boundary: host/Sandbox mounts
             monkeypatch.setattr(sandbox_detection, "_MOUNTINFO", mountinfo)
             tlr._enforce_runtime_location("init")  # must not raise
             assert init_cmd.run_init(argparse.Namespace(seed=True), tmp_path) == 2

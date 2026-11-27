@@ -678,7 +678,7 @@ async def _codex_spawn(
 ) -> tuple[asyncio.subprocess.Process, Path]:
     """Spawn the codex subprocess with piped I/O.
 
-    Inside a container, a private HOME exposes the recursion-safe MCP tools
+    In a Sandbox, a private HOME exposes the recursion-safe MCP tools
     in ``params.nested_mcp_tools`` and carries the scoped MCP environment.
     An unlabeled caller uses "_anonymous" with an empty allowlist.
     """
