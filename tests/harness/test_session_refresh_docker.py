@@ -20,10 +20,13 @@ from booley.runtime.lifecycle_lock import host_lifecycle_lock
 from tests.docker_cli_guard import route_session_helpers_through_subprocess_run
 from tests.time_budget import hang_guard_s
 
-pytestmark = pytest.mark.skipif(
-    os.environ.get("BOOLEY_RUN_REFRESH_DOCKER_PROOF") != "1",
-    reason="opt-in real Docker proof: set BOOLEY_RUN_REFRESH_DOCKER_PROOF=1 and run serially (-n 0)",
-)
+pytestmark = [
+    pytest.mark.docker_cli,
+    pytest.mark.skipif(
+        os.environ.get("BOOLEY_RUN_REFRESH_DOCKER_PROOF") != "1",
+        reason="opt-in real Docker proof: set BOOLEY_RUN_REFRESH_DOCKER_PROOF=1 and run serially (-n 0)",
+    ),
+]
 
 
 def _docker(*args: str) -> str:

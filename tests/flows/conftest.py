@@ -41,10 +41,11 @@ def _set_flow_project_root(monkeypatch, _flow_project_root):
 @pytest.fixture
 def session_runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """A session runtime with no ambient state, identity or log variables."""
-    from booley.runtime import runtime_context
+    from booley.runtime.runtime_context import RuntimeLocation
+    from tests.sandbox_venue_fake import place
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     for name in (
         "BOOLEY_STATE_FILE",
         "BOOLEY_TICKET_FILE",

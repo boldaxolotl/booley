@@ -25,6 +25,7 @@ sys.path.insert(0, str(REPOSITORY_ROOT / ".github/scripts"))
 
 from ci_changes import (  # pyright: ignore[reportMissingImports]
     CATEGORIES,
+    DEFAULT_WINDOWS_SHARD_COUNT,
     build_test_matrix,
     required_jobs,
 )
@@ -181,7 +182,8 @@ def test_bwave_integration_prebuilds_and_runs_native_tests_without_skips() -> No
 
 def test_ci_mark_expressions_never_deselect_sandbox_only_tests() -> None:
     """Sandbox-only tests skip on Windows only; no `-m` expression may drop them anywhere."""
-    from tests.sandbox_only import SANDBOX_ONLY_PATHS, is_sandbox_only
+    from tests.os_specific import is_os_specific
+    from tests.sandbox_only import is_sandbox_only
 
     workflows = (REPOSITORY_ROOT / ".github" / "workflows").glob("*.yml")
     mentions = [path.name for path in workflows if "sandbox_only" in path.read_text("utf-8")]
@@ -191,22 +193,10 @@ def test_ci_mark_expressions_never_deselect_sandbox_only_tests() -> None:
     )
     paths = [word for word in shlex.split(compatibility["run"]) if word.startswith("tests/")]
     assert paths
-    # A compatibility leg whose paths are all skipped on Windows would pass while testing nothing.
-    # A test file is judged by the registry (its Windows exceptions included); a directory
-    # overlaps when any registry entry sits inside it or contains it.
-    skipped = [
-        path
-        for path in paths
-        if (
-            is_sandbox_only(path)
-            if path.endswith(".py")
-            else any(
-                path.startswith(entry) or entry.startswith(path.rstrip("/") + "/")
-                for entry in SANDBOX_ONLY_PATHS
-            )
-        )
-    ]
-    assert not skipped, f"Windows compatibility paths overlap the Sandbox-only registry: {skipped}"
+    # A leg whose paths are all skipped on Windows would pass while testing nothing, and an
+    # unregistered path (a directory included) would run tests with no OS-dependent result.
+    wrong = [path for path in paths if not is_os_specific(path) or is_sandbox_only(path)]
+    assert not wrong, f"Windows compatibility paths must be registered and run there: {wrong}"
 
 
 def test_windows_headroom_only_warns() -> None:
@@ -225,7 +215,8 @@ def test_windows_headroom_only_warns() -> None:
 
 
 def test_windows_shards_are_exactly_verified() -> None:
-    jobs = _test_workflow()["jobs"]
+    workflow = _test_workflow()
+    jobs = workflow["jobs"]
     test_verify_steps = jobs["test-verify"]["steps"]
     test_verify_download = next(
         step for step in test_verify_steps if "pattern" in step.get("with", {})
@@ -240,9 +231,13 @@ def test_windows_shards_are_exactly_verified() -> None:
         for step in test_verify_steps
         if step.get("name") == "Prove every sharded test ran exactly once"
     )
-    assert verify_step["env"]["WINDOWS_SHARD_COUNT"] == (
-        "${{ inputs.windows_shard_count || '4' }}"
-    )
+    fallback = f"${{{{ inputs.windows_shard_count || '{DEFAULT_WINDOWS_SHARD_COUNT}' }}}}"
+    assert verify_step["env"]["WINDOWS_SHARD_COUNT"] == fallback
+    assert fallback in _named_step(jobs["changes"], "Classify changed paths")["run"]
+    # PyYAML reads the `on:` key as the boolean True.
+    dispatch = workflow[True]["workflow_dispatch"]["inputs"]["windows_shard_count"]
+    assert dispatch["default"] == str(DEFAULT_WINDOWS_SHARD_COUNT)
+    assert dispatch["default"] in dispatch["options"]
 
 
 def test_coverage_job_exactly_verifies_before_combining() -> None:

@@ -52,7 +52,7 @@ def _record_and_replan(tmp_path, monkeypatch, toml, request):
         return run.flow, path, codec.decode_simulation_record_manifest(path.read_bytes())
 
     flow, path, stored = record(1, request)
-    # Private seam: only the coverage refusal reaches the options builder until #4371.
+    # Private seam: publicly, only a resume refusal prints these options until #4371.
     options = flow._frozen_test_run_options(stored, target)
     parser = argparse.ArgumentParser()
     SimArguments.add_args(parser)
