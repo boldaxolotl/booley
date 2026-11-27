@@ -3,8 +3,8 @@
 Booley's core move is giving Developer Agents **one consistent interface to the
 EDA tools** through Booley Flows, the same for Claude Code and Codex and the
 same across the EDA tools each Flow supports, and wrapping the result in an
-agentic development environment (ADE): T3 Code, a web UI the Sandbox serves,
-where you direct and supervise those agents from your browser. That makes
+agentic development environment (ADE), where you direct and supervise those
+agents from your browser in T3 Code, a web UI the Sandbox serves. That makes
 Developer Agents more capable, but it also gives the engineer a faster,
 lower-friction RTL workflow. Every feature below builds on that foundation;
 the reasoning behind the load-bearing choices is in
@@ -86,12 +86,11 @@ worktrees and each worktree's Jobs share one T3 Code window in your browser.
   turns.
 - **Parallel.** Run several threads at once, each on its own worktree and
   branch ([Parallel Sessions](#parallel-sessions)), and step in when an agent
-  needs a decision. The Booley Dashboard shows each worktree's Jobs.
+  needs a decision.
 
-Either way, Booley removes the manual transitions among editor, build commands,
-logs, waveforms, and review artifacts. Less time spent on that plumbing
-means faster iterations and more opportunities to verify, refine, and optimize
-the design.
+Either way, Booley removes the manual transitions among build commands, logs,
+waveforms, and review artifacts. Less time spent on that plumbing means faster
+iterations and more opportunities to verify, refine, and optimize the design.
 
 Today the shell is T3 Code: agent sessions run in its threads, and the Booley
 Dashboard, a web page of each worktree's Jobs, opens in its preview panel.
@@ -339,9 +338,9 @@ simulation did. Booley lets it observe actual simulation behavior through
 specific time ranges, use one signal as a trigger for sampling another, and
 trace data through the design: systematic debugging instead of guesswork.
 
-Booley has no waveform viewer of its own for now: `bwave gui` exits with a
-message saying so, and you open an FST in a viewer of your own. Waveform views
-are on the [roadmap](../internals/ROADMAP.md#native-ade-surface).
+Booley has no waveform viewer of its own for now: `bwave gui` fails with a
+message. Waveform views are on the
+[roadmap](../internals/ROADMAP.md#native-ade-surface).
 
 **FST trace store.** Raw VCD files from complex designs can reach 10 GB+, so
 Booley's successful trace artifact is FST: the open, transition-based waveform

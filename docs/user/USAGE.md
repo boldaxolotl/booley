@@ -102,7 +102,8 @@ Don't continue until `booley doctor` shows no failures or warnings.
    Sandbox serves, opens with your Project. The other `booley session`
    commands are in [SANDBOX.md](SANDBOX.md).
 
-3. In T3 Code, start a thread on the main checkout and choose Claude or Codex.
+3. In T3 Code, start a thread on the main checkout (your Project folder) and
+   choose Claude or Codex.
 
     Every Agent CLI listed in `[agent] clis` in `.booley/booley.toml` gets
     Booley's tools and skills and the sign-in its `[agent.auth]` policy allows;
@@ -111,7 +112,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
 
     If the agent can't sign in, run `booley auth --status` in a
     **host terminal** and follow its advice (usually `booley auth`). Then run
-    `booley session refresh` there and try again. See
+    `booley session down` and `booley session up` there and try again. See
     [Sign-in and billing](SETUP.md#sign-in-and-billing).
 
 4. Type this first request into the chat:
@@ -277,10 +278,10 @@ instead: `git -C .booley commit`. See [STEALTH.md](STEALTH.md#turning-it-on).
 
 When a simulation with tracing fails, the Developer Agent reads the waveform
 on its own with `bwave`. Booley has no waveform viewer for now, and
-`bwave gui` exits with a message saying so. When *you* want to know what
-happened, ask: *"what does the FIFO handshake do around the failure"*. The
-agent answers from the waveform, naming the signals, times and values. You can
-open the FST file in a viewer of your own, such as GTKWave or Surfer.
+`bwave gui` fails with a message. When *you* want to know what happened, ask:
+*"what does the FIFO handshake do around the failure"*. The agent answers from
+the waveform, naming the signals, times and values. You can open the FST file
+in a viewer of your own, such as GTKWave or Surfer.
 
 ## When Booley itself misbehaves
 
