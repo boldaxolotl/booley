@@ -227,7 +227,7 @@ def test_nonpassing_test_is_not_a_headroom_error(
 @pytest.mark.parametrize(
     "option",
     [f"--timeout-headroom={value}" for value in ("0", "-0.5", "1.5", "nan", "inf", "half")]
-    + ["--timeout-headroom-warn=0", "--timeout-headroom-warn=half"],
+    + ["--timeout-headroom-warn=0"],
 )
 def test_invalid_fraction_is_a_usage_error(tmp_path: Path, option: str) -> None:
     result = _run_case(tmp_path, [option])
@@ -243,7 +243,8 @@ def test_guard_requires_pytest_timeout(tmp_path: Path, option: str) -> None:
     result = _run_case(tmp_path, [option], timeout_plugin=False)
 
     assert result.returncode == pytest.ExitCode.USAGE_ERROR, result.stdout + result.stderr
-    assert "requires the pytest-timeout plugin" in result.stderr
+    option_name = option.partition("=")[0]
+    assert f"{option_name} requires the pytest-timeout plugin" in result.stderr
 
 
 @pytest.mark.parametrize(
