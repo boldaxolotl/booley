@@ -3,10 +3,12 @@
 A **worktree** is a second checkout of your Project where a separate Developer
 Agent can work without touching your files, for example one for each task you
 run in parallel; see [Several agents at once](USAGE.md#several-agents-at-once).
-T3 Code creates a worktree for each thread that asks for one, names its branch,
-and deletes it with the last thread that uses it. Booley prepares it. Read this
-page to see what Booley gives a worktree, prepare one made with Git, or remove
-one. Run the commands in a container terminal.
+A T3 Code thread started on a new worktree gets one in `t3-worktrees/` in the
+Main Booley Directory (`.booley/t3-worktrees/` by default). T3 Code creates
+it, names its branch, and deletes it with the last thread that uses it.
+Booley prepares it. Read this page to see what Booley gives a worktree,
+prepare one made with Git, or remove one. Run the commands in a container
+terminal.
 
 ## Preparing a worktree
 
