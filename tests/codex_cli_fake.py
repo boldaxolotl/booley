@@ -1,8 +1,8 @@
 """Stand-in ``codex`` commands for driving ``CodexBackend`` in tests.
 
 ``answer_codex_on_host`` gives a host run canned events. ``install_fake_codex``'s fake (POSIX only)
-is for Sandbox-like runs. It reads the whole prompt from stdin, then reports on stdout what it was
-launched with: the selected provider and that provider's token command output,
+is for Sandbox-like runs. That fake reads the whole prompt from stdin, then reports what it was
+launched with on stdout: the selected provider and that provider's token command output,
 credential variables, ``auth.json``, home, argv, model catalog and prompt size.
 Tests observe the process boundary through ``codex_report`` instead of calling
 Booley's spawn internals.
