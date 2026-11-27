@@ -11,9 +11,9 @@ explicit tracked role marker, while the distribution name plus distinctive
 source layout recognizes older branches, forks, and linked worktrees without
 depending on a Git remote. Dogfood feedback remains available but stores its
 local state under Git's shared metadata directory instead of creating
-`.booley_project/`.
+`.booley/`.
 
-An explicit `BOOLEY_PROJECT_DIR` that resolves outside the Source Checkout may
+An explicit `BOOLEY_DIR` that resolves outside the Source Checkout may
 select a separate Project while running Booley from source. This does not make
 the Source Checkout a Project; explicit starts and overrides that resolve
 inside it still fail closed.
@@ -30,6 +30,6 @@ inside it still fail closed.
 ## Consequences
 
 Project commands reject stale source-local Project state and environment
-overrides rather than adopting them. Existing `.booley_project/` directories
-and foreign hooks in a source checkout require a separate, explicitly approved
-operational migration; detection never deletes or rewrites them.
+overrides rather than adopting them. Existing Booley Directories and foreign
+hooks in a source checkout require separate, explicitly approved cleanup;
+detection never deletes or rewrites them.

@@ -542,7 +542,7 @@ def test_retired_layout_marker_invalidates_and_recovers(project):
         marker = project.parent / ".booley_project"
         marker.mkdir()
         assert await catalog.observe_change()
-        with pytest.raises(RuntimeError, match="both Booley Directories"):
+        with pytest.raises(RuntimeError, match=r"Booley 0\.4\.x"):
             await catalog.refresh()
         marker.rmdir()
         assert await catalog.observe_change()

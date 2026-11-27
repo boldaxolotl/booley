@@ -20,7 +20,6 @@ from pathlib import Path
 
 from booley.runtime import mount_history, platform_paths, sandbox_layout
 from booley.runtime.atomic_files import atomic_replace_bytes
-from booley.runtime.directory_migration_git import pointer_bytes
 from booley.runtime.filesystem_utils import safe_rmtree
 from booley.runtime.project_repositories import common_git_dir, resolve_inner_project_repo
 from booley.runtime.worktree_paths import worktree_state_dir
@@ -146,6 +145,11 @@ def _config_fixes(admin: Path, checkout: Path, former: tuple[str, ...]) -> list[
     return fixes
 
 
+def _pointer_bytes(target: Path, parent: Path, relative: bool, *, prefix: str = "") -> bytes:
+    spelling = os.path.relpath(target, parent) if relative else str(target)
+    return (prefix + spelling.replace(os.sep, "/") + "\n").encode()
+
+
 def _pointer_fix(
     raw: str, base: Path, candidates: list[Path], target: Path, *, prefix: str
 ) -> bytes | None:
@@ -153,8 +157,8 @@ def _pointer_fix(
     if candidates[0] == target:
         return None
     if Path(raw).is_absolute():
-        return pointer_bytes(target, base, False, prefix=prefix)
-    return pointer_bytes(target.resolve(), base.resolve(), True, prefix=prefix)
+        return _pointer_bytes(target, base, False, prefix=prefix)
+    return _pointer_bytes(target.resolve(), base.resolve(), True, prefix=prefix)
 
 
 def _is_disposable(admin: Path, checkout: Path, project_root: Path) -> bool:

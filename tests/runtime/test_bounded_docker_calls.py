@@ -26,7 +26,6 @@ from typing import Any
 import pytest
 
 from booley.runtime import (
-    booley_dir_migration,
     docker_capacity,
     host_base_acquisition,
     image_lifecycle,
@@ -69,31 +68,6 @@ def _sites() -> list[_Site]:
     # Private drive: no public route builds the Docker CLI wrapper without running Docker.
     cli = image_lifecycle._DockerCli()
     return [
-        # Private drive: booley init migration also checks layout and containers around this call, so the public route cannot show this call alone.
-        _Site(
-            "booley_dir_migration docker ps",
-            booley_dir_migration,
-            ["docker", "ps"],
-            30,
-            lambda _root: booley_dir_migration._running_sandboxes(),
-            "",
-            {"ok": "returned:[]"}
-            | _same("BooleyLayoutError")
-            | {"missing": "FileNotFoundError"}
-            | {"timeout": "TimeoutExpired"},
-        ),
-        # Private drive: booley init migration runs `docker ps` first and migrates after, so the public route cannot show this call alone.
-        _Site(
-            "booley_dir_migration docker inspect",
-            booley_dir_migration,
-            ["docker", "inspect"],
-            30,
-            lambda _root: booley_dir_migration._running_sandboxes(),
-            "not json",
-            {"ok": "BooleyLayoutError", "nonzero": "BooleyLayoutError"}
-            | {"missing": "FileNotFoundError", "timeout": "TimeoutExpired"},
-            prior_stdout="abc\n",
-        ),
         # Private drive: the capacity preflight runs three probes and disk checks around one, so the public route cannot show this call alone.
         _Site(
             "docker_capacity probe",

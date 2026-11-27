@@ -273,7 +273,7 @@ def _doctor_auth_auto(env: Env) -> str:
 
 
 def _env_project_dir(env: Env) -> str:
-    env.mp.setenv("BOOLEY_PROJECT_DIR", "x")
+    env.mp.setenv("BOOLEY_PROJECT_DIR", "")
     return _raised(booley_layout.validate_environment)
 
 
@@ -281,8 +281,14 @@ def _layout_retired_path(env: Env) -> str:
     return _raised(lambda: booley_layout.reject_retired_path(env.tmp / ".booley_project"))
 
 
-def _layout_retired_dir(env: Env) -> str:
-    (env.tmp / ".booley_project").mkdir()
+def _layout_leftover(env: Env, *directories: str, journal: bool = False, pointer: str = "") -> str:
+    for name in directories:
+        (env.tmp / name).mkdir()
+    if journal:
+        (env.tmp / ".git/booley").mkdir(parents=True)
+        (env.tmp / ".git/booley/directory-migration.json").write_bytes(b"{}")
+    if pointer:
+        (env.tmp / ".git").write_bytes(f"gitdir: {env.tmp / pointer}\n".encode())
     return _raised(lambda: booley_layout.require_current_layout(env.tmp))
 
 
@@ -293,7 +299,7 @@ _PROJECT_SCHEMA = "src/booley/audit/project_schema.py"
 _FLOW_SCHEMA = "src/booley/audit/flow_schema.py"
 _AGENT = "src/booley/config/agent.py"
 _HOST = "src/booley/config/host_config.py"
-_LAYOUT = "src/booley/core/booley_layout.py"
+_LEFTOVER = "src/booley/core/booley_layout.py::retired_layout_error"
 _YOSYS = "src/booley/flows/synth/backends/yosys/core.py"
 _RECIPE = "src/booley/flows/synth/recipe_migrations.py"
 _RETIRED_FLOW = f"{_FLOW_ENABLEMENT}::retired_config_error"
@@ -599,24 +605,45 @@ CASES: list[Refusal] = [
     ),
     Refusal(
         "env-booley-project-dir",
-        (f"{_LAYOUT}::validate_environment",),
+        (_LEFTOVER,),
         "BOOLEY_PROJECT_DIR",
-        "BOOLEY_DIR",
+        "Booley 0.4.x",
         _env_project_dir,
     ),
     Refusal(
         "layout-retired-path",
-        (f"{_LAYOUT}::reject_retired_path",),
+        (_LEFTOVER,),
         ".booley_project",
-        ".booley",
+        "Booley 0.4.x",
         _layout_retired_path,
     ),
     Refusal(
         "layout-retired-dir",
-        (f"{_LAYOUT}::require_current_layout",),
+        (_LEFTOVER,),
         ".booley_project",
-        ".booley",
-        _layout_retired_dir,
+        "Booley 0.4.x",
+        lambda env: _layout_leftover(env, ".booley_project"),
+    ),
+    Refusal(
+        "layout-retired-dir-beside-current",
+        (_LEFTOVER,),
+        ".booley_project",
+        "Booley 0.4.x",
+        lambda env: _layout_leftover(env, ".booley_project", ".booley"),
+    ),
+    Refusal(
+        "layout-migration-journal",
+        (_LEFTOVER,),
+        "directory-migration.json",
+        "Booley 0.4.x",
+        lambda env: _layout_leftover(env, journal=True),
+    ),
+    Refusal(
+        "layout-retired-git-pointer",
+        (_LEFTOVER,),
+        "Git pointer",
+        "Booley 0.4.x",
+        lambda env: _layout_leftover(env, pointer=".booley_project/worktrees/x"),
     ),
     Refusal(
         "endpoint-tools",

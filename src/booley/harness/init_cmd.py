@@ -175,6 +175,7 @@ from booley.runtime.booley_dir import (
     booley_dir_for_init,
     init_booley_dir_scope,
     own_booley_dir,
+    require_supported_layout,
     reset_cache,
     resolve_booley_dir,
     resolve_checkout_booley_dir,
@@ -2871,63 +2872,29 @@ def _run_init_unlocked(
         )
 
 
-def _check_init_layout(args: argparse.Namespace, project_root: Path):
-    """Observe layout and report migration independently of host Bootstrap/recovery."""
-    from booley.core.booley_layout import BooleyLayoutError, Layout, classify_layout
+def _check_init_layout(project_root: Path) -> None:
+    """Refuse a 0.3.x leftover or an unsupported layout before any write."""
     from booley.core.checkout_role import require_project_checkout
-    from booley.harness.setup.directory_migration import inspect_migration
 
-    project_root = require_project_checkout(project_root)
-    if classify_layout(project_root) is Layout.RETIRED:
-        if getattr(args, "seed", False):
-            raise BooleyLayoutError(
-                "Run full `booley init` from the primary Project Root before --seed"
-            )
-        if getattr(args, "check_only", False):
-            info(
-                "Would rename the Booley Directory; required preflight checks follow, no changes made"
-            )
-    migration = inspect_migration(project_root)
-    if migration is not None:
-        info(f"Pending Booley Directory migration at {project_root}; run `booley init`")
-        if getattr(args, "seed", False):
-            raise BooleyLayoutError(
-                "Run full `booley init` from the primary Project Root before --seed"
-            )
-    return migration
+    # Runs before init replaces BOOLEY_DIR for its own lookups.
+    require_supported_layout(require_project_checkout(project_root))
 
 
-def _check_init_only(args: argparse.Namespace, project_root: Path, migration) -> int:
+def _check_init_only(args: argparse.Namespace, project_root: Path) -> int:
     from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 
-    pending = shared_recovery_blocks_command(read_only=True)
-    if migration is not None:
-        info("Would rename the Booley Directory and repair linked worktrees; no changes made")
-    if pending:
-        err("interrupted Sandbox host state also requires recovery")
-    if pending or migration is not None:
+    if shared_recovery_blocks_command(read_only=True):
+        err("interrupted Sandbox host state requires recovery")
         ctx = InitContext(project_root=project_root, check_only=True)
-        if pending:
-            ctx.record("recovery", "err", "interrupted Sandbox host state requires recovery")
-        if migration is not None:
-            ctx.record("migration", "err", "Booley Directory migration required")
+        ctx.record("recovery", "err", "interrupted Sandbox host state requires recovery")
         _print_check_verdict(ctx)
         return 2
     return _run_init_unlocked(args, project_root)
 
 
-def _init_with_migration(args: argparse.Namespace, project_root: Path, migration) -> int:
-    from booley.runtime.booley_dir_migration import apply_migration
+def _init_after_recovery(args: argparse.Namespace, project_root: Path) -> int:
     from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 
-    if migration is not None:
-        apply_migration(migration)
-        reset_cache()
-        info(
-            "Booley Directory migrated; review tracked renames in every checkout. "
-            "Create a branch before committing a retained detached worktree; "
-            "migrate each existing clone before pulling a tracked rename."
-        )
     if shared_recovery_blocks_command(read_only=False):
         err("recovered interrupted Sandbox host state; run `booley init` again")
         return 2
@@ -2997,25 +2964,11 @@ def _sandbox_init_refusal(args: argparse.Namespace) -> str | None:
     return None
 
 
-def _sandbox_needs_host_migration(project_root: Path) -> bool:
-    """Observe (never change) whether a Booley Directory migration is pending."""
-    from booley.core.booley_layout import Layout, classify_layout
-    from booley.harness.setup.directory_migration import inspect_migration
-
-    return classify_layout(project_root) is Layout.RETIRED or (
-        inspect_migration(project_root) is not None
-    )
-
-
 def _initialize_sandbox_project(ctx: InitContext) -> int:
     """Run Project Initialization with the Sandbox's own Git and Agent CLI facts."""
     if not _project_checkout_ready(ctx):
         return _print_summary(ctx)
-    if _sandbox_needs_host_migration(ctx.project_root):
-        err("this Project needs a Booley Directory migration, which runs on the host")
-        hint("run `booley init` on the host")
-        ctx.record("migration", "err", "Booley Directory migration required")
-        return _print_summary(ctx)
+    _check_init_layout(ctx.project_root)
     config_path = _agent_config_path(ctx.project_root, seed=False)
     if not _project_config_migration_preflight(ctx, config_path):
         return _print_summary(ctx)
@@ -3072,7 +3025,7 @@ def run_sandbox_init(args: argparse.Namespace, project_root: Path) -> int:
 
 
 def run_init(args: argparse.Namespace, project_root: Path) -> int:
-    """Refuse before writes, then migrate under host-wide lifecycle serialization.
+    """Refuse before writes, then initialize under host-wide lifecycle serialization.
 
     Inside a Sandbox only Project Initialization runs (:func:`run_sandbox_init`).
     """
@@ -3084,11 +3037,11 @@ def run_init(args: argparse.Namespace, project_root: Path) -> int:
     from booley.runtime.lifecycle_lock import host_lifecycle_lock
 
     try:
-        migration = _check_init_layout(args, project_root)
+        _check_init_layout(project_root)
         if getattr(args, "check_only", False):
-            return _check_init_only(args, project_root, migration)
+            return _check_init_only(args, project_root)
         with host_lifecycle_lock("project init"):
-            return _init_with_migration(args, project_root, migration)
+            return _init_after_recovery(args, project_root)
     except (
         BooleyLayoutError,
         SourceCheckoutProjectError,
@@ -3110,7 +3063,7 @@ def preflight_auth_reseed(project_root: Path) -> None:
     from booley.runtime import session_issuance
     from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
 
-    _check_init_layout(argparse.Namespace(seed=True), project_root)
+    _check_init_layout(project_root)
     shared_recovery_blocks_command(read_only=True)
     session_issuance.validate_auth_reseed_storage(project_root)
 

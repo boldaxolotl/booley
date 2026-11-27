@@ -188,7 +188,7 @@ _RETIRED = b'[project]\ndir = ".booley_project"\n'
         (["tools/booley"], _RELOCATED, None),
         ([], None, r"no canonical \.git or \.booley"),
         # A retired directory name makes the Booley Directory lookup raise BooleyLayoutError.
-        ([], _RETIRED, "needs migration"),
+        ([], _RETIRED, r"Booley 0\.4\.x"),
     ],
     ids=["git", "booley", "relocated", "unmarked", "retired"],
 )

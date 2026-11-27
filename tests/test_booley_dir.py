@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.core import booley_layout
 from booley.runtime.booley_dir import (
     BooleyDirOutsideCheckoutError,
     booley_dir_for_init,
@@ -176,7 +177,52 @@ def test_raises_when_nothing_found(tmp_path: Path, monkeypatch):
         resolve_booley_dir(start=tmp_path)
 
 
+@pytest.mark.parametrize("leftover", ["ancestor-cache", "environment", "selection", "journal"])
+def test_a_0_3_leftover_refuses_resolution(tmp_path, monkeypatch, leftover):
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    root = tmp_path / "rtl"
+    (root / ".booley").mkdir(parents=True)
+    start = root
+    if leftover in {"ancestor-cache", "environment"}:
+        assert resolve_booley_dir(root) == root.resolve() / ".booley"
+    if leftover == "ancestor-cache":
+        start = root / "child"
+        (start / ".booley_project").mkdir(parents=True)
+    if leftover == "environment":
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", "")
+    if leftover == "selection":
+        monkeypatch.setenv("BOOLEY_DIR", str(root / ".booley_project"))
+    if leftover == "journal":
+        journal = booley_layout.layout_metadata(root) / "directory-migration.json"
+        journal.parent.mkdir(parents=True)
+        journal.write_bytes(b"{}")
+
+    with pytest.raises(booley_layout.BooleyLayoutError, match=r"upgrade through Booley 0\.4\.x"):
+        resolve_booley_dir(start)
+
+
+@pytest.mark.parametrize("selected", [False, True])
+def test_older_booley_project_layout_refuses(tmp_path, monkeypatch, selected):
+    (tmp_path / ".booley" / "project").mkdir(parents=True)
+    if selected:
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley" / "project"))
+    else:
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+
+    with pytest.raises(booley_layout.BooleyLayoutError, match="unsupported older"):
+        resolve_booley_dir(tmp_path)
+
+
 class TestSourceCheckoutRefusal:
+    def test_source_checkout_guard_precedes_unrelated_ancestor_layout(
+        self, tmp_path, source_checkout
+    ):
+        (tmp_path / ".booley_project").mkdir()
+
+        with pytest.raises(SourceCheckoutProjectError):
+            resolve_booley_dir(source_checkout)
+
     def test_stale_state_does_not_turn_source_into_project(
         self, tmp_path, monkeypatch, source_checkout
     ):

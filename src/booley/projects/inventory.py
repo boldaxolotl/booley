@@ -31,7 +31,6 @@ class ProjectStatus(StrEnum):
     PRESENT = "present"
     MISSING = "missing"
     UNINITIALIZED = "uninitialized"
-    MIGRATION_NEEDED = "migration-needed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,7 +214,7 @@ def _is_initialized_checkout(path: Path) -> bool:
 
     if not (path / ".git").exists():
         return False
-    return classify_layout(path) in {Layout.CURRENT, Layout.RETIRED} or _has_booley_dir(path)
+    return classify_layout(path) is Layout.CURRENT or _has_booley_dir(path)
 
 
 def _child_directories(path: Path) -> list[Path]:
@@ -237,10 +236,9 @@ def _child_directories(path: Path) -> list[Path]:
 def _status(project_root: Path) -> ProjectStatus:
     if not project_root.exists():
         return ProjectStatus.MISSING
-    from booley.core.booley_layout import Layout, classify_layout
+    from booley.core.booley_layout import classify_layout
 
-    if classify_layout(project_root) is Layout.RETIRED:
-        return ProjectStatus.MIGRATION_NEEDED
+    classify_layout(project_root)
     if _has_booley_dir(project_root):
         return ProjectStatus.PRESENT
     return ProjectStatus.UNINITIALIZED

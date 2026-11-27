@@ -22,6 +22,7 @@ from booley.runtime.image_lifecycle import (
     Status,
 )
 from tests.docker_cli_guard import forbid_docker_cli
+from tests.git_support import git
 from tests.harness.init_agent_support import (
     empty_host,
     login,
@@ -191,6 +192,52 @@ def test_source_checkout_refusal_precedes_bootstrap_and_project_write(
     assert "cannot be initialized or used as a Project" in capsys.readouterr().out
     assert not (tmp_path / ".booley").exists()
     assert not (tmp_path / ".devcontainer").exists()
+
+
+@pytest.mark.parametrize("check_only", [False, True])
+@pytest.mark.parametrize(
+    "leftover",
+    ["directory", "beside-current", "journal", "environment", "selection", "project-dir"],
+)
+def test_0_3_leftover_refusal_precedes_bootstrap_and_project_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    leftover: str,
+    check_only: bool,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    if leftover in {"directory", "beside-current"}:
+        (root / ".booley_project").mkdir()
+    if leftover == "beside-current":
+        (root / ".booley").mkdir()
+    if leftover == "journal":
+        git(root, "init", "-q")
+        (root / ".git/booley").mkdir()
+        (root / ".git/booley/directory-migration.json").write_bytes(b"{}")
+    if leftover == "environment":
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", "")
+    if leftover == "selection":
+        monkeypatch.setenv("BOOLEY_DIR", str(root / ".booley_project"))
+    if leftover == "project-dir":
+        (root / "booley.toml").write_bytes(b'[project]\ndir = ".booley_project"\n')
+
+    def tree() -> dict[Path, bytes]:
+        return {path: path.read_bytes() if path.is_file() else b"" for path in root.rglob("*")}
+
+    before = tree()
+    monkeypatch.setattr(
+        init_cmd,
+        "reconcile_bootstrap",
+        lambda *_args, **_kwargs: pytest.fail("refusal must precede Host Bootstrap"),
+    )
+
+    code = init_cmd.run_init(_args(check_only=check_only), root)
+
+    assert "upgrade through Booley 0.4.x" in capsys.readouterr().out
+    assert code == 2
+    assert tree() == before
 
 
 @pytest.mark.parametrize("check_only", [False, True])

@@ -34,6 +34,7 @@ from booley.core.booley_dir_pin import require_pinned_entry
 from booley.core.booley_layout import (
     BOOLEY_DIR_NAME,
     git_common_directory,
+    reject_retired_path,
     require_current_layout,
     validate_environment,
     validate_selection,
@@ -263,7 +264,7 @@ def _main_checkout_root(checkout: Path) -> Path | None:
     """Return the main checkout of *checkout*'s repository, or ``None`` if unreadable.
 
     A bare repository, submodule or separate git dir has no ``.git`` directory
-    to take the main checkout from. A malformed marker or retired migration
+    to take the main checkout from. A malformed marker or retired Git
     pointer raises ``BooleyLayoutError``.
     """
     try:
@@ -393,6 +394,16 @@ def own_booley_dir(checkout_root: Path) -> Path:
     ``/booley`` can never leak into a path built from it.
     """
     return _own_booley_dir_and_kind(checkout_root)[1]
+
+
+def require_supported_layout(checkout_root: Path) -> None:
+    """Refuse a 0.3.x leftover or unsupported layout at the root or in a selection."""
+    validate_environment()
+    # Checked here because a root with its own `.booley/` never resolves BOOLEY_DIR.
+    if selection := os.environ.get("BOOLEY_DIR"):
+        reject_retired_path(Path(selection).absolute())
+    require_current_layout(checkout_root)
+    own_booley_dir(checkout_root)  # [project].dir is a selection too
 
 
 def own_booley_dir_relative(checkout_root: Path) -> PurePosixPath:

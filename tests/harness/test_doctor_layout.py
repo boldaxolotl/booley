@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import os
 import re
 import shutil
@@ -13,8 +12,10 @@ import pytest
 
 from booley.audit.diagnostic_results import Severity
 from booley.audit.doctor_waivers import DoctorWaiver, DoctorWaivers
+from booley.harness import booley as booley_cli
 from booley.harness import doctor
 from booley.presentation import colors
+from tests.git_support import git
 from tests.harness.doctor_run_support import run_doctor
 from tests.harness.test_doctor import _patch_environment, _write_project
 
@@ -169,18 +170,36 @@ def test_summary_tables_fit_the_terminal_width(columns, capsys, monkeypatch):
     assert max(map(colors.len_visible, tables)) <= columns
 
 
-@pytest.mark.parametrize("retired", ["env", "directory"])
-def test_run_doctor_layout_error_uses_fail_glyph(capsys, monkeypatch, tmp_path, retired):
-    if retired == "env":
-        monkeypatch.setenv("BOOLEY_PROJECT_DIR", str(tmp_path))
-        message = "BOOLEY_PROJECT_DIR is retired; unset it and use BOOLEY_DIR"
+@pytest.mark.parametrize("leftover", ["env", "directory", "beside-current", "selection", "toml"])
+def test_run_doctor_layout_error_uses_fail_glyph(capsys, monkeypatch, tmp_path, leftover):
+    git(tmp_path, "init", "-q")
+    monkeypatch.chdir(tmp_path)
+    if leftover == "env":
+        monkeypatch.setenv("BOOLEY_PROJECT_DIR", "")
+        subject = "BOOLEY_PROJECT_DIR"
+    elif leftover == "selection":
+        (tmp_path / ".booley").mkdir()
+        subject = str(tmp_path.resolve() / "old" / ".booley_project")
+        monkeypatch.setenv("BOOLEY_DIR", subject)
+    elif leftover == "toml":
+        (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "state/.booley_project"\n')
+        subject = str(tmp_path.resolve() / "state" / ".booley_project")
     else:
         (tmp_path / ".booley_project").mkdir()
-        message = f"{tmp_path / '.booley_project'} needs migration to {tmp_path / '.booley'}; "
-        message += "run `booley init` from the Project Root"
+        subject = str(tmp_path.resolve() / ".booley_project")
+        if leftover == "beside-current":
+            (tmp_path / ".booley").mkdir()
+    monkeypatch.setattr(sys, "argv", ["booley", "doctor"])
 
-    assert doctor.run_doctor(argparse.Namespace(), tmp_path) == 2
-    assert capsys.readouterr().out == f"  ✗  {message}\n"
+    assert booley_cli.main() == 2
+
+    output = capsys.readouterr()
+    assert output.out == (
+        f"  ✗  {subject} is retired: this release does not migrate Booley 0.3.x Projects; "
+        "upgrade through Booley 0.4.x and run its `booley init` first, "
+        "then upgrade to this release\n"
+    )
+    assert "ERROR:" not in output.err
 
 
 def test_waived_findings_are_counted_but_not_listed_as_problems(capsys):

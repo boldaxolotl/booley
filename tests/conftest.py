@@ -631,7 +631,7 @@ def _isolate_host_lifecycle_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 
 @pytest.fixture(autouse=True)
 def _isolate_directory_layout_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Non-Git layout gates must not create coordination state in the real host config."""
+    """Keep non-Git worktree locks and journal lookups out of the real host config."""
     from booley.core import booley_layout
 
     monkeypatch.setattr(booley_layout, "config_dir", lambda: tmp_path / "layout-config" / "booley")

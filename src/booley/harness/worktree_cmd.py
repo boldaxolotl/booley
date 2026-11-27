@@ -296,7 +296,7 @@ class _Created:
 
 
 def run(args: argparse.Namespace, project_root: Path) -> int:
-    """Dispatch ``new``, ``list``, ``rm`` or ``gc``; ``new`` keeps registration atomic with directory migration."""
+    """Dispatch ``new``, ``list``, ``rm`` or ``gc``; ``new`` holds the worktree mutation lock."""
     if args.worktree_command == "list":
         from booley.harness import worktree_list
 
@@ -330,7 +330,7 @@ def create_worktree(project_root: Path, name: str) -> Path | None:
 
 def _create(project_root: Path, name: str) -> _Created | None:
     """Create and set up a worktree atomically; ``None`` after a printed, rolled-back failure."""
-    from booley.core.layout_lock import layout_gate
+    from booley.core.worktree_lock import worktree_mutation_lock
 
     try:
         # Placement first: an escaping [project].dir keeps its own advice even when it names a checkout.
@@ -339,11 +339,11 @@ def _create(project_root: Path, name: str) -> _Created | None:
     except (ProjectPairingError, BooleyDirOutsideCheckoutError, BooleyDirMismatchError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return None
-    with layout_gate(project_root):
+    with worktree_mutation_lock(project_root):
         created = _run_current(name, project_root)
     if isinstance(created, int):
         return None
-    # The post-setup hook can take minutes, so it runs after the gate is released.
+    # The post-setup hook can take minutes, so it runs after the lock is released.
     return created if _finish_setup(name, project_root, created) == 0 else None
 
 
@@ -495,15 +495,15 @@ def _rollback_creation(
 ) -> None:
     """Undo creation: the Paired Checkout and its branch first, then the outer worktree.
 
-    *regate* takes the layout gate for the rollback, for a caller that released
-    it (the post-setup hook runs outside the gate).
+    *regate* takes the worktree mutation lock for the rollback, for a caller that
+    released it (the post-setup hook runs outside the lock).
     """
     from booley.core.booley_layout import BooleyLayoutError
-    from booley.core.layout_lock import layout_gate
+    from booley.core.worktree_lock import worktree_mutation_lock
 
     try:
         if regate:
-            with layout_gate(root):
+            with worktree_mutation_lock(root):
                 _undo_creation(root, worktree, name, paired_source, new_branch)
         else:
             _undo_creation(root, worktree, name, paired_source, new_branch)
