@@ -624,6 +624,7 @@ def pin_project_root(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
     if pinned_project_root is not None:
+        # No public input pins the root: a synthetic tmp_path proves no checkout ownership.
         monkeypatch.setattr(
             shared_infra, "resolve_project_root", lambda fallback_dir=None: pinned_project_root
         )
