@@ -102,7 +102,7 @@ Don't continue until `booley doctor` shows no failures or warnings.
    Reopen in Container**. The first start can take several minutes. When it's
    done, the lower-left corner of the window says you are in a Dev Container.
    No VS Code (for example, over SSH)? See
-   [Entering the Sandbox without VS Code](SANDBOX.md#entering-the-sandbox-without-vs-code).
+   [Entering the Sandbox](SANDBOX.md#entering-the-sandbox).
 
 3. Start a Developer Agent, Claude or Codex, in a T3 Code thread.
 
@@ -208,7 +208,7 @@ The Dashboard is a web page of one worktree's Jobs, the long runs of Flows and
 Specialists. Open it to see what runs there, what waits and how each run ended.
 
 1. Click **Booley Dashboard** in the top bar of
-   [T3 Code](SANDBOX.md#entering-the-sandbox-without-vs-code). The page opens
+   [T3 Code](SANDBOX.md#entering-the-sandbox). The page opens
    in the preview panel; the Sandbox already serves it.
 2. Pick the worktree: the main checkout or one of your T3 Code threads'
    worktrees. Each has its own page. With no T3 Code worktree, the page opens

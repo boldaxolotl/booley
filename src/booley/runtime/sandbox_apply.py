@@ -1,9 +1,11 @@
 """The host workflows that recreate a Sandbox, worded once.
 
-``docs/user/SANDBOX.md`` ("Applying Sandbox changes") is the authority. Every
-remedy that tells a user to recreate a Sandbox builds its text here, so the
-documented steps and the printed steps cannot drift apart. A hand-written
-Sandbox is rebuilt from its own spec.
+``docs/user/SANDBOX.md`` ("Applying Sandbox changes") is the authority for the
+``booley session`` steps. It does not list the VS Code steps, which go with
+#4777. Every remedy that tells a user to recreate a Sandbox builds its text here,
+and ``tests/docs/test_sandbox_apply_docs.py`` compares the ``booley session``
+commands with the documented ones. A hand-written Sandbox is rebuilt from its
+own spec.
 """
 
 from __future__ import annotations
