@@ -24,6 +24,7 @@ from booley.mcp import server
 from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.endpoint_execution import EndpointOutcome
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
+from tests import mcp_runner_fake
 from tests.memory_budget_support import fail_budget, pin_budget
 
 FLOWS = {"sim": SimulateFlow, "lint": LintFlow, "synth": AsicSynthesizeFlow, "fpga": FpgaImplFlow}
@@ -70,7 +71,7 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_MCP_JOB_INLINE_WAIT_SECONDS", "0")
     # The MCP tool's public boundary is the SDK server over a live session; the
     # subprocess runner is the seam that keeps schema, argv and Job handling real.
-    monkeypatch.setattr(server, "_run_subprocess", _transport_child)
+    mcp_runner_fake.install(monkeypatch, _transport_child)
     return tmp_path
 
 
