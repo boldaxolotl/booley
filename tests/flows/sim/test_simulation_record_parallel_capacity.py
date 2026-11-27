@@ -512,12 +512,13 @@ def test_interrupted_scheduler_drains_its_lanes_before_it_raises(tmp_path: Path,
 def test_interrupt_stays_the_outcome_when_a_lane_outlasts_the_drain(
     tmp_path: Path, slots, caplog: pytest.LogCaptureFixture
 ) -> None:
-    seconds = itertools.count(step=1000)
 
     def linger(_draining: threading.Event, give_up: threading.Event) -> None:
         give_up.wait(hang_guard_s())
 
-    with _interrupted_scheduler(tmp_path, slots, linger, clock=lambda: float(next(seconds))):
+    with _interrupted_scheduler(
+        tmp_path, slots, linger, clock=itertools.count(0.0, 1000.0).__next__
+    ):
         assert "record workers exceeded bounded shutdown" in caplog.text
 
 
