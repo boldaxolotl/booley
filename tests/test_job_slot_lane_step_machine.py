@@ -48,6 +48,7 @@ from hypothesis.stateful import precondition, rule, run_state_machine_as_test
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.record.capacity import (
     ChildPermit,
+    LeaseLostError,
     SimulationRecordCapacity,
     SimulationRecordCapacityError,
 )
@@ -63,6 +64,7 @@ from booley.runtime.execution_records import (
 from booley.runtime.execution_recovery import recover_execution
 from booley.runtime.job_slots import (
     CLASS_MEMORY,
+    ROLE_INTERACTIVE,
     ClaimAbortedError,
     ClaimLostError,
     SlotRecovery,
@@ -672,6 +674,25 @@ def _execution_claims(machine: LaneStepMachine) -> list[dict[str, Any]]:
     return [payload for payload in payloads if payload.get("owner_kind") == "execution"]
 
 
+def _queue_lane(machine: LaneStepMachine) -> tuple[Lane, Worker]:
+    """Two standalone holders fill the budget, so a new lane waits at its admission poll."""
+    for actor in machine.actors[:2]:
+        for op in ("submit", "refresh"):
+            machine.scheduler.finish(machine.start_operation(actor, op, ROLE_INTERACTIVE, 0))
+    lane = machine.start_lane()
+    machine.settled(lane.worker)
+    assert lane.worker is not None and lane.worker.pending == ("sleep", "")
+    return lane, lane.worker
+
+
+def _lane_record(machine: LaneStepMachine, lane: Lane) -> dict[str, Any]:
+    assert lane.execution_id is not None
+    record = execution_paths(lane.execution_id, booley_dir=machine.booley_real).record
+    payload = machine.read_payload(record)
+    assert payload is not None
+    return payload
+
+
 def test_lane_operations_interleave_with_a_standalone_claimant(
     build_machine: Callable[[], LaneStepMachine],
 ) -> None:
@@ -777,9 +798,7 @@ def test_unregister_cannot_replace_recovery_terminal_record(
             break
         machine.scheduler.grant(reaper)
     machine.scheduler.drain()
-    record = execution_paths(lane.execution_id, booley_dir=machine.booley_real).record
-    final = machine.read_payload(record)
-    assert final is not None
+    final = _lane_record(machine, lane)
     assert final["state"] == "terminal"
     assert final["terminal_cause"] == "orphan_recovered"
     assert reaper.oserror is None
@@ -806,6 +825,79 @@ def test_lock_waiters_let_the_holder_run(
     machine.scheduler.drain()
     assert lane.ended
     assert supervisor.state == "done"
+
+
+def test_a_cancel_withdraws_a_queued_lane_claim(
+    build_machine: Callable[[], LaneStepMachine],
+) -> None:
+    machine = build_machine()
+    lane, worker = _queue_lane(machine)
+    machine.scheduler.finish(machine.start_supervisor("cancel"))
+    machine.scheduler.finish(worker)
+    assert lane.permit is None and isinstance(lane.outcome, ClaimLostError)
+    assert not [name for name in machine.read_entries() if name.startswith("w-")]
+
+
+def test_a_cancel_after_a_waiting_lane_is_promoted_retires_it_as_an_abort(
+    build_machine: Callable[[], LaneStepMachine],
+) -> None:
+    machine = build_machine()
+    lane, worker = _queue_lane(machine)
+    release = machine.start_operation(machine.actors[0], "release", ROLE_INTERACTIVE, 0)
+    machine.scheduler.finish(release)
+    machine.scheduler.finish(worker)  # promoted, it runs to its first command
+    assert lane.idle and lane.permit is not None
+    machine.scheduler.finish(machine.start_supervisor("cancel"))
+    machine.command_lane(lane, "close")  # then the lane confirms its lease
+    machine.scheduler.finish(worker)
+    assert isinstance(lane.outcome, ClaimAbortedError) and "cancellation" in str(lane.outcome)
+    assert not lane.permit.lease_health.lost.is_set()
+    assert _lane_record(machine, lane)["terminal_cause"] == "orphan_recovered"
+    assert [claim["execution_id"] for claim in _execution_claims(machine)] == [_PARENT_EXECUTION]
+
+
+@pytest.mark.parametrize(
+    ("while_busy", "error", "cause"),
+    [
+        ("freed", None, "completed"),
+        ("renewed", None, "completed"),
+        ("lost", LeaseLostError, "lease_lost"),
+        ("cancelled", ClaimAbortedError, "orphan_recovered"),
+    ],
+)
+def test_a_busy_lease_gate_at_lane_confirmation_is_retried(
+    build_machine: Callable[[], LaneStepMachine],
+    while_busy: str,
+    error: type[BaseException] | None,
+    cause: str,
+) -> None:
+    machine = build_machine()
+    lane = machine.start_lane()
+    _run_lane_to_idle(machine, lane)
+    assert lane.permit is not None and lane.worker is not None
+    record, token = machine.record, lane.permit.token
+    gate = f".{token.lease_id}.lease.lock"
+    # The lane's renewal thread takes the lease gate for a tick and holds it.
+    tick = machine.scheduler.start(record, "tick", lambda: record.store.renew(token))
+    _step_until(machine, tick, "hardlink_to", gate)
+    machine.scheduler.grant(tick)
+    machine.command_lane(lane, "close")
+    for _ in range(21):  # a refused renewal reads the held gate 20 times: the lane now retries
+        _step_until(machine, lane.worker, "read_bytes", gate)
+        machine.scheduler.grant(lane.worker)
+    if while_busy == "lost":
+        machine.world.clock += job_slots.LEASE_DURATION_SECONDS + 1
+    if while_busy == "renewed":  # the tick extends the lease and still holds the gate
+        _step_until(machine, tick, "unlink", gate)
+        machine.scheduler.finish(lane.worker)
+        assert _lane_record(machine, lane)["terminal_cause"] == "completed"
+    machine.scheduler.finish(
+        machine.start_supervisor("cancel") if while_busy == "cancelled" else tick
+    )
+    machine.scheduler.drain()
+    assert type(lane.outcome) is error if error else lane.outcome is None
+    assert _lane_record(machine, lane)["terminal_cause"] == cause
+    assert [claim["execution_id"] for claim in _execution_claims(machine)] == [_PARENT_EXECUTION]
 
 
 def test_interleaved_lane_schedules(tmp_path: Path) -> None:
