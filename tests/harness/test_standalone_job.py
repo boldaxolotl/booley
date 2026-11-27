@@ -54,8 +54,7 @@ def run(argv):
     if outcome == "block":
         # Short sleeps: a signal that lands just before a sleep starts does not
         # interrupt it, so its Python handler runs only when that sleep ends.
-        deadline = time.monotonic() + float(os.environ["STUB_BLOCK_S"])
-        while time.monotonic() < deadline:
+        for _ in range(int(float(os.environ["STUB_BLOCK_S"]) / 0.05)):
             time.sleep(0.05)
         return 0
     if outcome in OUTCOMES:
@@ -266,8 +265,7 @@ def block():
         Path(sys.argv[2]).write_text("ready")  # the handler is installed before the run starts
         # Short sleeps: a signal that lands just before a sleep starts does not
         # interrupt it, so its Python handler runs only when that sleep ends.
-        deadline = time.monotonic() + {timeout}
-        while time.monotonic() < deadline:
+        for _ in range(int({timeout} / 0.05)):
             time.sleep(0.05)
     return 0
 
