@@ -635,14 +635,16 @@ class LaneStepMachine(JobSlotStepMachine):
         return float(reserved) if isinstance(reserved, int | float) else 0.0
 
     def _check_one_holder_per_slot(self) -> None:
-        reserved = sum(
-            self._reserved_mb(payload)
+        holders = [
+            payload
             for name, payload in self.read_entries().items()
             if name.startswith("h-") and payload is not None
-        )
-        assert reserved <= _CLAIM.budget_mb, (
-            f"I1: holders reserve {reserved} MB of {_CLAIM.budget_mb} MB"
-        )
+        ]
+        reserved = sum(map(self._reserved_mb, holders))
+        # A scenario's claims may carry a larger Memory Budget than the machine's own.
+        budgets = (p["memory"]["budget_mb"] for p in holders if p.get("memory"))
+        budget = min(budgets, default=_CLAIM.budget_mb)
+        assert reserved <= budget, f"I1: holders reserve {reserved} MB of {budget} MB"
 
     def _begin_checks(self) -> None:
         self._step_reads = {}  # the checks of one step read the directories once between them
