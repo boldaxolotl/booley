@@ -8,14 +8,10 @@ The private helpers fake the Runtime files and version probe the diagnostics rea
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
-from booley import __version__
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.audit.doctor_waivers import DoctorWarning, warning
-from booley.config.eda import parse_eda_config
-from booley.runtime import inspection
 
 
 def _record_report(report, *, passed=None, warned=None, skipped=None, failed=None, noted=None):
@@ -45,16 +41,6 @@ def _record_environment(finding, **sinks):
             )
         ),
         **sinks,
-    )
-
-
-def _inspection_request(project, docker_exe):
-    return inspection.RuntimeInspectionRequest(
-        project.project_root,
-        "booley-sandbox",
-        docker_exe,
-        eda=parse_eda_config(project.booley_toml.get("eda")),
-        fpga_enabled=project.booley_toml.get("flows", {}).get("fpga", {}).get("enabled", True),
     )
 
 
@@ -110,18 +96,6 @@ class _Rec:
 
     def kinds(self) -> set[str]:
         return {lvl for lvl, _ in self.events}
-
-
-def _runtime_probe_subprocess(other_stdout: str):
-    def run(argv, **_kwargs):
-        stdout = (
-            f"{__version__}\n"
-            if "import booley; print(booley.__version__)" in argv
-            else other_stdout
-        )
-        return subprocess.CompletedProcess(argv, 0, stdout, "")
-
-    return run
 
 
 def _issued_runtime_state(tmp_path: Path):
