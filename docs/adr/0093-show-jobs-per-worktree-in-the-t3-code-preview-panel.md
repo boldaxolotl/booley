@@ -4,11 +4,11 @@ Status: accepted (2026-11-13)
 
 Decided in [#3834](https://github.com/boldaxolotl/booley/issues/3834)
 (T3 Code as Booley's user interface), after a clickable prototype of three
-layouts. Once T3 Code replaces VS Code, this ADR
-**amends [ADR 0086](0086-launch-flows-and-specialists-from-the-dashboard.md)**:
-the launch form, Standalone Job worker and Specialist forms stand. The
-worktree choice and the Targets window go: the Dashboard's worktree is fixed,
-and Targets are chosen inside the Run form.
+layouts. Once T3 Code replaces VS Code, this ADR **amends
+[ADR 0086](0086-launch-flows-and-specialists-from-the-dashboard.md)**: the
+launch form, Standalone Job worker and Specialist forms stand. The
+worktree choice and the Targets window go: the Dashboard's worktree is
+fixed, and Targets are chosen inside the Run form.
 
 ## Context
 
