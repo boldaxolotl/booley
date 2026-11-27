@@ -1,4 +1,9 @@
-"""Shared fixtures for infrastructure unit tests."""
+"""Shared fixtures for infrastructure unit tests.
+
+Stand-ins here: the terminal, the host memory, the Sandbox venue check, the native B-Wave
+binary, the Sandbox owner inventory and the Feature Flag registry (rows of
+docs/internals/TEST_FAKES.md).
+"""
 
 from __future__ import annotations
 

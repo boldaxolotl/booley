@@ -1,4 +1,4 @@
-"""Shared Simulation test fixtures: compile-surface doubles."""
+"""Shared Simulation test fixtures: compile-surface and Target identity doubles, and host named-pipe support."""
 
 from pathlib import Path
 

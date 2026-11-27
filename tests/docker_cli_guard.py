@@ -1,4 +1,4 @@
-"""Guard that keeps unit tests from starting a real ``docker`` process.
+"""Guard and answers at the Docker CLI boundary, so no unit test starts a real ``docker`` process.
 
 ``booley.runtime.host_docker._run_docker`` is the seam the interactive
 Docker CLI calls go through; other runtime modules call

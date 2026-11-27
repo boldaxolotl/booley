@@ -1,4 +1,7 @@
-"""A healthy Doctor host for a Project that lives in a real Git repository."""
+"""A healthy Doctor host for a Project that lives in a real Git repository.
+
+It fakes Doctor's host and Sandbox commands, host inspection and the agent call.
+"""
 
 from __future__ import annotations
 

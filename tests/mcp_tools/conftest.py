@@ -1,4 +1,7 @@
-"""Test fixtures for endpoints tests."""
+"""Test fixtures for endpoints tests.
+
+``_set_booley_dir`` fakes Project root discovery.
+"""
 
 from __future__ import annotations
 
