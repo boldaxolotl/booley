@@ -91,6 +91,14 @@ _FAULT_KINDS = frozenset(
 )
 
 
+PROMOTION_GATE = ".promotion.lock"
+
+
+def lease_gate(token: job_slots.SlotToken) -> Path:
+    """The file a process holds while it renews, releases or promotes *token*."""
+    return token.path.parent / f".{token.lease_id}.lease.lock"
+
+
 @contextlib.contextmanager
 def held_gate(gate: Path, pid: int, identity: ProcessIdentity | None) -> Iterator[None]:
     """Another process's gate on disk, as that process publishes it, until the block ends."""
@@ -614,7 +622,7 @@ def _at_lock_wait(worker: Worker) -> bool:
 
 
 def _is_gate(name: str) -> bool:
-    return name == ".promotion.lock" or (name.startswith(".") and name.endswith(".lease.lock"))
+    return name == PROMOTION_GATE or (name.startswith(".") and name.endswith(".lease.lock"))
 
 
 _PATH_BASE = type(Path())

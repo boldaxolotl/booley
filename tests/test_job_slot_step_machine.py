@@ -51,6 +51,7 @@ from booley.runtime.pid import ProcessIdentity
 from tests.job_slot_steps import (
     FIRST_ACTOR_PID,
     LOCK_WAIT_KINDS,
+    PROMOTION_GATE,
     READ_KINDS,
     Actor,
     ActorKilled,
@@ -58,6 +59,7 @@ from tests.job_slot_steps import (
     StepScheduler,
     Worker,
     held_gate,
+    lease_gate,
     stepped_root,
 )
 
@@ -676,13 +678,11 @@ def _finished(machine: JobSlotStepMachine, actor: Actor, op: str) -> None:
 
 def _to_next_renewal(machine: JobSlotStepMachine, renewal: Worker) -> None:
     """Grant the renewal thread steps from one interval wait to the next."""
-    machine.scheduler.grant(renewal)
-    while renewal.state == "parked" and renewal.pending != ("sleep", "renewal"):
+    for _ in range(500):
         machine.scheduler.grant(renewal)
-
-
-def _lease_gate(token: SlotToken) -> Path:
-    return token.path.parent / f".{token.lease_id}.lease.lock"
+        if renewal.state != "parked" or renewal.pending == ("sleep", "renewal"):
+            return
+    raise AssertionError("the renewal never reached its next interval wait")
 
 
 def test_renewal_thread_survives_a_missed_lease_gate(
@@ -703,7 +703,7 @@ def test_renewal_thread_survives_a_missed_lease_gate(
     holder = owner.store.snapshot(job_slots.CLASS_MEMORY)[0][0]
     assert (token.lease_generation, holder.lease_generation) == (1, 1)
     assert holder.lease_state == job_slots.LEASE_ACTIVE
-    with held_gate(_lease_gate(token), other.pid, machine.world.capture_identity(other.pid)):
+    with held_gate(lease_gate(token), other.pid, machine.world.capture_identity(other.pid)):
         _to_next_renewal(machine, renewal)  # a whole refused renewal
         assert token.lease_generation == 1
         assert not token.lease_health.lost.is_set()
@@ -731,7 +731,7 @@ def test_release_waits_out_a_held_lease_gate(
         # private: no public input shortens the background retry (about 12,000 machine steps)
         monkeypatch.setattr(job_slots, "_RELEASE_RETRY_ATTEMPTS", 2)
         machine.scheduler.checks.remove(machine._check_entry_owners)  # the leak is the outcome
-    with held_gate(_lease_gate(token), other.pid, machine.world.capture_identity(other.pid)):
+    with held_gate(lease_gate(token), other.pid, machine.world.capture_identity(other.pid)):
         _finished(machine, owner, "release")
         (retry,) = machine.scheduler.parked()
         assert token.path.exists()
@@ -781,13 +781,13 @@ def test_one_breaker_holds_a_stale_gate(
     for actor in (first, second) if gate_kind == "promotion" else (third,):
         _finished(machine, actor, "submit")
     if gate_kind == "promotion":
-        gate = machine.memory_dir / ".promotion.lock"
+        gate = machine.memory_dir / PROMOTION_GATE
         # A dead owner's record, judged at the read (the PID is above the kernel limit).
         write_file_text(gate, json.dumps({"pid": 4_194_305, "owner_identity": None}))
         judge, remove = "read_bytes", "unlink"
     else:
         _finished(machine, third, "refresh")
-        gate = _lease_gate(third.tokens[0])
+        gate = lease_gate(third.tokens[0])
         gate.mkdir()  # as a dead process left it before gates named their owner
         old = machine.world.clock - 3600
         os.utime(gate, (old, old))
@@ -815,6 +815,7 @@ def test_one_breaker_holds_a_stale_gate(
     other = hold(second)
     machine.scheduler.finish(other)
     machine.scheduler.finish(paused)
+    assert sorted(taken) == sorted([first.name, second.name])  # both breakers ran
     assert list(taken.values()).count(True) == 1
     for worker in (paused, other):
         machine.scheduler.command(worker, "release")

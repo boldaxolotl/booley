@@ -44,7 +44,7 @@ from booley.runtime.pid import (
     ProcessIdentity,
     ProcessObservation,
 )
-from tests.job_slot_steps import held_gate
+from tests.job_slot_steps import PROMOTION_GATE, held_gate, lease_gate
 from tests.sharing_error_support import hold_opens, hold_unlinks
 from tests.time_budget import hang_guard_s
 
@@ -128,15 +128,9 @@ def deny_until(
 
 # Far past the store's age rule for unreadable entries and owner-less gates.
 OLD_S = 3600.0
-PROMOTION_GATE = ".promotion.lock"
 # A gate a dead process left behind: a bare PID, as gates were written before
 # they named their owner's identity. The PID is above the kernel limit.
 _DEAD_GATE_PID = 4_194_305
-
-
-def lease_gate(token: job_slots.SlotToken) -> Path:
-    """The file a process holds while it renews, releases or promotes *token*."""
-    return token.path.parent / f".{token.lease_id}.lease.lock"
 
 
 def is_lease_gate(path: Path) -> bool:

@@ -2,7 +2,7 @@
 
 Shared host storage lives in ``booley.core`` so that ``PrivateStore`` can retry
 without importing ``booley.runtime``; ``booley.runtime.filesystem_utils``
-re-exports these names for its existing importers.
+re-exports the names its existing importers use.
 """
 
 from __future__ import annotations
