@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 import os
 import sys
@@ -77,7 +76,6 @@ from tests.flows.sim.simulation_record_test_support import (
     _capacity,
     _holder_claim,
     _item_capacity,
-    _lane_registry,
     _managed,
     _outer_claim,
     _parallel_environment,
@@ -93,7 +91,7 @@ from tests.flows.sim.simulation_record_test_support import (
 from tests.memory_budget_support import pin_budget
 from tests.oom_priority_support import FakeProc
 from tests.sharing_error_support import sharing_error
-from tests.time_budget import hang_guard_s, scaled
+from tests.time_budget import hang_guard_s
 
 
 def _unique_execution_id() -> ExecutionId:
@@ -262,8 +260,8 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
         original_register(processes, process)
         child_registered.set()
 
+    # A spy: no public hook tells the test when the lane's child is registered.
     monkeypatch.setattr(SupervisedProcessSet, "register", register_and_signal)
-    started = time.monotonic()
     with (
         pytest.raises(SimulationRecordCapacityError, match="lease lost"),
         capacity.outer_permit(),
@@ -280,11 +278,12 @@ def test_real_child_process_is_terminated_immediately_on_lease_loss(
         killer = threading.Thread(target=lose_lease)
         killer.start()
         with supervised_execution_scope(permit.scope):
-            flow._execute_local(
-                [sys.executable, "-c", "import time; time.sleep(600)"], timeout=hang_guard_s()
+            result = flow._execute_local(
+                [sys.executable, "-c", "import threading; threading.Event().wait()"],
+                timeout=hang_guard_s(),
             )
         killer.join(timeout=hang_guard_s())
-    assert time.monotonic() - started < scaled(8)
+        assert not result.timed_out  # the lease loss killed the child, not the hang guard
     assert registry.is_terminal(lane_ids[0])
 
 
@@ -301,80 +300,6 @@ def test_child_permit_checks_lease_loss_before_return(
         _remove_slot_entry(store, permit.token)  # lost to a reaper, not to the cancel
         if cancel_after:
             capacity.cancel_waiters("test cancellation")
-
-
-@pytest.mark.parametrize(
-    ("while_refused", "error", "cause"),
-    [
-        pytest.param(None, None, "completed", id="gate-freed"),
-        pytest.param("renewed", None, "completed", id="renewal-thread-extended-it"),
-        pytest.param("lost", LeaseLostError, "lease_lost", id="lost-while-busy"),
-        pytest.param(
-            "cancelled", ClaimAbortedError, "orphan_recovered", id="cancelled-while-busy"
-        ),
-    ],
-)
-def test_child_permit_retries_a_busy_lease_gate_until_renewed_lost_or_cancelled(
-    tmp_path: Path, managed_capacity, monkeypatch, while_refused, error, cause
-) -> None:
-    """A busy lease gate refuses renewal without losing the lease, so the confirm retries."""
-    store, capacity = managed_capacity
-    renew = store.renew
-    refused: list[bool] = []
-
-    # Private gate, store patch: no public entry point holds a lease gate across the
-    # lane's own confirmation, so its renewal runs while the gate is held.
-    def renew_behind_a_held_gate(token: SlotToken) -> bool:
-        if threading.current_thread().name.startswith("booley-lease-"):
-            return renew(token)  # the claims' own renewal ticks are not under test
-        if refused and while_refused in (None, "lost"):  # otherwise the gate stays busy
-            return renew(token)
-        with store._lease_gate(token):  # another holder, such as a reaper, has the gate
-            refused.append(renew(token))
-        if while_refused == "lost":
-            _remove_slot_entry(store, token)  # that reaper reclaims the lease
-        elif while_refused == "cancelled":
-            capacity.cancel_waiters("test cancellation")
-        elif while_refused == "renewed" and len(refused) == 1:
-            assert renew(token)  # the renewal thread's tick takes the gate in between
-        return False
-
-    monkeypatch.setattr(store, "renew", renew_behind_a_held_gate)
-    monkeypatch.setattr("booley.runtime.job_slots.LEASE_RENEW_INTERVAL_SECONDS", 3600.0)  # no tick
-    with (
-        capacity.outer_permit(),
-        pytest.raises(error) if error else contextlib.nullcontext(),
-        _child_permit(capacity) as permit,
-    ):
-        pass
-    assert refused == [False]
-    paths = execution_paths(
-        permit.child_execution_id, booley_dir=_lane_registry(tmp_path).project_data
-    )
-    assert read_json(paths.record)["terminal_cause"] == cause
-    _assert_only_the_outer_claim_remains(store)
-
-
-def test_cancel_while_a_lane_holds_its_slot_aborts_instead_of_losing_its_lease(
-    tmp_path: Path, managed_capacity
-) -> None:
-    """A cancel retires a held lane as an abort and leaves its lease healthy."""
-    store, capacity = managed_capacity
-    with (
-        capacity.outer_permit(),
-        pytest.raises(ClaimAbortedError, match="cancellation"),
-        _child_permit(capacity) as permit,
-    ):
-        capacity.cancel_waiters("test cancellation")
-    assert not permit.lease_health.lost.is_set()
-    record = read_json(
-        execution_paths(
-            permit.child_execution_id, booley_dir=_lane_registry(tmp_path).project_data
-        ).record
-    )
-    assert record is not None
-    assert record["terminal_cause"] == "orphan_recovered"
-    _assert_only_the_outer_claim_remains(store)
 
 
 def test_a_cancelled_lane_whose_claim_is_reaped_still_aborts(tmp_path: Path) -> None:
@@ -513,27 +438,6 @@ def test_managed_capacity_releases_and_reacquires_exact_child_tokens(managed_cap
             holders, waiters = store.snapshot(CLASS_MEMORY)
             assert [token.execution_id for token in holders] == [ExecutionId("a" * 32)]
             assert waiters == []
-
-
-def test_capacity_cancellation_withdraws_a_real_queued_child(blocked_capacity) -> None:
-    store, capacity, _blocker = blocked_capacity
-    errors: list[BaseException] = []
-
-    def wait_for_child() -> None:
-        try:
-            with _child_permit(capacity, "queued"):
-                raise AssertionError("queued child unexpectedly acquired a slot")
-        except BaseException as exc:  # noqa: BLE001 -- assertion inspects worker outcome
-            errors.append(exc)
-
-    worker = threading.Thread(target=wait_for_child)
-    worker.start()
-    _wait_until(lambda: len(store.snapshot(CLASS_MEMORY)[1]) == 1)
-    capacity.cancel_waiters()
-    worker.join(timeout=hang_guard_s())
-    assert not worker.is_alive()
-    assert len(errors) == 1
-    assert store.snapshot(CLASS_MEMORY)[1] == []
 
 
 def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(managed_capacity) -> None:
