@@ -632,5 +632,6 @@ def test_unobserved_admission_entry_refuses_with_job_admission_wording(tmp_path)
     entry = tmp_path / OLD / "runtime/jobs/slots/memory/h-unreadable"
     entry.parent.mkdir(parents=True)
     entry.write_text("{}", encoding="utf-8")
-    with pytest.raises(BooleyLayoutError, match="cannot prove Job admission inactivity"):
+    refusal = "cannot prove Job admission inactivity: .*memory"
+    with pytest.raises(BooleyLayoutError, match=refusal):
         inspect_migration(tmp_path)
