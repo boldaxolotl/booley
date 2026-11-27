@@ -193,9 +193,6 @@ def test_direct_subcommand_help_forwards_to_native_bwave(monkeypatch, capsys, fa
     assert [call.args for call in fake_native.calls()] == [["value", "--help"]]
 
 
-# ── session store ────────────────────────────────────────────────────
-
-
 def test_register_keeps_an_unreadable_store_aside(capsys, session_file):
     session_file.parent.mkdir(parents=True, exist_ok=True)
     session_file.write_text("not json {{{")
@@ -384,9 +381,6 @@ def test_query_resolves_named_and_explicit_traces(stored, args, signal):
 
     assert r.returncode == 0, r.stderr
     assert signal in r.stdout
-
-
-# ── register ─────────────────────────────────────────────────────────
 
 
 def test_register_dir_names_stray_vcd_dump(tmp_path):
@@ -700,9 +694,6 @@ def test_register_reports_trace_identity_and_age(capsys):
     assert "top scope:" in err, err
     assert "written" in err, err
     assert "confirm this is the design under test" in err, err
-
-
-# ── markers ──────────────────────────────────────────────────────────
 
 
 @pytest.mark.parametrize(

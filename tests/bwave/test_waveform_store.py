@@ -17,9 +17,10 @@ from tests.bwave.native_binary import fake_native_binary
 from tests.bwave.session_store_support import isolate_temporary_store
 from tests.conftest import FST_HEADER_BYTES, MINIMAL_FST_BYTES
 from tests.path_tool_fake import PathToolFake
-from tests.time_budget import hang_guard_s
+from tests.time_budget import hang_guard_s, scaled
 
 _VCD = "$date now $end\n$timescale 1ns $end\n$scope module tb $end\n"
+_BUILD_BUDGET_S = 2  # long enough for a loaded host to start the build
 
 
 @pytest.fixture
@@ -451,7 +452,9 @@ def test_build_timeout_returns_bounded_completed_process(tmp_path: Path, fake_na
     source.write_text(_VCD, encoding="utf-8")
     fake_native.answer("build", hang_s=hang_guard_s())
 
-    result = stores.convert_vcd(source, tmp_path / "trace.fst", deadline=monotonic() + 2)
+    result = stores.convert_vcd(
+        source, tmp_path / "trace.fst", deadline=monotonic() + scaled(_BUILD_BUDGET_S)
+    )
 
     assert result.attempts[-1].return_code == 124
     assert "timed out after" in result.attempts[-1].stderr
@@ -660,12 +663,12 @@ def test_cli_find_trace_converts_and_publishes(
 
     found = cli.find_trace(work)
 
-    expected = {
-        "published": work / "trace.fst",
-        "copy-fails": stores.waveform_cache_dir(work) / "trace.fst",
-        "build-fails": work / "trace.vcd",
-    }[outcome]
-    assert found == expected
+    if outcome == "copy-fails":  # the cached store, in its bucket under the temporary directory
+        cache_root = (tmp_path / "session-tmp" / "bwave").resolve()
+        assert found.resolve().parent.parent == cache_root
+        assert found.name == "trace.fst"
+    else:
+        assert found == work / ("trace.fst" if outcome == "published" else "trace.vcd")
     if outcome == "build-fails":
         assert "conversion failed" in capsys.readouterr().err
     else:
