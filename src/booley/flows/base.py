@@ -322,7 +322,7 @@ class FlowMechanics:
         """Run locally and reap the whole process tree on timeout or interruption.
 
         *cwd* defaults to :meth:`_get_cwd`; a caller running another checkout
-        (a Cycle Count baseline) names that checkout.
+        names that checkout.
         """
         import sys as _sys
 

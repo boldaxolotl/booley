@@ -15,8 +15,7 @@ current attempt's evidence.
 
 - The Simulation Record owns policy: the immutable plan, manifest, durable
   serial scheduling and resume. `SimulateFlow` owns Target and test selection,
-  Cycle Count prerequisites, reports and the exit code. Neither
-  depends on leaf-adapter details.
+  reports and the exit code. Neither depends on leaf-adapter details.
 - Adapter composition is the only place that selects a simulator. Leaf
   adapters run only their own simulator (launch, verdict normalization, trace
   finalization) and import neither a sibling adapter nor the Flow. Waveform
@@ -55,9 +54,8 @@ current attempt's evidence.
   attempt and result by attempt ID and ordinal without re-hashing the build
   chain.
 - Project-owned settings (test list, selector, environment, Pre-Sim Commands)
-  resolve from the Target's own checkout on every invocation, so a Cycle Count
-  baseline worktree is judged by its own configuration, never a cache filled
-  for another checkout.
+  resolve from the Target's own checkout on every invocation, never from a
+  cache filled for another checkout.
 
 ### Pre-Sim and Elaboration Check
 
