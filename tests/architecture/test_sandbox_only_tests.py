@@ -116,6 +116,7 @@ def test_endpoint_help_roots_are_derived() -> None:
 
 
 def test_registry_is_the_only_sandbox_only_marker_source() -> None:
+    from tests.architecture.platform_branches import marker_writers
     from tests.sandbox_only import (
         SANDBOX_ONLY_PATHS,
         WINDOWS_HOST_TESTS,
@@ -131,21 +132,5 @@ def test_registry_is_the_only_sandbox_only_marker_source() -> None:
     for path in WINDOWS_HOST_TESTS:
         assert any(path.startswith(directory) for directory in directories), path
         assert not is_sandbox_only(path)
-    stray = [
-        path.relative_to(root).as_posix()
-        for path in _TESTS_ROOT.rglob("*.py")
-        if path.name != "sandbox_only.py" and _applies_marker(path)
-    ]
-    assert not stray, f"apply sandbox_only only through tests/sandbox_only.py: {stray}"
-
-
-def _applies_marker(path: Path) -> bool:
-    """True when a module writes ``pytest.mark.sandbox_only`` or ``mark.sandbox_only``."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
-    return any(
-        isinstance(node, ast.Attribute)
-        and node.attr == "sandbox_only"
-        and isinstance(node.value, ast.Attribute | ast.Name)
-        and getattr(node.value, "attr", getattr(node.value, "id", "")) == "mark"
-        for node in ast.walk(tree)
-    )
+    writers = marker_writers("sandbox_only")
+    assert writers == ["tests/sandbox_only.py"], f"apply sandbox_only only through it: {writers}"
