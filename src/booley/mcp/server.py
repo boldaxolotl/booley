@@ -668,10 +668,10 @@ def _build_mcp_tool_index(
     return index
 
 
-def _checkout_lines(checkout: Path) -> tuple[str, str]:
+def _checkout_lines(checkout: Path | None) -> tuple[str, str]:
     """Branch and checkout lines of *checkout*, with what Git metadata cannot say as unknown."""
     try:
-        metadata = peer_checkout.git_checkout_metadata(checkout.resolve())
+        metadata = peer_checkout.git_checkout_metadata((checkout or Path.cwd()).resolve())
     except (OSError, ValueError, UnicodeError):
         metadata = None
     if metadata is None:
@@ -697,7 +697,7 @@ def _format_status_card(mcp_tool_names: list[str], checkout: Path | None) -> str
         health = current_summary(Path.cwd())
     except Exception:  # noqa: BLE001 — status must survive corrupt/missing advisory state
         health = "Automatic Doctor status unavailable."
-    identity = "\n".join(_checkout_lines(checkout or Path.cwd()))
+    identity = "\n".join(_checkout_lines(checkout))
     return (
         "```text\n"
         f"Booley ready. Sandbox container {session_id} is running.\n"
