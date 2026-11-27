@@ -261,7 +261,8 @@ Tests that touch time, processes, sockets, or the filesystem also:
   named base budget passed to `scaled`, or `hang_guard_s()` for a wait that only
   stops a hang (see
   [Test time budgets](../../.github/ci/README.md#test-time-budgets)).
-  Windows CI fails any test that uses more than 80% of its timeout (see
+  Windows CI reports a passing test that uses more than 50% of its timeout and
+  does not fail it; the per-test timeout is the hard limit (see
   [`tests/timeout_headroom.py`](../../tests/timeout_headroom.py)).
 - Bind port 0 and read back the assigned port.
 - Pass on Windows or skip there with the reason: guard POSIX-only signals

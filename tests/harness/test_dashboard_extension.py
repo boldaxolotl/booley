@@ -91,10 +91,9 @@ _NODE_SUITE_BOUND_S = hang_guard_s() + math.ceil(scaled(5))
 #   is 97 s at factor 2 (the Windows CI factor), under 180 s, so a stall fails
 #   through the bound with node's output rather than through a pytest-timeout
 #   thread kill of the worker.
-# - Headroom: the strictest Windows fail limit is `--timeout-headroom=0.5` in
-#   full-python-matrix.yml, i.e. 90 s. The 70 s bound at factor 2 leaves
-#   20 s for setup and teardown, so a run that passes is capped near the
-#   bound, under that limit.
+# - Headroom: Windows CI warns when a passing run uses more than half the
+#   budget, 90 s. The 70 s bound at factor 2 leaves 20 s for setup and
+#   teardown, so a passing run stays under that warning.
 #   (Headroom only judges passing tests; a stall fails through the bound.)
 _NODE_SUITE_PYTEST_TIMEOUT_S = 180
 
