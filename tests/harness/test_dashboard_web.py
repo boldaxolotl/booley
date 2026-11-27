@@ -217,8 +217,8 @@ def _targets(rows: list[dict]) -> list[str]:
 
 
 def _dashboard_args(*words: str) -> argparse.Namespace:
-    # Only the tests of `booley dashboard` without --web use the private parser: they
-    # stub the Textual Dashboard, which #4561 deletes with them.
+    # Only test_dashboard_without_web_opens_the_textual_dashboard uses the private parser:
+    # it stubs the Textual Dashboard, which #4561 deletes with that test.
     return tlr._build_parser().parse_args(["dashboard", *words])
 
 
@@ -295,11 +295,7 @@ def test_held_port_is_a_booley_error_without_banner(world, monkeypatch, capsys):
 @pytest.mark.parametrize(
     ("port", "code", "shown"),
     [
-        (
-            None,
-            0,
-            ("--web Serve each", "on 127.0.0.1", "--port PORT Port of --web (default: 8090)"),
-        ),
+        (None, 0, ("[--web]", "127.0.0.1", "--port PORT", "default: 8090")),
         *(
             (port, 2, ("port must be a whole number from 1 to 65535",))
             for port in ("0", "65536", "-1", "http")
@@ -313,7 +309,7 @@ def test_dashboard_help_and_port_range(tmp_path, monkeypatch, capsys, port, code
 
     assert stop.value.code == code
     captured = capsys.readouterr()
-    text = " ".join((captured.out + captured.err).split())
+    text = " ".join((captured.err if code else captured.out).split())
     for fragment in shown:
         assert fragment in text
 
@@ -419,6 +415,8 @@ def test_unaccepted_worktree_gets_a_json_error_without_jobs(
     body = response.json()
     assert list(body) == ["error"]
     assert isinstance(body["error"], str)
+    if kind == "unlistable":
+        assert body["error"].startswith("Git could not list the worktrees: ")
     assert "leak" not in response.text
 
 

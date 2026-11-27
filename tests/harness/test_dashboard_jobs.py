@@ -228,6 +228,16 @@ def test_job_resources_include_eda_descendants_and_reject_child_reuse(tmp_path, 
     assert sampler.sample(identity, now=12, capacity=2) == ProcessResources()
 
 
+def test_server_job_lifecycle_does_not_include_other_interactive_roots(tmp_path, monkeypatch):
+    from booley.mcp import server
+
+    (tmp_path / "job_logs/historic/.runtime/jobs").mkdir(parents=True)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "job_logs/current"))
+    monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
+    assert server.job_roots() == (tmp_path / "job_logs/current/.runtime/jobs",)
+
+
 def test_job_cpu_is_percent_of_one_core_independent_of_sandbox_capacity(tmp_path, monkeypatch):
     from booley.harness.dashboard import resources
     from tests.mcp_tools.test_session_registry import _fake_process
