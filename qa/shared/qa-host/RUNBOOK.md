@@ -70,8 +70,8 @@ runs.
    canonical-install check. Don't install under `/tmp` or a `qa-runs` path.
 4. `qa$ booley bootstrap`. A fresh `qa-host-docker` volume builds the base
    Sandbox Image from scratch (see Measurements). Bootstrap warns that no
-   `claude` or `codex` is on PATH; that only affects Project Setup on the QA
-   host.
+   `claude` or `codex` is on PATH, which only affects Project Setup on the QA
+   Host, and that no editor is found, which the QA Host does not need.
 5. Create the Project and its Sandbox:
 
    ```bash
@@ -128,9 +128,6 @@ Each is a Booley behavior that the QA Host works around:
 - **Relay port:** the relay listens on the container's loopback. The
   entrypoint forwards ports 3780-3784 from the container's interface with
   `socat`.
-
-`code-stub.sh` still stands in for a VS Code CLI that Host Bootstrap does not
-need; #5634 removes it.
 
 The reaper's fixed `/var/run/docker.sock` mount (#5565) is the inner daemon's
 socket here, so it needs no workaround. It would on a rootless daemon.
