@@ -135,8 +135,8 @@ inputs and their allowed values are in `ci_changes.py`.
 The merge queue retries nothing, so one rare test failure would eject a PR or
 batch. The pytest steps of the `docs-check`, `test`, and `coverage-shards` jobs
 therefore run through `.github/scripts/ci_pytest_rerun.py`; other jobs do not
-rerun. When a run ends with test failures or errors (a timeout-headroom overrun
-is one), it reruns only the failed test ids once, in a separate serial pytest
+rerun. When a run ends with test failures or errors, it reruns only the failed
+test ids once, in a separate serial pytest
 process (`-n 0`, no shard options). The rerun keeps the mark expression,
 per-test timeout, and time scale. The job passes only when every rerun passes.
 
@@ -206,7 +206,11 @@ A test waits on real time in two ways, and both come from
 The factor is `BOOLEY_TEST_TIME_SCALE`. Unset means 1; a value that is not a
 positive finite number fails the pytest session at startup. The Windows legs
 of every pytest job (the test job, flake-stress, and the weekly full matrix)
-set 2 and run `--timeout=120`. Across the 161 tests that both the Windows and
+set 2 and run `--timeout=120`. They also pass
+`--timeout-headroom-warn=0.5`: a passing test that uses more than half its
+per-test timeout is reported in the step log, as a warning annotation, and in
+`junit.xml`, and still passes. The per-test timeout is the hard limit; no step
+fails a test on headroom. Across the 161 tests that both the Windows and
 Linux timing models contain, the Windows to Linux time ratio has
 median 1.06, 90th percentile 1.55, and 95th percentile 2.12, so a factor of 2
 covers the usual Windows tail. Ubuntu legs keep factor 1 and `--timeout=60`.

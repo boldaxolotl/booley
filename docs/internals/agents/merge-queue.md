@@ -340,10 +340,9 @@ Read the Mergify check and the underlying Actions failure, then:
       and `bwave-smoke`, so `main` evidence for every other job, including
       `package-artifacts` and the test jobs, comes from the nightly
       scheduled `Tests` run.
-    - Match by test ID whenever the failure names one: a failed test, a
-      timeout-headroom overrun, or a crashed worker (JUnit records it as
-      "crashed while running" that test). Match by job and error signature
-      only when the failure names no test ID, such as a step or job that
+    - Match by test ID whenever the failure names one: a failed test or a
+      crashed worker (JUnit records it as "crashed while running" that test).
+      Match by job and error signature only when the failure names no test ID, such as a step or job that
       hit its `timeout-minutes`.
     - When every failed test of a step passes on its rerun, the job stays
       green, so those failures never dequeue the PR and need no issue from

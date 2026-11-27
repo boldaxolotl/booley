@@ -1,4 +1,4 @@
-"""Fail passing tests that consume too much of their pytest-timeout budget.
+"""Report or fail passing tests that use much of their pytest-timeout budget.
 
 On Windows, pytest-timeout can only use its thread method. When a budget
 expires, that method ends the whole worker with ``os._exit(1)``, so xdist
@@ -6,17 +6,17 @@ reports an unattributed ``node down: Not properly terminated`` and the merge
 queue drops the batch (#1202). A test whose normal runtime drifts close to its
 budget therefore fails rarely, late, and without a name.
 
-``--timeout-headroom=FRACTION`` turns that drift into an ordinary, named
-failure before the kill: a test that passes but spends more than FRACTION of
-its effective budget fails at teardown. ``--timeout-headroom-warn=FRACTION``
-reports a lower band without failing, so runner noise does not fail unrelated
-pull requests (#1775) while drift stays visible: as a JUnit property, in the
-terminal summary, and as a GitHub Actions warning annotation.
+``--timeout-headroom-warn=FRACTION`` reports a passing test that spends more
+than FRACTION of its effective budget, without changing its outcome: as a JUnit
+property, in the terminal summary, and as a GitHub Actions warning annotation.
+``--timeout-headroom=FRACTION`` fails such a test at teardown instead. With both
+set, the warning FRACTION must not exceed the failure one. Windows CI sets only
+the 0.5 warning, so runner noise does not fail unrelated pull requests (#1775,
+#4384); the per-test timeout is the hard limit.
 
 Size a budget at three times the slowest observed Windows CI duration, rounded
-up to a 30-second multiple (:func:`suggested_budget`). CI warns above 0.5 and
-fails above 0.8: 1.5x slowdown before a warning, 2.4x before a failure, and 3x
-before the worker is killed.
+up to a 30-second multiple (:func:`suggested_budget`). That leaves a 1.5x
+slowdown before a warning and 3x before the per-test timeout ends the test.
 """
 
 from __future__ import annotations
@@ -80,7 +80,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         default=None,
         metavar="FRACTION",
         help="Report, without failing, a passing test that uses more than FRACTION of its "
-        "budget. Requires --timeout-headroom at or above FRACTION.",
+        "budget. With --timeout-headroom, FRACTION must not exceed it.",
     )
 
 
@@ -88,14 +88,13 @@ def pytest_configure(config: pytest.Config) -> None:
     """Refuse limits that cannot be enforced, and report what was enforced."""
     fraction = config.getoption("timeout_headroom")
     warn = config.getoption("timeout_headroom_warn")
-    if warn is not None and (fraction is None or warn > fraction):
-        raise pytest.UsageError(
-            "--timeout-headroom-warn requires --timeout-headroom at or above it"
-        )
-    if fraction is None:
+    if fraction is not None and warn is not None and warn > fraction:
+        raise pytest.UsageError("--timeout-headroom-warn must not exceed --timeout-headroom")
+    if fraction is None and warn is None:
         return
     if not timeout_plugin_loaded(config):
-        raise pytest.UsageError("--timeout-headroom requires the pytest-timeout plugin")
+        option = "--timeout-headroom" if fraction is not None else "--timeout-headroom-warn"
+        raise pytest.UsageError(f"{option} requires the pytest-timeout plugin")
     # xdist workers measure; the controller (or a serial run) summarizes.
     if not hasattr(config, "workerinput"):
         summary = _HeadroomSummary(fraction, warn)
@@ -105,7 +104,7 @@ def pytest_configure(config: pytest.Config) -> None:
 class _HeadroomSummary:
     """Collect per-test headroom ratios so CI logs prove the guard ran."""
 
-    def __init__(self, fraction: float, warn: float | None) -> None:
+    def __init__(self, fraction: float | None, warn: float | None) -> None:
         self.fraction = fraction
         self.warn = warn
         self.checked = 0
@@ -124,10 +123,10 @@ class _HeadroomSummary:
             self.warnings.append(properties[_WARNING_PROPERTY])
 
     def pytest_terminal_summary(self, terminalreporter: pytest.TerminalReporter) -> None:
-        line = f"timeout headroom: limit {self.fraction:.1%}"
+        limits = [f"limit {self.fraction:.1%}"] if self.fraction is not None else []
         if self.warn is not None:
-            line += f", warning above {self.warn:.1%}"
-        line += f", {self.checked} tests checked"
+            limits.append(f"warning above {self.warn:.1%}")
+        line = f"timeout headroom: {', '.join(limits)}, {self.checked} tests checked"
         if self.highest is not None:
             line += f", highest {self.highest[0]:.1%} ({self.highest[1]})"
         terminalreporter.write_line(line)
@@ -152,7 +151,8 @@ def pytest_runtest_makereport(
     del call  # hook signature; the report carries the phase and duration
     report = yield
     fraction = item.config.getoption("timeout_headroom")
-    if fraction is None:
+    warn = item.config.getoption("timeout_headroom_warn")
+    if fraction is None and warn is None:
         return report
     item.stash[_PHASE_NOT_PASSED] = item.stash.get(_PHASE_NOT_PASSED, False) or not report.passed
     budget_scope = _budget_scope(item)
@@ -165,8 +165,7 @@ def pytest_runtest_makereport(
     if report.when == "teardown" and not item.stash[_PHASE_NOT_PASSED]:
         elapsed = item.stash.get(_ELAPSED, 0.0)
         report.user_properties.append((_RATIO_PROPERTY, round(elapsed / budget, 4)))
-        warn = item.config.getoption("timeout_headroom_warn")
-        if elapsed > fraction * budget:
+        if fraction is not None and elapsed > fraction * budget:
             report.outcome = "failed"
             report.longrepr = _overrun(
                 item.nodeid, elapsed, budget, f"the headroom limit is {fraction:.1%}"
