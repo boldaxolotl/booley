@@ -254,7 +254,9 @@ def test_unconfigured_policy_is_subscription(clean_env, monkeypatch):
 
     # private: no Doctor entry point passes a missing Project; tests/runtime/test_agent_app_auto.py
     # also pins this fallback.
-    assert doctor._configured_auth_policy(None) == "subscription"
+    assert doctor._agent_audit(None, None).policy("claude") == "subscription"
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key")
+    assert doctor._agent_audit(None, None).policy("claude") == "api_key"
 
 
 def _give_credentials(app, key, stored, login, monkeypatch):
