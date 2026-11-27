@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -21,6 +22,8 @@ from booley.runtime.supervised_execution import supervised_execution_scope
 
 from .capacity import ChildPermit, LeaseLostError, SimulationRecordCapacity
 from .child_protocol import PreparedChild
+
+logger = logging.getLogger(__name__)
 
 _TURN_POLL_SECONDS = 0.05
 
@@ -188,7 +191,11 @@ class BoundedSimulationRecordScheduler:
             except SimulationRecordSchedulingError:
                 raise  # the bounded shutdown already ran and kept the outer slot
             except BaseException:
-                self._shut_down(lanes)
+                # The interrupt stays the outcome; an overrun still keeps the outer slot.
+                try:
+                    self._shut_down(lanes)
+                except SimulationRecordSchedulingError as overrun:
+                    logger.warning("%s", overrun)
                 raise
             self._stop.set()
         if not self._errors.empty():

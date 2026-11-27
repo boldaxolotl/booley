@@ -256,6 +256,9 @@ def _cancel() -> EndpointOutcome:
         pytest.param("failure", _fail, id="failure"),
         pytest.param("cancelled", _cancel, id="cancelled"),
         pytest.param("checkout-removed", None, id="checkout-removed", marks=NEEDS_PROC),
+        pytest.param(
+            "agent-cli-checkout-removed", None, id="agent-cli-checkout-removed", marks=NEEDS_PROC
+        ),
     ),
 )
 def test_slot_released_when_run_ends(
@@ -265,14 +268,15 @@ def test_slot_released_when_run_ends(
     behavior: Callable[[], EndpointOutcome] | None,
 ) -> None:
     checkout = memory_runtime.parent / "checkout"
-    removal = RemovalRun(checkout, memory_runtime.parent)
+    agent_cli = ending.startswith("agent-cli")
+    removal = RemovalRun(checkout, memory_runtime.parent, agent_cli=agent_cli)
     if behavior is None:
         checkout.mkdir()
         harness.request = replace(harness.request, work_dir=checkout)
     harness.behavior = behavior or removal
     stdout_before = sys.stdout
 
-    if ending == "checkout-removed":
+    if behavior is None:
         try:
             assert harness.execute().exit_code == EXIT_ERROR
             removal.assert_stopped()

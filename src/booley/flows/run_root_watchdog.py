@@ -37,6 +37,8 @@ class RunRootWatchdog:
         self.removed: str | None = None
         self._stop = threading.Event()
         # Remembered across ticks: a reparented child is no longer a descendant.
+        # Tools in this process's own group (an agent CLI) are remembered by PID.
+        self._pids: set[int] = set()
         self._groups: set[int] = set()
         self._interrupts = threading.current_thread() is threading.main_thread()
         self._thread = threading.Thread(target=self._watch, name=_THREAD_NAME, daemon=True)
@@ -66,27 +68,33 @@ class RunRootWatchdog:
             self.removed = removed
             logger.warning("Stopping the run: its %s is gone", removed)
             # Find the tools before the interrupt lets the run reap them.
-            self._find_tool_groups()
+            self._find_tools()
             if self._interrupts:
                 _thread.interrupt_main()
             self._signal_tools(signal.SIGTERM)
 
-    def _find_tool_groups(self) -> list[int]:
-        """Remember the tools' process groups; return the tools in this process's own group."""
-        ungrouped: list[int] = []
+    def _find_tools(self) -> None:
+        """Remember every tool: its process group, or its PID when it shares this one."""
         for pid in descendant_pids(os.getpid()):
             with contextlib.suppress(ProcessLookupError):
                 group = os.getpgid(pid)
                 if group == os.getpgrp():
-                    ungrouped.append(pid)
+                    self._pids.add(pid)
                 else:
                     self._groups.add(group)
-        return ungrouped
 
     def _signal_tools(self, signum: int) -> None:
-        for pid in self._find_tool_groups():
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.kill(pid, signum)
-        for group in list(self._groups):
-            with contextlib.suppress(ProcessLookupError, PermissionError):
-                os.killpg(group, signum)
+        self._find_tools()
+        # Lambdas: Windows has no killpg, and remembers no tool to call it for.
+        _signal_each(self._pids, lambda pid: os.kill(pid, signum))
+        _signal_each(self._groups, lambda group: os.killpg(group, signum))
+
+
+def _signal_each(targets: set[int], send: Callable[[int], None]) -> None:
+    """Signal each target; forget a gone one, so a reuse of its number is left alone."""
+    for target in list(targets):
+        with contextlib.suppress(PermissionError):
+            try:
+                send(target)
+            except ProcessLookupError:
+                targets.discard(target)
