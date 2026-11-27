@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import replace
 from pathlib import Path
@@ -2142,7 +2143,7 @@ def _fail(docker_cli: FakeDockerCli, words: tuple[str, ...], reply) -> AbstractC
 
 
 _DAEMON = _fails("Cannot connect to the Docker daemon", 125)
-_NO_FILE = "No such file or directory"
+_NO_FILE = "[Errno 2] No such file or directory: 'docker'"
 
 
 @pytest.mark.parametrize(
@@ -2222,8 +2223,7 @@ def test_owned_image_cleanup_reports_a_refused_removal(
     with _fail(docker_cli, ("image", "rm"), reply):
         (deferred,) = lifecycle.cleanup_owned_images(tmp_path)
 
-    assert deferred.startswith(f"{_ID}: deferred (could not remove retained tag {_ID}: ")
-    assert detail in deferred
+    assert deferred == f"{_ID}: deferred (could not remove retained tag {_ID}: {detail})"
 
 
 _ROW = image_row("booley-sandbox", "latest", _ID)
@@ -2289,9 +2289,11 @@ def test_host_check_reads_the_container_inventory(docker_cli, digest_only_alias,
         words, reply, message = failure
         with (
             _fail(docker_cli, words, reply),
-            pytest.raises(lifecycle.ImageLifecycleError, match=message),
+            pytest.raises(lifecycle.ImageLifecycleError, match=re.escape(message)),
         ):
             lifecycle.reconcile(lifecycle.Intent.CHECK)
+        if "after" in reply:  # the CLI vanished just before the call under test
+            assert set(reply["after"].split()) <= set(docker_cli.calls[-1])
         return
 
     result = lifecycle.reconcile(lifecycle.Intent.CHECK)

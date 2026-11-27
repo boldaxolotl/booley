@@ -1,6 +1,6 @@
 """The shared fake of the Docker CLI boundary: a ``docker`` program on ``PATH``.
 
-Every test crossing that boundary uses it. Its per-test state holds images, tags,
+Its per-test state holds images, tags,
 containers, networks and volumes. This module is also that program, run as
 ``python -I <module> <state folder> <docker arguments>``.
 """
@@ -42,6 +42,10 @@ def _find(images: _State, reference: str) -> str | None:
     return next((key for key, value in images.items() if _id(value) == reference), None)
 
 
+def _layers(value: Any) -> list[str]:
+    return [value] if isinstance(value, str) else value.get("Layers", [value["Id"]])
+
+
 def _inspect(state: _State, args: list[str]) -> _Result:
     template = None
     for flag in ("--format", "-f"):
@@ -63,7 +67,7 @@ def _inspect(state: _State, args: list[str]) -> _Result:
         return 0, (value if isinstance(value, str) else value["Image"]) + "\n", ""
     if not containers:
         record = {} if isinstance(value, str) else value
-        layers = record.get("Layers", [_id(value)])
+        layers = _layers(value)
         config = {"Labels": record.get("Labels", {}), "Env": record.get("Env", [])}
         document = {"Id": _id(value), "Config": config, "RootFS": {"Layers": layers}}
         answers = {
@@ -170,13 +174,30 @@ def _build(state: _State, args: list[str]) -> _Result:
     parent = next(line.split()[1] for line in recipe.splitlines() if line.startswith("FROM "))
     state["counter"] += 1
     number = state["counter"]
-    layers = images[parent]["Layers"] if parent in images else [f"sha256:layer-{number}"]
+    layers = _layers(images[parent]) if parent in images else [f"sha256:layer-{number}"]
     built = {"Id": f"sha256:image-{number}", "Labels": labels, "Layers": layers, "Parent": parent}
     images[output] = built
     edits, state["after_build"] = state["after_build"], {}
     for reference, fields in edits.items():
         images[output if reference == "<output>" else reference].update(fields)
     return 0, "", ""
+
+
+def _remove_volume(state: _State, args: list[str]) -> _Result:
+    name = args[-1]
+    if name not in state["volumes"]:
+        return 1, "", f"Error response from daemon: get {name}: no such volume\n"
+    records = [c for c in state["containers"].values() if not isinstance(c, str)]
+    if any(name in record.get("Volumes", ()) for record in records):
+        return 1, "", f"Error response from daemon: remove {name}: volume is in use\n"
+    del state["volumes"][name]
+    return 0, name + state["eol"], ""
+
+
+def _disk_usage(state: _State, args: list[str]) -> _Result:
+    """``system df --verbose --format '{{json .}}'``, as far as the volume sizes."""
+    volumes = [{"Name": name, "Size": "1GB"} for name in state["volumes"]]
+    return 0, json.dumps({"Volumes": volumes}) + "\n", ""
 
 
 _VERBS = {
@@ -188,6 +209,10 @@ _VERBS = {
     ("network", "ls"): _list_named,
     ("image", "tag"): _tag,
     ("image", "rm"): _remove,
+    ("volume", "rm"): _remove_volume,
+    ("system", "df"): _disk_usage,
+    ("tag",): _tag,
+    ("build",): _build,
 }
 
 
@@ -200,12 +225,12 @@ def _answer(here: Path, state: _State, command: list[str]) -> _Result:
             return code, texts[0], texts[1]
         text = texts[0] + "\n" if texts[0] else ""
         return (code, text, "") if code == 0 else (code, "", text)
-    if state["serve"] and command:
-        verbs: dict[tuple[str, ...], Any] = _VERBS | {("tag",): _tag, ("build",): _build}
-        serve = verbs.get(tuple(command[:2])) or verbs.get((command[0],))
-        if serve:
-            return serve(state, list(command))
-    return 0, "", ""
+    if not state["serve"]:
+        return 0, "", ""
+    serve = _VERBS.get(tuple(command[:2])) or _VERBS.get(tuple(command[:1]))
+    if serve:
+        return serve(state, list(command))
+    return 2, "", f"fake docker: unsupported command: {' '.join(command)}\n"
 
 
 def _wait_for(marker: Path, seconds: float) -> None:
@@ -345,10 +370,12 @@ class FakeDocker:
 
         for marker in ("paused", "resumed"):
             (self.path.parent / marker).unlink(missing_ok=True)
-        _Section(self.state_path).update(pause=list(words), deadline=hang_guard_s())
+        self._deadline = hang_guard_s()
+        _Section(self.state_path).update(pause=list(words), deadline=self._deadline)
 
     def wait_until_paused(self) -> None:
-        _wait_for(self.path.parent / "paused", _Section(self.state_path)["deadline"])
+        # Not the state file: the paused operation's calls may be rewriting it.
+        _wait_for(self.path.parent / "paused", self._deadline)
 
     def resume(self) -> None:
         (self.path.parent / "resumed").touch()
@@ -393,11 +420,12 @@ def install_fake_docker(
 
     A reply keyed by words (``"image rm"``; ``""`` for every call) answers each call whose
     arguments hold them all with ``(exit code, text)``: stdout on code 0, else stderr. Most
-    words win. A call without a reply exits 0 with no output.
+    words win. Without ``images``, a call no reply covers exits 0 with no output.
 
     ``images`` (reference or ID -> image ID, or ``{"Id", "Labels", "Layers", "Env",
     "Size"}``) makes the fake store-backed: calls no reply covers are served from the
-    state like Docker serves them. ``after_build`` (reference -> fields, ``"<output>"``
+    state like Docker serves them, and a command the state does not model exits 2.
+    ``after_build`` (reference -> fields, ``"<output>"``
     for the built image) edits images once after the next build; after a call holding the
     ``remove_after`` words the program deletes itself, so later calls find no Docker CLI.
     A store-backed fake is alone on ``PATH``; installing again in the same folder starts a

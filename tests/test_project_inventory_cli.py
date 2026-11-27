@@ -287,7 +287,7 @@ def test_forget_lists_leftovers_with_sizes_and_tags(
         ["Kind", "Name", "Size", "Reason", "Tags"],
         [
             ["image", _A, "1GB", "shared", f"mirror:x, {project_image_name(project)}:latest"],
-            ["volume", volume, "", "in-use", ""],
+            ["volume", volume, "1GB", "in-use", ""],
             ["network", "licensed", "", "labelled", ""],
         ],
     )
@@ -300,6 +300,8 @@ def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
     project = _remember(tmp_path, "it's a project")
     family = project_image_name(project)
     docker.images.update({f"{family}:latest": _A, f"{family}-wheel:latest": _B, "mirror:x": _B})
+    volume = min(devcontainer.state_volume_names(project_name_id(str(project.resolve()))))
+    docker.volumes[volume] = {}
     assert _cli("projects", "forget", str(project)) == 0
     first = capsys.readouterr().out
     assert f"booley projects forget --purge {quote_arg(str(project))}" in first
@@ -311,6 +313,7 @@ def test_forget_purge_removes_unused_own_tags_and_names_the_rest(
     assert f"Removed: {family}-wheel:latest\nRemoved: {family}:latest\n" in output
     assert "No Docker resources left behind" in output and "mirror:x" in docker.images
     assert "in-use:" not in output
+    assert f"Removed: {volume}\n" in output and volume not in docker.volumes
     docker.images[f"{family}-busy:latest"] = _C
     docker.containers[_CONTAINER] = _C
     assert _cli("projects", "forget", "--purge", str(project)) == 0
