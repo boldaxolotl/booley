@@ -5,9 +5,10 @@ import os
 import re
 import shlex
 import shutil
-import subprocess
+from collections.abc import MutableMapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -15,15 +16,17 @@ import booley
 from booley.config.host_config import SandboxHostPolicy
 from booley.harness import bootstrap
 from booley.harness import host_sidecars as sidecars
+from booley.harness.host_sidecars import plan_image_builds
 from booley.runtime import session_runtime
 from booley.runtime.docker_capacity import SKIP_PREFLIGHT_ENV
 from booley.runtime.image_lifecycle import Intent
-from tests.fake_docker_executable import install_fake_docker
-from tests.harness.session_docker_fake import route_session_commands, run_cli, serve_sandbox_docker
-from tests.harness.sidecar_docker_fake import EgressDocker, serve_egress_docker
-
-# `test_init_bootstrap.py` borrows the fake through this name.
-_egress_docker = serve_egress_docker
+from tests.fake_docker_executable import FakeDocker, install_fake_docker
+from tests.harness.session_docker_fake import (
+    headless_session_entry,
+    route_session_commands,
+    run_cli,
+    serve_sandbox_docker,
+)
 
 _POLICY = SandboxHostPolicy(600, 2, ("example.com",))
 _UNPROXIED = SandboxHostPolicy(egress="unproxied")
@@ -37,9 +40,126 @@ _PENDING = sidecars.SidecarState.PENDING
 _ERROR = sidecars.SidecarState.ERROR
 
 
+# What the Docker CLI reports about the selected daemon; no state models it.
+_DAEMON = {
+    "context inspect": (0, "unix:///var/run/docker.sock"),
+    "version": (0, "linux\tDocker Engine - Community"),
+    "info --format {{.ID}}": (0, "daemon-a"),
+}
+_REAPER_PROBE = ("exec", _REAPER, "info", "--format", "{{.ID}}")
+
+
+def _egress_docker(folder: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
+    """A daemon with no sidecars; `test_init_bootstrap.py` borrows it."""
+    monkeypatch.setenv(SKIP_PREFLIGHT_ENV, "1")
+    return install_fake_docker(folder, monkeypatch, _DAEMON, images={})
+
+
 @pytest.fixture
-def docker(monkeypatch: pytest.MonkeyPatch) -> EgressDocker:
-    return serve_egress_docker(monkeypatch)
+def docker(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> FakeDocker:
+    return _egress_docker(tmp_path_factory.mktemp("docker"), monkeypatch)
+
+
+def _edit(section: MutableMapping[str, Any], name: str, **fields: object) -> None:
+    section[name] = section[name] | fields
+
+
+def _add_current_image(docker: FakeDocker, reference: str) -> None:
+    # The labels a build would stamp come from the public planner. It is imported by name:
+    # Bootstrap tests replace the module attribute with an empty plan.
+    request = next(r for r in plan_image_builds(Intent.REFRESH) if r.output_tag == reference)
+    assert request.cache_evidence is not None
+    labels = dict(request.cache_evidence.expected_labels)
+    docker.images[reference] = {"Id": f"sha256:{reference}", "Labels": labels}
+    docker.forget_calls()  # seeding is not the step under test
+
+
+def _add_network(docker: FakeDocker, *, internal: bool = True) -> None:
+    options = {sidecars.legacy.GATEWAY_MODE_OPTION: sidecars.legacy.GATEWAY_MODE_ISOLATED}
+    docker.networks[_NETWORK] = {"Internal": internal, "Options": options}
+
+
+def _add_container(
+    docker: FakeDocker,
+    name: str,
+    *,
+    image: str = "sha256:unrelated",
+    labels: dict[str, str] | None = None,
+    running: bool = True,
+    networks: tuple[str, ...] = (),
+    **record: object,
+) -> None:
+    docker.containers[name] = {
+        "Image": image,
+        "Labels": labels or {},
+        "Running": running,
+        "Networks": list(networks),
+        **record,
+    }
+
+
+def _add_sidecar(
+    docker: FakeDocker, name: str, role: str, image: str, policy: SandboxHostPolicy
+) -> None:
+    _add_current_image(docker, image)
+    labels = {
+        sidecars.ROLE_LABEL: role,
+        sidecars.LABEL_POLICY_FINGERPRINT: sidecars.policy_fingerprint(policy),
+    }
+    networks = (_NETWORK,) if role == "egress-proxy" else ()
+    image_id = docker.images[image]["Id"]
+    _add_container(docker, name, image=image_id, labels=labels, networks=networks)
+
+
+def _add_session(
+    docker: FakeDocker,
+    name: str,
+    *,
+    running: bool = True,
+    networks: tuple[str, ...] = (),
+    state: str | None = None,
+    workspace: str | None = None,
+) -> None:
+    """Add a VS Code Sandbox (folder label ``/projects/a``).
+
+    ``state`` overrides the ``ps -a`` State derived from ``running``; ``workspace`` is
+    the source of a ``/work`` bind mount the inspection also reports.
+    """
+    bind = {"Type": "bind", "Source": workspace, "Destination": "/work", "RW": True}
+    _add_container(
+        docker,
+        name,
+        labels={
+            sidecars.ROLE_LABEL: sidecars.SESSION_ROLE,
+            "devcontainer.local_folder": "/projects/a",
+        },
+        running=running,
+        networks=networks,
+        State=state,
+        Mounts=[bind] if workspace else [],
+    )
+
+
+def _add_headless_session(
+    docker: FakeDocker, name: str, root: Path, *, networks: tuple[str, ...] = ()
+) -> None:
+    """Add a headless Sandbox whose Project is identified by its `/work` bind."""
+    entry = headless_session_entry(name, root)
+    _add_container(
+        docker,
+        name,
+        labels=entry["Config"]["Labels"],
+        networks=networks,
+        Id=entry["Id"],
+        Inspect=entry,  # full identity, so Session admission accepts it as a Sandbox
+    )
+
+
+def _mutations(docker: FakeDocker) -> list[list[str]]:
+    read_only = {"ps", "version", "info", "exec"}
+    return [call for call in docker.calls if "inspect" not in call and call[0] not in read_only]
 
 
 def _states(result: sidecars.SidecarResult) -> list[tuple[str, sidecars.SidecarState]]:
@@ -59,29 +179,35 @@ def _step(call: list[str]) -> str:
     return " ".join(call[:2]) if call[0] == "network" else " ".join(call[:3])
 
 
-def _install(docker: EgressDocker, policy: SandboxHostPolicy = _POLICY) -> None:
+def _install(docker: FakeDocker, policy: SandboxHostPolicy = _POLICY) -> None:
     """Converge an empty fake to a complete proxy-mode installation, then forget the calls."""
     assert sidecars.reconcile_sidecars(policy, Intent.ENSURE).ready
-    docker.calls.clear()
+    docker.forget_calls()
 
 
-def _damage(docker: EgressDocker, kind: str) -> None:
+def _damage(docker: FakeDocker, kind: str) -> None:
     """Break one resource of an installed fake."""
     if kind == "stopped-proxy":
-        docker.containers[_PROXY]["running"] = False
+        _edit(docker.containers, _PROXY, Running=False)
     elif kind == "disconnected-proxy":
-        docker.containers[_PROXY]["networks"] = set()
+        _edit(docker.containers, _PROXY, Networks=[])
     elif kind == "stale-reaper":
-        docker.containers[_REAPER]["labels"][sidecars.LABEL_POLICY_FINGERPRINT] = "old"  # type: ignore[index]
+        labels = docker.containers[_REAPER]["Labels"]
+        stale = labels | {sidecars.LABEL_POLICY_FINGERPRINT: "old"}
+        _edit(docker.containers, _REAPER, Labels=stale)
     elif kind == "moved-socket":
-        docker.endpoint = "unix:///run/user/1000/docker.sock"
+        docker.answer("context", "inspect", stdout="unix:///run/user/1000/docker.sock\n")
     elif kind == "stale-network":
-        docker.stale_network = True
+        _add_network(docker, internal=False)
     elif kind == "missing-network":
-        docker.network = False
+        del docker.networks[_NETWORK]
     else:
         assert kind == "missing-proxy", kind
         del docker.containers[_PROXY]
+
+
+def _relabel_image(docker: FakeDocker, reference: str, label: str, value: str) -> None:
+    _edit(docker.images, reference, Labels=docker.images[reference]["Labels"] | {label: value})
 
 
 def _recipes(package: Path) -> None:
@@ -118,12 +244,12 @@ def test_policy_fingerprint_is_canonical_and_policy_sensitive() -> None:
     )
 
 
-def test_ensure_converges_a_missing_installation_then_stays_current(docker: EgressDocker) -> None:
+def test_ensure_converges_a_missing_installation_then_stays_current(docker: FakeDocker) -> None:
     result = sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE)
 
     assert result.ready
     assert _states(result) == [(resource, _CHANGED) for resource in _SIDECAR_RESOURCES]
-    assert [_step(call) for call in docker.mutations()] == [
+    assert [_step(call) for call in _mutations(docker)] == [
         f"build {sidecars.legacy.PROXY_IMAGE}",
         f"build {sidecars.legacy.REAPER_IMAGE}",
         "network create",
@@ -140,16 +266,16 @@ def test_ensure_converges_a_missing_installation_then_stays_current(docker: Egre
     assert ["network", "connect", _NETWORK, _PROXY] in docker.calls
     assert not any(call[0] == "ps" for call in docker.calls), "a fresh install enumerates nothing"
 
-    docker.calls.clear()
+    docker.forget_calls()
     again = sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE)
 
     assert _states(again) == [(resource, _CURRENT) for resource in _SIDECAR_RESOURCES]
-    assert docker.mutations() == []
+    assert _mutations(docker) == []
 
 
 @pytest.mark.parametrize("layout", ["installed", "source"])
 def test_image_recipes_are_fingerprinted_in_either_layout(
-    docker: EgressDocker, tmp_path: Path, layout: str
+    docker: FakeDocker, tmp_path: Path, layout: str
 ) -> None:
     package = tmp_path if layout == "installed" else tmp_path / "src" / "booley"
     _recipes(package)
@@ -183,13 +309,15 @@ def test_image_recipes_are_fingerprinted_in_either_layout(
     ],
 )
 def test_check_reports_drift_without_mutating(
-    docker: EgressDocker, case: str, resource: str, fragments: list[str]
+    docker: FakeDocker, case: str, resource: str, fragments: list[str]
 ) -> None:
     _install(docker)
     if case == "old-booley-image":
-        docker.images[sidecars.legacy.REAPER_IMAGE][1][sidecars.LABEL_BOOLEY_VERSION] = "0.0.0"
+        _relabel_image(
+            docker, sidecars.legacy.REAPER_IMAGE, sidecars.LABEL_BOOLEY_VERSION, "0.0.0"
+        )
     elif case == "unstamped-container":
-        docker.containers[_REAPER]["labels"] = {sidecars.ROLE_LABEL: "reaper"}
+        _edit(docker.containers, _REAPER, Labels={sidecars.ROLE_LABEL: "reaper"})
     else:
         _damage(docker, case)
 
@@ -203,7 +331,7 @@ def test_check_reports_drift_without_mutating(
         assert sidecars.LABEL_SOURCE_FINGERPRINT not in row.detail
     if case == "unstamped-container":
         assert "image_identity" not in row.detail
-    assert docker.mutations() == []
+    assert _mutations(docker) == []
 
 
 @pytest.mark.parametrize(
@@ -226,7 +354,7 @@ def test_check_reports_drift_without_mutating(
     ],
 )
 def test_ensure_repairs_damaged_resources(
-    docker: EgressDocker, kind: str, expected: list[str]
+    docker: FakeDocker, kind: str, expected: list[str]
 ) -> None:
     _install(docker)
     _damage(docker, kind)
@@ -234,16 +362,16 @@ def test_ensure_repairs_damaged_resources(
     result = sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE)
 
     assert result.ready
-    assert [_step(call) for call in docker.mutations()] == expected
+    assert [_step(call) for call in _mutations(docker)] == expected
 
 
 def test_plan_image_builds_selects_missing_and_refresh_requested_images(
-    docker: EgressDocker,
+    docker: FakeDocker,
 ) -> None:
-    docker.add_current_image(sidecars.legacy.PROXY_IMAGE)
+    _add_current_image(docker, sidecars.legacy.PROXY_IMAGE)
 
-    ensure = sidecars.plan_image_builds(Intent.ENSURE, docker=docker)
-    refresh = sidecars.plan_image_builds(Intent.REFRESH, docker=docker)
+    ensure = sidecars.plan_image_builds(Intent.ENSURE)
+    refresh = sidecars.plan_image_builds(Intent.REFRESH)
 
     assert [request.output_tag for request in ensure] == [sidecars.legacy.REAPER_IMAGE]
     assert [request.output_tag for request in refresh] == [
@@ -252,9 +380,9 @@ def test_plan_image_builds_selects_missing_and_refresh_requested_images(
     ]
     assert all(request.estimate_class.value == "thin-overlay" for request in (*ensure, *refresh))
 
-    docker.images[sidecars.legacy.PROXY_IMAGE] = ("sha256:foreign", {})
+    docker.images[sidecars.legacy.PROXY_IMAGE] = {"Id": "sha256:foreign", "Labels": {}}
     with pytest.raises(sidecars.SidecarError, match="foreign image collision"):
-        sidecars.plan_image_builds(Intent.ENSURE, docker=docker)
+        sidecars.plan_image_builds(Intent.ENSURE)
 
 
 @pytest.mark.parametrize(
@@ -271,40 +399,39 @@ def test_plan_image_builds_selects_missing_and_refresh_requested_images(
     ],
 )
 def test_foreign_resources_are_never_mutated(
-    docker: EgressDocker, case: str, resource: str, fragment: str
+    docker: FakeDocker, case: str, resource: str, fragment: str
 ) -> None:
     _install(docker)
     if case == "proxy-image-unlabelled":
         unlabelled = json.dumps({"Id": "sha", "Config": {"Labels": None}})
-        docker.reply(
-            "image", "inspect", sidecars.legacy.PROXY_IMAGE, returncode=0, stdout=unlabelled
-        )
+        docker.answer("image", "inspect", sidecars.legacy.PROXY_IMAGE, stdout=unlabelled)
     elif case == "reaper-image-kind":
-        docker.images[sidecars.legacy.REAPER_IMAGE][1][sidecars.LABEL_SIDECAR_KIND] = "other"
+        _relabel_image(docker, sidecars.legacy.REAPER_IMAGE, sidecars.LABEL_SIDECAR_KIND, "other")
     elif case == "proxy-container-role":
-        docker.containers[_PROXY]["labels"][sidecars.ROLE_LABEL] = "someone-else"  # type: ignore[index]
+        labels = docker.containers[_PROXY]["Labels"] | {sidecars.ROLE_LABEL: "someone-else"}
+        _edit(docker.containers, _PROXY, Labels=labels)
     else:
         _damage(docker, "stale-network")
-        docker.add_container("someone-else", networks=(_NETWORK,))
+        _add_container(docker, "someone-else", networks=(_NETWORK,))
 
     result = sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE)
 
     assert result.findings[-1].resource == resource, "reconciliation stops at the foreign resource"
     assert result.findings[-1].state is _ERROR
     assert fragment in result.findings[-1].detail
-    assert docker.mutations() == []
+    assert _mutations(docker) == []
 
 
 @pytest.mark.parametrize("kind", ["stale-network", "stale-reaper"])
 def test_active_sessions_block_stale_replacement(
-    docker: EgressDocker, tmp_path: Path, kind: str
+    docker: FakeDocker, tmp_path: Path, kind: str
 ) -> None:
     _install(docker)
     _damage(docker, kind)
     # The folder label names the Project; the conflicting `/work` bind must not override it.
-    docker.add_session("booley-session-vscode", workspace="/projects/elsewhere")
+    _add_session(docker, "booley-session-vscode", workspace="/projects/elsewhere")
     root = tmp_path / "proj"
-    docker.add_headless_session("booley-session-headless", root)
+    _add_headless_session(docker, "booley-session-headless", root)
 
     result = sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE)
 
@@ -369,10 +496,10 @@ def test_active_sessions_block_stale_replacement(
     ],
 )
 def test_reaper_mounts_the_socket_of_the_selected_docker_endpoint(
-    docker: EgressDocker, endpoint: str, version: str, source: str
+    docker: FakeDocker, endpoint: str, version: str, source: str
 ) -> None:
-    docker.endpoint = endpoint
-    docker.version = version
+    docker.answer("context", "inspect", stdout=f"{endpoint}\n")
+    docker.answer("version", stdout=f"{version}\n")
 
     result = sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE)
 
@@ -392,10 +519,10 @@ def test_reaper_mounts_the_socket_of_the_selected_docker_endpoint(
     ],
 )
 def test_remote_docker_endpoint_refuses_the_reaper(
-    docker: EgressDocker, endpoint: str, version: str
+    docker: FakeDocker, endpoint: str, version: str
 ) -> None:
-    docker.endpoint = endpoint
-    docker.version = version
+    docker.answer("context", "inspect", stdout=f"{endpoint}\n")
+    docker.answer("version", stdout=f"{version}\n")
 
     result = sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE)
 
@@ -403,7 +530,7 @@ def test_remote_docker_endpoint_refuses_the_reaper(
     row = _row(result, "reaper")
     assert row.state is _ERROR
     assert endpoint in row.detail
-    assert f"run {_REAPER}" not in [_step(call) for call in docker.mutations()]
+    assert f"run {_REAPER}" not in [_step(call) for call in _mutations(docker)]
 
 
 @dataclass(frozen=True)
@@ -422,8 +549,8 @@ class _Failure:
     stopped_session: bool = False
 
 
-def _answer(*prefix: str, **result: object) -> tuple[tuple[str, ...], dict[str, object]]:
-    return prefix, result
+def _answer(*words: str, code: int = 1, **output: str) -> tuple[tuple[str, ...], dict[str, Any]]:
+    return words, {"code": code, **output}
 
 
 _PROXY_IMAGE_INSPECT = ("image", "inspect", sidecars.legacy.PROXY_IMAGE)
@@ -451,19 +578,19 @@ _FAILURES = {
     "image-list-json": _Failure(
         "proxy-image",
         "invalid image",
-        answers=(_answer(*_PROXY_IMAGE_INSPECT, returncode=0, stdout="[]"),),
+        answers=(_answer(*_PROXY_IMAGE_INSPECT, code=0, stdout="[]"),),
         installed=False,
     ),
     "image-incomplete": _Failure(
         "proxy-image",
         "incomplete inspection for image",
-        answers=(_answer(*_PROXY_IMAGE_INSPECT, returncode=0, stdout='{"Config":{}}'),),
+        answers=(_answer(*_PROXY_IMAGE_INSPECT, code=0, stdout='{"Config":{}}'),),
         installed=False,
     ),
     "image-bad-labels": _Failure(
         "proxy-image",
         "invalid labels",
-        answers=(_answer(*_PROXY_IMAGE_INSPECT, returncode=0, stdout=_DOCUMENT % '{"name":1}'),),
+        answers=(_answer(*_PROXY_IMAGE_INSPECT, code=0, stdout=_DOCUMENT % '{"name":1}'),),
         installed=False,
     ),
     "image-silent-failure": _Failure(
@@ -480,9 +607,7 @@ _FAILURES = {
     "network-no-internal": _Failure(
         "network",
         "incomplete inspection for network",
-        answers=(
-            _answer("network", "inspect", returncode=0, stdout='{"Options":{},"Containers":{}}'),
-        ),
+        answers=(_answer("network", "inspect", code=0, stdout='{"Options":{},"Containers":{}}'),),
     ),
     "network-nameless-container": _Failure(
         "network",
@@ -491,7 +616,7 @@ _FAILURES = {
             _answer(
                 "network",
                 "inspect",
-                returncode=0,
+                code=0,
                 stdout='{"Internal":true,"Options":{},"Containers":{"id":{}}}',
             ),
         ),
@@ -510,12 +635,12 @@ _FAILURES = {
     "container-empty": _Failure(
         "proxy",
         "incomplete inspection for container",
-        answers=(_answer("container", "inspect", returncode=0, stdout="{}"),),
+        answers=(_answer("container", "inspect", code=0, stdout="{}"),),
     ),
     "container-bad-mounts": _Failure(
         "proxy",
         "incomplete inspection for container",
-        answers=(_answer("container", "inspect", returncode=0, stdout=_BAD_MOUNTS),),
+        answers=(_answer("container", "inspect", code=0, stdout=_BAD_MOUNTS),),
     ),
     "run-fails": _Failure(
         "proxy", "failed to start", damage="missing-proxy", answers=(_answer("run", stderr="no"),)
@@ -561,19 +686,19 @@ _FAILURES = {
         "reaper",
         "incomplete active Session listing",
         damage="stale-reaper",
-        answers=(_answer("ps", returncode=0, stdout="malformed"),),
+        answers=(_answer("ps", code=0, stdout="malformed"),),
     ),
     "session-unproven": _Failure(
         "reaper",
         "cannot prove active Session ownership",
         damage="stale-reaper",
-        answers=(_answer("ps", returncode=0, stdout="ghost-id\tghost\n"),),
+        answers=(_answer("ps", code=0, stdout="ghost-id\tghost\n"),),
     ),
     "session-stopped": _Failure(
         "reaper",
         "cannot prove active Session ownership",
         damage="stale-reaper",
-        answers=(_answer("ps", returncode=0, stdout="booley-session-x\tbooley-session-x\n"),),
+        answers=(_answer("ps", code=0, stdout="booley-session-x\tbooley-session-x\n"),),
         stopped_session=True,
     ),
     "session-without-project": _Failure(
@@ -596,13 +721,13 @@ _FAILURES = {
     "reaper-reaches-other-daemon": _Failure(
         "reaper",
         "daemon-b",
-        answers=(_answer("exec", _REAPER, returncode=0, stdout="daemon-b\n"),),
+        answers=(_answer(*_REAPER_PROBE, code=0, stdout="daemon-b\n"),),
         installed=False,
     ),
     "reaper-reaches-no-daemon": _Failure(
         "reaper",
         "Cannot connect",
-        answers=(_answer("exec", _REAPER, stderr="Cannot connect to the Docker daemon"),),
+        answers=(_answer(*_REAPER_PROBE, stderr="Cannot connect to the Docker daemon"),),
     ),
     "network-remove-fails": _Failure(
         "network",
@@ -614,20 +739,19 @@ _FAILURES = {
 
 
 @pytest.mark.parametrize("failure", [pytest.param(f, id=name) for name, f in _FAILURES.items()])
-def test_docker_failures_are_reported_on_their_row(
-    docker: EgressDocker, failure: _Failure
-) -> None:
+def test_docker_failures_are_reported_on_their_row(docker: FakeDocker, failure: _Failure) -> None:
     if failure.installed:
         _install(docker)
     if failure.damage is not None:
         _damage(docker, failure.damage)
-    docker.unlabelled_builds = failure.unlabelled_builds
+    if failure.unlabelled_builds:
+        docker.after_build = {"<output>": {"Labels": {}}}
     if failure.unowned_session:
-        docker.add_container("booley-session-x", labels={sidecars.ROLE_LABEL: "interactive"})
+        _add_container(docker, "booley-session-x", labels={sidecars.ROLE_LABEL: "interactive"})
     if failure.stopped_session:
-        docker.add_session("booley-session-x", running=False)
-    for prefix, result in failure.answers:
-        docker.reply(*prefix, **result)  # type: ignore[arg-type]
+        _add_session(docker, "booley-session-x", running=False)
+    for words, reply in failure.answers:
+        docker.answer(*words, **reply)
 
     result = sidecars.reconcile_sidecars(_POLICY, failure.intent)
 
@@ -639,22 +763,13 @@ def test_docker_failures_are_reported_on_their_row(
         assert result.findings[-1] is row, "no later resource is reconciled after the failure"
 
 
-def test_a_hung_reaper_probe_is_reported_with_the_remedy(
-    docker: EgressDocker, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    run = docker.run
-
-    def hang(args: list[str], *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
-        if args[0] == "exec":
-            raise sidecars.SidecarError("Docker command failed: timed out")
-        return run(args, timeout=timeout)
-
-    monkeypatch.setattr(docker, "run", hang)
+def test_a_failed_reaper_probe_is_reported_with_the_remedy(docker: FakeDocker) -> None:
+    docker.remove_after = "info --format {{.ID}}"  # gone before the probe inside the reaper
 
     row = _row(sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE), "reaper")
 
     assert row.state is _ERROR
-    assert "no Docker daemon (Docker command failed: timed out)" in row.detail
+    assert "no Docker daemon (Docker command failed:" in row.detail
     assert "retry `booley bootstrap`" in row.detail
 
 
@@ -662,10 +777,10 @@ def test_a_hung_reaper_probe_is_reported_with_the_remedy(
     os.name == "nt", reason="the fake docker there is docker.cmd, which the probe cannot run"
 )
 def test_image_reconciliation_reports_capacity_refusal_without_building(
-    docker: EgressDocker, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    docker: FakeDocker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv(SKIP_PREFLIGHT_ENV)
-    install_fake_docker(tmp_path, monkeypatch, {"info": (1, "Docker daemon unavailable")})
+    docker.answer("info", "--format", "{{.DockerRootDir}}", code=1, stderr="daemon unavailable")
 
     result = sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE)
 
@@ -704,25 +819,36 @@ def test_check_only_missing_sidecar_images_and_containers_are_pending(
     assert _tree_snapshot(tmp_path) == before
 
 
-@pytest.mark.parametrize("resource", ["proxy-image", "reaper-image", "network", "proxy"])
-def test_check_only_continues_after_sidecar_error(monkeypatch, tmp_path, capsys, resource):
+@pytest.mark.parametrize(
+    ("resource", "call"),
+    [
+        ("proxy-image", ("image", "inspect", sidecars.legacy.PROXY_IMAGE)),
+        ("reaper-image", ("image", "inspect", sidecars.legacy.REAPER_IMAGE)),
+        ("network", ("network", "inspect", _NETWORK)),
+        ("proxy", ("container", "inspect", _PROXY)),
+    ],
+    ids=["proxy-image", "reaper-image", "network", "proxy"],
+)
+def test_check_only_continues_after_sidecar_error(monkeypatch, tmp_path, capsys, resource, call):
     from tests.harness.test_bootstrap import (
         _assert_complete,
+        _assert_inspect_only,
         _inspection_environment,
         _run_inspection,
     )
 
     environment = _inspection_environment(monkeypatch, tmp_path)
-    environment.docker.failure = resource
+    environment.docker.answer(*call, code=1, stderr="access denied")
     status, output = _run_inspection(capsys)
     _assert_complete(output)
     assert status == 2
     assert f"✗  {resource}:" in output
     assert "access" in output
+    _assert_inspect_only(environment.docker)
 
 
 def test_complete_inspection_foreign_container_with_missing_image_remains_error(
-    monkeypatch, tmp_path, capsys
+    monkeypatch, tmp_path, tmp_path_factory, capsys
 ):
     from tests.harness.test_bootstrap import (
         _assert_complete,
@@ -731,7 +857,7 @@ def test_complete_inspection_foreign_container_with_missing_image_remains_error(
     )
 
     _inspection_environment(monkeypatch, tmp_path)
-    serve_egress_docker(monkeypatch).add_container(_PROXY, labels={})
+    _add_container(_inspection_docker(monkeypatch, tmp_path_factory), _PROXY)
     status, output = _run_inspection(capsys)
     _assert_complete(output)
     assert status == 2
@@ -740,7 +866,7 @@ def test_complete_inspection_foreign_container_with_missing_image_remains_error(
 
 
 def test_complete_inspection_checks_network_and_containers_after_recipe_failure(
-    monkeypatch: pytest.MonkeyPatch, docker: EgressDocker
+    monkeypatch: pytest.MonkeyPatch, docker: FakeDocker
 ) -> None:
     def unavailable(_root):
         raise PermissionError("packaged recipes unavailable")
@@ -759,7 +885,9 @@ def test_complete_inspection_checks_network_and_containers_after_recipe_failure(
 
 
 @pytest.mark.parametrize("blocker", ["foreign", "active-session", "foreign-proxy"])
-def test_check_only_stale_network_blockers_are_errors(monkeypatch, tmp_path, capsys, blocker):
+def test_check_only_stale_network_blockers_are_errors(
+    monkeypatch, tmp_path, tmp_path_factory, capsys, blocker
+):
     from tests.harness.test_bootstrap import (
         _assert_complete,
         _inspection_environment,
@@ -768,14 +896,14 @@ def test_check_only_stale_network_blockers_are_errors(monkeypatch, tmp_path, cap
     )
 
     _inspection_environment(monkeypatch, tmp_path)
-    docker = serve_egress_docker(monkeypatch)
-    docker.network = docker.stale_network = True
+    docker = _inspection_docker(monkeypatch, tmp_path_factory)
+    _add_network(docker, internal=False)
     if blocker == "foreign":
-        docker.add_container("foreign", networks=(_NETWORK,))
+        _add_container(docker, "foreign", networks=(_NETWORK,))
     elif blocker == "active-session":
-        docker.add_session("session-a")
+        _add_session(docker, "session-a")
     else:
-        docker.add_container(_PROXY, labels={})
+        _add_container(docker, _PROXY)
     before = _tree_snapshot(tmp_path)
     status, output = _run_inspection(capsys)
     assert "✗  network:" in output, "blocked network must be ERROR"
@@ -785,7 +913,9 @@ def test_check_only_stale_network_blockers_are_errors(monkeypatch, tmp_path, cap
     assert _tree_snapshot(tmp_path) == before
 
 
-def test_check_only_stale_container_with_active_session_is_error(monkeypatch, tmp_path, capsys):
+def test_check_only_stale_container_with_active_session_is_error(
+    monkeypatch, tmp_path, tmp_path_factory, capsys
+):
     from tests.harness.test_bootstrap import (
         _assert_complete,
         _inspection_environment,
@@ -793,11 +923,11 @@ def test_check_only_stale_container_with_active_session_is_error(monkeypatch, tm
     )
 
     _inspection_environment(monkeypatch, tmp_path)
-    docker = serve_egress_docker(monkeypatch)
-    docker.add_current_image(sidecars.legacy.PROXY_IMAGE)
-    docker.add_current_image(sidecars.legacy.REAPER_IMAGE)
-    docker.add_container(_PROXY, image="old-sha", labels={sidecars.ROLE_LABEL: "egress-proxy"})
-    docker.add_session("session-a")
+    docker = _inspection_docker(monkeypatch, tmp_path_factory)
+    _add_current_image(docker, sidecars.legacy.PROXY_IMAGE)
+    _add_current_image(docker, sidecars.legacy.REAPER_IMAGE)
+    _add_container(docker, _PROXY, image="old-sha", labels={sidecars.ROLE_LABEL: "egress-proxy"})
+    _add_session(docker, "session-a")
     status, output = _run_inspection(capsys)
     assert "✗  proxy:" in output, "blocked container must be ERROR"
     assert status == 2
@@ -805,13 +935,15 @@ def test_check_only_stale_container_with_active_session_is_error(monkeypatch, tm
     assert "shut down" in output
 
 
-def test_check_only_pending_container_keeps_differences(monkeypatch, tmp_path, capsys):
+def test_check_only_pending_container_keeps_differences(
+    monkeypatch, tmp_path, tmp_path_factory, capsys
+):
     from tests.harness.test_bootstrap import _inspection_environment, _run_inspection
 
     _inspection_environment(monkeypatch, tmp_path)
-    docker = serve_egress_docker(monkeypatch)
-    docker.add_current_image(sidecars.legacy.PROXY_IMAGE)
-    docker.add_current_image(sidecars.legacy.REAPER_IMAGE)
+    docker = _inspection_docker(monkeypatch, tmp_path_factory)
+    _add_current_image(docker, sidecars.legacy.PROXY_IMAGE)
+    _add_current_image(docker, sidecars.legacy.REAPER_IMAGE)
     status, output = _run_inspection(capsys)
     assert "image_identity" in output, "pending containers must explain desired-state differences"
     assert status == 1
@@ -820,17 +952,17 @@ def test_check_only_pending_container_keeps_differences(monkeypatch, tmp_path, c
 # --- Host Bootstrap under host ``[sandbox] egress = "unproxied"`` (issue #2215) ---
 
 
-def _leftover_egress(docker: EgressDocker, *, reaper: bool = True) -> None:
+def _leftover_egress(docker: FakeDocker, *, reaper: bool = True) -> None:
     """Give the fake a proxy-mode installation: images, network, proxy, reaper."""
-    docker.network = True
-    docker.add_sidecar(_PROXY, "egress-proxy", sidecars.legacy.PROXY_IMAGE, _UNPROXIED)
-    docker.add_current_image(sidecars.legacy.REAPER_IMAGE)
+    _add_network(docker)
+    _add_sidecar(docker, _PROXY, "egress-proxy", sidecars.legacy.PROXY_IMAGE, _UNPROXIED)
+    _add_current_image(docker, sidecars.legacy.REAPER_IMAGE)
     if reaper:
-        docker.add_sidecar(_REAPER, "reaper", sidecars.legacy.REAPER_IMAGE, _UNPROXIED)
+        _add_sidecar(docker, _REAPER, "reaper", sidecars.legacy.REAPER_IMAGE, _UNPROXIED)
 
 
 @pytest.mark.parametrize("start", ["fresh", "leftover-egress", "mode-flip"])
-def test_unproxied_bootstrap_converges_to_the_reaper(docker: EgressDocker, start: str) -> None:
+def test_unproxied_bootstrap_converges_to_the_reaper(docker: FakeDocker, start: str) -> None:
     policy = _UNPROXIED
     if start == "leftover-egress":
         _leftover_egress(docker)
@@ -840,7 +972,8 @@ def test_unproxied_bootstrap_converges_to_the_reaper(docker: EgressDocker, start
         states = [_CURRENT, _CHANGED, _CURRENT, _CURRENT, _CHANGED]
         steps = [f"build {sidecars.legacy.REAPER_IMAGE}", f"run {_REAPER}"]
     else:
-        docker.add_sidecar(_REAPER, "reaper", sidecars.legacy.REAPER_IMAGE, SandboxHostPolicy())
+        reaper_image = sidecars.legacy.REAPER_IMAGE
+        _add_sidecar(docker, _REAPER, "reaper", reaper_image, SandboxHostPolicy())
         policy = replace(SandboxHostPolicy(), egress="unproxied")
         states = [_CURRENT] * 5
         steps = []
@@ -849,21 +982,21 @@ def test_unproxied_bootstrap_converges_to_the_reaper(docker: EgressDocker, start
 
     assert _states(result) == list(zip(_SIDECAR_RESOURCES, states, strict=True))
     assert result.ready
-    assert [_step(call) for call in docker.mutations()] == steps
+    assert [_step(call) for call in _mutations(docker)] == steps
     if start == "fresh":
         assert not any(sidecars.legacy.PROXY_IMAGE in call for call in docker.calls)
     if start == "leftover-egress":
         assert _PROXY not in docker.containers
-        assert not docker.network
+        assert _NETWORK not in docker.networks
 
 
 @pytest.mark.parametrize("blocker", ["running", "parked-predecessor", "foreign-attachment"])
 def test_unproxied_bootstrap_keeps_proxy_while_sandboxes_exist(
-    docker: EgressDocker, blocker: str
+    docker: FakeDocker, blocker: str
 ) -> None:
     _leftover_egress(docker, reaper=False)
     if blocker == "running":
-        docker.add_session("booley-session-a", networks=(_NETWORK,))
+        _add_session(docker, "booley-session-a", networks=(_NETWORK,))
         # The fake Session carries the VS Code folder label: `session down` refuses it.
         expected = [
             "booley-session-a",
@@ -872,10 +1005,10 @@ def test_unproxied_bootstrap_keeps_proxy_while_sandboxes_exist(
         ]
     elif blocker == "parked-predecessor":
         name = "booley-session-a-pre-refresh"
-        docker.add_session(name, running=False)
+        _add_session(docker, name, running=False)
         expected = [name, "/projects/a", "docker rename", "booley bootstrap"]
     else:
-        docker.add_container("someone-else", networks=(_NETWORK,))
+        _add_container(docker, "someone-else", networks=(_NETWORK,))
         expected = ["someone-else", "detach foreign containers"]
 
     result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
@@ -887,23 +1020,25 @@ def test_unproxied_bootstrap_keeps_proxy_while_sandboxes_exist(
         for fragment in expected:
             assert fragment in finding.detail
     assert not any(call[0] == "rm" or call[:2] == ["network", "rm"] for call in docker.calls)
-    assert docker.network
+    assert _NETWORK in docker.networks
     assert _PROXY in docker.containers
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the hint uses cmd quoting, which shlex cannot parse")
 def test_bootstrap_replaces_proxy_after_deleted_project_session_down(
-    monkeypatch: pytest.MonkeyPatch, docker: EgressDocker, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch, docker: FakeDocker, tmp_path: Path
 ) -> None:
     _leftover_egress(docker, reaper=False)
     root = tmp_path / "gone"
     root.mkdir()
     name = session_runtime.session_container_name(root)
-    docker.add_headless_session(name, root, networks=(_NETWORK,))
+    _add_headless_session(docker, name, root, networks=(_NETWORK,))
     shutil.rmtree(root)
-    route_session_commands(
-        monkeypatch, tmp_path, lambda argv, **_kw: docker.run(argv[1:]), docker.containers
-    )
+
+    def run(argv, **kwargs):
+        return docker.runner(argv[1:], kwargs.get("timeout", 30))
+
+    route_session_commands(monkeypatch, tmp_path, run, docker.containers)
 
     blocked = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
 
@@ -922,33 +1057,40 @@ def test_bootstrap_replaces_proxy_after_deleted_project_session_down(
     assert removed.count(f"id-{name}") == 1, "only `session down` removes the Session"
 
 
-def test_readiness_check_accepts_unproxied_leftover_proxy(docker: EgressDocker) -> None:
+def test_readiness_check_accepts_unproxied_leftover_proxy(docker: FakeDocker) -> None:
     _leftover_egress(docker)
-    docker.add_session("booley-session-a", networks=(_NETWORK,))
+    _add_session(docker, "booley-session-a", networks=(_NETWORK,))
 
     result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.CHECK)
 
     assert _states(result) == [(resource, _CURRENT) for resource in _SIDECAR_RESOURCES]
     assert not any(call[0] == "ps" for call in docker.calls), "readiness never enumerates"
-    assert docker.mutations() == []
+    assert _mutations(docker) == []
 
 
-def _unproxied_inspection(monkeypatch, tmp_path) -> EgressDocker:
+def _inspection_docker(monkeypatch, tmp_path_factory) -> FakeDocker:
+    """A store-backed daemon in place of `_inspection_environment`'s reply-only one."""
+    return _egress_docker(tmp_path_factory.mktemp("inspection-docker"), monkeypatch)
+
+
+def _unproxied_inspection(monkeypatch, tmp_path, tmp_path_factory) -> FakeDocker:
     from tests.harness.test_bootstrap import _inspection_environment
 
     _inspection_environment(monkeypatch, tmp_path)
     # Patching the host policy loader: it reads the machine's policy file, and no public entry
     # point pins an unproxied policy without writing that file into the real Booley directory.
     monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: _UNPROXIED)
-    docker = serve_egress_docker(monkeypatch)
-    docker.add_sidecar(_REAPER, "reaper", sidecars.legacy.REAPER_IMAGE, _UNPROXIED)
+    docker = _inspection_docker(monkeypatch, tmp_path_factory)
+    _add_sidecar(docker, _REAPER, "reaper", sidecars.legacy.REAPER_IMAGE, _UNPROXIED)
     return docker
 
 
-def test_check_only_unproxied_absent_proxy_and_network_are_current(monkeypatch, tmp_path, capsys):
+def test_check_only_unproxied_absent_proxy_and_network_are_current(
+    monkeypatch, tmp_path, tmp_path_factory, capsys
+):
     from tests.harness.test_bootstrap import _assert_complete, _run_inspection
 
-    docker = _unproxied_inspection(monkeypatch, tmp_path)
+    docker = _unproxied_inspection(monkeypatch, tmp_path, tmp_path_factory)
 
     status, output = _run_inspection(capsys)
 
@@ -957,19 +1099,19 @@ def test_check_only_unproxied_absent_proxy_and_network_are_current(monkeypatch, 
         assert f"=  {resource}:" in output, f"{resource} must be current"
     assert not any(sidecars.legacy.PROXY_IMAGE in call for call in docker.calls)
     assert status == 1, "only the helper's stale base image stays pending"
-    assert docker.mutations() == []
+    assert _mutations(docker) == []
 
 
 @pytest.mark.parametrize("blocker", ["idle", "running"])
 def test_check_only_unproxied_reports_leftover_proxy_and_network(
-    monkeypatch, tmp_path, capsys, blocker
+    monkeypatch, tmp_path, tmp_path_factory, capsys, blocker
 ):
     from tests.harness.test_bootstrap import _assert_complete, _run_inspection
 
-    docker = _unproxied_inspection(monkeypatch, tmp_path)
+    docker = _unproxied_inspection(monkeypatch, tmp_path, tmp_path_factory)
     _leftover_egress(docker)
     if blocker == "running":
-        docker.add_session("booley-session-a", networks=(_NETWORK,))
+        _add_session(docker, "booley-session-a", networks=(_NETWORK,))
 
     status, output = _run_inspection(capsys)
 
@@ -982,13 +1124,13 @@ def test_check_only_unproxied_reports_leftover_proxy_and_network(
         if blocker == "running":
             assert "booley-session-a" in line
     assert status == (1 if blocker == "idle" else 2)
-    assert docker.mutations() == []
+    assert _mutations(docker) == []
 
 
-def test_parked_predecessor_remedy_leads_with_rename(docker: EgressDocker) -> None:
+def test_parked_predecessor_remedy_leads_with_rename(docker: FakeDocker) -> None:
     """Check-only and mutating Bootstrap give the same remedy; neither says Bootstrap recovers it."""
     _leftover_egress(docker)
-    docker.add_session("booley-session-a-pre-refresh", running=False)
+    _add_session(docker, "booley-session-a-pre-refresh", running=False)
 
     for intent in (Intent.CHECK, Intent.ENSURE):
         if intent is Intent.CHECK:
@@ -1004,10 +1146,10 @@ def test_parked_predecessor_remedy_leads_with_rename(docker: EgressDocker) -> No
         assert "recovery left it in place" not in proxy.detail
 
 
-def test_restarting_predecessor_is_listed_once(docker: EgressDocker) -> None:
+def test_restarting_predecessor_is_listed_once(docker: FakeDocker) -> None:
     _leftover_egress(docker)
     name = "booley-session-a-pre-refresh"
-    docker.add_session(name, state="restarting")
+    _add_session(docker, name, state="restarting")
 
     result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
 
@@ -1016,19 +1158,19 @@ def test_restarting_predecessor_is_listed_once(docker: EgressDocker) -> None:
     assert proxy.detail.count(name) == 1, "an active predecessor must not also be listed parked"
 
 
-def test_unproxied_reaper_image_error_skips_retirement(docker: EgressDocker) -> None:
+def test_unproxied_reaper_image_error_skips_retirement(docker: FakeDocker) -> None:
     _leftover_egress(docker, reaper=False)
-    docker.images[sidecars.legacy.REAPER_IMAGE] = ("sha256:foreign", {})
+    docker.images[sidecars.legacy.REAPER_IMAGE] = {"Id": "sha256:foreign", "Labels": {}}
 
     result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
 
     assert _states(result) == [("proxy-image", _CURRENT), ("reaper-image", _ERROR)]
-    assert docker.mutations() == [], "an image error must stop before any retirement mutation"
+    assert _mutations(docker) == [], "an image error must stop before any retirement mutation"
 
 
-def test_unproxied_network_removal_failure_reports_removed_proxy(docker: EgressDocker) -> None:
+def test_unproxied_network_removal_failure_reports_removed_proxy(docker: FakeDocker) -> None:
     _leftover_egress(docker)
-    docker.reply("network", "rm", stderr="in use")
+    docker.answer("network", "rm", code=1, stderr="in use")
 
     result = sidecars.reconcile_sidecars(_UNPROXIED, Intent.ENSURE)
 
