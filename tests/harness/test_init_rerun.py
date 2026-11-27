@@ -75,11 +75,15 @@ def _filesystem_snapshot(root: Path) -> dict[Path, tuple[bytes, int]]:
     }
 
 
-@pytest.fixture(autouse=True)
-def _unknown_sandbox_git_version(monkeypatch):
+def _unknown_sandbox_git_version(monkeypatch) -> None:
     """Init's Sandbox git-version probe answers ``None``, as without the image."""
     # private: the version probe starts Docker; no public input makes it answer without it.
     monkeypatch.setattr(init_cmd, "_sandbox_git_version", lambda *_args, **_kwargs: None)
+
+
+@pytest.fixture(autouse=True)
+def _no_sandbox_git_version(monkeypatch):
+    _unknown_sandbox_git_version(monkeypatch)
 
 
 @pytest.fixture
@@ -148,6 +152,7 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     pdk_root = tmp_path / "pdk"
     pdk_root.mkdir()
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: pdk_root)
+    _unknown_sandbox_git_version(monkeypatch)
     return root
 
 

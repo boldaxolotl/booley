@@ -18,7 +18,7 @@ from tests.subprocess_budget import run_bounded_child
 
 # Reuse the init suite's isolated scratch repo (no Docker, isolated HOME).
 repo = init_fixtures.repo
-_unknown_sandbox_git_version = init_fixtures._unknown_sandbox_git_version
+_no_sandbox_git_version = init_fixtures._no_sandbox_git_version
 
 CORE_TEXT = "CAPI=2:\nname: example:lib:cpu:1.0\n"
 
