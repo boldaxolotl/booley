@@ -6,9 +6,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from tests.sandbox_venue_fake import place
 
 from booley.core import host_shell
 from booley.runtime import sandbox_apply, session_admission, session_runtime
+from booley.runtime.runtime_context import RuntimeLocation
 
 
 def _write_image(root: Path, image: str | None) -> None:
@@ -91,9 +93,8 @@ def test_stale_image_advice_for_headless_and_vscode_containers(tmp_path: Path) -
 
 
 def _host_attachment(monkeypatch: pytest.MonkeyPatch, attachment: object) -> None:
-    from booley.runtime import runtime_context
 
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: attachment)
 
 
@@ -124,12 +125,11 @@ def test_sandbox_entry_remedy_names_the_owner_workflow_then_retry(
 def test_sandbox_entry_remedy_survives_a_missing_docker_cli(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.runtime import runtime_context
 
     def no_docker(*_args: object, **_kwargs: object) -> object:
         raise FileNotFoundError("docker")
 
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(session_runtime, "_run", no_docker)
 
     remedy = session_runtime.sandbox_entry_remedy(tmp_path, session_runtime.SessionError("x"))

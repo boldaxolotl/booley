@@ -13,7 +13,8 @@ import pytest
 from booley.harness import booley as booley_cli
 from booley.mcp import catalog
 from booley.mcp.registry import discover_mcp_tools
-from booley.runtime import runtime_context
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.sandbox_venue_fake import place
 
 
 def test_cli_parses_every_mutation_flag(tmp_path) -> None:
@@ -104,7 +105,8 @@ def test_specialist_command_no_longer_runs_mutation_tester(
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("RTL_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
+    monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")  # no proxy restoration into os.environ
 
     monkeypatch.setattr("sys.argv", ["booley", "specialist", "mutation_tester"])
     assert booley_cli.main() == 2

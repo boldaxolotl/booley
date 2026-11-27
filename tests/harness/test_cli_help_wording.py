@@ -24,6 +24,8 @@ from booley.flows.endpoint_cli import human_endpoint_parser
 from booley.harness import booley as cli
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import discover_mcp_tools
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 # Internal vocabulary that must not leak into human help.
@@ -73,7 +75,7 @@ def test_help_command_matches_help_flag_without_project(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if inside else RuntimeLocation.HOST)
 
     def unexpected(*_args, **_kwargs):
         pytest.fail("help touched Project/runtime state")
@@ -264,7 +266,7 @@ def test_help_from_the_booley_entry_point(
     run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
     (tmp_path / ".booley").mkdir()
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if inside else RuntimeLocation.HOST)
     monkeypatch.setattr("sys.argv", [*command.split(), *prefix, flag])
     monkeypatch.setattr(
         cli, "_invoke_endpoint", lambda *_args, **_kwargs: pytest.fail("help executed")

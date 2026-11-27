@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tests.bwave.native_binary import fake_native_binary
 from tests.time_budget import hang_guard_s, scaled
 
 from booley.bwave import waveform_store
@@ -478,12 +479,10 @@ def test_no_stall_monitor_outlives_the_run(tmp_path: Path, monkeypatch, request,
             sim_proc.wait(timeout=KILLED_WITHIN_S)
 
 
-def test_declared_stream_monitor_stops_with_the_run(
-    tmp_path: Path, request, monkeypatch, fake_bwave
-):
+def test_declared_stream_monitor_stops_with_the_run(tmp_path: Path, request, monkeypatch):
     """Declared streams run without a trace session on the launch; their monitor must still end."""
     request.getfixturevalue("instant_timer")
-    monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
+    fake_native_binary(tmp_path / "bwave", monkeypatch).answer("build", hang_s=hang_guard_s())
     monkeypatch.setattr(waveform_store, "can_stream_waveform", lambda: True)  # sim conftest: off
     run_dir = tmp_path / "run"
     run_dir.mkdir()

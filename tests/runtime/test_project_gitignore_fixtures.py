@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime.project_gitignore import (
@@ -10,6 +11,7 @@ from booley.runtime.project_gitignore import (
     PROJECT_GITIGNORE_PATTERNS,
     missing_gitignore_patterns,
 )
+from booley.runtime.runtime_context import RuntimeLocation
 
 
 def test_the_policy_reports_nothing_missing_from_itself() -> None:
@@ -128,7 +130,6 @@ def test_reconciled_checkout_stays_clean_after_real_reviewer(tmp_path, monkeypat
 
     from booley.harness import init_cmd
     from booley.harness.setup.common import InitContext
-    from booley.runtime import runtime_context
     from booley.specialists.reviewer import ReviewerSpecialist
 
     root, directory, worktree, selected_dir = _old_policy_checkouts(tmp_path, paired)
@@ -141,7 +142,8 @@ def test_reconciled_checkout_stays_clean_after_real_reviewer(tmp_path, monkeypat
     policy_owner = selected_dir if paired else worktree
     git(policy_owner, "add", ".gitignore" if paired else ".booley/.gitignore")
     git(policy_owner, "commit", "--allow-empty", "-qm", "reconcile selected checkout")
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
+    monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")  # the Sandbox spec hand-off
     monkeypatch.setenv("BOOLEY_DIR", str(selected_dir))
     for key in (
         "BOOLEY_STATE_FILE",

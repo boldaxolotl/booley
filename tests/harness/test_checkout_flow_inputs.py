@@ -22,9 +22,11 @@ from pathlib import Path
 import pytest
 
 from booley.harness import checkout_flow
-from booley.runtime import booley_dir, runtime_context, sandbox_layout
+from booley.runtime import booley_dir, sandbox_layout
 from booley.runtime.commit_export import export_commit
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.harness.test_checkout_flow import git, linux_only
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import SUBPROCESS_TIMEOUT_S
 
 TIMEOUT_S = SUBPROCESS_TIMEOUT_S
@@ -207,11 +209,7 @@ def poisoned_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[
     monkeypatch.setenv("PATH", f"{tools}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     # The verdict must not depend on the mounts of the host that runs the tests.
-    monkeypatch.setattr(
-        runtime_context,
-        "runtime_location",
-        lambda: runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX,
-    )
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(live.resolve()))
     for name in ("BOOLEY_DIR", "BOOLEY_INTERNAL_SELFTEST_KIND"):
         monkeypatch.delenv(name, raising=False)

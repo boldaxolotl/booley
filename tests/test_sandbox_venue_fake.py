@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -29,6 +31,11 @@ _CHILD = textwrap.dedent(
         _codex_backend._inside_container(),
     )
     """
+)
+
+# A patch of a venue check names it in a string.
+_VENUE_CHECK = re.compile(
+    r"[\"']([\w.]+\.)?(inside_session_runtime|_inside_container|runtime_location)[\"']"
 )
 
 
@@ -70,3 +77,15 @@ def test_child_process_sees_the_placed_location(monkeypatch, tmp_path, location,
 
     assert result.returncode == 0, result.stderr
     assert result.stdout.strip() == seen
+
+
+def test_only_the_venue_fake_patches_a_venue_check():
+    tests = Path(__file__).parent
+    patches = [
+        f"{path.relative_to(tests).as_posix()}:{number}"
+        for path in sorted(tests.rglob("*.py"))
+        if path.name != "sandbox_venue_fake.py"
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+        if _VENUE_CHECK.search(line)
+    ]
+    assert patches == []

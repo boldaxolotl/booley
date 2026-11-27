@@ -17,12 +17,13 @@ from booley.core.host_shell import quote_arg
 from booley.harness import host_diagnostics
 from booley.runtime import (
     issuance_invalidation,
-    runtime_context,
     session_admission,
     session_issuance,
 )
 from booley.runtime.host_install import HostInstallationIdentity
 from booley.runtime.private_store import session_store_repair
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.sandbox_venue_fake import place
 
 
 def _identity() -> HostInstallationIdentity:
@@ -61,7 +62,7 @@ def test_host_bootstrap_states_are_complete_typed_findings(monkeypatch, tmp_path
         return bootstrap.BootstrapResult(intent, (finding,))
 
     monkeypatch.setattr(bootstrap, "reconcile_bootstrap", reconcile)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     identity = _identity()
     monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
     monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: identity)
@@ -115,7 +116,7 @@ def test_host_egress_check_never_lists_sandboxes_without_ready_docker_and_policy
         "running_sandboxes",
         lambda **_kw: pytest.fail("Sandbox inventory listed"),
     )
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     identity = _identity()
     monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
     monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: identity)
@@ -132,7 +133,7 @@ def test_host_egress_check_never_lists_sandboxes_without_ready_docker_and_policy
 
 
 def test_in_runtime_host_diagnosis_does_not_prepare_or_probe_host(monkeypatch, tmp_path):
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setattr(
         host_diagnostics.bootstrap,
         "reconcile_bootstrap",
@@ -251,7 +252,7 @@ def test_agent_detection_uses_config_or_executable(
 def test_host_diagnostics_preserves_environment_failures_and_warning_identity(
     monkeypatch, tmp_path, severity
 ):
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     observation = host_environment.EnvironmentFinding(
         severity,
         "legacy package observation",
@@ -271,7 +272,7 @@ def _stub_offline_host(monkeypatch) -> None:
     monkeypatch.setattr(
         bootstrap, "reconcile_bootstrap", lambda intent: bootstrap.BootstrapResult(intent, ())
     )
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     identity = _identity()
     monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
     monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: identity)

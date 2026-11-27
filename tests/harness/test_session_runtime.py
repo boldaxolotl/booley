@@ -28,6 +28,7 @@ from booley.runtime import devcontainer as dc
 from booley.runtime import health, issuance_invalidation, platform_paths
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import Attachment
 from booley.runtime.session_admission import (
     admit_start as real_admit_start,
@@ -66,6 +67,7 @@ from tests.pipe_holding_tree import (
     start_deadline_after_tree_start,
     wait_until_heartbeat_stops,
 )
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s, scaled
 
@@ -927,14 +929,13 @@ class TestInitReconciliation:
         withdrawn: bool,
     ) -> None:
         """The refusal names the workflow Sandbox validation prints, also after a Grant change."""
-        from booley.runtime import runtime_context
 
         def snapshot(_root: Path) -> SimpleNamespace:
             if withdrawn:
                 raise runtime_spec.IssuanceUnavailableError("withdrawn")
             return SimpleNamespace(license_profile=None)
 
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+        place(monkeypatch, RuntimeLocation.HOST)
         monkeypatch.setattr(runtime_spec, "load_issued_snapshot", snapshot)
         monkeypatch.setattr(sr.project_image, "project_sandbox_image", lambda _root: "selected")
         monkeypatch.setattr(sr.project_image, "is_managed_sandbox_image", lambda *_args: True)
