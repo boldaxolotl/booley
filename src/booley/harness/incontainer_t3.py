@@ -32,13 +32,12 @@ def main(argv: list[str]) -> int:
     if args.verb == "start":
         print(incontainer_register.start_t3(agent.sandbox_agent_clis()))
     elif args.verb == "state":
-        print(incontainer_setup.t3_state(incontainer_register.hook_start_directory()))
+        print(incontainer_setup.t3_state())
     else:
-        root = incontainer_register.hook_start_directory()
-        if incontainer_setup.t3_state(root) == incontainer_setup.T3_PORT_TAKEN:
+        if incontainer_setup.t3_state() == incontainer_setup.T3_PORT_TAKEN:
             print(incontainer_setup.T3_PORT_TAKEN)
             return 1
-        pairing = incontainer_setup.create_t3_pairing(root, f"http://127.0.0.1:{args.port}")
+        pairing = incontainer_setup.create_t3_pairing(f"http://127.0.0.1:{args.port}")
         if pairing.returncode:
             print(f"t3 auth pairing create failed (exit {pairing.returncode})", file=sys.stderr)
             return 1

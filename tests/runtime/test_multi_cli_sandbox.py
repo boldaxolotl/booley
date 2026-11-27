@@ -94,6 +94,7 @@ def test_issued_spec_seeds_every_listed_cli(tmp_path, monkeypatch):
     assert _volumes(spec) == [
         dc.state_volume_mount("claude", project_id),
         dc.state_volume_mount("codex", project_id, "api_key"),
+        dc.t3_state_volume_mount(project_id),
     ]
     assert ".codex/auth.json" not in _hooks(spec)
     assert ".claude/.credentials.json" in _hooks(spec)
@@ -115,7 +116,11 @@ def test_single_cli_spec_seeds_only_claude_as_before(tmp_path, monkeypatch, auth
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in spec["remoteEnv"]
     assert _CODEX_CREDS_SEED not in _targets(spec)
     assert _CLAUDE_CREDS_SEED in _targets(spec)
-    assert _volumes(spec) == [dc.state_volume_mount("claude", dc.canonical_project_id(project))]
+    project_id = dc.canonical_project_id(project)
+    assert _volumes(spec) == [
+        dc.state_volume_mount("claude", project_id),
+        dc.t3_state_volume_mount(project_id),
+    ]
     assert ".codex" not in _hooks(spec)
     # Exact hooks as before: the Claude login copy, then the fixed runtime tail.
     assert spec["postStartCommand"].split("; ")[0] in session_issuance._FIXED_SEED_FRAGMENTS
@@ -146,6 +151,7 @@ def test_each_cli_seeds_per_its_own_auth_policy(tmp_path, monkeypatch):
     assert _volumes(spec) == [
         dc.state_volume_mount("claude", project_id, "subscription"),
         dc.state_volume_mount("codex", project_id, "api_key"),
+        dc.t3_state_volume_mount(project_id),
     ]
 
 

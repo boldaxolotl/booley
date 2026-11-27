@@ -24,6 +24,8 @@ DEVCONTAINER_TARGET = "/work/.devcontainer"
 
 # T3 Code's managed policy; Session Issuance mounts the Sandbox's own copy over it.
 T3_POLICY_TARGET = "/etc/t3code/policy.json"
+# T3 Code's base directory; the Project's T3 state volume is mounted there.
+T3_BASE_DIR = "/home/agent/.t3"
 
 
 def canonical_project_alias_path(path: Path) -> Path:

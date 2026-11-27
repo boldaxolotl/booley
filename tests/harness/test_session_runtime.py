@@ -1237,7 +1237,7 @@ class TestUp:
         caplog: pytest.LogCaptureFixture,
         tmp_path: Path,
     ) -> None:
-        t3 = serve_t3_code(monkeypatch)
+        t3 = serve_t3_code(monkeypatch, volume=tmp_path / "t3-volume")
         runs = run_registrar_on_post_start(up_docker, workspace, monkeypatch)
         up_docker.containers[sr.session_container_name(workspace)] = _sandbox_state(
             workspace, running=False
@@ -1245,15 +1245,25 @@ class TestUp:
 
         sr.up(workspace)
         sr.up(workspace)
+        before_down = len(up_docker.calls)
+        sr.down(workspace)
+        t3.running = False  # the removed container's processes are gone
+        sr.up(workspace)
 
-        base = str(workspace / ".booley" / ".runtime" / "t3")
+        base = "/home/agent/.t3"
         serve = ["t3", "serve", "--host", "127.0.0.1", "--port", "3773", "--base-dir", base]
-        assert t3.served == [[*serve, str(workspace)]]
-        assert t3.added == [["t3", "project", "add", "--base-dir", base, str(workspace)]]
+        assert t3.served == [[*serve, str(workspace)]] * 2
+        assert t3.added == [["t3", "project", "add", "--base-dir", base, str(workspace)]] * 2
         assert [("t3:started" in run, "t3:running" in run) for run in runs] == [
             (True, False),
             (False, True),
-        ]
+        ] * 2
+        later = up_docker.calls[before_down:]
+        (created,) = [call for call in later if call[1] == "run"]
+        mounts = _flag_values(created, "--mount")
+        assert f"source=booley-t3-state-i2c,target={base},type=volume" in mounts
+        assert any(mount.endswith("target=/booley,type=bind") for mount in mounts)
+        assert not any(c[1] == "volume" or (c[1] == "rm" and "-v" in c) for c in later)
         logs = [
             caplog.text,
             *runs,
@@ -1261,7 +1271,7 @@ class TestUp:
         ]
         logs += [Path(sink).read_text() for sink in t3.sinks]
         assert t3.sinks
-        assert t3.serve_stdouts == [subprocess.DEVNULL]
+        assert t3.serve_stdouts == [subprocess.DEVNULL] * 2
         assert TOKEN not in "".join(logs)
 
     def test_existing_container_with_runtime_drift_is_never_started(
@@ -2284,7 +2294,7 @@ class TestT3CodeRelay:
             session_admission, "running_project_sandboxes", real_running_project_sandboxes
         )
         up_docker.created = _sandbox_state(workspace)
-        t3 = serve_t3_code(monkeypatch)
+        t3 = serve_t3_code(monkeypatch, volume=tmp_path / "t3-volume")
         runs = run_registrar_on_post_start(up_docker, workspace, monkeypatch)
 
         no_ui, _ = relay_cli.run(["up", "--no-ui"], workspace)

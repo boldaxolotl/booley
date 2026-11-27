@@ -56,7 +56,8 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     forget.add_argument(
         "--purge",
         action="store_true",
-        help="Also remove the Project's unused images and state volumes (agent login and history)",
+        help="Also remove the Project's unused images and state volumes "
+        "(agent login and history, T3 Code threads)",
     )
     forget.add_argument(
         "--json",

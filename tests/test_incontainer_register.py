@@ -265,10 +265,10 @@ def test_hook_without_an_agent_cli_starts_and_writes_nothing(first_run, monkeypa
 def test_ensure_t3_server_registers_the_project(
     tmp_path, monkeypatch, capsys, replies, adds, status
 ):
-    t3 = _t3_code(monkeypatch, add_replies=replies)
+    volume = tmp_path / "t3-volume"
+    t3 = _t3_code(monkeypatch, add_replies=replies, volume=volume)
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-    base = tmp_path / ".booley" / ".runtime" / "t3"
-    stale = write_t3_runtime(base, pid=4_194_305, port=3773, environment_id="env-fake")
+    stale = write_t3_runtime(volume, pid=4_194_305, port=3773, environment_id="env-fake")
 
     assert reg.ensure_t3_server(tmp_path) == status
     assert t3.replaced_records == [stale]  # untouched until T3 Code replaced it
@@ -293,13 +293,15 @@ def test_ensure_t3_server_registers_the_project(
     ],
 )
 def test_only_its_own_t3_code_on_the_port_counts_as_running(
-    first_run, monkeypatch, capsys, listener, pid, port_offset, status
+    first_run, tmp_path, monkeypatch, capsys, listener, pid, port_offset, status
 ):
+    volume = tmp_path / "t3-volume"
+    monkeypatch.setattr(reg, "T3_BASE_DIR", str(volume))
     monkeypatch.setattr(reg, "ensure_t3_server", _REAL_ENSURE_T3_SERVER)
     with t3_listener(listener) as port:
         monkeypatch.setattr(reg, "T3_PORT", port)  # a test cannot bind T3 Code's fixed port
         write_t3_runtime(
-            first_run.booley_dir / ".runtime" / "t3",
+            volume,
             pid=os.getpid() if pid == "live" else pid,
             port=port + port_offset,
             environment_id="env-own",

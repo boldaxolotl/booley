@@ -378,9 +378,14 @@ build trees; to import a Project nested inside another, name its path directly.
 `forget` releases the Project's Sandbox Image tag and cleans up its older
 unused Sandbox Images. It then lists what the Project still holds in Docker,
 with sizes: images, agent state volumes (a copy of the agent's login and
-history), containers, and networks. These stay until you add `--purge`, which
+history), T3 Code's state volume (its threads and browser pairings),
+containers, and networks. These stay until you add `--purge`, which
 removes the unused ones, even for a Project already forgotten or deleted.
 To use a forgotten Project again, run `booley init` in it.
+
+Purging deletes T3 Code's threads and pairings, but not its worktrees: they
+stay as plain Git worktrees in `t3-worktrees/` of the main checkout's Booley
+Directory.
 
 <details markdown>
 <summary>With host-installed licensed tools</summary>

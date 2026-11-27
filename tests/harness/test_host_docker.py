@@ -200,7 +200,8 @@ def test_ensure_unproxied_network_refuses_an_internal_network(docker: SandboxDoc
     "reply",
     [
         completed(
-            stdout="booley-claude-state-a\nbooley-codex-state-b\nbooley-pip-local\nunrelated\n"
+            stdout="booley-claude-state-a\nbooley-codex-state-b\nbooley-t3-state-c\n"
+            "booley-pip-local\nunrelated\n"
         ),
         completed(1, stderr="boom"),
     ],
@@ -208,7 +209,8 @@ def test_ensure_unproxied_network_refuses_an_internal_network(docker: SandboxDoc
 def test_state_volumes_lists_state_volumes_only(reply: Any, docker: SandboxDocker) -> None:
     docker.script(("volume", "ls"), reply)
 
-    expected = [] if reply.returncode else ["booley-claude-state-a", "booley-codex-state-b"]
+    listed = ["booley-claude-state-a", "booley-codex-state-b", "booley-t3-state-c"]
+    expected = [] if reply.returncode else listed
     assert idk.state_volumes() == expected
 
 

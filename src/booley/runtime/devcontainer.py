@@ -41,7 +41,7 @@ from booley.runtime.incontainer_git_identity import (
     load_git_identity,
 )
 from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
-from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
+from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, T3_BASE_DIR, WORK_DIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 # --- Supported agent apps (mirrors the init wizard's app selection) ---
@@ -319,14 +319,24 @@ def _state_volume_name(app: str, project_id: str, policy: str, *, legacy: bool =
     return f"booley-{app}-state-{project_id}{suffix}"
 
 
+def t3_state_volume_name(project_id: str) -> str:
+    """Name of T3 Code's state volume, without a policy suffix: it holds no CLI credential."""
+    return f"booley-t3-state-{project_id}"
+
+
+def t3_state_volume_mount(project_id: str) -> str:
+    """The mount of T3 Code's state volume at its base directory."""
+    return _volume_mount(t3_state_volume_name(project_id), T3_BASE_DIR)
+
+
 def state_volume_names(project_id: str) -> frozenset[str]:
-    """Every state-volume name one Project can own across agent apps and auth policies."""
+    """Every state-volume name one Project can own: T3 Code's and each app's, per auth policy."""
     return frozenset(
         f"{base}{suffix}"
         for app in _APP_STATE_DIR
         if (base := state_volume_name(app, project_id)) is not None
         for suffix in ("", "-subscription", "-api_key", "-gateway")
-    )
+    ) | {t3_state_volume_name(project_id)}
 
 
 def state_volume_mount(
@@ -403,8 +413,8 @@ def spec_cli_policies(spec: dict) -> dict[str, str]:
 def spec_volume_targets(spec: dict) -> frozenset[str]:
     """Container targets of the named-volume mounts in *spec*.
 
-    Only the per-app home-state volumes are ``type=volume`` mounts, so this is the
-    set of agent state dirs the spec persists across rebuilds.
+    The named volumes are the CLI state volumes and T3 Code's, so this is the set of
+    state dirs the spec persists across rebuilds.
     """
     mounts = spec.get("mounts")
     parsed = (_parse_mount(mount) for mount in (mounts if isinstance(mounts, list) else []))
@@ -613,7 +623,10 @@ def _planned_seeds(app: str, cli_seeds: Sequence[CliSeeds]) -> list[_Seed]:
 def _cli_seed_mounts(
     seeds: Sequence[_Seed], project_id: str, legacy_clis: frozenset[str]
 ) -> list[str]:
-    """Per CLI, in order: token seed, login seed, Claude config seed, state volume."""
+    """Per CLI, in order: token seed, login seed, Claude config seed, state volume.
+
+    Then T3 Code's state volume when an Agent CLI is allowed.
+    """
     mounts: list[str] = []
     for seed in seeds:
         # Rotation-free credential stored by `booley auth` (see
@@ -645,6 +658,8 @@ def _cli_seed_mounts(
         state_mount = state_volume_mount(seed.app, project_id, seed.policy, legacy=legacy)
         if state_mount:
             mounts.append(state_mount)
+    if any(seed.app in _APP_STATE_DIR for seed in seeds):
+        mounts.append(t3_state_volume_mount(project_id))
     return mounts
 
 
