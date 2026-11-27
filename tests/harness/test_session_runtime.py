@@ -2321,25 +2321,11 @@ class TestT3CodeRelay:
     def test_status_and_pair_report_an_unobservable_relay(
         self, workspace: Path, attached: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        from booley.core.process_identity import ProcessIdentity
         from booley.runtime import t3_relay
-        from booley.runtime.pid import ProcessState, capture_process_identity
 
-        name = sr.session_container_name(workspace)
         _running_headless(attached.docker, workspace)
         attached.docker.exec_reply = lambda argv: completed(stdout="running\n")
-        identity = capture_process_identity(os.getpid())
-        assert isinstance(identity, ProcessIdentity)
-        root = str(workspace.resolve())
-        record = {"schema_version": 1, "project_root": root, "port": 3780, "container": name}
-        t3_relay.relay_store().write(
-            root, json.dumps({**record, "process": identity.to_payload()})
-        )
-        monkeypatch.setattr(
-            t3_relay,
-            "observe_process",
-            lambda _identity: SimpleNamespace(state=ProcessState.UNKNOWN),
-        )
+        _record_relay(workspace, monkeypatch, "UNKNOWN")
 
         assert sr.ui_status(workspace) == "T3 Code: running\nT3 Code relay: unknown"
         with pytest.raises(t3_relay.T3RelayError, match="cannot tell whether"):
@@ -2421,6 +2407,7 @@ def _record_relay(workspace: Path, monkeypatch: pytest.MonkeyPatch, process: str
     record.update(container=sr.session_container_name(workspace), process=identity.to_payload())
     t3_relay.relay_store().write(root, json.dumps(record))
     state = SimpleNamespace(state=ProcessState[process])
+    # The process observation is the boundary: no test starts a relay process.
     monkeypatch.setattr(t3_relay, "observe_process", lambda _identity: state)
 
 
@@ -2549,6 +2536,31 @@ def test_no_ui_start_of_a_stopped_sandbox_leaves_no_ui_to_check(
     assert sr.ensure(workspace, ui=False).started
 
     assert _ui_findings(workspace) == _UI_OFF
+
+
+def test_no_ui_start_of_a_running_sandbox_keeps_its_relay_record(
+    workspace: Path, attached: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _running_headless(attached.docker, workspace)
+    attached.docker.exec_reply = lambda _argv: completed(stdout="off\n")
+    _record_relay(workspace, monkeypatch, "DEAD")
+
+    assert not sr.ensure(workspace, ui=False).started
+
+    assert _ui_findings(workspace) == [_SERVER_OFF, _RELAY_DOWN]
+
+
+def test_no_ui_start_fails_when_it_cannot_tell_whether_the_old_relay_runs(
+    workspace: Path, attached: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime import t3_relay
+
+    name = sr.session_container_name(workspace)
+    attached.docker.containers[name] = _sandbox_state(workspace, running=False)
+    _record_relay(workspace, monkeypatch, "UNKNOWN")
+
+    with pytest.raises(t3_relay.T3RelayError, match="cannot tell whether"):
+        sr.ensure(workspace, ui=False)
 
 
 class TestDownAndStatus:

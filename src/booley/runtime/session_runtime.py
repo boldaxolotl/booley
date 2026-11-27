@@ -930,6 +930,8 @@ def ensure(workspace: Path, *, rebuild: bool = False, ui: bool = True) -> Ensure
         if result.started and not ui:
             # Its record would otherwise tell Doctor that a UI should be running.
             t3_relay.stop(workspace)
+            # `stop` keeps a record whose process it cannot observe: fail, as that raises.
+            t3_relay.observe(workspace, result.name)
         # A VS Code-owned Sandbox is not stopped by `session down`, so it gets no relay.
         if result.vscode or not ui:
             return result

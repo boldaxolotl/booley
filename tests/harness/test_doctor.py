@@ -15,7 +15,6 @@ import tomllib
 from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
 
 import pytest
 
@@ -53,7 +52,6 @@ from booley.runtime import (
     doctor_stamp,
     incontainer_setup,
     issuance_invalidation,
-    platform_paths,
     project_gitignore,
     runtime_context,
     sandbox_apply,
@@ -6552,7 +6550,11 @@ def test_doctor_checks_the_pinned_t3_code_version(
         return True
 
     _answer_command(
-        monkeypatch, version_command, returncode=returncode, stdout=reply.format(pin=pin)
+        monkeypatch,
+        version_command,
+        returncode=returncode,
+        stdout=reply.format(pin=pin),
+        stderr="pulled\nt3: not found\n",
     )
 
     result = _doctor_run(tmp_path)
@@ -6579,9 +6581,9 @@ def test_doctor_checks_the_pinned_t3_code_version(
     if returncode:
         assert (severity, message) == (
             "fail",
-            f"T3 Code {pin} is not installed: t3 --version reported nothing",
+            f"T3 Code {pin} installed check failed: t3 --version exited 127: t3: not found",
         )
-        assert fix.startswith("recreate the Sandbox: ")
+        assert fix.startswith("rerun `booley doctor`; if it fails again, recreate the Sandbox: ")
         assert result.exit_code == 1
     else:
         assert (severity, message) == (
@@ -6590,15 +6592,30 @@ def test_doctor_checks_the_pinned_t3_code_version(
         )
 
 
-def test_a_missing_t3_binary_fails_the_install_check(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_missing_t3_binary_fails_the_install_check(tmp_path: Path) -> None:
     from booley.runtime import t3_inspection
 
-    # The process boundary: inside a Sandbox without T3 Code, `t3` cannot start at all.
-    monkeypatch.setattr(
-        platform_paths, "run_captured_bounded", Mock(side_effect=FileNotFoundError("t3"))
-    )
+    command = [str(tmp_path / "t3"), "--version"]
+    (finding,) = t3_inspection.inspect_install(command, lambda: "steps").findings
 
-    (finding,) = t3_inspection.inspect_install(["t3", "--version"], lambda: "steps").findings
+    assert "installed check failed: t3 --version could not run: " in finding.message
+    assert finding.fix == "rerun `booley doctor`; if it fails again, recreate the Sandbox: steps"
 
-    assert finding.message.endswith("t3 --version reported nothing")
-    assert finding.fix == "recreate the Sandbox: steps"
+
+@pytest.mark.parametrize(
+    ("row", "skipped"),
+    [
+        ("invalid-config", "checks skipped - project config invalid"),
+        ("host-no-runtime", "checks skipped - no Docker/Podman runtime found on this host"),
+        ("image-missing", "version check skipped - Sandbox Image missing"),
+    ],
+)
+def test_doctor_skips_the_t3_code_checks_it_cannot_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, row: str, skipped: str
+) -> None:
+    _runtime_setup(tmp_path, monkeypatch, inside=False, valid=row != "invalid-config")
+    _prepare_row(monkeypatch, row)
+    if row == "image-missing":
+        monkeypatch.setattr(doctor.idk, "image_exists", lambda *_a, **_kw: False)
+
+    assert f"T3 Code {skipped}" in _messages(_doctor_run(tmp_path), Severity.SKIP)

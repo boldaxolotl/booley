@@ -28,12 +28,22 @@ def inspect_install(command: list[str], remedy: Callable[[], str]) -> Diagnostic
     """Run *command* (``t3 --version``, however it is reached) and compare it with the pin."""
     findings = Findings()
     version = pinned_version()
+    reported = failure = ""
     try:
         result = platform_paths.run_captured_bounded(command, timeout=_VERSION_TIMEOUT_S)
-        reported = result.stdout.strip() if result.returncode == 0 else ""
-    except (OSError, subprocess.TimeoutExpired):
-        reported = ""
-    if reported == f"t3 v{version}":
+        reported = result.stdout.strip()
+        if result.returncode:
+            # The last stderr line says why: no `t3`, or Docker could not run the image.
+            why = result.stderr.strip().splitlines()[-1:]
+            failure = ": ".join([f"exited {result.returncode}", *why])
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        failure = f"could not run: {exc}"
+    if failure:
+        findings.fail(
+            f"T3 Code {version} installed check failed: t3 --version {failure}",
+            f"rerun `booley doctor`; if it fails again, recreate the Sandbox: {remedy()}",
+        )
+    elif reported == f"t3 v{version}":
         findings.pass_(f"T3 Code {version} installed (the version the manifest pins)")
     else:
         findings.fail(
@@ -47,6 +57,9 @@ def inspect_ui(project_root: Path) -> DiagnosticReport:
     """On the host: whether T3 Code answers in the running Sandbox and its relay runs."""
     findings = Findings()
     try:
+        # Doctor skips what needs the Sandbox until a lifecycle command recovers it.
+        if session_runtime.recovery_pending():
+            raise session_runtime.RecoveryPendingError
         state = session_runtime.ui_state(project_root)
     except session_runtime.SessionError as exc:
         findings.skip(f"T3 Code server and relay checks could not run: {exc}")
