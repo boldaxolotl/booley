@@ -416,3 +416,100 @@ def test_selected_base_report(
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert output.read_text(encoding="utf-8").splitlines() == list(expected)
+
+
+_FAKE_RESOLVER = """#!/bin/sh
+if [ "$FAKE_RESOLVER" = match ]; then
+  echo "image=ghcr.io/acme/base@sha256:aaa" >> "$GITHUB_OUTPUT"
+  exit 0
+fi
+echo "error: $FAKE_RESOLVER" >&2
+exit 2
+"""
+_SELECTION_CALLERS = (
+    ("test.yml", "bwave-smoke", "Select compatible stable runtime base"),
+    ("test.yml", "riscv-image", "Select compatible stable runtime base"),
+    ("picorv32-demo.yml", "base-plan", "Select compatible stable runtime base"),
+    ("picorv32-demo.yml", "demo-contract", "Select compatible stable runtime base"),
+)
+
+
+_PUBLISHED = "ghcr.io/acme/base:main"
+
+
+def _run_selection(
+    tmp_path: Path, step: dict[str, Any], resolver: str, env: dict[str, str]
+) -> tuple[int, list[str], str]:
+    """Run a workflow step's shell text with a fake resolver; return status, outputs, logs."""
+    fake = tmp_path / "bin" / "python"
+    fake.parent.mkdir(parents=True)
+    fake.write_bytes(_FAKE_RESOLVER.encode())
+    fake.chmod(0o755)
+    script = tmp_path / "step.sh"
+    script.write_text(step["run"], encoding="utf-8", newline="\n")
+    output = tmp_path / "output"
+    output.touch()
+    result = run_bounded_child(
+        ["bash", "--noprofile", "--norc", "-eo", "pipefail", str(script)],
+        cwd=_ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{fake.parent}{os.pathsep}{os.environ['PATH']}",
+            "FAKE_RESOLVER": resolver,
+            **env,
+            "GITHUB_OUTPUT": str(output),
+        },
+        check=False,
+    )
+    lines = output.read_text(encoding="utf-8").splitlines()
+    return result.returncode, lines, result.stdout + result.stderr
+
+
+def _release_step() -> tuple[dict[str, Any], dict[str, str]]:
+    """Release publication's resolver step: it must never fall back to a local build."""
+    workflow = _workflow("docker-publish.yml")
+    decide = _step_by_id(workflow, "runtime-base", "decide")
+    assert decide["if"] == "github.event_name == 'workflow_dispatch'"
+    return _step_by_id(workflow, "runtime-base", "published"), {"BASE_REF": _PUBLISHED}
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="workflow steps run under Linux bash")
+def test_stable_base_selection(tmp_path: Path) -> None:
+    """A CI image job reuses a matching published base and builds one locally otherwise.
+
+    Release publication keeps refusing a published base without this contract.
+    """
+    notice = f"::notice title=Stable runtime base built locally::{_PUBLISHED}"
+    cases = 0
+    for workflow, job, name in _SELECTION_CALLERS:
+        step = _named_step(workflow, job, name)
+        for flag in (None, "false"):
+            env = {"PUBLISHED_BASE": _PUBLISHED, **({"BUILD_STABLE_BASE": flag} if flag else {})}
+            for resolver in ("match", "label mismatch", "registry error"):
+                cases += 1
+                where = f"{workflow} {job} {flag} {resolver}"
+                status, lines, log = _run_selection(tmp_path / str(cases), step, resolver, env)
+                assert status == 0, f"{where}: {log}"
+                if resolver == "match":
+                    assert lines == ["image=ghcr.io/acme/base@sha256:aaa", "build=false"], where
+                    assert "::notice" not in log, where
+                else:
+                    assert lines == ["build=true", "image=booley-runtime-base:ci"], where
+                    assert notice in log and f"error: {resolver}" in log, where
+    release, env = _release_step()
+    status, lines, log = _run_selection(tmp_path / "release", release, "label mismatch", env)
+    assert status != 0, log
+    assert lines == []
+
+
+def test_release_tag_never_substitutes_a_candidate_base() -> None:
+    """Only a dispatch may fall back to a candidate base after a failed second lookup (#4420)."""
+    workflow = yaml.safe_load((_WORKFLOWS / "docker-publish.yml").read_text(encoding="utf-8"))
+    steps = {s["id"]: s for s in workflow["jobs"]["runtime-base"]["steps"] if "id" in s}
+
+    assert steps["decide"]["if"] == "github.event_name == 'workflow_dispatch'"
+    assert steps["published"]["continue-on-error"] == (
+        "${{ github.event_name == 'workflow_dispatch' }}"
+    )
+    for name in ("candidate-metadata", "candidate-build", "candidate-verify"):
+        assert "steps.published.outcome == 'failure'" in steps[name]["if"]

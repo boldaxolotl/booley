@@ -34,6 +34,19 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # GPG-verified.
 RUN printf 'Acquire::Check-Date "false";\n' > /etc/apt/apt.conf.d/99-tolerate-clock-skew
 
+# Retry transient apt and git failures (#4420); the final stage sets only the apt retries.
+RUN printf 'Acquire::Retries "8";\n' > /etc/apt/apt.conf.d/99-network-retries \
+    && printf '%s\n' '#!/bin/sh' \
+        '# Run "$@"; retry a failure up to 8 times, 30 s apart.' \
+        'attempt=1' \
+        'until "$@"; do' \
+        '    test "$attempt" -le 8 || exit 1' \
+        '    echo "booley-retry: $1 failed (attempt $attempt); retrying in 30 s" >&2' \
+        '    attempt=$((attempt + 1))' \
+        '    sleep 30' \
+        'done' > /usr/local/bin/booley-retry \
+    && chmod 0755 /usr/local/bin/booley-retry
+
 # Builder-only packages. Nothing installed here reaches the final image: only
 # /opt/riscv and /opt/riscv-docs are copied out. device-tree-compiler serves
 # Spike's `make check`; the final stage installs its own runtime copy.
@@ -64,7 +77,7 @@ ARG XPACK_GCC_VERSION=15.2.0-1
 ARG XPACK_GCC_SHA256=aaaa8060c914851a3e5ee1ba82cc3d6f80972f90638a05c6e823a37557a33758
 RUN echo ">>> Installing xPack RISC-V GNU toolchain ${XPACK_GCC_VERSION} (multilib newlib)..." \
     && mkdir -p /opt/riscv \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_GCC_VERSION}/xpack-riscv-none-elf-gcc-${XPACK_GCC_VERSION}-linux-x64.tar.gz" \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://github.com/xpack-dev-tools/riscv-none-elf-gcc-xpack/releases/download/v${XPACK_GCC_VERSION}/xpack-riscv-none-elf-gcc-${XPACK_GCC_VERSION}-linux-x64.tar.gz" \
         -o /tmp/riscv-toolchain.tar.gz \
     && echo "${XPACK_GCC_SHA256}  /tmp/riscv-toolchain.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/riscv-toolchain.tar.gz -C /opt/riscv --strip-components=1 \
@@ -121,10 +134,10 @@ RUN echo ">>> Building Spike (riscv-isa-sim) ${SPIKE_REF} from source..." \
     && git init /tmp/spike \
     && cd /tmp/spike \
     && git remote add origin https://github.com/riscv-software-src/riscv-isa-sim.git \
-    && git fetch --depth 1 origin "${SPIKE_REF}" \
+    && booley-retry git fetch --depth 1 origin "${SPIKE_REF}" \
     && git checkout --detach FETCH_HEAD \
     && test "$(git rev-parse HEAD)" = "${SPIKE_REF}" \
-    && git -c protocol.version=0 submodule update --init --recursive \
+    && booley-retry git -c protocol.version=0 submodule update --init --recursive \
     && mkdir -p /tmp/spike/build && cd /tmp/spike/build \
     && ../configure --prefix=/opt/riscv \
         --without-boost --without-boost-asio --without-boost-regex \
@@ -176,17 +189,17 @@ ARG DEBUG_SPEC_SHA256=ce2787b25233a6109c9bc767b2bc497798148b721390f72fb9b48ff0ed
 ARG PSABI_SHA256=a8d06bdcaa82a6a4567a1904dc27ef1ca1043ebaa1f523558c927a9d72bc23d9
 RUN echo ">>> Downloading ratified RISC-V International specifications..." \
     && mkdir -p /opt/riscv-docs \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-unprivileged-${ISA_MANUAL_RELEASE}.pdf" \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-unprivileged-${ISA_MANUAL_RELEASE}.pdf" \
         -o /opt/riscv-docs/riscv-isa-unprivileged.pdf \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-unprivileged-${ISA_MANUAL_RELEASE}.html" \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-unprivileged-${ISA_MANUAL_RELEASE}.html" \
         -o /opt/riscv-docs/riscv-isa-unprivileged.html \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-privileged-${ISA_MANUAL_RELEASE}.pdf" \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-privileged-${ISA_MANUAL_RELEASE}.pdf" \
         -o /opt/riscv-docs/riscv-isa-privileged.pdf \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-privileged-${ISA_MANUAL_RELEASE}.html" \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://github.com/riscv/riscv-isa-manual/releases/download/${ISA_MANUAL_RELEASE}/riscv-privileged-${ISA_MANUAL_RELEASE}.html" \
         -o /opt/riscv-docs/riscv-isa-privileged.html \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv/riscv-debug-spec/releases/download/${DEBUG_SPEC_RELEASE}/riscv-debug-specification.pdf" \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://github.com/riscv/riscv-debug-spec/releases/download/${DEBUG_SPEC_RELEASE}/riscv-debug-specification.pdf" \
         -o /opt/riscv-docs/riscv-debug-specification.pdf \
-    && curl --proto '=https' --tlsv1.2 -fsSL "https://github.com/riscv-non-isa/riscv-elf-psabi-doc/releases/download/${PSABI_RELEASE}/riscv-abi.pdf" \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://github.com/riscv-non-isa/riscv-elf-psabi-doc/releases/download/${PSABI_RELEASE}/riscv-abi.pdf" \
         -o /opt/riscv-docs/riscv-abi.pdf \
     && echo "${ISA_UNPRIVILEGED_PDF_SHA256}  /opt/riscv-docs/riscv-isa-unprivileged.pdf" | sha256sum -c - \
     && echo "${ISA_UNPRIVILEGED_HTML_SHA256}  /opt/riscv-docs/riscv-isa-unprivileged.html" | sha256sum -c - \
@@ -228,6 +241,7 @@ USER root
 #                          from an agent or shell without network access.
 # ---------------------------------------------------------------------------
 RUN echo ">>> Installing srecord + device-tree-compiler + poppler-utils..." \
+    && printf 'Acquire::Retries "8";\n' > /etc/apt/apt.conf.d/99-network-retries \
     && apt-get update && apt-get install -y --no-install-recommends \
         srecord device-tree-compiler poppler-utils \
     && rm -rf /var/lib/apt/lists/*
