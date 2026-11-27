@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Iterator, Mapping, MutableMapping
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -216,11 +216,23 @@ _VERBS = {
 }
 
 
+def _holds(words: str, command: list[str]) -> bool:
+    """Whether *command* holds every word, also as a word inside one argument."""
+    return set(words.split()) <= set(" ".join(command).split())
+
+
 def _answer(here: Path, state: _State, command: list[str]) -> _Result:
-    replies = json.loads((here / "fake_docker_replies.json").read_text(encoding="utf-8"))
-    matching = [key for key in replies if set(key.split()) <= set(command)]
+    path = here / "fake_docker_replies.json"
+    replies = json.loads(path.read_text(encoding="utf-8"))
+    matching = [key for key in replies if _holds(key, command)]
     if matching:  # the most words win, then the later rule
-        code, *texts = replies[max(reversed(matching), key=lambda key: len(key.split()))]
+        best = max(reversed(matching), key=lambda key: len(key.split()))
+        rule = replies[best]
+        if isinstance(rule[0], list):  # answers in turn; the last one repeats
+            replies[best] = rule[1:] or rule
+            path.write_bytes(json.dumps(replies).encode("utf-8"))
+            rule = rule[0]
+        code, *texts = rule
         if len(texts) == 2:
             return code, texts[0], texts[1]
         text = texts[0] + "\n" if texts[0] else ""
@@ -249,13 +261,13 @@ def _serve_call(here: Path, command: list[str]) -> int:
     state_path = here / "fake_docker_state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     code, out, err = _answer(here, state, command)
-    pause = bool(state["pause"]) and set(state["pause"]) <= set(command)
+    pause = bool(state["pause"]) and _holds(" ".join(state["pause"]), command)
     if pause:
         state["pause"] = []
     state_path.write_bytes(json.dumps(state).encode("utf-8"))
     sys.stdout.buffer.write(out.encode("utf-8"))  # bytes: Docker's line ends on Windows too
     sys.stderr.buffer.write(err.encode("utf-8"))
-    if state["remove_after"] and set(state["remove_after"].split()) <= set(command):
+    if state["remove_after"] and _holds(state["remove_after"], command):
         for name in ("docker", "docker.cmd"):
             (here / name).unlink(missing_ok=True)
     if pause:
@@ -337,6 +349,7 @@ class FakeDocker:
         self.replies_path = path.parent / "fake_docker_replies.json"  # reread on every call
         self.state_path = path.parent / "fake_docker_state.json"
         self.replies = _Section(self.replies_path)
+        self._errors: list[tuple[str, Exception]] = []
 
     @property
     def calls(self) -> list[list[str]]:
@@ -354,6 +367,14 @@ class FakeDocker:
     def answer(self, *words: str, code: int = 0, stdout: str = "", stderr: str = "") -> None:
         """Answer every call whose arguments hold all *words* instead of serving the state."""
         self.replies[" ".join(words)] = [code, stdout, stderr]
+
+    def answer_in_turn(self, *words: str, answers: Iterable[tuple[int, str, str]]) -> None:
+        """Answer successive calls holding all *words* with *answers*; the last one repeats."""
+        self.replies[" ".join(words)] = [list(answer) for answer in answers]
+
+    def raise_on(self, *words: str, error: Exception) -> None:
+        """Make ``runner`` raise *error* for a call holding all *words*, as a timeout does."""
+        self._errors.append((" ".join(words), error))
 
     @contextmanager
     def absent(self) -> Iterator[None]:
@@ -384,6 +405,9 @@ class FakeDocker:
         """The injected-runner front end, for production code that takes a Docker runner."""
         if not self.path.exists():
             raise FileNotFoundError(2, "No such file or directory", "docker")
+        for words, error in self._errors:
+            if _holds(words, args):
+                raise error
         argv = [*_program(self.path.parent), *args]
         return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
 
@@ -400,7 +424,8 @@ def _find_launcher_as_posix_does(monkeypatch: pytest.MonkeyPatch, launcher: Path
                 found = shutil.which("docker", path=path)
                 if found is None:
                     raise FileNotFoundError(2, "No such file or directory", "docker")
-                if os.path.normcase(found) == os.path.normcase(launcher):
+                # str: a test may patch normcase with a function that refuses a Path.
+                if os.path.normcase(found) == os.path.normcase(str(launcher)):
                     args = [*_program(launcher.parent), *args[1:]]
             super().__init__(args, *rest, **kwargs)
 
@@ -419,8 +444,9 @@ def install_fake_docker(
     """Put a ``docker`` on ``PATH`` answering with reply rules and, optionally, state.
 
     A reply keyed by words (``"image rm"``; ``""`` for every call) answers each call whose
-    arguments hold them all with ``(exit code, text)``: stdout on code 0, else stderr. Most
-    words win. Without ``images``, a call no reply covers exits 0 with no output.
+    arguments hold them all, also as words inside one argument, with ``(exit code, text)``:
+    stdout on code 0, else stderr. Most words win. Without ``images``, a call no reply
+    covers exits 0 with no output.
 
     ``images`` (reference or ID -> image ID, or ``{"Id", "Labels", "Layers", "Env",
     "Size"}``) makes the fake store-backed: calls no reply covers are served from the

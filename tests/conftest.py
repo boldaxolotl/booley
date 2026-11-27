@@ -1,8 +1,8 @@
 """Shared fixtures for infrastructure unit tests.
 
 Stand-ins here: the terminal, the host memory, the Sandbox venue check, the native B-Wave
-binary, the Sandbox owner inventory and the Feature Flag registry (rows of
-docs/internals/TEST_FAKES.md).
+binary, the Sandbox owner inventory, the Feature Flag registry and Project Root
+discovery (rows of docs/internals/TEST_FAKES.md).
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO
 
 import pytest
 
-from tests.memory_budget_support import budget_of, pin_budget
+from tests.memory_budget_support import measure_or_fall_back, pin_budget
 from tests.python_command_support import interpreter_first_path, python_path_entry
 
 if TYPE_CHECKING:
@@ -609,6 +609,30 @@ def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
             pytest.fail("Publication resources leaked past the test:\n" + "\n".join(leaks))
 
 
+@pytest.fixture
+def pinned_project_root(tmp_path: Path) -> Path | None:
+    """The Project Root ``pin_project_root`` answers; override with None for real discovery."""
+    return tmp_path
+
+
+@pytest.fixture
+def pin_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_project_root: Path | None
+) -> None:
+    """Run in tmp_path as the Booley Directory with Project Root discovery pinned."""
+    from booley.runtime import shared_infra
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
+    if pinned_project_root is not None:
+        # No public input pins the root: a synthetic tmp_path proves no checkout ownership.
+        monkeypatch.setattr(
+            shared_infra, "resolve_project_root", lambda fallback_dir=None: pinned_project_root
+        )
+    # Private seam: the project-config cache is a module global with no public reset.
+    monkeypatch.setattr(shared_infra, "_TOML_CACHE", None)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_host_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve Booley's host config directory inside each test's tmp_path (#3837).
@@ -735,25 +759,8 @@ def _fresh_target_catalogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _memory_budget_is_measurable_everywhere(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Admission tests must not depend on the host exposing ``/proc/meminfo``.
-
-    Windows has no ``/proc``, so the real Memory Budget is unavailable there and
-    every Job would run alone with an extra "Memory Budget unavailable" note in
-    its reports and refusals. Fall back to a fixed 64 GiB budget when measuring
-    fails; tests of the unavailable path patch ``compute_memory_budget`` themselves.
-    """
-    from booley.flows import memory_admission
-    from booley.runtime import memory_budget
-
-    real_compute = memory_budget.compute_memory_budget
-
-    def compute_or_fixed(**kwargs: Any) -> memory_budget.MemoryBudget:
-        try:
-            return real_compute(**kwargs)
-        except OSError:
-            return budget_of(64 * 1024**3)
-
-    monkeypatch.setattr(memory_admission, "compute_memory_budget", compute_or_fixed)
+    """Admission tests must not depend on the host exposing ``/proc/meminfo``."""
+    measure_or_fall_back(monkeypatch)
 
 
 @pytest.fixture
