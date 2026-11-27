@@ -124,8 +124,9 @@ class BoundedSimulationRecordScheduler:
     without a result, so a later resume runs it; its lane takes the next item.
 
     *clock* times the shutdown deadline, *event* makes the lanes-exited event the
-    supervisor waits on and *take_turn* waits for the start turn: the lane step machine
-    steps all three.
+    supervisor waits on, *take_turn* waits for the start turn and *condition* makes the
+    condition a lane waits on while another lane runs its collision key: the lane step
+    machine steps all four.
     """
 
     def __init__(
@@ -138,6 +139,7 @@ class BoundedSimulationRecordScheduler:
         clock: Callable[[], float] = time.monotonic,
         event: Callable[[], threading.Event] = threading.Event,
         take_turn: Callable[[threading.Lock, float], bool] = _take_turn,
+        condition: Callable[[], threading.Condition] = threading.Condition,
     ) -> None:
         self._capacity = capacity
         self._allocate = allocate
@@ -153,7 +155,7 @@ class BoundedSimulationRecordScheduler:
         self._live = 0
         self._lanes_exited = event()
         self._allocation_gate = threading.Lock()
-        self._collision_condition = threading.Condition()
+        self._collision_condition = condition()
         self._active_collisions: set[str] = set()
         # Terminal progress is lane-scoped only while items really overlap.
         self._lanes_concurrent = False
