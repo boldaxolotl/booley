@@ -152,8 +152,7 @@ def test_develop_reports_verification_commands(checkout, capsys):
     commands = {command["id"]: command for command in document["commands"]}
     assert " ".join(commands) == (
         "python.bootstrap-agent-tools readiness.rerun-develop ruff.agent-gate ruff.ci-check "
-        "ruff.ci-format pyright.ci-check packaged-copies.check markdown.line-length "
-        "function-length.check pytest.broad coverage.changed-lines"
+        "ruff.ci-format pyright.ci-check markdown.line-length function-length.check pytest.broad coverage.changed-lines"
     )
     options = ["-n", "auto", "--maxprocesses=8", "--dist=loadscope"]
     if sys.platform != "win32":
@@ -166,7 +165,6 @@ def test_develop_reports_verification_commands(checkout, capsys):
         "ruff.ci-format": [*tool, "ruff", "format", "--check", "."],
         # CI's bare `pyright` step, with imports resolved in the shared environment.
         "pyright.ci-check": [*tool, "pyright", "--pythonpath", python],
-        "packaged-copies.check": [*launcher, str(scripts / "sync_packaged_copies.py"), "--check"],
         "markdown.line-length": [*launcher, str(scripts / "markdown_line_length.py")],
         "function-length.check": [*launcher, str(scripts / "check_function_length.py")],
         "pytest.broad": [
@@ -194,23 +192,6 @@ def test_develop_reports_verification_commands(checkout, capsys):
         assert commands[identifier]["argv"] == argv, identifier
         assert commands[identifier]["required_at"] == required_at, identifier
         assert commands[identifier]["cwd"] == str(root), identifier
-
-
-def test_packaged_copies_check_runs_as_reported():
-    """The reported argv works as written: right launcher path, src insert, flag."""
-    root = Path(__file__).parents[2]
-    # private: the reported command names the shared environment's interpreter, which a test run need not have; this builds it for sys.executable.
-    commands = readiness._verification_commands(Path(sys.executable), root)
-    command = next((item for item in commands if item.id == "packaged-copies.check"), None)
-    assert command is not None
-    environment = {key: value for key, value in os.environ.items() if key != "PYTHONPATH"}
-    result = run_bounded_child(
-        list(command.argv),
-        cwd=command.cwd,
-        env=environment,
-        timeout=SUBPROCESS_TIMEOUT_S,
-    )
-    assert (result.returncode, result.stdout) == (0, "")
 
 
 def test_broad_pytest_keeps_default_basetemp_on_windows(tmp_path, monkeypatch):

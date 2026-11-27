@@ -1,22 +1,17 @@
-"""The packaged-copy tooling: link rewriting, the CHANGELOG mirror sync, and ``--check``.
+"""The packaged user-doc renderer: link rewriting and unclassified-link errors.
 
-The user-doc copies are build output (``booley.runtime.build_stamp``); only the CHANGELOG
-mirror is still synchronized here (#2495, #3658)."""
+The copies are build output written by ``booley.runtime.build_stamp`` (#2495, #3658)."""
 
 from __future__ import annotations
 
-import runpy
 from pathlib import Path
 
 import pytest
 
-from booley.dev_support import reference_docs
 from booley.runtime import packaged_docs
 
 SOURCE = "docs/user/CONFIG.md"
 MARKER = "(host doc, not shipped)"
-CHANGELOG_SOURCE = "CHANGELOG.md"
-CHANGELOG_MIRROR = "src/booley/data/refs/CHANGELOG.md"
 
 
 def _render(text: str, source: str = SOURCE) -> str:
@@ -32,105 +27,11 @@ def _fake_repo(tmp_path: Path, overrides: dict[str, str] | None = None) -> Path:
         path.write_bytes(f"# {path.name}\n".encode())
     for source, text in (overrides or {}).items():
         (root / source).write_bytes(text.encode())
-    # A current checkout: the packaged CHANGELOG mirror already matches its source.
-    mirror = root / CHANGELOG_MIRROR
-    mirror.parent.mkdir(parents=True, exist_ok=True)
-    (root / CHANGELOG_SOURCE).write_bytes(b"# Changelog\n")
-    mirror.write_bytes(b"# Changelog\n")
     return root
 
 
 def _packaged(root: Path) -> Path:
     return root / packaged_docs.PACKAGED_DOCS_RELATIVE_DIR
-
-
-def test_sync_mirrors_changelog_byte_for_byte(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    root = _fake_repo(tmp_path)
-    # A shipped-doc link, non-ASCII text and a CRLF line: copied verbatim, never rewritten.
-    changelog = "# Changelog\n[x](docs/user/SETUP.md) caf\u00e9\r\nlast\n".encode()
-    (root / CHANGELOG_SOURCE).write_bytes(changelog)
-    mirror = root / CHANGELOG_MIRROR
-
-    assert reference_docs.main([], root=root) == 0
-
-    assert mirror.read_bytes() == changelog
-    assert "src/booley/data/refs/CHANGELOG.md" in capsys.readouterr().out
-    assert reference_docs.main([], root=root) == 0
-    assert "packaged CHANGELOG mirror is current" in capsys.readouterr().out
-
-
-@pytest.mark.parametrize("state", ["stale", "missing"])
-def test_check_reports_stale_changelog_mirror(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str], state: str
-) -> None:
-    root = _fake_repo(tmp_path)
-    mirror = root / CHANGELOG_MIRROR
-    if state == "stale":
-        mirror.write_bytes(b"hand edit\n")
-    else:
-        mirror.unlink()
-    before = mirror.read_bytes() if mirror.exists() else None
-
-    assert reference_docs.main(["--check"], root=root) == 1
-
-    output = capsys.readouterr().out
-    assert f"src/booley/data/refs/CHANGELOG.md: packaged copy is {state}" in output
-    assert "python -m booley.dev_support.reference_docs" in output
-    assert (mirror.read_bytes() if mirror.exists() else None) == before
-
-    assert reference_docs.main([], root=root) == 0
-    capsys.readouterr()
-    assert reference_docs.main(["--check"], root=root) == 0
-    assert capsys.readouterr().out == ""
-
-
-def test_check_covers_only_the_changelog_mirror(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    """The user-doc copies are build output: ``--check`` neither needs nor reads them (#3658)."""
-    root = _fake_repo(tmp_path)
-    assert not _packaged(root).exists()
-
-    assert reference_docs.main(["--check"], root=root) == 0
-    assert capsys.readouterr().out == ""
-
-    # A leftover rendered copy, stale or orphaned, is not this check's business.
-    _packaged(root).mkdir(parents=True)
-    (_packaged(root) / "CONFIG.md").write_text("hand edit\n", encoding="utf-8")
-    (_packaged(root) / "RETIRED.md").write_text("old\n", encoding="utf-8")
-
-    assert reference_docs.main(["--check"], root=root) == 0
-    assert capsys.readouterr().out == ""
-
-
-def test_check_prints_the_entry_points_own_fix_command(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    root = _fake_repo(tmp_path)
-    (root / CHANGELOG_MIRROR).write_bytes(b"hand edit\n")
-
-    assert reference_docs.main(["--check"], root=root, sync_command="the-fix") == 1
-
-    assert "packaged CHANGELOG mirror is out of date; run the-fix" in capsys.readouterr().out
-
-
-def test_launcher_names_itself_as_the_fix_command(monkeypatch: pytest.MonkeyPatch) -> None:
-    launcher = Path(__file__).resolve().parents[2] / ".github/scripts/sync_packaged_copies.py"
-    seen: dict[str, str] = {}
-
-    def fake_main(argv: list[str] | None = None, *, sync_command: str) -> int:
-        seen["sync_command"] = sync_command
-        return 0
-
-    monkeypatch.setattr(reference_docs, "main", fake_main)
-    monkeypatch.setattr("sys.dont_write_bytecode", True)
-
-    namespace = runpy.run_path(str(launcher))
-    assert namespace["main"]() == 0
-
-    assert seen["sync_command"] == "python3 .github/scripts/sync_packaged_copies.py"
 
 
 _EXTERNAL_AND_FENCED = (
