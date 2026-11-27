@@ -90,7 +90,7 @@ runs.
 
    ```bash
    qa$ booley session enter -- t3 auth pairing create \
-     --base-dir /work/.booley/.runtime/t3 \
+     --base-dir /home/agent/.t3 \
      --base-url http://127.0.0.1:<port + 110> --ttl 30m --json
    ```
 

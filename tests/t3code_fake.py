@@ -23,6 +23,7 @@ from tests.time_budget import hang_guard_s
 
 TOKEN = "pairing-token-0123"
 ADDED = (0, "Added project 1 (p) at /p.")
+SANDBOX_T3_BASE = Path("/home/agent/.t3")  # where the T3 state volume is mounted
 
 
 @dataclass
@@ -34,6 +35,7 @@ class T3CodeFake:
     """
 
     running: bool = False
+    volume: Path | None = None  # this host's stand-in for the T3 state volume
     environment_id: str | None = None  # None: the listener on the port is not T3 Code
     replaced_records: list[bytes] = field(default_factory=list)
     add_replies: list[tuple[int, str] | OSError] = field(default_factory=list)
@@ -55,6 +57,9 @@ class T3CodeFake:
     def describe(self) -> str | None:
         return self.environment_id if self.running else None
 
+    def on_host(self, base: Path) -> Path:
+        return self.volume if self.volume and base == SANDBOX_T3_BASE else base
+
     def publish(self, base: Path) -> None:
         record = base / "userdata" / "server-runtime.json"
         if record.exists():
@@ -69,7 +74,7 @@ class T3CodeFake:
         if cmd[0] == "t3":
             self.served.append(cmd)
             self.serve_stdouts.append(kwargs["stdout"])
-            self.publish(Path(cmd[cmd.index("--base-dir") + 1]))
+            self.publish(self.on_host(Path(cmd[cmd.index("--base-dir") + 1])))
             self.running = True
         self.sinks += [s.name for s in (kwargs["stdout"], kwargs["stderr"]) if hasattr(s, "name")]
         if hasattr(kwargs["stdout"], "write"):
@@ -121,6 +126,7 @@ def serve_t3_code(
     monkeypatch: pytest.MonkeyPatch,
     *,
     foreign: bool = False,
+    volume: Path | None = None,
     add_replies: list[tuple[int, str] | OSError] | None = None,
     check_reply: tuple[int, str] | OSError = (0, ""),
     projects: dict[str, str] | None = None,
@@ -128,16 +134,22 @@ def serve_t3_code(
 ) -> T3CodeFake:
     """Route `incontainer_setup`'s port and descriptor probes and `subprocess` to a `T3CodeFake`.
 
-    With *foreign*, something other than T3 Code already answers on the port.
+    With *foreign*, something other than T3 Code already answers on the port. *volume* keeps
+    what T3 Code writes to, and is read from, the T3 state volume.
     The two probes are the network boundary and `subprocess` the process boundary; the
     global `subprocess` module stays untouched.
     """
     fake = T3CodeFake(
         running=foreign,
+        volume=volume,
         add_replies=list(add_replies or []),
         check_reply=check_reply,
         projects=dict(projects or {}),
         rename_reply=rename_reply,
+    )
+    proven = incontainer_setup._t3_identity_proven
+    monkeypatch.setattr(
+        incontainer_setup, "_t3_identity_proven", lambda base: proven(fake.on_host(base))
     )
     monkeypatch.setattr(incontainer_setup, "_port_is_serving", fake.serving)
     monkeypatch.setattr(incontainer_setup, "_t3_environment_id", fake.describe, raising=False)
