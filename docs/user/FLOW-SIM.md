@@ -495,8 +495,7 @@ booley flow sim --resume-from <manifest.json>
 - One resume continues one Target. For a run of several Targets, resume each
   unfinished Target's manifest.
 - Only Test Runs without a result run again.
-- A `--coverage` run never resumes, even when only publishing its results was
-  left: Booley refuses (exit `2`).
+- A `--coverage` run never resumes: Booley refuses (exit `2`).
   Start a new `booley flow sim --coverage` run instead: the refusal prints the
   command, with the same Test Runs, seeds and report directory.
 - A test with a recorded result is finished, even if it failed. Resume never

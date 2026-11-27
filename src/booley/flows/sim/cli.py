@@ -35,11 +35,11 @@ class SimArguments(BuiltinArguments):
             (
                 HelpOption(
                     "coverage",
-                    "Default: off for new Simulation Records; resume rejects this flag: a coverage Simulation Record never resumes.",
+                    "Default: off for new Simulation Records; resume rejects this flag, and a coverage Simulation Record never resumes.",
                 ),
                 HelpOption(
                     "no_waivers",
-                    "When omitted, approved waivers apply on new coverage-collecting Simulation Records; resume rejects this flag: a coverage Simulation Record never resumes.",
+                    "When omitted, approved waivers apply on new coverage-collecting Simulation Records; resume rejects this flag, and a coverage Simulation Record never resumes.",
                 ),
                 HelpOption(
                     "mode",

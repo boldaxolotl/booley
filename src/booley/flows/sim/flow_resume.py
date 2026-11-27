@@ -485,7 +485,6 @@ class SimulationRecordResumeMixin:
                 kind=kind,
                 planning_disclosures=disclosures,
                 required_suite_catalog_backed=not view.required_suite_default_invocation,
-                no_waivers=view.no_waivers,
             )
         return self._ordinary_resume_plan(
             handle, inspection, preview, view, revision, invocation_id, disclosures
