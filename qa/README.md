@@ -77,7 +77,7 @@ booley bootstrap --with-qa-skills
 | [`booley-qa-run`](booley-qa-run/SKILL.md) | Run one mission against a Booley build; writes `findings.md`, `log.md`, `resources.md`, `evidence/` |
 | [`booley-qa-triage`](booley-qa-triage/SKILL.md) | Triage findings: interactively with the maintainer one cluster at a time, or automatically by a unanimous model jury (`booley-qa-run` does this by default); verify against current main, then file issues or fix the mission |
 | [`booley-add-to-qa`](booley-add-to-qa/SKILL.md) | Add a behavior, fault idea, or known trap to a mission |
-| [`booley-gui-check`](booley-gui-check/SKILL.md) | Check one PR's GUI change in T3 Code on a Sandbox built locally from the PR head; posts a screenshot table on the PR and returns pass, fail, or blocked per step |
+| [`booley-gui-check`](booley-gui-check/SKILL.md) | Check one PR's GUI change in T3 Code on a Sandbox built from the PR head in the QA Host; posts a screenshot table on the PR and returns pass, fail, n/a, or blocked |
 
 ## Other files
 

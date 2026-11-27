@@ -2,7 +2,11 @@
 
 This runbook takes a QA agent from a Booley commit `<sha>` to the picorv32
 demo Project open in T3 Code, Booley's user interface, in a browser tab on
-this host. It then checks the GUI against the CLI and cleans up. The `gui`
+this host. It then checks the GUI against the CLI and cleans up. The
+candidate build runs in the QA Host
+([its runbook](../qa-host/RUNBOOK.md)), a Docker-in-Docker container with
+its own Docker daemon and `HOME`, so the host's canonical Booley install and
+its `booley-*` containers stay as they are. The `gui`
 mission ([MISSION.md](../../missions/gui/MISSION.md)) and the
 `booley-gui-check` skill ([SKILL.md](../../booley-gui-check/SKILL.md)) follow
 it and cite its step numbers; they say what to check, this file says how.
@@ -19,9 +23,16 @@ is valid. Steps 6-9 are rules and references, and step 10 cleans up.
 |---|---|
 | `<sha>` | The Booley commit under test (full) |
 | `<short>` | The first 9 characters of `<sha>`, as `booley --version` prints them |
-| `<run-dir>` | The run directory the mission or skill created |
-| `$QA_PROJECT` | `<artifact-root>/gui-project/picorv32`: one fixed path per host, so the Project keeps its relay port across runs |
-| `<port>` | The T3 Code relay port that `booley session up` prints |
+| `<run-dir>` | The run directory the mission or skill created, on the outer host |
+| `qa$ ...` | A command run in the QA Host as user `qa`, as its runbook's table says; add `-w <dir>` for its working directory |
+| `$QA_PROJECT` | `/home/qa/gui-project/picorv32` in the QA Host: one fixed path in the `qa-host-home` volume, so the Project keeps its relay port across runs |
+| `<port>` | The T3 Code relay port that `booley session up` prints, inside the QA Host (3780-3784) |
+| `<outer>` | `<port>` + 110: the outer host port your tab opens (3890-3894) |
+
+Every `booley` command in this runbook runs in the QA Host as `qa$`, in
+`$QA_PROJECT` unless it says otherwise. Only the `preview_*` tools, `docker`
+commands that manage the QA Host, and `primary-ids.sh` run on the outer
+host.
 
 ## Hard rules
 
@@ -31,7 +42,8 @@ is valid. Steps 6-9 are rules and references, and step 10 cleans up.
   never GUI evidence.
 - **The pairing link is a secret.** It carries a one-time token. Write
   `booley session up` and `booley session pair` output only to a file created
-  with `umask 077` under `<run-dir>/scratch/`, never print the link in a
+  with `umask 077` under `/home/qa/scratch/` in the QA Host, copy it out only
+  to a `umask 077` file under `<run-dir>/scratch/`, never print the link in a
   shell command's output, and keep it out of `log.md`, evidence, comments and
   screenshots. Use each link once, at once, then delete its file. The
   `preview_open` call that uses it lands in the thread transcript; the
@@ -48,8 +60,12 @@ is valid. Steps 6-9 are rules and references, and step 10 cleans up.
   T3 Code in your tab; it belongs to this run. Never use the host tools that
   change your own T3 Code (`t3_theme_set`, `t3_environment_preferences_update`
   and the like).
-- **One GUI run per host at a time.** Two runs would share `$QA_PROJECT`, its
-  relay port and the browser profile's session for `127.0.0.1`.
+- **One GUI run per host at a time.** There is one QA Host per host, with
+  fixed ports. Two runs would share it, `$QA_PROJECT`, its relay port and the
+  browser profile's session for `127.0.0.1`.
+- **Leave the outer host's Booley alone.** Never install a candidate on the
+  outer host or touch its `booley-*` resources; the QA Host runbook's rules
+  apply throughout.
 - **Keep the maintainer's identity out of evidence.** Before a screenshot or
   DOM read of Doctor output, filter its identity line
   (`booley doctor 2>&1 | grep -v gitconfig-identity`) or capture only the
@@ -58,99 +74,126 @@ is valid. Steps 6-9 are rules and references, and step 10 cleans up.
 ## 1. Preconditions
 
 - **Same host.** A T3 session with the `mcp__t3-code__preview_*` tools on the
-  host whose Docker runs the Sandbox. The relay listens on host `127.0.0.1`
-  only, so a browser on another machine can't reach it.
-- **Canonical host install.** Host commands such as `booley init` and
-  `booley session up` refuse any Booley that is not the canonical host
-  installation. Installing the candidate as the canonical one (step 2)
-  rebuilds the shared `booley-sandbox` base image and replaces the shared
-  `booley-proxy` and `booley-reaper` containers, so every other Booley Sandbox
-  on the host is affected. Do step 2 only with the maintainer's approval and
-  while no other Booley run uses the host. Without both, the run is blocked:
-  `blocked: host install`.
-- **Agent sign-in.** For areas that run a Developer Agent,
-  `booley auth --status` shows the Project's Agent CLIs signed in.
-- **Disk.** Follow [`qa/DISK.md`](../../DISK.md). The local Sandbox Image
-  build needs room for a base image and the RISC-V Project image.
-- **No leftovers.** `$QA_PROJECT` is absent or empty, and no Sandbox of it
-  runs (`booley session status` there reports it absent). Otherwise ask the
-  maintainer before removing anything: it may be another run's live repro.
+  host whose Docker runs the QA Host. Its relay ports are published on outer
+  `127.0.0.1` only, so a browser on another machine can't reach them.
+- **QA Host.** The caller approved starting it (the QA Host runbook's Rules
+  say who may). Outer ports 3890-3894 are free (`ss -ltn`) or held by a
+  `qa-host` container that this run may reuse (step 2.3). A QA Host that
+  can't be built or started, or ports held by anything else, block the run:
+  `blocked: qa host`.
+- **Agent sign-in.** For areas that run a Developer Agent, copy each Agent
+  CLI's credential into the QA config home as QA Host step 1.5 says; then
+  `qa$ booley auth --status` shows the Project's Agent CLIs signed in.
+- **Disk.** Follow [`qa/DISK.md`](../../DISK.md). A new `qa-host-docker`
+  volume needs about 20 GiB (QA Host Measurements); a reused one needs room
+  for the rebuilt layers and the RISC-V Project image.
+- **No leftovers.** In the QA Host, `$QA_PROJECT` is absent or empty, and no
+  Sandbox of it runs (`qa$ booley session status` there reports it absent).
+  Otherwise ask the maintainer before removing anything: it may be another
+  run's live repro.
 
 ## 2. Candidate build
 
-Record the canonical host install's revision first
-(`booley --version`): cleanup restores it.
-
-1. Make a detached worktree of `<sha>` outside `.worktrees` and the run
+1. Save the outer daemon's IDs, as QA Host step 1.1 does, from the source
+   checkout:
+   `qa/shared/qa-host/primary-ids.sh > <run-dir>/evidence/qa-host/before.txt`.
+   Record the outer host's `booley --version` in `log.md`.
+2. Make a detached worktree of `<sha>` outside `.worktrees` and the run
    directory, and build a development wheel from it, as "Building a
    development wheel" in
    [CONTRIBUTING.md](../../../docs/internals/CONTRIBUTING.md) says.
-2. Install the wheel over the canonical host install, with the tool that
-   installed it, and update Host Bootstrap:
+3. Start the QA Host, or reuse it. Its image tag is the last commit that
+   changed the image's inputs, read in the source checkout:
+   `git log -1 --format=%h --abbrev=9 -- qa/shared/qa-host ':!*.md'`.
+   - A `qa-host` container runs that image and no Sandbox runs in it
+     (`docker exec qa-host docker ps` lists only `booley-proxy` and
+     `booley-reaper`): reuse it. A Sandbox running there is another run's:
+     `blocked: qa host`.
+   - Any other `qa-host` container: `docker rm -f qa-host`. Its volumes keep
+     the images, install and Projects.
+   - No `qa-host:<tag>` image: build it, as QA Host step 1.2 does.
+   - Unless you reuse one, start the container with QA Host step 1.2's
+     `docker run` (with the `qa-host-docker` and `qa-host-home` volumes,
+     existing or new). Done when `docker exec qa-host docker info` succeeds.
+4. Install the wheel as QA Host step 1.3 says, then update Host Bootstrap:
+   `qa$ booley bootstrap --update` on a reused `qa-host-home` volume, plain
+   `qa$ booley bootstrap` on a new one. A new `qa-host-docker` volume builds
+   the base Sandbox Image from scratch (about 20 minutes); a reused one
+   rebuilds only the changed layers (about 1 minute). Note the time.
 
-   ```sh
-   pipx install --force <wheel>   # or: uv tool install --force --reinstall <wheel>
-   booley bootstrap --update
-   ```
-
-   Bootstrap builds the base Sandbox Image locally; with a changed base
-   recipe this takes an hour or more. Note the time.
-
-Worked when `booley --version` reads `booley <version> (<short>, <date>)` and
-`booley bootstrap --check-only` reports no pending change. A build that fails
-or overruns the caller's budget is `blocked: image build`.
+Worked when `qa$ booley --version` reads `booley <version> (<short>, <date>)`
+and `qa$ booley bootstrap --check-only` reports Host Bootstrap current. A
+build that fails or overruns the caller's budget is `blocked: image build`.
 
 ## 3. Project
 
-Set the Project up as the demo README's Quick start says: upstream picorv32
-at the [picorv32 mission](../../missions/picorv32/MISSION.md)'s pin, with the
-demo cloned at `main` as its Stealth Booley Directory. Record the demo `main`
-SHA in `log.md`.
+Set the Project up in the QA Host as the demo README's Quick start says:
+upstream picorv32 at the
+[picorv32 mission](../../missions/picorv32/MISSION.md)'s pin, with the demo
+cloned at `main` as its Stealth Booley Directory. Record the demo `main` SHA
+in `log.md`.
 
 ```sh
-git clone https://github.com/YosysHQ/picorv32 $QA_PROJECT
-git -C $QA_PROJECT checkout --detach a473fc8fca393771d83b0ffcf0b14db3393339d8
-git clone https://github.com/boldaxolotl/booley-prj-picorv32 $QA_PROJECT/.booley
+qa$ git clone https://github.com/YosysHQ/picorv32 $QA_PROJECT
+qa$ git -C $QA_PROJECT checkout --detach a473fc8fca393771d83b0ffcf0b14db3393339d8
+qa$ git clone https://github.com/boldaxolotl/booley-prj-picorv32 $QA_PROJECT/.booley
 ```
 
 Turn on the Run form's Feature Flag for this clone only: add
 `enable = ["web-run-panel"]` under `[features]` in `.booley/booley.toml`, and
-commit it with `git -C $QA_PROJECT/.booley` on a local branch `qa/<short>`
-(never push it). Then:
+commit it on a local branch `qa/<short>` (never push it). User `qa` has no Git
+identity, so give the commit one:
+`qa$ git -C $QA_PROJECT/.booley -c user.name=qa -c user.email=qa@qa-host.invalid commit -qam 'QA: enable web-run-panel'`.
+Then, in `$QA_PROJECT`:
 
 ```sh
-cd $QA_PROJECT && booley init
-(umask 077; booley session up > <run-dir>/scratch/session-up.txt 2>&1)
-grep -v 'pair a browser' <run-dir>/scratch/session-up.txt
+qa$ booley init
+qa$ umask 077; mkdir -p ~/scratch; booley session up > ~/scratch/session-up.txt 2>&1
+qa$ grep -v 'pair a browser' ~/scratch/session-up.txt
 ```
 
-`booley init` builds the Project's Sandbox Image; note its time.
+`booley init` builds the Project's Sandbox Image (about 4 minutes); note its
+time.
 
 Worked when the filtered output shows `Sandbox ready: <name>` and
-`T3 Code relay: 127.0.0.1:<port>`, and the unfiltered file holds one
-`pair a browser (link valid 5m): ` line. Never use that first link: it went
-through a command's output on the way to the file. Delete the file. A missing
-pair line comes with a `warning: no T3 Code pairing link: ...` line on stderr
-while `session up` still exits 0; that is a setup failure, so stop.
+`T3 Code relay: 127.0.0.1:<port>` with `<port>` in 3780-3784, and the
+unfiltered file holds one `pair a browser (link valid 5m): ` line. Never use
+that first link: it went through a command's output on the way to the file.
+Delete the file. A missing pair line comes with a
+`warning: no T3 Code pairing link: ...` line on stderr while `session up`
+still exits 0; that is a setup failure, so stop. A `<port>` outside
+3780-3784 is not forwarded to the outer host: `blocked: qa host`.
 
 ## 4. Pair your tab
 
-1. Make a fresh link:
-   `(umask 077; booley session pair > <run-dir>/scratch/pair.txt)`. The link
-   is the text after `: ` on its one line. Read it with the Read tool, not a
-   shell command.
+1. Make a fresh link in the QA Host with its port changed to `<outer>`,
+   copy it out, and delete the inner file:
+
+   ```sh
+   qa$ umask 077; booley session pair | sed 's#//127\.0\.0\.1:<port>/#//127.0.0.1:<outer>/#' > ~/scratch/pair.txt
+   (umask 077; docker exec qa-host cat /home/qa/scratch/pair.txt > <run-dir>/scratch/pair.txt)
+   docker exec qa-host rm /home/qa/scratch/pair.txt
+   ```
+
+   The link is the text after `: ` on its one line. Read it with the Read
+   tool, not a shell command, and check it holds `127.0.0.1:<outer>`.
 2. Open it at once with `preview_open` (`reuseExistingTab: false`), then
-   delete `pair.txt`. Call `preview_resize` with `freeform` 1440×900 and
+   delete `<run-dir>/scratch/pair.txt`. Take one `preview_snapshot`
+   (`save: true`, `includeImage: false`) to make the new tab draw (step 6,
+   "Hidden tab"), then call `preview_resize` with `freeform` 1440×900 and
    confirm the size with `preview_status`.
-3. Check that the URL `preview_status` reports no longer holds the token. If
-   it does, log a finding, and keep the address bar out of every screenshot.
+3. Check that the URL `preview_status` reports no longer holds the token; a
+   paired tab shows `/draft/<id>`. If it holds the token, log a finding, and
+   keep the address bar out of every screenshot.
 
 Worked when the page shows the T3 Code UI with the demo Project (`picorv32`)
-in its project list, not "No project" and not a pairing prompt. An expired or
-used link shows a pairing error: make a new one with step 4.1, never reuse
-one. Pair again the same way after `booley session down` and `up`, or when
-the relay reports it moved (`warning: 127.0.0.1:<old> is held by another
-process ...`).
+in its project list, not "No project" and not a pairing prompt. Until #5686
+is fixed, T3 Code lists the Project as `work`, the Sandbox's mount path,
+because Booley registers it without a title: a check that expects `picorv32`
+accepts `work` and notes #5686. An expired or used link shows a pairing
+error: make a new one with step 4.1, never reuse one. Pair again the same way
+after `booley session down` and `up`, or when the relay reports it moved
+(`warning: 127.0.0.1:<old> is held by another process ...`).
 
 ## 5. Dashboard and threads
 
@@ -189,19 +232,23 @@ thread.
   call), never with a fixed sleep. An agent turn can take many minutes: wait
   in a loop and look at the thread between waits.
 - **Hidden tab:** while your tab is not visible (`preview_status` reports
-  `visible: false`) it renders no frames. Take a `preview_snapshot`
-  (`save: true`, `includeImage: false`) first: it forces a repaint.
+  `visible: false`) it renders no frames, and `preview_resize` fails with
+  "desktop did not draw the page", as it does right after `preview_open`.
+  Take a `preview_snapshot` (`save: true`, `includeImage: false`) first: it
+  forces a repaint.
 - **Snapshot timeouts:** `preview_snapshot` can fail or time out several
-  times in a row while `preview_evaluate` still works. Wait a minute and
-  retry, for up to five minutes; if it still fails, see step 9.
-- **Files:** write them from the host with
-  `booley session enter -- sh -c '...'` (heredoc or Python), never by typing
-  into an editor view.
+  times in a row while `preview_evaluate` still works. When it fails with
+  "not producing screenshot frames", `preview_navigate` your tab to `/` and
+  take the snapshot again; waiting does not help. Otherwise wait a minute and
+  retry, for up to five minutes. If it still fails, see step 9.
+- **Files:** write them from the QA Host with
+  `qa$ booley session enter -- sh -c '...'` (heredoc or Python), never by
+  typing into an editor view.
 
 ## 7. Host commands
 
-Run Sandbox commands from the host as `booley session enter -- <command>`;
-the Project is at `/work` inside the Sandbox. A failing
+Run Sandbox commands as `qa$ booley session enter -- <command>` in
+`$QA_PROJECT`; the Project is at `/work` inside the Sandbox. A failing
 `booley session enter` exit code of 126 or 127 means the command did not
 start, not that a Flow failed.
 
@@ -245,32 +292,37 @@ gap in `log.md` the first time you meet it.
 
 1. Stop `booley dashboard` (Ctrl+C in its terminal drawer) and close
    your tab (`t3_preview_close` with your `tabId`).
-2. `cd $QA_PROJECT && booley session down`, which removes the Sandbox and
-   stops the relay. The relay's port record stays on purpose: the next run at
-   the same `$QA_PROJECT` reuses the port.
-3. Remove the clone's contents and the `<run-dir>/scratch/` link files.
-4. Restore the canonical host install the run started with (the revision you
-   recorded in step 2), the same way step 2 installed the candidate, and run
-   `booley bootstrap --update` from it.
-5. Remove the candidate wheel and its detached worktree.
+2. `qa$ booley session down` in `$QA_PROJECT`, which removes the Sandbox and
+   stops the relay. The relay's port record, in the QA config home, stays on
+   purpose: the next run at the same `$QA_PROJECT` reuses the port.
+3. `qa$ rm -rf $QA_PROJECT`, and remove any link files left in
+   `/home/qa/scratch/` and `<run-dir>/scratch/`.
+4. Remove the candidate wheel, inside the QA Host
+   (`qa$ rm /home/qa/<wheel-file>`) and on the outer host, and its detached
+   worktree. The candidate stays installed in the QA Host; the next run
+   replaces it.
+5. `docker rm -f qa-host`. Keep its volumes and image for the next run.
+6. Save `qa/shared/qa-host/primary-ids.sh` output to
+   `<run-dir>/evidence/qa-host/after.txt` and `diff` it with `before.txt`
+   (QA Host step 3.2). Only `qa-host` rows may differ, such as a new
+   `qa-host:<tag>` image. Any other difference is a finding: record each row
+   in `log.md` with what made it, if known. A container row present in only
+   one snapshot can be another process's short-lived container; still record
+   it.
 
-Check: `booley session status`, run in `$QA_PROJECT` before item 3, reports
-the Sandbox absent, and `booley --version` prints the revision recorded in
-step 2.
+Check: `qa$ booley session status`, run in `$QA_PROJECT` before item 3,
+reports the Sandbox absent, and the outer host's `booley --version` prints
+the same revision as before the run.
 
-Exception: if a finding needs a live repro, leave the Sandbox up and the
-candidate installed, skip items 2-5, and tell the maintainer the Project
-path, the candidate revision, and the finding.
+Exception: if a finding needs a live repro, leave the QA Host and its
+Sandbox up, skip items 2-5, and tell the maintainer the Project path in the
+QA Host, the candidate revision, and the finding. Item 6 still runs.
 
 ## Not yet verified
 
-No run has used this runbook yet. The first run confirms, and records in its
-`log.md`, each of these; fix this file where it is wrong:
+No run has confirmed these yet. The first run that reaches them records each
+in its `log.md`; fix this file where it is wrong:
 
-- `preview_open` reaches the host relay at `127.0.0.1:<port>` and pairing
-  completes in the preview tab.
-- What the address bar holds after pairing (step 4.3).
 - T3 Code creates and prepares a thread's new worktree in the Sandbox.
 - The preview panel loads the Dashboard at Sandbox `127.0.0.1:8090`, and
   whether its DOM is readable from your tab.
-- How long the local base and Project image builds take.
