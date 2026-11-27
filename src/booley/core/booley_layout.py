@@ -138,6 +138,7 @@ def layout_metadata(root: Path) -> Path:
     if common is not None:
         return common / "booley"
     key = hashlib.sha256(str(root.resolve()).encode()).hexdigest()
+    # The folder name is where 0.4.x wrote its journal, so it must not change.
     return config_dir() / "directory-migrations" / key
 
 

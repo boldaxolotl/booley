@@ -327,10 +327,17 @@ def test_sandbox_init_check_only_writes_nothing(
     assert not (project / ".vscode").exists()
 
 
+@pytest.mark.parametrize("leftover", ["directory", "selection"])
 def test_sandbox_init_refuses_a_0_3_leftover(
-    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    leftover: str,
 ) -> None:
-    (project / ".booley").rename(project / ".booley_project")  # the retired layout
+    if leftover == "directory":
+        (project / ".booley").rename(project / ".booley_project")  # the retired layout
+    else:
+        monkeypatch.setenv("BOOLEY_DIR", str(project / "old" / ".booley_project"))
     before = _repository_state(project)
 
     assert _booley_init(project, monkeypatch) == 2

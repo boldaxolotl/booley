@@ -12,8 +12,8 @@ Project Root with the directory holding Booley inputs and local state (#1361).
 This is a hard cut: there is no alias or dual-read period, and the older
 `.booley/project` and embedded Booley-source layouts are unsupported. Booley
 0.4.x's `booley init` is the migrator from Booley 0.3.x's `.booley_project/`.
-This release does not migrate. It refuses each 0.3.x leftover with one message
-to upgrade through Booley 0.4.x first:
+Booley does not migrate it. It refuses each 0.3.x leftover with one message to
+upgrade through Booley 0.4.x first:
 
 - `.booley_project/` at the Project Root, with or without `.booley/`;
 - the journal of an interrupted 0.4.x migration;
@@ -22,14 +22,14 @@ to upgrade through Booley 0.4.x first:
 - a linked checkout's Git pointer into a missing `.booley_project` path.
 
 `booley init` raises the refusal before it writes anything. Keeping the
-migrator was rejected: its journal, Docker inventory, tracking of running
-Booley processes and layout lock cost every Project command and worktree
-change, for a step each 0.3.x Project takes once.
+migrator was rejected: it carries a journal and a Docker inventory, and its
+tracking of running Booley processes and its layout lock cost every Project
+command and worktree change, for a step each 0.3.x Project takes once.
 
 ## In-Sandbox selection
 
 - **Accepted `BOOLEY_DIR` spellings.** In-Sandbox Doctor accepts `BOOLEY_DIR`
-  when it is exactly `/booley-project`, or when it is the `.booley` entry
+  when it is exactly `/booley`, or when it is the `.booley` entry
   directly under the Project Root that Doctor inspects (for example
   `/workspaces/<project>/.booley` in a Codespace). Either spelling must be
   absolute and resolve to an existing directory; the `.booley` entry may be a
@@ -45,6 +45,5 @@ change, for a step each 0.3.x Project takes once.
   configuration, SSH credentials) and the mounted-Vivado checks, which run
   whatever the identity result.
 
-This supersedes path spellings in ADR 0067 while preserving its Goal authority
-and immutable-history decisions. Sandbox home `~/.booley/`, XDG configuration,
-and caches keep their names.
+This supersedes path spellings in ADR 0067. Sandbox home `~/.booley/`, XDG
+configuration, and caches keep their names.

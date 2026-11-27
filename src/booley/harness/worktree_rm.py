@@ -487,7 +487,7 @@ def _busy_reasons(target: _Target) -> list[str]:
 def discard_losses(project_root: Path, name: str) -> list[str]:
     """What removing worktree *name* would lose, in the words of ``rm``'s refusal.
 
-    Read-only: it takes no layout lock and changes nothing. A live Session
+    Read-only: it takes no worktree mutation lock and changes nothing. A live Session
     and a Git lock are blockers, not losses; ``remove_worktree`` reports
     them as its refusal. Raises the failures in :data:`REMOVAL_FAILURES`.
     """

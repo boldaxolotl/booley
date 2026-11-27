@@ -797,15 +797,11 @@ def record_manual_result(
 
 def run_doctor(args: argparse.Namespace, project_root: Path) -> int:
     """Run setup health checks."""
-    from booley.core.booley_layout import (
-        BooleyLayoutError,
-        require_current_layout,
-        validate_environment,
-    )
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.runtime.booley_dir import require_supported_layout
 
     try:
-        validate_environment()
-        require_current_layout(project_root)
+        require_supported_layout(project_root)
     except BooleyLayoutError as exc:
         print(ts.status_line(ts.LineStatus.FAIL, str(exc)))
         return 2

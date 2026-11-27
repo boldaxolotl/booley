@@ -175,6 +175,7 @@ from booley.runtime.booley_dir import (
     booley_dir_for_init,
     init_booley_dir_scope,
     own_booley_dir,
+    require_supported_layout,
     reset_cache,
     resolve_booley_dir,
     resolve_checkout_booley_dir,
@@ -2873,20 +2874,10 @@ def _run_init_unlocked(
 
 def _check_init_layout(project_root: Path) -> None:
     """Refuse a 0.3.x leftover or an unsupported layout before any write."""
-    from booley.core.booley_layout import (
-        reject_retired_path,
-        require_current_layout,
-        validate_environment,
-    )
     from booley.core.checkout_role import require_project_checkout
 
-    validate_environment()
-    # Full init replaces BOOLEY_DIR for its own lookups, so check the caller's value here.
-    if selection := os.environ.get("BOOLEY_DIR"):
-        reject_retired_path(Path(selection).absolute())
-    root = require_project_checkout(project_root)
-    require_current_layout(root)
-    own_booley_dir(root)  # validates a [project].dir selection
+    # Runs before init replaces BOOLEY_DIR for its own lookups.
+    require_supported_layout(require_project_checkout(project_root))
 
 
 def _check_init_only(args: argparse.Namespace, project_root: Path) -> int:
@@ -2975,11 +2966,9 @@ def _sandbox_init_refusal(args: argparse.Namespace) -> str | None:
 
 def _initialize_sandbox_project(ctx: InitContext) -> int:
     """Run Project Initialization with the Sandbox's own Git and Agent CLI facts."""
-    from booley.core.booley_layout import require_current_layout
-
     if not _project_checkout_ready(ctx):
         return _print_summary(ctx)
-    require_current_layout(ctx.project_root)
+    _check_init_layout(ctx.project_root)
     config_path = _agent_config_path(ctx.project_root, seed=False)
     if not _project_config_migration_preflight(ctx, config_path):
         return _print_summary(ctx)

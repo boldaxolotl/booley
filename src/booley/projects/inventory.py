@@ -238,7 +238,7 @@ def _status(project_root: Path) -> ProjectStatus:
         return ProjectStatus.MISSING
     from booley.core.booley_layout import classify_layout
 
-    classify_layout(project_root)  # refuses an unsupported layout
+    classify_layout(project_root)
     if _has_booley_dir(project_root):
         return ProjectStatus.PRESENT
     return ProjectStatus.UNINITIALIZED

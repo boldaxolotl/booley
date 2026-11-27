@@ -46,6 +46,7 @@ def test_scaffold_check_and_interrupted_apply_publish_no_origin(tmp_path, monkey
 
 def test_early_check_recovery_verdict(tmp_path, monkeypatch, capsys):
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    # private: a real pending recovery needs an interrupted host Docker operation.
     monkeypatch.setattr(issuance_invalidation, "shared_recovery_blocks_command", lambda **_k: True)
 
     assert init_cmd.run_init(argparse.Namespace(check_only=True), tmp_path) == 2

@@ -2361,15 +2361,11 @@ def _require_command_project(command: str, project_root: Path) -> None:
     if command == "init":
         return
     if command == "doctor":
-        from booley.core.booley_layout import (
-            BooleyLayoutError,
-            require_current_layout,
-            validate_environment,
-        )
+        from booley.core.booley_layout import BooleyLayoutError
+        from booley.runtime.booley_dir import require_supported_layout
 
         try:
-            validate_environment()
-            require_current_layout(project_root)
+            require_supported_layout(project_root)
         except BooleyLayoutError:
             return  # run_doctor reports the refusal as a FAIL
     try:

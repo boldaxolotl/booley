@@ -170,13 +170,20 @@ def test_summary_tables_fit_the_terminal_width(columns, capsys, monkeypatch):
     assert max(map(colors.len_visible, tables)) <= columns
 
 
-@pytest.mark.parametrize("leftover", ["env", "directory", "beside-current"])
+@pytest.mark.parametrize("leftover", ["env", "directory", "beside-current", "selection", "toml"])
 def test_run_doctor_layout_error_uses_fail_glyph(capsys, monkeypatch, tmp_path, leftover):
     git(tmp_path, "init", "-q")
     monkeypatch.chdir(tmp_path)
     if leftover == "env":
         monkeypatch.setenv("BOOLEY_PROJECT_DIR", "")
         subject = "BOOLEY_PROJECT_DIR"
+    elif leftover == "selection":
+        (tmp_path / ".booley").mkdir()
+        subject = str(tmp_path.resolve() / "old" / ".booley_project")
+        monkeypatch.setenv("BOOLEY_DIR", subject)
+    elif leftover == "toml":
+        (tmp_path / "booley.toml").write_bytes(b'[project]\ndir = "state/.booley_project"\n')
+        subject = str(tmp_path.resolve() / "state" / ".booley_project")
     else:
         (tmp_path / ".booley_project").mkdir()
         subject = str(tmp_path.resolve() / ".booley_project")

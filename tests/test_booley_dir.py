@@ -201,6 +201,19 @@ def test_a_0_3_leftover_refuses_resolution(tmp_path, monkeypatch, leftover):
         resolve_booley_dir(start)
 
 
+@pytest.mark.parametrize("selected", [False, True])
+def test_older_booley_project_layout_refuses(tmp_path, monkeypatch, selected):
+    (tmp_path / ".booley" / "project").mkdir(parents=True)
+    if selected:
+        monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley" / "project"))
+    else:
+        monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    reset_cache()
+
+    with pytest.raises(booley_layout.BooleyLayoutError, match="unsupported older"):
+        resolve_booley_dir(tmp_path)
+
+
 class TestSourceCheckoutRefusal:
     def test_source_checkout_guard_precedes_unrelated_ancestor_layout(
         self, tmp_path, source_checkout
