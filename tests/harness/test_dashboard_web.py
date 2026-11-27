@@ -1,4 +1,4 @@
-"""`booley dashboard --web`: the per-worktree Jobs snapshot as JSON, over real Job records."""
+"""`booley dashboard`: the per-worktree Jobs snapshot as JSON, over real Job records."""
 
 from __future__ import annotations
 
@@ -234,7 +234,7 @@ _SERVE_SCRIPT = "import sys; from pathlib import Path; from booley.harness.dashb
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="stops the child with SIGINT, a POSIX signal")
-def test_web_flag_serves_loopback_after_binding(world):
+def test_serve_binds_loopback_before_its_banner(world):
     proc = subprocess.Popen(
         [sys.executable, "-c", _SERVE_SCRIPT, str(world.main)],
         stdout=subprocess.PIPE,
@@ -279,7 +279,7 @@ def test_held_port_is_a_booley_error_without_banner(world, monkeypatch, capsys):
         holder.listen()
         port = holder.getsockname()[1]
 
-        assert tlr._cmd_dashboard(_dashboard_args("--web", "--port", str(port)), world.main) == 2
+        assert tlr._cmd_dashboard(_dashboard_args("--port", str(port)), world.main) == 2
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -291,13 +291,13 @@ def test_held_port_is_a_booley_error_without_banner(world, monkeypatch, capsys):
     assert served == []
 
 
-def test_dashboard_help_documents_web_and_port(capsys):
+def test_dashboard_help_documents_the_port(capsys):
     with pytest.raises(SystemExit) as stop:
         _dashboard_args("--help")
 
     text = " ".join(capsys.readouterr().out.split())
     assert stop.value.code == 0
-    assert "--web" in text
+    assert "--web" not in text
     assert "127.0.0.1" in text
     assert "--port PORT" in text
     assert "default: 8090" in text
@@ -306,30 +306,21 @@ def test_dashboard_help_documents_web_and_port(capsys):
 @pytest.mark.parametrize("port", ["0", "65536", "-1", "http"])
 def test_port_outside_tcp_range_is_refused(capsys, port):
     with pytest.raises(SystemExit) as stop:
-        _dashboard_args("--web", "--port", port)
+        _dashboard_args("--port", port)
 
     assert stop.value.code == 2
     assert "port must be a whole number from 1 to 65535" in capsys.readouterr().err
 
 
-def test_port_without_web_is_refused(tmp_path, monkeypatch, capsys):
-    from booley.harness.dashboard import command
+def test_dashboard_serves_the_web_dashboard(world, monkeypatch, capsys):
+    served = capture_serving(monkeypatch)
+    # The default port belongs to the host; an ephemeral one keeps parallel workers apart.
+    monkeypatch.setattr("booley.harness.dashboard.web.DEFAULT_PORT", 0)
 
-    monkeypatch.setattr(command, "run_dashboard", lambda _root: 0)
-    args = argparse.Namespace(web=False, port=9123)
+    assert tlr._cmd_dashboard(_dashboard_args(), world.main) == 0
 
-    assert tlr._cmd_dashboard(args, tmp_path) == 2
-    assert "booley dashboard: --port needs --web" in capsys.readouterr().err
-
-
-def test_dashboard_without_web_opens_the_textual_dashboard(tmp_path, monkeypatch):
-    from booley.harness.dashboard import command
-
-    opened: list[Path] = []
-    monkeypatch.setattr(command, "run_dashboard", lambda root: opened.append(root) or 0)
-
-    assert tlr._cmd_dashboard(_dashboard_args(), tmp_path) == 0
-    assert opened == [tmp_path]
+    assert [address[0] for _app, address in served] == ["127.0.0.1"]
+    assert "Booley Dashboard (web): http://127.0.0.1:" in capsys.readouterr().out
 
 
 def test_linked_worktree_snapshot_lists_only_its_jobs(world, monkeypatch):

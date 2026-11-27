@@ -262,11 +262,11 @@ metric. Losing candidates stay until the user deletes them in T3 Code or with
 
 ## Notifications
 
-**Planned.** Agent sessions and slow Booley Flows run for hours, and today the
-only signal is the Dashboard's NEEDS YOU group, so the user has to keep
-watching it. Booley should push a short notice to the desktop, a phone, or
-email when a session waits for the user, stops, or crashes, or when a long
-Flow Job finishes or fails.
+**Planned.** Agent sessions and slow Booley Flows run for hours, and today
+Booley sends no notice of its own, so the user has to keep watching. Booley
+should push a short notice to the desktop, a phone, or email when a session
+waits for the user, stops, or crashes, or when a long Flow Job finishes or
+fails.
 
 The hard part is security. A notification service is a path out of the
 Sandbox, and the Sandbox must not gain one, so push services such as ntfy.sh
@@ -287,9 +287,9 @@ agent:
 
 **Planned.** Booley is an agentic development environment (ADE), but its
 agent-facing UI is thin: Developer Agent sessions run in VS Code terminals,
-and the Booley Dashboard, a terminal view, is the one native view of
-sessions, Jobs, and Targets. The next step is UI for supervising agents
-rather than editing code: a session panel, a Flow-run view, one-click
+and the Booley Dashboard, a web page of each worktree's Jobs, is the one view
+Booley adds. The next step is UI for supervising agents rather than editing
+code: a session panel, a Flow-run view, one-click
 waveform open, and views for Measurement Reports and reviews.
 
 The end state is Booley as a **standalone ADE**: an app built around running

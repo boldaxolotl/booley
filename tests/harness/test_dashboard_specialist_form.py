@@ -1,6 +1,6 @@
 """The reviewer's hand-made Run form (#3816): its focuses, rows, command words and drift guard.
 
-Pure model tests; the wizard pilots are in ``test_dashboard_run_specialist.py``.
+Pure model tests; the argument check is tested in ``test_dashboard_run_specialist.py``.
 """
 
 from __future__ import annotations
@@ -73,7 +73,7 @@ FORMS: dict[str, dict[str, str]] = {REVIEWER: FULLEST, "coverage_analyst": COVER
 
 
 def reviewer_form():
-    """The reviewer's form. Imported here so a Dashboard without it fails the test body, not collection."""
+    """The reviewer's form. Imported here so a tree without it fails the test body, not collection."""
     from booley.harness.dashboard.specialist_form import ReviewerForm
 
     return ReviewerForm()

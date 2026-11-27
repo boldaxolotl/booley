@@ -2758,17 +2758,17 @@ def _check_current_runtime_web_isolation(_pass: Check, _fail: Fail) -> None:
 
 
 def _check_current_runtime_activity_hooks(_pass: Check, _warn: Check) -> None:
-    """Validate the Dashboard's session-activity hooks from inside the Sandbox."""
+    """Validate the session-activity hooks from inside the Sandbox."""
     from booley.harness.activity_hooks import hooks_error
 
     error = hooks_error()
     if error:
         _warning_sink(_warn, "sandbox.activity-hooks-unavailable")(
-            f"Dashboard session activity is unavailable: {error}; "
+            f"Session activity is unavailable: {error}; "
             "rebuild the sandbox image, then rebuild/reopen the Sandbox"
         )
         return
-    _pass("Dashboard session-activity hooks installed")
+    _pass("Session-activity hooks installed")
 
 
 def _check_current_runtime_git_identity(

@@ -705,7 +705,7 @@ class TestEnforceVenue:
 
         assert not re.search(r"\[(Sandbox|either|host|mixed)\]", help_text)
         assert "Locations:" not in help_text
-        assert "Open the Sandbox Dashboard" in " ".join(help_text.split())
+        assert "Serve the web Dashboard" in " ".join(help_text.split())
 
 
 class TestEffectiveCommand:

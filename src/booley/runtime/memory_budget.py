@@ -2,9 +2,8 @@
 
 The budget is the container's memory limit (``[sandbox].memory``, or installed
 memory when the container has none) minus a reserve for what the Jobs do not own:
-the running Developer Agents, the MCP server, the Dashboard, ``t3 serve``, the
-headless Chrome processes, and, without a swap allowance, a quarter of the base as
-headroom.
+the running Developer Agents, the MCP server, ``t3 serve``, the headless Chrome
+processes, and, without a swap allowance, a quarter of the base as headroom.
 Memory admission holds each Job's Memory Reservation against this number; the
 module computes and explains it.
 """
@@ -28,12 +27,7 @@ from booley.runtime.pid import capture_process_identity
 
 # A process found running whose memory cannot be read still reserves 1 GiB.
 UNREADABLE_PROCESS_BYTES = GIB_BYTES
-# Prefix of the Dashboard's socket address as ``/proc/net/unix`` prints it (the
-# abstract-namespace NUL shows as "@"); a test pins it to ``view_probe.socket_name``.
-DASHBOARD_SOCKET_PREFIX = "@booley-dashboard:"
-
 _MAX_PROCESSES = 8192
-_MAX_FDS_PER_PROCESS = 4096
 _CLAUDE_NAMES = frozenset({"claude", "claude.exe"})
 _CODEX_NAMES = frozenset(
     {
@@ -63,7 +57,6 @@ class ReserveRole(StrEnum):
 
     DEVELOPER_AGENT = "developer-agent"
     MCP_SERVER = "mcp-server"
-    DASHBOARD = "dashboard"
     T3_CODE = "t3-code"
     HEADLESS_CHROME = "headless-chrome"
     HEADROOM = "headroom"
@@ -207,10 +200,7 @@ def _is_t3_server(argv: Sequence[str]) -> bool:
 
 
 def _classify(proc_root: Path, pid: int) -> ReserveRole | None:
-    """Return the role of *pid* (agent, headless Chrome, MCP server, ``t3 serve``).
-
-    The Dashboard is found by socket.
-    """
+    """Return the role of *pid* (agent, headless Chrome, MCP server, ``t3 serve``)."""
     executable = _read_executable_name(proc_root, pid)
     if (
         _read_comm(proc_root, pid) == "claude"
@@ -226,30 +216,6 @@ def _classify(proc_root: Path, pid: int) -> ReserveRole | None:
     return ReserveRole.T3_CODE if _is_t3_server(argv) else None
 
 
-def _dashboard_socket_inode(proc_root: Path) -> str | None:
-    """Return the inode of this PID namespace's Dashboard socket, if one is bound."""
-    try:
-        scope = str((proc_root / "self" / "ns" / "pid").readlink())
-        table = (proc_root / "net" / "unix").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    address = DASHBOARD_SOCKET_PREFIX + scope
-    for line in table.splitlines()[1:]:
-        fields = line.split()
-        if len(fields) >= 8 and fields[7] == address:
-            return fields[6]
-    return None
-
-
-def _holds_socket(proc_root: Path, pid: int, inode: str) -> bool:
-    wanted = f"socket:[{inode}]"
-    try:
-        links = (proc_root / str(pid) / "fd").iterdir()
-        return any(str(link.readlink()) == wanted for link in islice(links, _MAX_FDS_PER_PROCESS))
-    except OSError:
-        return False
-
-
 def _scan_processes(proc_root: Path) -> dict[ReserveRole, list[int]]:
     """Find the PIDs of each reserve role with one bounded scan of *proc_root*."""
     try:
@@ -260,21 +226,13 @@ def _scan_processes(proc_root: Path) -> dict[ReserveRole, list[int]]:
     found: dict[ReserveRole, list[int]] = {
         ReserveRole.DEVELOPER_AGENT: [],
         ReserveRole.MCP_SERVER: [],
-        ReserveRole.DASHBOARD: [],
         ReserveRole.T3_CODE: [],
         ReserveRole.HEADLESS_CHROME: [],
     }
-    inode = _dashboard_socket_inode(proc_root)
     for pid in pids:
         role = _classify(proc_root, pid)
         if role is not None:
             found[role].append(pid)
-        elif (
-            inode is not None
-            and not found[ReserveRole.DASHBOARD]
-            and _holds_socket(proc_root, pid, inode)
-        ):
-            found[ReserveRole.DASHBOARD].append(pid)
     return found
 
 
@@ -300,7 +258,7 @@ def _measure_summed(role: ReserveRole, pids: Sequence[int], proc_root: Path) -> 
 
 
 def measure_reserve(*, proc_root: Path = Path("/proc")) -> tuple[ReservePart, ...]:
-    """Measure the Developer Agents, MCP server, Dashboard, ``t3 serve`` and Chrome now running.
+    """Measure the Developer Agents, MCP server, ``t3 serve`` and Chrome now running.
 
     Each process counts alone (its own VmRSS), not with its descendants: those
     include running Jobs, which their own reservations already cover. The

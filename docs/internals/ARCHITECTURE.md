@@ -159,8 +159,10 @@ sessions and Booley's own calls. Configuration is under
 [`[models]`](../user/CONFIG.md#model-selection-models); sign-in and billing
 are in [SETUP.md](../user/SETUP.md#sign-in-and-billing).
 
-`booley dashboard` is the Sandbox view beside the editor. It shows the Sandbox's
-sessions and Jobs and can start Booley Flows as Standalone Jobs.
+`booley dashboard` serves the Booley Dashboard, a web page of each worktree's
+Jobs for T3 Code's preview panel. With the `web-run-panel` Feature Flag on, the
+page can also start Booley Flows as Standalone Jobs. The design is in
+[ADR 0093](../adr/0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md).
 
 ### Why VS Code
 
@@ -216,8 +218,8 @@ CPU, but they fail by running out of memory.
 
 - **Budget.** The Memory Budget is the container's memory limit
   (`[sandbox].memory`, else the host memory the container sees) minus a
-  reserve for the agents, the MCP server, the Dashboard, `t3 serve` and the
-  headless Chrome processes, each measured while it runs.
+  reserve for the agents, the MCP server, `t3 serve` and the headless Chrome
+  processes, each measured while it runs.
 - **Estimate.** A Job reserves its estimated peak memory: the largest recent
   peak recorded for the same Target and phase, plus headroom. A Job with no
   history borrows the largest estimate for that phase elsewhere in the

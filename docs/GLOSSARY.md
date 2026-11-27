@@ -342,11 +342,15 @@ _Avoid_: regex, marker, exit-code-only verdict
 ### Presentation
 
 **Booley Dashboard**:
-The terminal view, one per Sandbox, of agent sessions, Booley Flow Jobs,
-Targets, and health signals, from which a human can also launch Booley Flows as
-Standalone Jobs. Its **Session activity** is what a session's agent client last
-reported, never inferred from Booley calls or Jobs.
-_Avoid_: control room, console, monitor; session status, session state (for Session activity)
+The web page, one per worktree and served from inside the Sandbox, of that
+worktree's Booley Flow and Specialist Jobs, from which a human can also Run them
+as Standalone Jobs. It shows no sessions, Goals, or health signals.
+_Avoid_: control room, console, monitor
+
+**Session activity**:
+What a session's agent client last reported, never inferred from Booley calls or
+Jobs.
+_Avoid_: session status, session state
 
 ## Execution and evidence
 

@@ -2,13 +2,12 @@
 
 Status: accepted
 
-Once T3 Code replaces VS Code,
 [ADR 0093](0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md)
-replaces the worktree choice and the Targets browser.
+shows one Dashboard page per worktree, and the Run form is on that page.
 
 ## Context
 
-The Dashboard shows every session and Job in a Sandbox, but starting a run
+The Dashboard shows a worktree's Jobs, but starting a run
 meant typing `booley flow sim --target sim_fifo --test burst+stall@42` into a
 Sandbox shell. Picking a compatible Target, recalling a Test or Test Variant
 name and remembering a Flow's options is a lookup the Dashboard already has the
@@ -28,9 +27,8 @@ it cannot host a run that must outlive the Dashboard.
   it did not start, Goal-change approvals stay with chat, and abandoning stays
   on the CLI. Its trust boundary does not change: it runs in the Sandbox with
   a Sandbox shell's rights.
-- A read-only Targets browser shows the Targets of the selected worktree and
-  the Flows that can drive each. Choosing one starts the launch with worktree
-  and Target filled in. Any git worktree of the Project can be chosen.
+- The worktree is fixed: it is the page's. The Run form offers the Flows and
+  Specialists that worktree enables and, for a Flow, the Targets it can drive.
 - Rerun, cancel, waveform opening and other actions on an existing Job are out
   of scope.
 
@@ -64,8 +62,8 @@ fix when authentication is missing.
   record, log and terminal status itself and so outlives the Dashboard. The
   worker strips session and Goal environment, and a detached Specialist
   disables its parent-death watchdog.
-- Job detail links the report, `job.log` and a Specialist's transcript
-  directory; there is no embedded log viewer.
+- A finished Job's result card links its report; there is no embedded log
+  viewer.
 - Standalone Jobs are admitted like any Job (ADR 0087) at the `interactive`
   priority.
 - A Standalone Job is never Goal evidence: it has no Goal binding and never

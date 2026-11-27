@@ -33,7 +33,7 @@
     return n >= gib ? (n / gib).toFixed(1) + ' GiB' : (n / (1024 * 1024)).toFixed(1) + ' MiB';
   }
 
-  // Mirrors the Dashboard's duration format; an unknown duration shows nothing.
+  // Mirrors `booley.runtime.timefmt.format_duration`; an unknown duration shows nothing.
   function formatDuration(seconds) {
     if (seconds === null) {
       return '';

@@ -1,6 +1,6 @@
-"""The Run wizard's form, generated from a Flow's human parser (#3580).
+"""The Run form, generated from a Flow's human parser (#3580).
 
-No Textual here. :func:`describe` reads the parser's help groups and turns each
+:func:`describe` reads the parser's help groups and turns each
 option into a form field or routes it to the one extra-arguments field;
 :func:`command_argv` turns the human's values back into the argument words the
 Flow's own parser validates.
@@ -43,11 +43,11 @@ GROUP_PLACEMENT: Final[dict[str, Literal["field", "extra"]]] = {
     "Expert: OpenROAD": "extra",
 }
 
-# The two options the wizard fills from the worktree's Targets: dest -> field kind.
+# The two options the form fills from the worktree's Targets: dest -> field kind.
 _PICKERS: Final[dict[str, FieldKind]] = {"target": "target", "test": "tests"}
 _PICKER_HINTS: Final[dict[FieldKind, str]] = {
     "target": "One Target; put more in the extra arguments.",
-    "tests": "Enter toggles a Test Run; more forms (seeds) go in the extra arguments.",
+    "tests": "More forms (seeds) go in the extra arguments.",
 }
 AUTOMATIC = "automatic"  # what the Target field shows while no Target is chosen
 DEFAULT_SUITE = "default suite"  # what the test field shows while no Test Run is chosen

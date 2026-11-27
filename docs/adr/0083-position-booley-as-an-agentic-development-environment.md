@@ -56,8 +56,6 @@ break the package, CLI, repository, and published links for no gain.
   ARCHITECTURE, and AGENTS.md use the ADE framing.
 - Warp and Orca are named only in WHY.md, to explain the category.
 - The CHANGELOG keeps its historical "IDE" wording.
-- Internal names such as the site's `ide-figure.html` are left alone: that
-  illustration shows a VS Code window.
 
 ## Amendments (2026-11-12)
 

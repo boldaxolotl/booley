@@ -78,7 +78,7 @@ step ends.
 
 | Name | Fragment | Use |
 |---|---|---|
-| `small-budget` | `[sandbox]` `memory = "<size>"`: the wanted budget plus the reserve (the measured agent, MCP server and Dashboard memory, plus 2 GB); restart the Session as `docs/user/SANDBOX.md` says, read the resulting `budget_mb` in a claim file, and set it back afterwards | Fit one Job and not two, or a set number of Record items |
+| `small-budget` | `[sandbox]` `memory = "<size>"`: the wanted budget plus the reserve (the measured agent and MCP server memory, plus 2 GB); restart the Session as `docs/user/SANDBOX.md` says, read the resulting `budget_mb` in a claim file, and set it back afterwards | Fit one Job and not two, or a set number of Record items |
 | `parallel-items` | `[flows.sim]` `run_cwd = ".booley/runs/sim/{attempt}"`, so each Record item runs in its own directory | Let Record items run in parallel |
 | `retired` | `[jobs]` `max_heavy = 2`, `heavy_memory = "22g"`, `max_light = 4`, `queue_max = 8` and `memory_budget = "20g"`; for the one-key-at-a-time step, one of them | Retired keys, refused with a fix hint |
 | `seats` | Remove `[jobs.seats]`; then `vivado = 0`, `vivado = "x"`, `unknown_tool = 1` under `[jobs.seats]`, and `[jobs] seats = 1` | Seat Cap values, good and bad |

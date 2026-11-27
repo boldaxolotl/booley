@@ -29,7 +29,7 @@ step never hides the bugs behind it.
 | [coverage](missions/coverage/MISSION.md) | Native coverage on a fixed fixture Project with known counts: collection, arithmetic, coverage bounds, waivers, storage, a measured test-gap closure, the Coverage Analyst |
 | [mutation](missions/mutation/MISSION.md) | Mutation Flow on a fixture Project with a hand-written list of every Mutant: sites and decoys, determinism, selection, scoring, hangs, bad input, removed surface |
 | [scheduler](missions/scheduler/MISSION.md) | Memory-budget Job scheduling on the Caliptra demo Project plus a memory-hog Custom Flow: estimates, queueing and its reasons, jump-ahead, shrinking reservations, real OOM kills and the single requeue, Simulation Record items, Specialists admitted beside Flows, thread counts, Vivado Seat Caps, retired `[jobs]` keys |
-| [gui](missions/gui/MISSION.md) | Browser Codespace on the picorv32 demo with a candidate image: onboarding, Dashboard under a live request and its measurement, `bwave gui` without a viewer, stop and resume, terminal output, Measurement Report, themes, docs site, all checked against the CLI |
+| [gui](missions/gui/MISSION.md) | Browser Codespace on the picorv32 demo with a candidate image: onboarding, the web Dashboard under a live request and its measurement, `bwave gui` without a viewer, stop and resume, terminal output, Measurement Report, themes, docs site, all checked against the CLI |
 
 Each mission's primary areas fit an 8-hour budget (`gui`: 4 hours) and run in
 priority order; areas marked optional follow-up sit outside that budget. Host

@@ -38,8 +38,8 @@ finding, work around it if you can, and keep going.
   commands such as "Toggle Screen Reader Accessibility Mode" write to the
   default profile, which follows the maintainer into other github.dev
   sessions. QA settings go only into the Codespace's machine settings (step 6).
-- **Don't reload the page** unless the area is about reload. A reload loses the
-  Dashboard terminal and every terminal's contents.
+- **Don't reload the page** unless the area is about reload. A reload loses
+  every terminal's contents, including the one that serves the Dashboard.
 - **The Codespace carries the maintainer's identity.** `/etc/gitconfig` holds
   their name and email, and `booley doctor` prints them, with or without
   `-v`, on its `sandbox.gitconfig-identity` line (warned or waived). Before
@@ -158,7 +158,9 @@ the trust prompt ("Do you trust the authors of the files in this folder?")
    out; then click its page coordinates (see "Clicking" in step 7). Check
    right after that the prompt is gone and Restricted Mode has ended.
 2. Open a terminal: F1, type `Terminal: Create New Terminal`, Enter. Run
-   `booley dashboard` and check that the Dashboard renders.
+   `booley dashboard` and leave it running. Open the forwarded port 8090 with
+   `?worktree=/workspaces/picorv32` added (step 7, "Forwarded ports") and check
+   that the page renders.
 3. Open a second terminal, the command terminal, the same way.
    Run `booley --version`. Before step 6 the terminal is a canvas: read the
    result from a screenshot.
@@ -166,10 +168,6 @@ the trust prompt ("Do you trust the authors of the files in this folder?")
 Worked when the output reads `booley <version> (<short>, <date>)`, for
 example `booley 0.4.0 (10c8f9c, 2026-11-06)`. Any other
 commit means the Codespace runs the wrong image: stop and recheck steps 2-4.
-
-Note the Dashboard's `Doctor:` line now. The automatic Doctor run happens
-before the folder is trusted, yet it should match a manual `booley doctor`
-(step 8); a difference is a finding.
 
 ## 6. Reading mode
 
@@ -258,8 +256,7 @@ depending on the tool version), another reason to prefer `preview_evaluate`.
   prompt line, and a reused marker matches the previous command's output
   before `clear` runs. This needs step 6; before it, poll with screenshots.
 - **Read only the terminal in front.** A terminal behind another one keeps
-  stale DOM text: a hidden Dashboard can still read `1 FAIL` after the CLI
-  published `0 failed`, and shows the new value once brought to the front.
+  stale DOM text, and shows the new output once brought to the front.
 - **Hidden tab:** while your tab is not visible (`preview_status` reports
   `visible: false`) it renders no frames, and the terminal DOM goes stale.
   Take a `preview_snapshot` (`save: true`, `includeImage: false`) first: it
@@ -270,19 +267,11 @@ depending on the tool version), another reason to prefer `preview_evaluate`.
   Load the same page top-level ("Live Preview: Show Preview (External
   Browser)", or the forwarded-port URL from the Ports view in a tab of your
   own) before calling it a Booley finding.
-- **Dashboard:** click inside it, then press keys. `ArrowRight`/`ArrowLeft`
-  switch between the Sessions, Jobs and Targets windows, `Enter` opens a
-  detail, `Escape` goes back one level. `ArrowUp` on the first row moves into
-  the top bar; `ArrowDown` or `Escape` leaves it. The top bar lists
-  `Sessions Jobs Targets`, then the active window's own items (Jobs:
-  `Running Finished All Owner: <owner>`; Targets: `Worktree: <name>`), then
-  `Run` and `Help`, separated by `│`. In the top bar `ArrowLeft`/`ArrowRight`
-  choose and `Enter` applies. In Help, after leaving the top bar, `ArrowDown`
-  and PageUp/PageDown scroll, as the footer says; the mouse wheel doesn't.
-  `q` quits; `booley dashboard` in a terminal reopens it.
+- **Dashboard:** a web page that refreshes itself every 3 s. Read it with
+  `preview_snapshot` or `preview_evaluate`; click a report link or the Results
+  heading.
 - **Long output:** F1, `View: Toggle Maximized Panel` shows output that doesn't
-  fit the panel (a layout change, not a setting), and gives the Dashboard more
-  than its default ~258 px. Toggle it back afterwards.
+  fit the panel (a layout change, not a setting). Toggle it back afterwards.
 - **Resizing:** after the viewport narrows, the terminal DOM keeps old cells
   past the new width (a line can read twice). Trust the screenshot then, or
   cut each row to the new column count.
@@ -300,19 +289,16 @@ depending on the tool version), another reason to prefer `preview_evaluate`.
 
 The CLI is the truth; the main bug class is "GUI disagrees with CLI". Run the
 oracle right after the screenshot it checks, then bring the GUI back to the
-front and allow a refresh (the Dashboard redraws every 2 s) before you call a
-mismatch.
+front and allow a refresh (the Dashboard page refreshes every 3 s) before you
+call a mismatch.
 
 | GUI surface | Oracle (command terminal) |
 |---|---|
-| Dashboard `Doctor:` line (`OK`, or `N FAIL · M WARN`) | `booley doctor 2>&1 \| grep -v gitconfig-identity`, or read only its Summary (the identity line, see Hard rules). It republishes the result the Dashboard reads, so the line must match its summary after the next refresh. |
-| Dashboard resource line (CPU, Memory, Free disk) | No Booley command: `booley resources --json` shows historical peaks per Target, not this line. Compare with `nproc`, `cat /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max` and `df -h /workspaces`; CPU % only roughly, against `top -bn1 \| head -5`. |
-| Notices (upgrade review) | `booley upgrade status --json` |
-| Sessions overview, preview pane, session detail | No CLI. Check against what you started: which agent sessions, their branch and work dir (`git worktree list`), and the last Booley call you made in each. Each call shows as two rows (started, completed), and the detail stays on an ended session until `Escape`. Without a signed-in agent, make sessions with the scripted MCP client below. |
-| Session measurement line (`Measured <sha>`, `last Measured … · latest …`, `measuring k/n`) and the report it opens | The run's own document, found by its run ID: the report `Enter` opens is `<run_id>.md`, and the `measure` Job record carries `run_id`; then `find /workspaces/picorv32/.booley/measurements -name '<run_id>.json'` (layout `measurements/<project_tree>/<run_id>.json`) read with `jq .`, and compare its commit with `git -C <worktree> rev-parse HEAD`. While measuring, the `measure` Job's `progress.json` beside its `job.log`. Never pick a run by directory order, and never run `booley measure` as an oracle on a commit that is not Measured: it starts a measurement. |
-| Jobs window, Job detail | No CLI (agents see Jobs through the `booley_status` MCP tool). Read the Job records: `for f in /workspaces/picorv32/.booley/{,logs/,logs/*/,job_logs/*/,runtime/sessions/*/}.runtime/jobs/*.json; do jq -c '{run_id,endpoint,status,exit_code,owner,work_dir}' "$f"; done 2>/dev/null`, plus `ps -eo pid,etime,args` for running ones. A record says `running` until its server notices the end, so check the PID before calling a status mismatch. For Flows you started yourself, their terminal output is also an oracle. |
+| Dashboard header resources (CPU, memory, disk) | No Booley command: `booley resources --json` shows historical peaks per Target, not these. Compare with `nproc`, `cat /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max` and `df -h /workspaces`; CPU % only roughly, against `top -bn1 \| head -5`. |
+| Measured Commit and its Measurement Report | `booley measure` in the worktree, only on a commit that is Measured (on any other it starts a measurement): it prints the stored run. The run's own document, found by its run ID: the report is `<run_id>.md`, and the `measure` Job record carries `run_id`; then `find /workspaces/picorv32/.booley/measurements -name '<run_id>.json'` (layout `measurements/<project_tree>/<run_id>.json`) read with `jq .`, and compare its commit with `git -C <worktree> rev-parse HEAD`. While measuring, the `measure` Job's `progress.json` beside its `job.log`. Never pick a run by directory order. |
+| Dashboard Now and Results cards, header Job admission | The `booley_status` MCP tool, and the Job records: `for f in /workspaces/picorv32/.booley/{,logs/,logs/*/,job_logs/*/,runtime/sessions/*/}.runtime/jobs/*.json; do jq -c '{run_id,endpoint,status,exit_code,owner,work_dir}' "$f"; done 2>/dev/null`, plus `ps -eo pid,etime,args` for running ones. A record says `running` until its server notices the end, so check the PID before calling a status mismatch. For Flows you started yourself, their terminal output is also an oracle. |
 
-**Scripted MCP client.** Sessions without an agent: in a command terminal,
+**Scripted MCP client.** Without a signed-in agent: in a command terminal,
 write a Python script (heredoc) that uses the image's `mcp` package against the
 Booley MCP server that `~/.codex/config.toml` names
 (by default `http://127.0.0.1:8814/mcp`). That `mcp` version's API is

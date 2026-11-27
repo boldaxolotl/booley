@@ -15,8 +15,6 @@ import pytest
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import TextContent
 
-from booley.harness.dashboard import model
-from booley.harness.dashboard.app import DashboardApp
 from booley.mcp import server, session_observer, session_peer, session_registry
 from booley.mcp.application import McpApplication, McpDispatchResult, McpRequestContext
 from booley.mcp.session_observer import SessionObserver
@@ -451,7 +449,7 @@ async def test_codex_call_routes_by_the_workspace_in_its_turn_metadata(
 
 
 @pytest.mark.asyncio
-async def test_dashboard_lists_the_session_under_its_worktree(
+async def test_registry_lists_the_session_under_its_worktree(
     tmp_path: Path, repos: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     application, seen = capturing_application(LINT_DEFINITION["schema"])
@@ -468,15 +466,10 @@ async def test_dashboard_lists_the_session_under_its_worktree(
     assert row.attribution.work_dir == str(repos.main_wt)
     assert row.attribution.default_work_dir == ""
     assert row.attribution.process is not None and row.attribution.process.pid == 200
-    app = DashboardApp(lambda: None)
-    app.snapshot = model.DashboardSnapshot(sessions=(row,), observed_at=1791453900)
-    facts = app._session_facts(row)
-    assert facts.work_dir == str(repos.main_wt)
-    assert "(default)" not in facts.work_dir
 
 
 @pytest.mark.asyncio
-async def test_status_card_names_the_session_the_dashboard_lists(
+async def test_status_card_names_the_session_the_registry_lists(
     tmp_path: Path, repos: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     common = repos.main / ".booley"
@@ -497,16 +490,12 @@ async def test_status_card_names_the_session_the_dashboard_lists(
             response = await call(port, "booley_status", {})
             assert response.status_code == 200, response.text
             cards[port] = response.json()["result"]["content"][0]["text"]
-    labels, titles, _ = HandleStore(common).titled_snapshot()
-    rows = SessionRegistry(common).snapshot().rows
-    app = DashboardApp(lambda: None)
-    app.snapshot = model.DashboardSnapshot(
-        sessions=rows, session_handles=labels, session_titles=titles, observed_at=1791453900
-    )
-    by_branch = {facts.branch: facts for facts in map(app._session_facts, rows)}
-    main_row, worktree_row = by_branch["main"], by_branch["main-work"]
-    assert (main_row.title, main_row.work_dir) == ("S1", f"{repos.main} (default)")
-    assert (worktree_row.title, worktree_row.work_dir) == ("S2", str(repos.main_wt))
+    _, titles, _ = HandleStore(common).titled_snapshot()
+    listed = {
+        titles[row.attribution.key]: (row.attribution.work_dir, row.attribution.default_work_dir)
+        for row in SessionRegistry(common).snapshot().rows
+    }
+    assert listed == {"S1": ("", str(repos.main)), "S2": (str(repos.main_wt), "")}
     assert f"Session: S1\nBranch: main\nCheckout: {repos.main} (main checkout)\n" in cards[50002]
     assert (
         f"Session: S2\nBranch: main-work\nCheckout: {repos.main_wt} (worktree)\n" in cards[50001]

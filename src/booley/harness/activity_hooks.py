@@ -1,4 +1,4 @@
-"""Validate the Sandbox Image's session-activity hooks for the Dashboard (ADR 0068)."""
+"""Validate the Sandbox Image's session-activity hooks (ADR 0068)."""
 
 from __future__ import annotations
 

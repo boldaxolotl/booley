@@ -1,6 +1,6 @@
 """One worktree's Jobs, resources and admission as plain JSON values.
 
-Textual-free and HTTP-free: ``web`` routes requests and calls ``read_snapshot``.
+HTTP-free: ``web`` routes requests and calls ``read_snapshot``.
 Sizes are bytes and durations are seconds; timestamps are the stored RFC 3339 strings.
 """
 

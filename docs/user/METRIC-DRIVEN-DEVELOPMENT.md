@@ -217,9 +217,7 @@ the commit it measures.
     commit's tree, so amending only the message keeps a commit Measured.
 
 The Developer Agent reports the verdict line, the failing rows and the paths
-of the reports, and cancelling it stops the measurement's Flows. The
-Dashboard shows each session's measurement; see
-[The dashboard](USAGE.md#the-dashboard).
+of the reports, and cancelling it stops the measurement's Flows.
 
 A commit that is already Measured is not measured again: the command prints
 its stored run, starts no Flow and exits with status 0. `--target` checks and

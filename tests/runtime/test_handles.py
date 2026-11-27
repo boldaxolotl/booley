@@ -13,6 +13,8 @@ from tests.conftest import symlink_or_skip
 from tests.project_runtime_git_support import git
 from tests.time_budget import hang_guard_s
 
+from booley.harness.dashboard.jobs import JobReader
+from booley.harness.dashboard.model import read_occupants
 from booley.mcp import session_registry
 from booley.mcp.session_registry import Attribution, SessionRegistry
 from booley.runtime import handles, job_records
@@ -291,13 +293,9 @@ def test_job_allocation_failure_is_advisory(tmp_path, monkeypatch, caplog):
     assert "disk" in caplog.text
 
 
-def test_full_dashboard_reader_keeps_maps_and_registry_bytes_unchanged(
-    tmp_path_factory, monkeypatch
-):
+def test_dashboard_reads_keep_maps_and_registry_bytes_unchanged(tmp_path_factory, monkeypatch):
     for map_state in ["allocated", "named", "empty", "broken"]:
         tmp_path = tmp_path_factory.mktemp(str(map_state))
-        from booley.harness.dashboard.model import DashboardReader
-
         registry = SessionRegistry(tmp_path)
         registry.upsert(attribution(), "sim", "completed", now=100)
         job = job_records.JobRecord("job-one", "sim", STAMP, 60, session_key="codex:one")
@@ -320,24 +318,19 @@ def test_full_dashboard_reader_keeps_maps_and_registry_bytes_unchanged(
 
         monkeypatch.setattr(handles.HandleStore, "load", counted_load)
         before = {str(p): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
-        reader = DashboardReader(tmp_path, tmp_path)
+        reader = JobReader(tmp_path)
+        title = {"allocated": "S1", "named": "S1 \u00b7 uart-fix"}.get(map_state, "S?")
         for _ in range(2):
             reads.clear()
-            snapshot = reader.read()
+            occupants = read_occupants(tmp_path, reader, Path("/work"))
             assert reads.count(False) == 1, map_state
-            assert snapshot.sessions[0].attribution.key == "codex:one", map_state
-            assert snapshot.jobs.jobs[0].handle == "J-SIM1", map_state
-            assert snapshot.jobs.jobs[0].owner_handle == (
+            assert occupants.sessions == (f"{title} Interactive",), map_state
+            snapshot = reader.read(now=101)
+            assert snapshot.jobs[0].handle == "J-SIM1", map_state
+            assert snapshot.jobs[0].owner_handle == (
                 "S1" if map_state in {"allocated", "named"} else ""
             ), map_state
-            assert snapshot.session_handles == (
-                {"codex:one": "S1"} if map_state in {"allocated", "named"} else {}
-            ), map_state
-            assert snapshot.session_titles == {
-                "allocated": {"codex:one": "S1"},
-                "named": {"codex:one": "S1 \u00b7 uart-fix"},
-            }.get(map_state, {}), map_state
-            diagnostics = (*snapshot.diagnostics, *snapshot.jobs.diagnostics)
+            diagnostics = snapshot.diagnostics
             assert sum("Session handles unavailable" in d for d in diagnostics) == (
                 map_state == "broken"
             ), map_state
@@ -507,9 +500,7 @@ def test_lasting_handle_map_sharing_error_is_a_snapshot_diagnostic(tmp_path, mon
     assert attempts[store.path] > 1
 
 
-def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path, monkeypatch):
-    from booley.harness.dashboard import app
-    from booley.harness.dashboard.model import DashboardReader
+def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path):
     from booley.runtime.timefmt import rfc3339_from_epoch
 
     now = 1_800_000_000.0
@@ -531,15 +522,12 @@ def test_dashboard_names_expired_unallocated_job_by_run_id(tmp_path, monkeypatch
             session_key="codex:gone",
         )
         job_records.write_record(record, root)
-    monkeypatch.setattr("booley.harness.dashboard.model.namespace", lambda: "fixture")
-    monkeypatch.setattr("booley.harness.dashboard.model.wall_clock", lambda: now)
-    views = {j.record.run_id: j for j in DashboardReader(tmp_path, tmp_path).read().jobs.jobs}
-    expired, recent = views["sim-expired"], views["sim-recent"]
-    assert app._job_label(expired) == "sim-expired"
-    assert app._owner_handle(expired, {}) == "codex:gone"
-    assert app._job_label(recent) == "J-SIM?"
-    assert app._owner_handle(recent, {}) == "S?"
-    assert app._job_label(views["sim-running"]) == "J-SIM?"
+    views = {j.record.run_id: j for j in JobReader(tmp_path).read(now=now).jobs}
+    assert {run_id: (view.handle, view.owner_handle) for run_id, view in views.items()} == {
+        "sim-expired": ("sim-expired", "codex:gone"),
+        "sim-recent": ("", ""),
+        "sim-running": ("", ""),
+    }
 
 
 def test_session_allocation_ignores_worktrees_and_branches(tmp_path, monkeypatch):

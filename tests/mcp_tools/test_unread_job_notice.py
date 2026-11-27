@@ -24,7 +24,7 @@ from booley.mcp.application import McpInputRequired
 from booley.mcp.session_registry import Attribution
 from booley.runtime import job_records as jobrec
 from booley.runtime.session_paths import session_jobs_dir
-from booley.runtime.timefmt import format_clock, format_duration, parse_timestamp, utc_now_rfc3339
+from booley.runtime.timefmt import utc_now_rfc3339
 
 SERVER = "mcp-stdio:developer:pid:test:1:1"
 NESTED_SERVER = "mcp-stdio:nested:pid:test:2:2"
@@ -335,10 +335,7 @@ async def test_notice_failure_keeps_result(monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
-async def test_first_read_time_recorded_and_latency_visible():
-    from booley.harness.dashboard.app import job_detail
-    from booley.harness.dashboard.jobs import JobView
-
+async def test_first_read_time_is_recorded_once():
     _write("mine-job", ended_at=EARLIER)
     application = _application()
 
@@ -346,9 +343,6 @@ async def test_first_read_time_recorded_and_latency_visible():
     rec = _read("mine-job")
     assert rec.read_at is not None
     await _call(application, "booley_poll", {"run_id": "mine-job"})
-    waited = (parse_timestamp(rec.read_at) - parse_timestamp(EARLIER)).total_seconds()
-    detail = job_detail(JobView(session_jobs_dir(), rec, "completed"))
-    assert f"Read: {format_clock(rec.read_at)} · {format_duration(waited)} after end" in detail
     # The second poll did not move the first-read time.
     assert _read("mine-job").read_at == rec.read_at
 

@@ -96,10 +96,10 @@ def test_doctor_warns_rather_than_fails_when_hooks_are_missing(monkeypatch):
     passed, warned = [], []
     monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
     doctor._check_current_runtime_activity_hooks(passed.append, warned.append)
-    assert passed == ["Dashboard session-activity hooks installed"]
+    assert passed == ["Session-activity hooks installed"]
     monkeypatch.setattr(activity_hooks, "hooks_error", lambda: "Codex activity hooks missing")
     doctor._check_current_runtime_activity_hooks(passed.append, warned.append)
     assert len(passed) == 1
-    assert "Dashboard session activity is unavailable: Codex activity hooks missing" in warned[0]
+    assert "Session activity is unavailable: Codex activity hooks missing" in warned[0]
     assert "rebuild the sandbox image" in warned[0]
     assert warned[0].check_id == "sandbox.activity-hooks-unavailable"

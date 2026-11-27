@@ -187,14 +187,6 @@ def test_report_listing_reports_a_0_4_0_simulation_report_as_older() -> None:
             report, endpoint="sim", exit_code=report["exit_code"], argv=["sim"]
         )
         assert job.flow_result.value == expected, name
-        for presentation in (present_report(report), job):
-            values = " ".join(row.value for row in presentation.result_rows)
-            for unavailable in (
-                "Summary unavailable",
-                "grade unavailable",
-                "evaluation unavailable",
-            ):
-                assert unavailable not in values, name
 
 
 @requires_procfs

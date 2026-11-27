@@ -391,7 +391,7 @@ def test_shared_health_has_no_transitive_command_or_sdk_dependency(
 def test_health_consumers_reach_shared_health_without_the_doctor_worker(
     production_source: SourceTreeAnalysis,
 ) -> None:
-    consumers = {"booley.mcp.server", "booley.harness.dashboard.model"}
+    consumers = {"booley.mcp.server"}
     shared = {"booley.runtime.health", "booley.runtime.health_presentation"}
     worker = "booley.harness.auto_doctor"
     targets: dict[str, set[str]] = {consumer: set() for consumer in consumers}

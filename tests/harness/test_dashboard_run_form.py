@@ -1,8 +1,8 @@
-"""The Run wizard's form model (#3580): generated from each Flow's human parser.
+"""The Run form's model (#3580): generated from each Flow's human parser.
 
 The drift tests build the real parsers of every built-in Flow, so a Flow that
 gains an option fails here until the option is shown or routed to extra
-arguments. The module under test is imported in each test body, so a Dashboard
+arguments. The module under test is imported in each test body, so a tree
 without it fails there and not at collection.
 """
 
@@ -162,7 +162,7 @@ def test_target_and_test_fields_are_pickers():
     assert fields["--test"].kind == "tests"
     assert not fields["--target"].required  # every built-in Flow can pick the Target itself
     assert "One Target" in fields["--target"].hint
-    assert "toggles a Test Run" in fields["--test"].hint
+    assert "More forms (seeds)" in fields["--test"].hint
     assert fields["--seed"].hint.startswith("Seed for every selected Test Run")
     assert fields["--target"].shown("") == "automatic"
     assert fields["--target"].shown("sim_fifo") == "sim_fifo"

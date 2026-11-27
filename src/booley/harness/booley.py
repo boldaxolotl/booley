@@ -563,25 +563,15 @@ def _build_parser(features: frozenset[str] = frozenset()) -> argparse.ArgumentPa
 def _add_dashboard_subparser(sub: argparse._SubParsersAction) -> None:
     dashboard = sub.add_parser(
         "dashboard",
-        help="Open the Sandbox Dashboard",
-        description=(
-            "Open the Sandbox Dashboard: sessions, Jobs and Targets, and Run to start a Booley "
-            "Flow. With --web, serve each worktree's Jobs as a web page and JSON "
-            "instead."
-        ),
-    )
-    dashboard.add_argument(
-        "--web",
-        action="store_true",
-        help="Serve each worktree's Jobs page and JSON on 127.0.0.1 instead of opening the "
-        "terminal Dashboard",
+        help="Serve the web Dashboard",
+        description="Serve each worktree's Dashboard page and its JSON on 127.0.0.1 until stopped.",
     )
     dashboard.add_argument(
         "--port",
         type=_tcp_port,
         default=None,
         metavar="PORT",
-        help="Port of --web (default: 8090)",
+        help="Port to serve on (default: 8090)",
     )
 
 
@@ -1105,16 +1095,9 @@ def _add_utility_subparsers(sub) -> None:
 
 
 def _cmd_dashboard(args: argparse.Namespace, project_root: Path) -> int:
-    if args.port is not None and not args.web:
-        print("booley dashboard: --port needs --web", file=sys.stderr)
-        return 2
-    if args.web:
-        from booley.harness.dashboard.web import DEFAULT_PORT, serve
+    from booley.harness.dashboard.web import DEFAULT_PORT, serve
 
-        return serve(project_root, args.port or DEFAULT_PORT)
-    from booley.harness.dashboard.command import run_dashboard
-
-    return run_dashboard(project_root)
+    return serve(project_root, args.port or DEFAULT_PORT)
 
 
 def _add_targets_subparser(sub) -> None:
