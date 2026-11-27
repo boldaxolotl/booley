@@ -108,6 +108,26 @@ The guard has these blind spots:
   takes from a support module, `conftest.py`, or another test module is not
   attributed to it.
 
+## Docker CLI guard
+
+A unit test that starts the host's `docker` is slow, load-sensitive, and depends
+on the host. `tests/docker_cli_guard_plugin.py` therefore fails every test
+outside `tests/docker/` and `tests/smoke/` that starts a `docker` process: at
+once, naming the command line, or at teardown when the failure was swallowed, as
+on a worker thread or by a broad `except`.
+
+A test opts out in one of two ways:
+
+- It carries the `docker_cli` marker, on the test or as a module `pytestmark`.
+- It installs a shared fake that puts a `docker` program on `PATH`:
+  `install_fake_docker`, `install_sandbox_exec`, or `PathToolFake.install` for
+  `docker`. Fakes that replace a Booley runner start no process and leave the
+  guard on.
+
+The guard watches `subprocess.Popen` in the test process. It does not see a
+`docker` started by a child process the test runs, a shell command line
+(`shell=True`), `os.system`, `os.posix_spawn`, or `os.exec*`.
+
 ## Shard safety and timing models
 
 `ci_pytest_shard.py` collects the eligible tests on every runner. Timings

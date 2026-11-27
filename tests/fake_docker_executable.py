@@ -18,6 +18,8 @@ from typing import Any
 
 import pytest
 
+from tests.docker_cli_guard_plugin import allow_docker_cli
+
 _SCRIPT = """\
 import json, sys
 from pathlib import Path
@@ -139,8 +141,10 @@ def install_fake_docker(
     image) edits images once after the next build; ``remove_after`` names a first argument
     after whose answer the program deletes itself, so later calls find no Docker CLI. A
     store-backed fake is alone on ``PATH``: no host ``docker`` can answer in its place, and
-    installing again in the same folder starts a new call log and store.
+    installing again in the same folder starts a new call log and store. Installing it lets
+    the test start ``docker``: see ``tests/docker_cli_guard_plugin.py``.
     """
+    allow_docker_cli()
     tmp_path.mkdir(parents=True, exist_ok=True)
     (tmp_path / "fake_docker_calls.jsonl").unlink(missing_ok=True)
     replies_path = tmp_path / "fake_docker_replies.json"

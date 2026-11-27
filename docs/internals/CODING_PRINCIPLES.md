@@ -274,6 +274,12 @@ Tests that touch time, processes, sockets, or the filesystem also:
   detached job it started stopped, including work that tools start on their
   own, such as Git auto-maintenance. Code that starts a background thread
   stops and joins it on every way its owner exits.
+- **No Docker CLI by accident.** A test outside `tests/docker/` and
+  `tests/smoke/` fails when it starts `docker`: at once, or at teardown when the
+  failure was swallowed, as on a worker thread. Use a shared Docker CLI fake
+  from the [test fakes catalog](TEST_FAKES.md); a test that must run the real
+  CLI carries the `docker_cli` marker
+  ([Docker CLI guard](../../.github/ci/README.md#docker-cli-guard)).
 - **Patch time narrowly.** Inject a clock, or patch a name the module under
   test owns. Never replace `time.monotonic` or `time.time` on the shared
   `time` module, whether directly, through a module's `time` alias, or by a

@@ -36,6 +36,7 @@ pytest_plugins = [
     "tests.sandbox_only",
     "tests.os_specific",
     "tests.thread_leak_guard",
+    "tests.docker_cli_guard_plugin",
 ]
 
 
