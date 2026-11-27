@@ -1322,10 +1322,8 @@ def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
     manifest = _three_item_manifest(runtime_execution_id or "")
     plan = create_simulation_record_plan(manifest)
     project, state = _parallel_environment(tmp_path)
-    monkeypatch.setattr(
-        "booley.flows.sim.record.serial_execution.TargetCatalog.build",
-        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
-    )
+    _write_cocotb_core(project)
+    state.handle = TargetCatalog.build(project).select("sim", for_flow="sim")
     executor = OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
