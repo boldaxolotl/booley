@@ -15,8 +15,8 @@ _HEADER = """\
 import contextlib, subprocess, threading
 import pytest
 from tests.fake_docker_executable import install_fake_docker
-def _docker():
-    subprocess.run(["docker", "version"], capture_output=True, check=False)
+def _docker(program="docker"):
+    subprocess.run([program, "version"], capture_output=True, check=False)
 def _swallow():
     with contextlib.suppress(BaseException):
         _docker()
@@ -31,19 +31,17 @@ def test_thread_swallows_the_failure():
 def test_swallows_on_the_test_thread():
     _swallow()
 """
-# An empty PATH: a start that reaches the OS finds no host ``docker``.
+# A path with no program: emptying PATH would not hide a ``docker.exe`` in Windows' System32.
 _STARTS = """\
-def test_starts(tmp_path, monkeypatch):
-    monkeypatch.setenv("PATH", str(tmp_path))
+def test_starts(tmp_path):
     with pytest.raises(FileNotFoundError):
-        _docker()
+        _docker(str(tmp_path / "missing" / "docker"))
 """
 _FAKED = """\
 def test_with_fake(tmp_path, monkeypatch):
     install_fake_docker(tmp_path, monkeypatch, {})
-    monkeypatch.setenv("PATH", str(tmp_path))
-    with contextlib.suppress(FileNotFoundError):
-        _docker()
+    with pytest.raises(FileNotFoundError):
+        _docker(str(tmp_path / "missing" / "docker"))
 """
 
 
