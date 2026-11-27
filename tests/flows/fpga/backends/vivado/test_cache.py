@@ -167,7 +167,7 @@ def test_cached_reports_cannot_replace_missing_route_witness(
     """A cache whose run log lost the route witness runs Vivado again (#1075)."""
     run_fpga(project)
     work_root = work_root_for(project, "fpga", "fpga")
-    impl = work_root / "fake.runs" / "impl_1"
+    impl = work_root / "top.runs" / "impl_1"
     (impl / "runme.log").write_bytes(b"no route occurred\n")
     (impl / "top_drc_routed.rpt").write_bytes(b"route_design completed successfully\n")
     stored = json.loads((work_root / fpga_cache.CACHE_FILE).read_text(encoding="utf-8"))
@@ -197,7 +197,7 @@ def test_cached_reports_cannot_replace_missing_route_witness(
 def test_post_route_completion_gates_success_and_cache(
     project: Path, vivado: FakeVivado, completion_log: str, returncode: int, passes: bool
 ) -> None:
-    vivado.answer(stdout=completion_log + "\n", returncode=returncode)
+    vivado.answer(stdout=completion_log + "\n", returncode=returncode, route=True)
 
     outcome, _ = run_fpga(project, "--ppa-profile", "max_frequency")
 
