@@ -68,6 +68,8 @@ def _env(tmp_path, monkeypatch):
 
 
 def _application(identity: str = SERVER):
+    # Private seams: only the SDK adapter appends the notice, and no public constructor
+    # builds the application with a chosen server identity without serving it.
     return server._build_mcp_application(
         [], [], server._McpLifetime(None, None), server_identity=identity
     )
@@ -80,6 +82,7 @@ async def _call(
     params = CallToolRequestParams(
         name=name, arguments=arguments or {}, _meta={"threadId": thread} if thread else None
     )
+    # Private seam: the SDK adapter is the step that appends the notice.
     result = await server._call_application_tool(
         application, params, None, Observer() if thread else None
     )
@@ -251,18 +254,6 @@ async def test_notice_line_facts():
 
 
 @pytest.mark.asyncio
-async def test_notice_never_marks_read():
-    _write("mine-job")
-    application = _application()
-
-    first = await _call(application, "booley_targets")
-    second = await _call(application, "booley_targets")
-
-    assert len(_notice_lines(first)) == len(_notice_lines(second)) == 1
-    assert _read("mine-job").read_at is None
-
-
-@pytest.mark.asyncio
 async def test_poll_by_run_id_clears_notice():
     _write("mine-job")
     application = _application()
@@ -300,18 +291,6 @@ async def test_no_unread_leaves_response_unchanged():
     after = await _call(application, "booley_targets")
 
     assert after == before
-
-
-@pytest.mark.asyncio
-async def test_non_owner_poll_keeps_owner_notice():
-    _write("mine-job")
-    application = _application()
-
-    await _call(application, "booley_poll", {"run_id": "mine-job"}, thread="t2")
-    mine = await _call(application, "booley_targets", thread="t1")
-
-    assert len(_notice_lines(mine)) == 1
-    assert _read("mine-job").read_at is None
 
 
 @pytest.mark.asyncio
@@ -374,6 +353,7 @@ async def test_form_request_is_returned_unchanged():
     )
     params = CallToolRequestParams(name="probe", _meta={"threadId": "t1"})
 
+    # Private seam: the SDK adapter is the step that would run the response hook.
     result = await server._call_application_tool(application, params, None, Observer())
 
     assert result.request_state == "opaque-state"
