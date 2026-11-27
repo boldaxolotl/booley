@@ -5,29 +5,25 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import subprocess
 import uuid
 from pathlib import Path
 
 import pytest
-from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.git_support import git
+from tests.harness.session_docker_fake import SandboxDocker, completed, serve_migration_docker
+from tests.owned_scratch_support import exited_process_payload
 from tests.subprocess_budget import run_bounded_child
 
 from booley.core.booley_dir import reset_cache, resolve_booley_dir
-from booley.core.booley_layout import BooleyLayoutError
+from booley.core.booley_layout import BooleyLayoutError, ensure_layout_metadata
+from booley.core.project_identity import project_label_id
 from booley.harness.init_cmd import run_init
+from booley.harness.setup.directory_migration import inspect_migration
 from booley.runtime import booley_dir_migration as migration
 from booley.runtime.worktree_identity import resolve_worktree_identity
 
 OLD = ".booley_project"
 NEW = ".booley"
-
-
-@pytest.fixture(autouse=True)
-def _route_bounded_capture_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Let this file's ``subprocess.run`` fakes see the bounded Docker commands of migration."""
-    route_bounded_capture_through_subprocess_run(monkeypatch, migration)
 
 
 @pytest.fixture(autouse=True)
@@ -40,17 +36,9 @@ def selection(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def quiet_sandboxes(monkeypatch):
-    """Real-Git relocation cases model a quiescent host independently of other tests."""
-    original = migration._running_sandboxes
-    monkeypatch.setattr(migration, "_running_sandboxes", lambda: [])
-    return original
-
-
-def _inspect(root: Path):
-    from booley.harness.setup.directory_migration import inspect_migration
-
-    return inspect_migration(root)
+def docker(monkeypatch) -> SandboxDocker:
+    """A quiescent host: Docker answers, and no Sandbox runs unless a test scripts one."""
+    return serve_migration_docker(monkeypatch)
 
 
 def _repository(path: Path) -> None:
@@ -78,14 +66,6 @@ def _leftover_record(directory: Path) -> Path:
     target.parent.mkdir(parents=True)
     target.write_text(json.dumps({"id": target.parent.name, "state": "finished"}))
     return target
-
-
-def test_hard_cut_diagnoses_old_instead_of_ancestor(tmp_path):
-    (tmp_path / NEW).mkdir()
-    child = tmp_path / "child"
-    (child / OLD).mkdir(parents=True)
-    with pytest.raises(BooleyLayoutError, match="booley init"):
-        resolve_booley_dir(child)
 
 
 @pytest.mark.parametrize("value", ["", "somewhere"])
@@ -132,7 +112,7 @@ def test_moves_detached_worktree_and_nested_copy_or_pair(tmp_path, paired, relat
     identity = resolve_worktree_identity(outer, create=True)
     leftover = _leftover_record(old)
     frozen = leftover.read_bytes()
-    plan = _inspect(tmp_path)
+    plan = inspect_migration(tmp_path)
     assert plan is not None
     migration.apply_migration(plan)
     moved = tmp_path / NEW / "worktrees" / "débug tree"
@@ -148,29 +128,38 @@ def test_moves_detached_worktree_and_nested_copy_or_pair(tmp_path, paired, relat
         assert Path(git(moved / NEW, "rev-parse", "--show-toplevel")) == moved / NEW
     assert (tmp_path / ".git/info/exclude").read_text() == f"# personal\n/{NEW}\nkeep-me\n"
     after = _snapshot(tmp_path)
-    assert _inspect(tmp_path) is None
+    assert inspect_migration(tmp_path) is None
     assert _snapshot(tmp_path) == after
 
 
-def test_recovery_after_parent_rename(tmp_path, monkeypatch):
-    _repository(tmp_path)
-    (tmp_path / OLD).mkdir()
-    outer = tmp_path / OLD / "worktrees" / "one"
-    git(tmp_path, "worktree", "add", "--detach", str(outer))
-    plan = _inspect(tmp_path)
-    original = migration._apply_edit
-    monkeypatch.setattr(
-        migration, "_apply_edit", lambda row: (_ for _ in ()).throw(OSError("power loss"))
-    )
-    with pytest.raises(OSError, match="power loss"):
-        migration.apply_migration(plan)
-    assert (tmp_path / NEW).is_dir()
+@pytest.mark.parametrize("git_backed", [True, False], ids=["git", "non-git"])
+def test_power_loss_after_rename_blocks_until_init_recovers(tmp_path, monkeypatch, git_backed):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "settings"))
+    root = tmp_path / "rtl"
+    (root / OLD).mkdir(parents=True)
+    (root / ".gitignore").write_bytes(f"/{OLD}\n".encode())
+    if git_backed:
+        _repository(root)
+        git(root, "worktree", "add", "--detach", str(root / OLD / "worktrees/one"))
+    plan = inspect_migration(root)
+
+    def power_loss(_row):
+        raise OSError("power loss")
+
+    with monkeypatch.context() as crash:
+        # `_apply_edit` is patched because no external fault lands between the rename
+        # and the edits: preflight already proved every edited file writable.
+        crash.setattr(migration, "_apply_edit", power_loss)
+        with pytest.raises(OSError, match="power loss"):
+            migration.apply_migration(plan)
+    assert (root / NEW).is_dir()
     with pytest.raises(BooleyLayoutError, match="interrupted"):
-        resolve_booley_dir(tmp_path)
-    monkeypatch.setattr(migration, "_apply_edit", original)
-    recovered = _inspect(tmp_path)
-    migration.apply_migration(recovered)
-    assert "prunable" not in git(tmp_path, "worktree", "list", "--porcelain")
+        resolve_booley_dir(root)
+    migration.apply_migration(inspect_migration(root))
+    assert not plan.journal.exists()
+    assert (root / ".gitignore").read_bytes() == f"/{NEW}\n".encode()
+    if git_backed:
+        assert "prunable" not in git(root, "worktree", "list", "--porcelain")
 
 
 def test_pull_of_tracked_rename_refuses_both_and_preserves_local_state(tmp_path):
@@ -183,14 +172,14 @@ def test_pull_of_tracked_rename_refuses_both_and_preserves_local_state(tmp_path)
     git(source, "commit", "-qm", "Project")
     run_bounded_child(["git", "clone", str(source), str(clone)], check=True)
     leftover = _leftover_record(clone / OLD)
-    migration.apply_migration(_inspect(source))
+    migration.apply_migration(inspect_migration(source))
     git(source, "add", "-A", "--", OLD)
     git(source, "add", "-f", NEW)
     git(source, "commit", "-qm", "tracked rename")
     git(clone, "pull", "--ff-only")
     before = _snapshot(clone)
     with pytest.raises(BooleyLayoutError, match="both"):
-        _inspect(clone)
+        inspect_migration(clone)
     assert _snapshot(clone) == before
     assert leftover.is_file()
 
@@ -220,19 +209,38 @@ def _linked_layout(tmp_path, paired, relative):
     return old, outer
 
 
-def test_recovery_rejects_unbound_journal_edit_without_writes(tmp_path, monkeypatch):
+def _prepared_journal(root: Path):
+    """Leave the journal `apply_migration` saves before it renames anything."""
+    plan = inspect_migration(root)
+    ensure_layout_metadata(root)
+    plan.journal.write_text(json.dumps(plan.document))
+    return plan
+
+
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("unbound-edit", "unbound migration edit"),
+        ("link-edit", "invalid managed link"),
+        ("inventory", "cannot inventory"),
+    ],
+)
+def test_interrupted_journal_refuses_without_writes(tmp_path, docker, fault, message):
     _repository(tmp_path)
     (tmp_path / OLD).mkdir()
-    plan = _inspect(tmp_path)
-    monkeypatch.setattr(migration, "_apply", lambda plan: (_ for _ in ()).throw(OSError("stop")))
-    with pytest.raises(OSError):
-        migration.apply_migration(plan)
+    plan = _prepared_journal(tmp_path)
     data = json.loads(plan.journal.read_bytes())
-    data["edits"].append({"path": str(tmp_path.parent / "outside"), "before": "", "after": ""})
+    if fault == "unbound-edit":
+        data["edits"].append({"path": str(tmp_path.parent / "outside"), "before": "", "after": ""})
+    elif fault == "link-edit":
+        link = str(tmp_path / "AGENTS.md")
+        data["edits"].append({"path": link, "link_before": f"{OLD}/AGENTS.md"})
+    else:
+        docker.missing = True
     plan.journal.write_text(json.dumps(data))
     before = _snapshot(tmp_path)
-    with pytest.raises(BooleyLayoutError, match="unbound migration edit"):
-        _inspect(tmp_path)
+    with pytest.raises(BooleyLayoutError, match=message):
+        inspect_migration(tmp_path)
     assert _snapshot(tmp_path) == before
 
 
@@ -250,7 +258,7 @@ def test_migration_repairs_external_pair_without_moving_its_checkout(tmp_path):
     admin.mkdir()
     (admin / "worktree-id").write_text(str(uuid.uuid4()) + "\n")
     identity = resolve_worktree_identity(external)
-    migration.apply_migration(_inspect(root))
+    migration.apply_migration(inspect_migration(root))
     assert resolve_worktree_identity(external) == identity
     assert Path(git(external, "rev-parse", "--show-toplevel")) == external
     assert Path(git(external, "config", "core.hooksPath")) == root / NEW / ".managed/hooks"
@@ -265,29 +273,19 @@ def test_existing_integrations_and_freshness_are_repaired_in_transaction(tmp_pat
     (tmp_path / "AGENTS.md").symlink_to(f"{OLD}/AGENTS.md")
     (old / "AGENTS.md").write_text("user guidance\n")
     projection = tmp_path / ".booley-projected-top.core"
-    projection.write_text(f"CAPI=2:\n# Booley stealth core projection: {OLD}/cores/top.core\n")
-    migration.apply_migration(_inspect(tmp_path))
+    # Only path components and the exact retired variable are rewritten.
+    text = (
+        f"CAPI=2:\n# Booley stealth core projection: {OLD}/cores/top.core\n"
+        f"/tmp/x{OLD}s/{OLD}/inputs {OLD}_suffix BOOLEY_PROJECT_DIR BOOLEY_PROJECT_DIRTY\n"
+    )
+    projection.write_bytes(text.encode())
+    migration.apply_migration(inspect_migration(tmp_path))
     assert (tmp_path / "AGENTS.md").readlink() == Path(NEW) / "AGENTS.md"
     assert (tmp_path / NEW / "runtime/doctor_stamp.json").read_text() == "{}\n"
-    assert OLD not in projection.read_text()
-
-
-def test_pending_non_git_migration_blocks_current_resolver(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "settings"))
-    root = tmp_path / "rtl"
-    (root / OLD).mkdir(parents=True)
-    plan = _inspect(root)
-    original = migration._invalidate_issuance
-    monkeypatch.setattr(
-        migration, "_invalidate_issuance", lambda doc: (_ for _ in ()).throw(OSError("power loss"))
+    assert projection.read_bytes().decode() == (
+        f"CAPI=2:\n# Booley stealth core projection: {NEW}/cores/top.core\n"
+        f"/tmp/x{OLD}s/{NEW}/inputs {OLD}_suffix BOOLEY_DIR BOOLEY_PROJECT_DIRTY\n"
     )
-    with pytest.raises(OSError):
-        migration.apply_migration(plan)
-    with pytest.raises(BooleyLayoutError, match="interrupted"):
-        resolve_booley_dir(root)
-    monkeypatch.setattr(migration, "_invalidate_issuance", original)
-    migration.apply_migration(_inspect(root))
-    assert not plan.journal.exists()
 
 
 def test_affected_missing_checkout_refuses_before_mutation(tmp_path):
@@ -301,7 +299,7 @@ def test_affected_missing_checkout_refuses_before_mutation(tmp_path):
     shutil.rmtree(worktree)
     before = _snapshot(tmp_path)
     with pytest.raises(BooleyLayoutError, match="missing"):
-        _inspect(tmp_path)
+        inspect_migration(tmp_path)
     assert _snapshot(tmp_path) == before
 
 
@@ -311,7 +309,7 @@ def test_captured_performance_evidence_is_preserved_as_opaque_state(tmp_path):
     output = tmp_path / OLD / "runtime/performance-report.json"
     output.parent.mkdir(parents=True)
     output.write_bytes(fixture.read_bytes())
-    migration.apply_migration(_inspect(tmp_path))
+    migration.apply_migration(inspect_migration(tmp_path))
     assert (
         tmp_path / NEW / "runtime/performance-report.json"
     ).read_bytes() == fixture.read_bytes()
@@ -331,25 +329,9 @@ def test_known_managed_file_conflict_refuses_before_rename(tmp_path, variant):
         path.chmod(0o444)
     before = _snapshot(tmp_path)
     with pytest.raises((BooleyLayoutError, OSError), match=r"symlink|read-only|writable"):
-        _inspect(tmp_path)
+        inspect_migration(tmp_path)
     assert _snapshot(tmp_path) == before
     path.chmod(0o644)
-
-
-def test_malformed_link_journal_refuses_before_any_rename(tmp_path, monkeypatch):
-    _repository(tmp_path)
-    (tmp_path / OLD).mkdir()
-    plan = _inspect(tmp_path)
-    monkeypatch.setattr(migration, "_apply", lambda plan: (_ for _ in ()).throw(OSError("stop")))
-    with pytest.raises(OSError):
-        migration.apply_migration(plan)
-    data = json.loads(plan.journal.read_bytes())
-    data["edits"].append({"path": str(tmp_path / "AGENTS.md"), "link_before": f"{OLD}/AGENTS.md"})
-    plan.journal.write_text(json.dumps(data))
-    before = _snapshot(tmp_path)
-    with pytest.raises(BooleyLayoutError, match="invalid managed link"):
-        _inspect(tmp_path)
-    assert _snapshot(tmp_path) == before
 
 
 @pytest.mark.parametrize("promote", [True, False], ids=["holder", "waiter"])
@@ -381,7 +363,7 @@ def test_live_job_without_session_registry_refuses_unchanged(tmp_path, retired, 
     directory.rename(tmp_path / OLD)
     before = _snapshot(tmp_path)
     with pytest.raises(BooleyLayoutError, match="live/unknown Job"):
-        _inspect(tmp_path)
+        inspect_migration(tmp_path)
     assert _snapshot(tmp_path) == before
 
 
@@ -410,54 +392,45 @@ def test_home_watcher_state_is_not_adopted_even_with_dotfiles_repository(tmp_pat
     assert resolve_booley_dir(home) == ancestor
 
 
-def test_owned_integration_rewrites_only_path_components_and_exact_variable(tmp_path):
-    from booley.harness.setup.directory_migration_integrations import _rewrite
-
-    path = tmp_path / "owned.json"
-    path.write_text(
-        f"/tmp/x{OLD}s/{OLD}/inputs {OLD}_suffix BOOLEY_PROJECT_DIR BOOLEY_PROJECT_DIRTY"
-    )
-    row = _rewrite(path, [])
-    migration._apply_edit(row)
-    assert (
-        path.read_text()
-        == f"/tmp/x{OLD}s/{NEW}/inputs {OLD}_suffix BOOLEY_DIR BOOLEY_PROJECT_DIRTY"
-    )
+_INCOMPLETE_INVENTORIES = [
+    {},
+    {"Config": {}, "Mounts": []},
+    {"Config": {"Labels": {}}},
+    {"Config": {"Labels": {"bad": 1}}, "Mounts": []},
+    {"Config": {"Labels": {}}, "Mounts": [{"Type": "bind"}]},
+    {"Config": {"Labels": {}}, "Mounts": [None]},
+    {"Config": {"Labels": {}}, "Mounts": [{"Type": "bind", "Source": "../relative"}]},
+]
 
 
-def test_live_sandbox_label_refuses_without_local_spec_or_matching_mount(
-    tmp_path, monkeypatch, quiet_sandboxes
-):
-    from types import SimpleNamespace
-
-    from booley.core.project_identity import project_label_id
-
+@pytest.mark.parametrize(
+    ("fault", "message"),
+    [
+        ("no-cli", "cannot inventory live Sandboxes"),
+        ("daemon-down", "cannot inventory live Sandboxes"),
+        ("project-label", "stop live Sandbox"),
+        *((document, "invalid inventory") for document in _INCOMPLETE_INVENTORIES),
+    ],
+)
+def test_docker_inventory_refuses_before_any_write(tmp_path, docker, fault, message):
     _repository(tmp_path)
     (tmp_path / OLD).mkdir()
+    if fault == "no-cli":
+        docker.missing = True
+    elif fault == "daemon-down":
+        docker.failing.add("ps")
+    else:
+        # A labelled Sandbox is refused although no local spec or mount names the Project.
+        labelled = {
+            "Config": {"Labels": {"booley.project-id": project_label_id(str(tmp_path))}},
+            "Mounts": [{"Type": "bind", "Source": "/desktop-remapped/source"}],
+        }
+        document = labelled if fault == "project-label" else fault
+        docker.script(("ps",), completed(stdout="live\n"))
+        docker.script(("inspect",), completed(stdout=json.dumps([document])))
     before = _snapshot(tmp_path)
-    monkeypatch.setattr(migration, "_running_sandboxes", quiet_sandboxes)
-    monkeypatch.setattr(migration.shutil, "which", lambda name: "/fake/docker")
-    responses = iter(
-        [
-            SimpleNamespace(returncode=0, stdout="live-container\n"),
-            SimpleNamespace(
-                returncode=0,
-                stdout=json.dumps(
-                    [
-                        {
-                            "Config": {
-                                "Labels": {"booley.project-id": project_label_id(str(tmp_path))}
-                            },
-                            "Mounts": [{"Type": "bind", "Source": "/desktop-remapped/source"}],
-                        }
-                    ]
-                ),
-            ),
-        ]
-    )
-    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: next(responses))
-    with pytest.raises(BooleyLayoutError, match="stop live Sandbox"):
-        migration._refuse_live_sandboxes(tmp_path, [])
+    with pytest.raises(BooleyLayoutError, match=message):
+        inspect_migration(tmp_path)
     assert _snapshot(tmp_path) == before
 
 
@@ -470,27 +443,6 @@ def test_local_retired_project_outranks_warmed_ancestor_cache(tmp_path):
         resolve_booley_dir(child)
 
 
-@pytest.mark.parametrize("unavailable", ["binary", "daemon"])
-def test_unavailable_docker_refuses_without_local_spec_before_writes(
-    tmp_path, monkeypatch, quiet_sandboxes, unavailable
-):
-    from types import SimpleNamespace
-
-    _repository(tmp_path)
-    (tmp_path / OLD).mkdir()
-    before = _snapshot(tmp_path)
-    monkeypatch.setattr(migration, "_running_sandboxes", quiet_sandboxes)
-    monkeypatch.setattr(
-        migration.shutil, "which", lambda name: None if unavailable == "binary" else "/fake/docker"
-    )
-    monkeypatch.setattr(
-        subprocess, "run", lambda *a, **kw: SimpleNamespace(returncode=1, stdout="")
-    )
-    with pytest.raises(BooleyLayoutError, match="cannot inventory live Sandboxes"):
-        migration._refuse_live_sandboxes(tmp_path, [])
-    assert _snapshot(tmp_path) == before
-
-
 def test_source_checkout_guard_precedes_unrelated_ancestor_layout(tmp_path):
     from booley.core.checkout_role import SourceCheckoutProjectError
 
@@ -500,40 +452,6 @@ def test_source_checkout_guard_precedes_unrelated_ancestor_layout(tmp_path):
     (source / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     with pytest.raises(SourceCheckoutProjectError):
         resolve_booley_dir(source)
-
-
-@pytest.mark.parametrize(
-    "document",
-    [
-        {},
-        {"Config": {}, "Mounts": []},
-        {"Config": {"Labels": {}}},
-        {"Config": {"Labels": {"bad": 1}}, "Mounts": []},
-        {"Config": {"Labels": {}}, "Mounts": [{"Type": "bind"}]},
-        {"Config": {"Labels": {}}, "Mounts": [None]},
-        {"Config": {"Labels": {}}, "Mounts": [{"Type": "bind", "Source": "../relative"}]},
-    ],
-)
-def test_incomplete_docker_inventory_refuses_before_any_move(
-    tmp_path, monkeypatch, quiet_sandboxes, document
-):
-    from types import SimpleNamespace
-
-    _repository(tmp_path)
-    (tmp_path / OLD).mkdir()
-    before = _snapshot(tmp_path)
-    monkeypatch.setattr(migration, "_running_sandboxes", quiet_sandboxes)
-    monkeypatch.setattr(migration.shutil, "which", lambda name: "/fake/docker")
-    responses = iter(
-        [
-            SimpleNamespace(returncode=0, stdout="live\n"),
-            SimpleNamespace(returncode=0, stdout=json.dumps([document])),
-        ]
-    )
-    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: next(responses))
-    with pytest.raises(BooleyLayoutError, match="invalid inventory"):
-        migration._refuse_live_sandboxes(tmp_path, [])
-    assert _snapshot(tmp_path) == before
 
 
 @pytest.mark.parametrize("kind", ["separate", "submodule"])
@@ -558,7 +476,7 @@ def test_primary_git_pointer_file_migrates_and_repairs_registered_worktree(tmp_p
     git(root, "config", "core.hooksPath", str(old / ".managed/hooks"))
     identity = resolve_worktree_identity(worktree, create=True)
     marker = (root / ".git").read_bytes()
-    migration.apply_migration(_inspect(root))
+    migration.apply_migration(inspect_migration(root))
     moved = root / NEW / "worktrees/one"
     assert (root / ".git").read_bytes() == marker
     assert resolve_worktree_identity(moved) == identity
@@ -578,37 +496,15 @@ def test_seed_on_retired_layout_reports_full_init_without_traceback_or_writes(tm
 
 
 def test_check_reports_pending_rename_even_when_docker_inventory_is_unavailable(
-    tmp_path, monkeypatch, capsys
+    tmp_path, docker, capsys
 ):
     _repository(tmp_path)
     (tmp_path / OLD).mkdir()
-    monkeypatch.setattr(
-        migration,
-        "_running_sandboxes",
-        lambda: (_ for _ in ()).throw(BooleyLayoutError("cannot inventory")),
-    )
+    docker.missing = True
     before = _snapshot(tmp_path)
     assert run_init(argparse.Namespace(check_only=True), tmp_path) == 2
     output = capsys.readouterr().out
     assert "Would rename" in output and "cannot inventory" in output
-    assert _snapshot(tmp_path) == before
-
-
-def test_recovery_rechecks_sandbox_inventory_before_any_further_write(tmp_path, monkeypatch):
-    _repository(tmp_path)
-    (tmp_path / OLD).mkdir()
-    plan = _inspect(tmp_path)
-    monkeypatch.setattr(migration, "_apply", lambda plan: (_ for _ in ()).throw(OSError("stop")))
-    with pytest.raises(OSError):
-        migration.apply_migration(plan)
-    monkeypatch.setattr(
-        migration,
-        "_running_sandboxes",
-        lambda: (_ for _ in ()).throw(BooleyLayoutError("cannot inventory")),
-    )
-    before = _snapshot(tmp_path)
-    with pytest.raises(BooleyLayoutError, match="cannot inventory"):
-        _inspect(tmp_path)
     assert _snapshot(tmp_path) == before
 
 
@@ -632,29 +528,19 @@ def test_terminal_job_with_retained_pid_migrates_unchanged(tmp_path):
         jobs,
     )
     before = (jobs / "finished.json").read_bytes()
-    migration.apply_migration(_inspect(tmp_path))
+    migration.apply_migration(inspect_migration(tmp_path))
     assert (tmp_path / NEW / ".runtime/jobs/finished.json").read_bytes() == before
 
 
-def test_dead_consumer_of_other_registered_root_does_not_block(tmp_path, monkeypatch):
-    import os
-    from types import SimpleNamespace
-
-    from booley.runtime import layout_consumers
-    from booley.runtime.pid import DEAD, capture_process_identity
-
+def test_dead_consumer_of_other_registered_root_does_not_block(tmp_path):
     _repository(tmp_path)
     (tmp_path / OLD).mkdir()
     leases = migration.metadata_root(tmp_path) / "directory-consumers"
     leases.mkdir(parents=True)
-    identity = capture_process_identity(os.getpid())
     (leases / "old-worktree.json").write_text(
-        json.dumps({"root": str(tmp_path / "other-worktree"), "process": identity.to_payload()})
+        json.dumps({"root": str(tmp_path / "other-worktree"), "process": exited_process_payload()})
     )
-    monkeypatch.setattr(
-        layout_consumers, "observe_process", lambda identity: SimpleNamespace(state=DEAD)
-    )
-    migration.apply_migration(_inspect(tmp_path))
+    migration.apply_migration(inspect_migration(tmp_path))
     assert (tmp_path / NEW).is_dir()
 
 
@@ -686,7 +572,7 @@ def test_linked_separate_git_root_reports_owner_instead_of_metadata_as_root(tmp_
     (linked / OLD).mkdir()
     before = _snapshot(tmp_path)
     with pytest.raises(BooleyLayoutError, match="checkout owning Git metadata"):
-        _inspect(linked)
+        inspect_migration(linked)
     assert _snapshot(tmp_path) == before
 
 
@@ -697,7 +583,7 @@ def test_unmoved_git_config_keeps_custom_formatting(tmp_path):
     with config.open("a") as handle:
         handle.write("[core]\n    hooksPath    =    custom/hooks\n")
     before = config.read_bytes()
-    migration.apply_migration(_inspect(tmp_path))
+    migration.apply_migration(inspect_migration(tmp_path))
     assert config.read_bytes() == before
 
 
@@ -723,7 +609,7 @@ def test_non_retired_linked_checkout_does_not_require_primary_owner(tmp_path, ki
     if current:
         (linked / NEW).mkdir()
     before = _snapshot(tmp_path)
-    assert _inspect(linked) is None
+    assert inspect_migration(linked) is None
     assert _snapshot(tmp_path) == before
 
 
@@ -734,20 +620,17 @@ def test_managed_ignore_rewrite_preserves_unrelated_bytes_and_line_endings(tmp_p
     path = tmp_path / relative
     before = b"# opaque \xff \xc3\xa9\r\n/" + OLD.encode() + b"/\r\nkeep \xfe\n"
     path.write_bytes(before)
-    migration.apply_migration(_inspect(tmp_path))
+    migration.apply_migration(inspect_migration(tmp_path))
     assert path.read_bytes() == before.replace(
         b"/" + OLD.encode() + b"/", b"/" + NEW.encode() + b"/"
     )
 
 
-def test_unobserved_admission_entry_refuses_with_job_admission_wording(tmp_path, monkeypatch):
-    from booley.harness.setup import directory_migration_jobs
-    from booley.runtime.job_slots import CLASS_MEMORY, SlotStore
-
-    entry = tmp_path / "runtime/jobs/slots" / CLASS_MEMORY / "h-unreadable"
+def test_unobserved_admission_entry_refuses_with_job_admission_wording(tmp_path):
+    _repository(tmp_path)
+    # A holder entry the Job slot store cannot read is not one it can prove inactive.
+    entry = tmp_path / OLD / "runtime/jobs/slots/memory/h-unreadable"
     entry.parent.mkdir(parents=True)
     entry.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(SlotStore, "observe", lambda _self, _name: ([], []))
-
     with pytest.raises(BooleyLayoutError, match="cannot prove Job admission inactivity"):
-        directory_migration_jobs._slots(tmp_path)
+        inspect_migration(tmp_path)
