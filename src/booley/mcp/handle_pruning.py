@@ -1,4 +1,4 @@
-"""Prune expired Job and Session display handles when a top-level MCP server starts (ADR 0068).
+"""Prune expired Job and Session display handles when a top-level MCP server starts (ADR 0093).
 
 A Job handle lives while its Job runs and for 24 h after it ends. A Session handle
 lives while a registry row names it (or one of its aliases), while a live Job

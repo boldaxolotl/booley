@@ -7,9 +7,10 @@ allowed_web_search_modes = []
 # never install.
 check_for_update_on_startup = false
 
-# Report session lifecycle events to the Session Registry (ADR 0068). Hooks
-# declared here are managed: they run without per-user hook trust. The activity
-# command prints nothing and always exits 0, so it can never block or alter a turn.
+# Report session lifecycle events to the Session Registry (retired by ADR 0093).
+# Hooks declared here are managed: they run without per-user hook trust. The
+# activity command prints nothing and always exits 0, so it can never block or
+# alter a turn.
 
 [[hooks.UserPromptSubmit]]
 [[hooks.UserPromptSubmit.hooks]]

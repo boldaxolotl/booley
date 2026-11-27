@@ -3,7 +3,7 @@
 The Sandbox Image installs this file at
 ``/usr/local/libexec/booley/session_activity_hook.py`` and configures Claude
 Code and Codex to run ``python3 -I -S <this file> <claude|codex>`` on lifecycle
-events, with the event's JSON on stdin (ADR 0068).
+events, with the event's JSON on stdin. ADR 0093 retires these hooks.
 
 The client waits for this process on every prompt and tool call, so it is a
 standalone, standard-library-only script: importing the ``booley`` package

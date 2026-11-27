@@ -100,7 +100,6 @@ def test_owned_process_group_primitives_stay_in_runtime_module() -> None:
         # One-shot record cleanup outlives its caller; no child group is owned or terminated.
         _SOURCE_ROOT / "goals" / "ended_records.py",
         _SOURCE_ROOT / "harness" / "auto_doctor.py",
-        _SOURCE_ROOT / "harness" / "tui" / "links.py",
         _SOURCE_ROOT / "runtime" / "incontainer_setup.py",
     }
     offenders = []

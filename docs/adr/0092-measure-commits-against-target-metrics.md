@@ -12,8 +12,6 @@ Decided in [#3045](https://github.com/boldaxolotl/booley/issues/3045)
   [ADR 0074](0074-make-the-review-goal-the-whole-review-contract.md)**: a
   review is no longer part of what makes work acceptable. Its review contract
   is replaced by [ADR 0091](0091-review-commits-outside-measurement.md);
-- **amends [ADR 0068](0068-booley-dashboard.md)**: the Dashboard's Goal status
-  summary, Goal views and Goal-change proposals go;
 - **amends [ADR 0072](0072-declare-test-variants-and-seeds-instead-of-run-overrides.md)**:
   its Goal rules (Goals naming Test Runs, multi-seed `@xN` Goals, evidence
   matching) go with Goal Mode. Test Variants, seeds and Test Runs stand. A

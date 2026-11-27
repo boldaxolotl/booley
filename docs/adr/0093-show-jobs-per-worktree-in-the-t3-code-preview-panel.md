@@ -4,22 +4,17 @@ Status: accepted (2026-11-13)
 
 Decided in [#3834](https://github.com/boldaxolotl/booley/issues/3834)
 (T3 Code as Booley's user interface), after a clickable prototype of three
-layouts. Once T3 Code replaces VS Code, this ADR:
-
-- **supersedes [ADR 0068](0068-booley-dashboard.md)** except its Jobs and
-  Sandbox resource decisions, which it restates below. The Sessions window,
-  session preview and detail, the Goal views, Doctor health, the VS Code
-  workspace extension, terminal attach and the unseen-Dashboard protocol go;
-- **amends [ADR 0086](0086-launch-flows-and-specialists-from-the-dashboard.md)**:
-  the launch form, Standalone Job worker and Specialist forms stand. The
-  worktree choice and the Targets window go: the Dashboard's worktree is
-  fixed, and Targets are chosen inside the Run form.
+layouts. Once T3 Code replaces VS Code, this ADR **amends
+[ADR 0086](0086-launch-flows-and-specialists-from-the-dashboard.md)**: the
+launch form, Standalone Job worker and Specialist forms stand. The
+worktree choice and the Targets window go: the Dashboard's worktree is
+fixed, and Targets are chosen inside the Run form.
 
 ## Context
 
-T3 Code is an agent client with its own thread and session list, so the
-Dashboard's Sessions window repeats what T3 Code already shows, with less
-detail. Jobs, Targets and the Run form have no T3 Code equivalent.
+T3 Code is an agent client with its own thread and session list, so a Booley
+view of sessions would repeat what T3 Code already shows, with less detail.
+Jobs, Targets and the Run form have no T3 Code equivalent.
 
 T3 Code offers four places for Booley UI without a fork: the terminal
 drawer, the preview panel (a browser view of a page served in the Sandbox),
@@ -33,6 +28,8 @@ worktree.
 - **One Dashboard per worktree.** The Dashboard shows only Jobs whose
   `work_dir` is its worktree. The main checkout counts as a worktree. There
   is no Sandbox-wide view: Jobs of a deleted worktree appear in no Dashboard.
+- **Jobs, not sessions.** The Dashboard has no session list, Goal view or
+  Doctor health: T3 Code lists threads, and Doctor reports health.
 - **A web page in the preview panel.** One server in the Sandbox serves
   every worktree's Dashboard; the worktree is a URL parameter
   (`?worktree=<path>`). A `t3.json` script opens it. Headless Chrome ships in
@@ -59,10 +56,9 @@ worktree.
 
 ## Considered options
 
-- **The Textual Dashboard in the terminal drawer.** It already runs there
-  unchanged and costs no image size, but a terminal tab is easy to lose, and
-  its links still pointed at VS Code. Rejected for a page that matches T3
-  Code and can link into it.
+- **A terminal view in the terminal drawer.** It costs no image size, but a
+  terminal tab is easy to lose. Rejected for a page that matches T3 Code and
+  can link into it.
 - **A Sandbox-wide Dashboard.** It would show Jobs in `/work` and other
   worktrees' Jobs holding shared slots. Rejected: the user works one worktree
   per thread, and the queue position shown on Run covers the slot question.
@@ -75,5 +71,3 @@ worktree.
   (ADR 0082); a Codex call refused for lack of a workspace starts no Job.
 - The Session Registry, session-activity hooks and session handles have no
   consumer left and are retired (ADR 0082).
-- The glossary's **Booley Dashboard** entry changes when this ships: a web
-  page per worktree of Jobs and Run, without sessions, Goals or health.
