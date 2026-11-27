@@ -7,6 +7,7 @@ import re
 import subprocess
 import time
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -114,6 +115,77 @@ class RelayResources:
     relay_container: str
 
 
+@dataclass(frozen=True)
+class RelayContainerSpec:
+    """Hardened FlexNet License Relay container values, typed once for run and inspect."""
+
+    user: str
+    tmpfs: tuple[str, str]  # (mount point, mount options)
+    cap_drop: str
+    security_opt: str
+    pids_limit: int
+    memory_mib: int  # also memory-plus-swap: the relay never swaps
+    cpus: str  # Docker's decimal CPUs; inspect reports nano-CPUs
+    ulimit: tuple[str, int]  # (name, soft and hard limit)
+    restart: str
+    log_driver: str
+    log_options: tuple[tuple[str, str], ...]
+
+    def run_options(self) -> list[str]:
+        """Render the spec as ``docker container run`` options."""
+        path, mount_options = self.tmpfs
+        name, limit = self.ulimit
+        memory = f"{self.memory_mib}m"
+        options = [
+            "--read-only",
+            "--tmpfs",
+            f"{path}:{mount_options}",
+            "--user",
+            self.user,
+            "--cap-drop",
+            self.cap_drop,
+            "--security-opt",
+            self.security_opt,
+            "--pids-limit",
+            str(self.pids_limit),
+            "--memory",
+            memory,
+            "--memory-swap",
+            memory,
+            "--cpus",
+            self.cpus,
+            "--ulimit",
+            f"{name}={limit}:{limit}",
+            "--restart",
+            self.restart,
+            "--log-driver",
+            self.log_driver,
+        ]
+        for key, value in self.log_options:
+            options += ["--log-opt", f"{key}={value}"]
+        return options
+
+    def check(self, config: dict, host: dict, mounts: object) -> None:
+        """Raise ``RelayDockerError`` when inspect output drifts from the spec."""
+        _validate_isolation(self, config, host, mounts)
+        _validate_host_policy(self, host)
+
+
+RELAY_CONTAINER = RelayContainerSpec(
+    user="65532:65532",
+    tmpfs=("/tmp", "rw,noexec,nosuid,nodev,size=1m"),
+    cap_drop="ALL",
+    security_opt="no-new-privileges",
+    pids_limit=64,
+    memory_mib=64,
+    cpus="0.50",
+    ulimit=("nofile", 256),
+    restart="no",
+    log_driver="json-file",
+    log_options=(("max-size", "1m"), ("max-file", "2")),
+)
+
+
 def resources_for_session(session_identity: str) -> RelayResources:
     """Derive non-sensitive deterministic object names from exact Session identity."""
     if not isinstance(session_identity, str) or not session_identity:
@@ -215,10 +287,6 @@ def outbound_network_create_argv(
     )
 
 
-# The relay never swaps: its memory and its memory-plus-swap are the same 64 MiB.
-_RELAY_MEMORY_FLAGS = ("--memory", "64m", "--memory-swap", "64m")
-
-
 def relay_run_argv(
     resources: RelayResources,
     profile: RelayProfile,
@@ -237,30 +305,7 @@ def relay_run_argv(
         resources.relay_container,
         "--network",
         resources.outbound_network,
-        "--read-only",
-        "--tmpfs",
-        "/tmp:rw,noexec,nosuid,nodev,size=1m",
-        "--user",
-        "65532:65532",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--pids-limit",
-        "64",
-        *_RELAY_MEMORY_FLAGS,
-        "--cpus",
-        "0.50",
-        "--ulimit",
-        "nofile=256:256",
-        "--restart",
-        "no",
-        "--log-driver",
-        "json-file",
-        "--log-opt",
-        "max-size=1m",
-        "--log-opt",
-        "max-file=2",
+        *RELAY_CONTAINER.run_options(),
         "--label",
         ROLE_LABEL,
         "--label",
@@ -619,31 +664,32 @@ def _validate_container_contract(
     mounts = state.get("Mounts")
     if not isinstance(config, dict) or not isinstance(host, dict):
         raise RelayDockerError("Docker returned invalid relay container state")
-    _validate_container_identity(state, config, host, mounts, image_id)
-    if not _security_options_match(host.get("SecurityOpt")):
+    _validate_container_identity(state, config, image_id)
+    RELAY_CONTAINER.check(config, host, mounts)
+    _validate_relay_env(config.get("Env"), expected_env)
+
+
+def _validate_host_policy(spec: RelayContainerSpec, host: dict) -> None:
+    if not _security_options_match(host.get("SecurityOpt"), spec.security_opt):
         raise RelayDockerError("license relay security options have drifted")
-    if host.get("Tmpfs") != {"/tmp": "rw,noexec,nosuid,nodev,size=1m"}:
+    expected_tmpfs = dict([spec.tmpfs])
+    if host.get("Tmpfs") != expected_tmpfs:
         raise RelayDockerError(
             "license relay tmpfs policy has drifted: "
-            + format_differences(
-                {"tmpfs": {"/tmp": "rw,noexec,nosuid,nodev,size=1m"}},
-                {"tmpfs": host.get("Tmpfs")},
-            )
+            + format_differences({"tmpfs": expected_tmpfs}, {"tmpfs": host.get("Tmpfs")})
         )
-    if not _limits_match(host):
+    if not _limits_match(host, spec):
         raise RelayDockerError("license relay resource limits have drifted")
-    if host.get("RestartPolicy") != {"Name": "no", "MaximumRetryCount": 0}:
+    expected_restart = {"Name": spec.restart, "MaximumRetryCount": 0}
+    if host.get("RestartPolicy") != expected_restart:
         raise RelayDockerError(
             "license relay restart policy has drifted: "
             + format_differences(
-                {"restart_policy": {"Name": "no", "MaximumRetryCount": 0}},
+                {"restart_policy": expected_restart},
                 {"restart_policy": host.get("RestartPolicy")},
             )
         )
-    expected_logging = {
-        "Type": "json-file",
-        "Config": {"max-file": "2", "max-size": "1m"},
-    }
+    expected_logging = {"Type": spec.log_driver, "Config": dict(spec.log_options)}
     if host.get("LogConfig") != expected_logging:
         raise RelayDockerError(
             "license relay logging policy has drifted: "
@@ -652,12 +698,9 @@ def _validate_container_contract(
                 {"logging_policy": host.get("LogConfig")},
             )
         )
-    _validate_relay_env(config.get("Env"), expected_env)
 
 
-def _validate_container_identity(
-    state: dict, config: dict, host: dict, mounts: object, image_id: str
-) -> None:
+def _validate_container_identity(state: dict, config: dict, image_id: str) -> None:
     runtime_state = state.get("State")
     if not isinstance(runtime_state, dict) or runtime_state.get("Running") is not True:
         raise RelayDockerError("license relay is not running")
@@ -669,7 +712,12 @@ def _validate_container_identity(
                 {"state_image": state.get("Image"), "config_image": config.get("Image")},
             )
         )
-    if config.get("User") != "65532:65532":
+
+
+def _validate_isolation(
+    spec: RelayContainerSpec, config: dict, host: dict, mounts: object
+) -> None:
+    if config.get("User") != spec.user:
         raise RelayDockerError("license relay user has drifted")
     if mounts != [] or host.get("Binds") not in (None, []):
         raise RelayDockerError("license relay mounts have drifted")
@@ -677,11 +725,12 @@ def _validate_container_identity(
         raise RelayDockerError("license relay port publication has drifted")
     if host.get("ReadonlyRootfs") is not True:
         raise RelayDockerError("license relay root filesystem is writable")
-    if host.get("CapAdd") not in (None, []) or host.get("CapDrop") != ["ALL"]:
+    expected_cap_drop = [spec.cap_drop]
+    if host.get("CapAdd") not in (None, []) or host.get("CapDrop") != expected_cap_drop:
         raise RelayDockerError(
             "license relay capability policy has drifted: "
             + format_differences(
-                {"cap_add": [], "cap_drop": ["ALL"]},
+                {"cap_add": [], "cap_drop": expected_cap_drop},
                 {"cap_add": host.get("CapAdd") or [], "cap_drop": host.get("CapDrop")},
             )
         )
@@ -710,18 +759,19 @@ def _ports_are_private(config: dict, host: dict) -> bool:
     return exposed in (None, {})
 
 
-def _security_options_match(raw: object) -> bool:
+def _security_options_match(raw: object, option: str) -> bool:
     if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], str):
         return False
-    return raw[0] in {"no-new-privileges", "no-new-privileges:true"}
+    return raw[0] in {option, f"{option}:true"}
 
 
-def _limits_match(host: dict) -> bool:
+def _limits_match(host: dict, spec: RelayContainerSpec) -> bool:
+    name, limit = spec.ulimit
     return (
-        host.get("PidsLimit") == 64
-        and host.get("Memory") == 64 * 1024 * 1024
-        and host.get("NanoCpus") == 500_000_000
-        and host.get("Ulimits") == [{"Name": "nofile", "Hard": 256, "Soft": 256}]
+        host.get("PidsLimit") == spec.pids_limit
+        and host.get("Memory") == spec.memory_mib * 1024 * 1024
+        and host.get("NanoCpus") == int(Decimal(spec.cpus) * 1_000_000_000)
+        and host.get("Ulimits") == [{"Name": name, "Hard": limit, "Soft": limit}]
     )
 
 
