@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import itertools
 import json
 import os
 import sys
@@ -483,9 +482,6 @@ def test_managed_simulation_record_publishes_lane_results_in_plan_order_and_clea
     manifest = _three_item_manifest()
     plan = create_simulation_record_plan(manifest)
     project, state = _parallel_environment(tmp_path)
-    # Nothing orders the items: the lane step machine checks the interleavings.
-    state.barrier = threading.Barrier(1)
-    state.first_finished.set()
     executor = _parallel_executor(monkeypatch, state)
     outcome, slot_store, invocation = _run_parallel_simulation_record(
         tmp_path, manifest, plan, project, executor, slots
@@ -575,9 +571,6 @@ def test_unsized_memory_admitted_simulation_record_runs_work_items_without_child
     manifest = _three_item_manifest()
     plan = create_simulation_record_plan(manifest)
     project, state = _parallel_environment(tmp_path)
-    state.clock = itertools.count().__next__  # a tick per reading, no wall-clock wait
-    # One item at a time: nothing waits for a peer to overlap.
-    state.barrier = threading.Barrier(1)
     executor = _parallel_executor(monkeypatch, state)
     booley_dir = project / ".booley"
     pin_budget(monkeypatch, 1000)
