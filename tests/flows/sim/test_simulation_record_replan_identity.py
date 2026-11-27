@@ -33,7 +33,7 @@ _CASES = {
 
 
 def _record_and_replan(tmp_path, monkeypatch, toml, request):
-    """Plan a record, then a new run from its frozen options; return both manifests."""
+    """Plan a record, then a new run from its frozen options; return both and the options."""
     target = "ccfg" if toml.startswith("[ccfg]") else "sim_0"
     files = {**_CORE_FILES, ".booley/tests.toml": toml}
 
@@ -52,23 +52,26 @@ def _record_and_replan(tmp_path, monkeypatch, toml, request):
         return run.flow, path, codec.decode_simulation_record_manifest(path.read_bytes())
 
     flow, path, stored = record(1, request)
-    # Private seam: no public entry point reaches the options builder until #4371.
+    # Private seam: only the coverage refusal reaches the options builder until #4371.
     options = flow._frozen_test_run_options(stored, target)
     parser = argparse.ArgumentParser()
     SimArguments.add_args(parser)
     replay = parser.parse_args(shlex.split(options))
-    return stored, record(2, {"test": replay.test, "seed": replay.seed})[2], path
+    replanned = record(2, {"test": replay.test, "seed": replay.seed})[2]
+    return stored, replanned, path, options
 
 
 @pytest.mark.parametrize("case", _CASES)
 def test_replaying_the_frozen_test_runs_replans_the_same_identity(tmp_path, monkeypatch, case):
-    stored, replanned, _ = _record_and_replan(tmp_path, monkeypatch, *_CASES[case])
+    stored, replanned, _, options = _record_and_replan(tmp_path, monkeypatch, *_CASES[case])
+    # This case pins the suite flag only while its replay names the runs.
+    assert case != "cocotb-default-suite" or "--test=" in options
     planning.verify_workload(stored, replanned)  # raising is a refused resume
 
 
 def test_a_manifest_with_prerequisites_is_refused(tmp_path, monkeypatch):
     """The identity gate phase 2 uses refuses it; an explicit early refusal is #4371's."""
-    stored, replanned, path = _record_and_replan(tmp_path, monkeypatch, _HDL, {})
+    stored, replanned, path, _ = _record_and_replan(tmp_path, monkeypatch, _HDL, {})
     prerequisites = prerequisite_documents(types.SimpleNamespace(manifest=stored), path)
     document = {k: v for k, v in stored.document.items() if k != "fingerprints"}
     older = planning.finalize_manifest(document | {"prerequisites": prerequisites})

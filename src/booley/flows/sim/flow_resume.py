@@ -269,7 +269,8 @@ class SimulationRecordResumeMixin:
         selection then resolves to the same runs.  Any other record (a subset,
         a reordering, a Test Variant, a pinned or drawn seed, a default that
         has since changed) is named run by run, so a new run draws no seed
-        again.  The unnamed invocation is named by ``--seed``.
+        again.  The unnamed invocation is named by ``--seed``, or by nothing
+        without a seed.
         """
         try:
             runs = [run for group in _manifest_run_groups(manifest) for run in group]
