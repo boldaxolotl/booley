@@ -253,28 +253,77 @@ def test_hook_without_an_agent_cli_starts_and_writes_nothing(first_run, monkeypa
 
 
 @pytest.mark.parametrize(
-    ("replies", "adds", "status"),
+    ("name", "registered", "fake", "expected"),
     [
-        pytest.param([(0, "Added")], 1, "started", id="registered"),
-        pytest.param([(1, "ProjectAlreadyExistsError")], 1, "started", id="already-registered"),
-        pytest.param([(78, "not ready"), (0, "Added")], 2, "started", id="server-not-ready"),
-        pytest.param([(1, "boom")], 1, "unregistered", id="refused"),
-        pytest.param([OSError("boom")], 1, "unregistered", id="run-error"),
+        pytest.param(None, None, {}, ("started", 1, 0, "work", 0), id="registered"),
+        pytest.param(None, "work", {}, ("started", 1, 0, "work", 0), id="already-registered"),
+        pytest.param(
+            None,
+            None,
+            {"add_replies": [(78, "not ready"), (0, "Added")]},
+            ("started", 2, 0, None, 0),
+            id="server-not-ready",
+        ),
+        pytest.param(
+            None,
+            None,
+            {"add_replies": [(1, "boom")]},
+            ("unregistered", 1, 0, None, 1),
+            id="refused",
+        ),
+        pytest.param(
+            None,
+            None,
+            {"add_replies": [OSError("boom")]},
+            ("unregistered", 1, 0, None, 1),
+            id="run-error",
+        ),
+        pytest.param("picorv32", None, {}, ("started", 1, 0, "picorv32", 0), id="titled"),
+        pytest.param("picorv32", "work", {}, ("started", 1, 1, "picorv32", 0), id="retitled"),
+        pytest.param(
+            "picorv32", "picorv32", {}, ("started", 1, 1, "picorv32", 0), id="already-named"
+        ),
+        pytest.param(
+            "picorv32",
+            "work",
+            {"rename_reply": (1, "boom")},
+            ("started", 1, 1, "work", 1),
+            id="rename-refused",
+        ),
+        pytest.param(
+            "picorv32",
+            "work",
+            {"rename_reply": OSError("boom")},
+            ("started", 1, 1, "work", 1),
+            id="rename-run-error",
+        ),
     ],
 )
-def test_ensure_t3_server_registers_the_project(
-    tmp_path, monkeypatch, capsys, replies, adds, status
+def test_ensure_t3_server_registers_the_project_under_its_name(
+    tmp_path, monkeypatch, capsys, name, registered, fake, expected
 ):
+    status, adds, renames, title, lines = expected
+    project, booley = tmp_path / "work", tmp_path / ".booley"
+    project.mkdir()
+    booley.mkdir()
+    if name:
+        (booley / "booley.toml").write_bytes(f'[project]\nname = "{name}"\n'.encode())
+    monkeypatch.setenv("BOOLEY_DIR", str(booley))
+    registrations = {str(project): registered} if registered else {}
     volume = tmp_path / "t3-volume"
-    t3 = _t3_code(monkeypatch, add_replies=replies, volume=volume)
-    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    t3 = _t3_code(monkeypatch, projects=registrations, volume=volume, **fake)
     stale = write_t3_runtime(volume, pid=4_194_305, port=3773, environment_id="env-fake")
 
-    assert reg.ensure_t3_server(tmp_path) == status
+    assert reg.ensure_t3_server(project) == status
     assert t3.replaced_records == [stale]  # untouched until T3 Code replaced it
-    assert len(t3.added) == adds
+    base = ["--base-dir", reg.T3_BASE_DIR]
+    assert t3.renamed == [["t3", "project", "rename", *base, str(project), name]] * renames
+    add = ["t3", "project", "add", *base, *(["--title", name] if name else []), str(project)]
+    assert t3.added == [add] * adds
+    assert t3.projects.get(str(project)) == title
     assert t3.checked == [["t3", "policy", "check", "/etc/t3code/policy.json"]]
-    assert "boom" not in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "boom" not in err and err.count("\n") == lines
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="NTFS would allocate the sparse log files")

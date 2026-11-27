@@ -187,13 +187,10 @@ still exits 0; that is a setup failure, so stop. A `<port>` outside
    keep the address bar out of every screenshot.
 
 Worked when the page shows the T3 Code UI with the demo Project (`picorv32`)
-in its project list, not "No project" and not a pairing prompt. Until #5686
-is fixed, T3 Code lists the Project as `work`, the Sandbox's mount path,
-because Booley registers it without a title: a check that expects `picorv32`
-accepts `work` and notes #5686. An expired or used link shows a pairing
-error: make a new one with step 4.1, never reuse one. Pair again the same way
-after `booley session down` and `up`, or when the relay reports it moved
-(`warning: 127.0.0.1:<old> is held by another process ...`).
+in its project list, not "No project" and not a pairing prompt. An expired or
+used link shows a pairing error: make a new one with step 4.1, never reuse one.
+Pair again the same way after `booley session down` and `up`, or when the relay
+reports it moved (`warning: 127.0.0.1:<old> is held by another process ...`).
 
 ## 5. Dashboard and threads
 

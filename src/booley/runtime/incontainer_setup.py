@@ -54,9 +54,10 @@ from types import SimpleNamespace
 from typing import IO, cast
 
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
+from booley.config.project_config import configured_project_name
 from booley.core.boundary import require_dict, require_int, require_str
 from booley.runtime import auth_token
-from booley.runtime.booley_dir import runtime_dir
+from booley.runtime.booley_dir import resolve_booley_dir, runtime_dir
 from booley.runtime.mcp_config import (
     DEVELOPER_AGENT_ENV,
     GATEWAY_PROVIDER_ID,
@@ -400,6 +401,7 @@ def _serve_t3(project_root: Path) -> str:
     """Start ``t3 serve`` detached and register the Project; never raises."""
     try:
         runtime = runtime_dir(project_root)
+        title = configured_project_name(resolve_booley_dir(project_root))
         # stdout carries T3 Code's startup pairing token, so it goes to no log.
         with (runtime / "t3-serve.log").open("ab") as log:
             started = _start_detached(
@@ -427,7 +429,7 @@ def _serve_t3(project_root: Path) -> str:
         return "failed"
     if started != "started":
         return started
-    return "started" if _register_t3_project(project_root) else "unregistered"
+    return "started" if _register_t3_project(project_root, title) else "unregistered"
 
 
 def _t3_policy_accepted() -> bool:
@@ -453,25 +455,24 @@ def _t3_policy_accepted() -> bool:
     return False
 
 
-def _register_t3_project(project_root: Path) -> bool:
-    """Run ``t3 project add``; already registered counts. Never echoes T3's output."""
-    cmd = ["t3", "project", "add", "--base-dir", T3_BASE_DIR, str(project_root)]
+def _register_t3_project(project_root: Path, title: str | None) -> bool:
+    """Run ``t3 project add``; already registered counts. Never echoes T3's output.
+
+    *title* (``[project].name``) names the Project; an existing registration is
+    renamed to it, and a failed rename still counts as registered.
+    """
+    titled = ["--title", title] if title else []
+    cmd = ["t3", "project", "add", "--base-dir", T3_BASE_DIR, *titled, str(project_root)]
     deadline = time.monotonic() + _T3_START_TIMEOUT_SECONDS
     while True:
-        try:
-            result = subprocess.run(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                capture_output=True,
-                text=True,
-                errors="replace",
-                timeout=_T3_START_TIMEOUT_SECONDS,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired) as exc:
-            print(f"T3 Code project registration failed: {type(exc).__name__}", file=sys.stderr)
+        result = _run_t3_project(cmd, "registration")
+        if result is None:
             return False
-        if result.returncode == 0 or "ProjectAlreadyExistsError" in result.stdout:
+        if result.returncode == 0:
+            return True
+        if "ProjectAlreadyExistsError" in result.stdout:
+            if title:
+                _rename_t3_project(project_root, title)
             return True
         if result.returncode != _T3_SERVER_NOT_READY or time.monotonic() >= deadline:
             print(
@@ -479,6 +480,31 @@ def _register_t3_project(project_root: Path) -> bool:
             )
             return False
         time.sleep(0.2)
+
+
+def _rename_t3_project(project_root: Path, title: str) -> None:
+    """Run ``t3 project rename``, which also exits 0 when the title already matches."""
+    cmd = ["t3", "project", "rename", "--base-dir", T3_BASE_DIR, str(project_root), title]
+    result = _run_t3_project(cmd, "rename")
+    if result is not None and result.returncode != 0:
+        print(f"T3 Code project rename failed (exit {result.returncode})", file=sys.stderr)
+
+
+def _run_t3_project(cmd: list[str], action: str) -> subprocess.CompletedProcess[str] | None:
+    """Run a ``t3 project`` command; report one that could not run and return ``None``."""
+    try:
+        return subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=_T3_START_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"T3 Code project {action} failed: {type(exc).__name__}", file=sys.stderr)
+        return None
 
 
 # ---------------------------------------------------------------------------
