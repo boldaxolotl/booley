@@ -72,6 +72,7 @@ def _start_supervisor_with_test_heartbeat(
     bootstrap = (
         "from pathlib import Path\n"
         "import booley.runtime.execution_supervisor as supervisor\n"
+        "import booley.runtime.heartbeat as reaper\n"
         f"heartbeat_path = Path({str(heartbeat_path)!r})\n"
         "generation = 0\n"
         "def touch():\n"
@@ -79,7 +80,8 @@ def _start_supervisor_with_test_heartbeat(
         "    generation += 1\n"
         "    with heartbeat_path.open('a', encoding='ascii') as stream:\n"
         "        stream.write(f'{generation}\\n')\n"
-        "supervisor.touch_reaper_heartbeat = touch\n"
+        # boundary: the Sandbox activity heartbeat file the idle reaper reads
+        "reaper.touch_reaper_heartbeat = touch\n"
         "supervisor._EXECUTION_HEARTBEAT_SECONDS = 0.03\n"
         "raise SystemExit(supervisor.main())\n"
     )

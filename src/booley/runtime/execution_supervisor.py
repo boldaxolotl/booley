@@ -16,7 +16,6 @@ import os
 import signal
 import subprocess
 import sys
-import threading
 import time
 from dataclasses import dataclass
 from types import FrameType
@@ -37,7 +36,7 @@ from booley.runtime.execution_records import (
     read_release_tokens,
     request_cancellation,
 )
-from booley.runtime.heartbeat import touch_reaper_heartbeat
+from booley.runtime.heartbeat import reaper_heartbeat
 from booley.runtime.pid import ProcessIdentity, capture_process_identity
 from booley.runtime.process_tree import (
     descendant_pids,
@@ -60,43 +59,6 @@ class _RuntimeSignals:
     def receive(self, signum: int, _frame: FrameType | None) -> None:
         self.signum = self.signum or signum
         self.count += 1
-
-
-class _ExecutionHeartbeat:
-    """Keep protected Sandbox activity visible for the complete supervisor lifetime."""
-
-    def __init__(self, interval: float | None = None) -> None:
-        self._interval = _EXECUTION_HEARTBEAT_SECONDS if interval is None else interval
-        self._stop_event = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        _touch_reaper_heartbeat()
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop_event.set()
-        if self._thread is not None:
-            self._thread.join()
-
-    def _run(self) -> None:
-        while not self._stop_event.wait(self._interval):
-            _touch_reaper_heartbeat()
-
-    def __enter__(self) -> _ExecutionHeartbeat:
-        self.start()
-        return self
-
-    def __exit__(self, *exc: object) -> None:
-        self.stop()
-
-
-def _touch_reaper_heartbeat() -> None:
-    """Refresh lifecycle safety without allowing heartbeat I/O to affect work."""
-    with contextlib.suppress(OSError):
-        touch_reaper_heartbeat()
 
 
 @contextlib.contextmanager
@@ -447,7 +409,7 @@ def supervise(
     supervisor = capture_process_identity(os.getpid())
     starting = _execution_record(state="starting", supervisor=supervisor, leader=None)
     atomic_write_json(paths.record, starting)
-    with _ExecutionHeartbeat():
+    with reaper_heartbeat(_EXECUTION_HEARTBEAT_SECONDS):
         if read_attachment_heartbeat(paths) is None:
             failed = _execution_record(
                 state="unrecoverable",

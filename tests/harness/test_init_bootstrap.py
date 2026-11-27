@@ -444,15 +444,16 @@ def test_seed_accepts_absent_proxy_and_network_under_unproxied(
     from booley.config.host_config import SandboxHostPolicy
     from booley.harness import host_sidecars
     from tests.harness.test_bootstrap import _wire_current
-    from tests.harness.test_host_sidecars import _egress_docker
+    from tests.harness.test_host_sidecars import _add_sidecar, _egress_docker, _mutations
 
     reconcile_sidecars = host_sidecars.reconcile_sidecars
     _wire_current(monkeypatch)
     monkeypatch.setattr(host_sidecars, "reconcile_sidecars", reconcile_sidecars)
     policy = SandboxHostPolicy(egress="unproxied")
     monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: policy)
-    docker = _egress_docker(monkeypatch)
-    docker.add_sidecar(
+    docker = _egress_docker(tmp_path / "docker", monkeypatch)
+    _add_sidecar(
+        docker,
         host_sidecars.legacy.REAPER_CONTAINER,
         "reaper",
         host_sidecars.legacy.REAPER_IMAGE,
@@ -466,4 +467,4 @@ def test_seed_accepts_absent_proxy_and_network_under_unproxied(
 
     assert result is not None, "absent proxy and network are current under unproxied"
     assert "run `booley bootstrap`" not in capsys.readouterr().out
-    assert docker.mutations() == []
+    assert _mutations(docker) == []
