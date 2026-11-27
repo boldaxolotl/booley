@@ -188,8 +188,10 @@ def git_init(root: Path) -> None:
     run_bounded_child(["git", "init", "-q", str(root)], check=True)
 
 
-def set_venue(monkeypatch, inside: bool) -> None:
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: inside)
+def set_venue(monkeypatch: pytest.MonkeyPatch, inside: bool) -> None:
+    monkeypatch.setattr(
+        runtime_context, "inside_session_runtime", lambda: inside
+    )  # boundary: venue
     # The suite inherits the shell it runs in, and an agent CLI exports the
     # markers _check_host_agent_session keys off — a run started from Claude
     # Code would otherwise record different events than one from a plain
