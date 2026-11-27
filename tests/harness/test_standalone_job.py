@@ -52,7 +52,11 @@ def run(argv):
     Path(os.environ["STUB_SEEN"]).write_text(os.environ.get("BOOLEY_RUN_ID", ""), encoding="utf-8")
     outcome = argv[argv.index("--outcome") + 1] if "--outcome" in argv else "0"
     if outcome == "block":
-        time.sleep(float(os.environ["STUB_BLOCK_S"]))
+        # Short sleeps: a signal that lands just before a sleep starts does not
+        # interrupt it, so its Python handler runs only when that sleep ends.
+        deadline = time.monotonic() + float(os.environ["STUB_BLOCK_S"])
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
         return 0
     if outcome in OUTCOMES:
         raise OUTCOMES[outcome]
@@ -260,7 +264,11 @@ def block():
     with ProgressLifecycle(publish):
         publish("running")
         Path(sys.argv[2]).write_text("ready")  # the handler is installed before the run starts
-        time.sleep({timeout})
+        # Short sleeps: a signal that lands just before a sleep starts does not
+        # interrupt it, so its Python handler runs only when that sleep ends.
+        deadline = time.monotonic() + {timeout}
+        while time.monotonic() < deadline:
+            time.sleep(0.05)
     return 0
 
 job = StandaloneJob.prepare(
