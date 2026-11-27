@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from booley.config.jobs import SeatCapError, required_seats
 from booley.core.boundary import as_float
+from booley.flows.endpoint_reporting import removed_root
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.memory_admission import (
     MemoryAdmissionPlan,
@@ -263,6 +264,9 @@ def _enter_admission(
     """
     try:
         return held.enter_context(AdmissionGate(endpoint, prepared, requeued=requeued).enter())
+    except job_slots.ClaimAbortedError as exc:
+        # The queue wait ends only when a run root is removed; the finish names it.
+        raise EndpointRejectedError(EndpointOutcome(exit_code=EXIT_ERROR)) from exc
     except (
         job_slots.ClaimLostError,
         AdmissionIdentityError,
@@ -400,6 +404,7 @@ def _acquire_memory_reservation(
         memory=claim,
         job=label,
         queue_reason=OOM_REQUEUE_REASON if requeued else None,
+        should_abort=lambda: removed_root(endpoint) is not None,
     )
     if claim.companion:
         # A Specialist or coordinator fixes no thread count and shrinks no Flow's share.
