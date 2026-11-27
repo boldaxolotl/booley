@@ -8,6 +8,7 @@ rather than a hand-written dict.
 from __future__ import annotations
 
 import json
+import logging
 import ntpath
 import os
 import re
@@ -57,6 +58,7 @@ from tests.harness.booley_dir_support import select_booley_dir
 from tests.harness.session_docker_fake import (
     SandboxDocker,
     attach_commands,
+    completed,
     headless_session_entry,
     isolate_session_cli,
     run_cli,
@@ -2013,24 +2015,28 @@ class TestT3CodeRelay:
             doctor, "observe_deep_status", lambda *_a, **_k: SimpleNamespace(render=lambda: "")
         )
         roots: dict[Path, None] = {}
+        # Any exec answers a pairing request with a link on the relay port it names.
+        up_docker.exec_reply = lambda argv: completed(
+            stdout=json.dumps({"pairUrl": f"http://127.0.0.1:{argv[-1].split()[-1]}/pair#token=t"})
+        )
 
-        def run(command: str, root: Path) -> tuple[str, str]:
+        def run(command: list[str], root: Path) -> tuple[str, str]:
             self.relay_module(monkeypatch, relay_ports)
             roots[root] = None
-            assert run_cli(monkeypatch, ["-C", str(root), "session", command]) == 0
+            assert run_cli(monkeypatch, ["-C", str(root), "session", *command]) == 0
             captured = capsys.readouterr()
             return captured.out, captured.err
 
         def up(root: Path) -> tuple[int, str]:
-            out, err = run("up", root)
+            out, err = run(["up"], root)
             assert "localhost" not in out
             match = re.search(r"T3 Code relay: 127\.0\.0\.1:(\d+)", out)
             assert match, f"no T3 Code relay address in: {out}"
             return int(match[1]), err
 
-        yield SimpleNamespace(up=up, down=lambda root: run("down", root)[0])
+        yield SimpleNamespace(up=up, run=run, down=lambda root: run(["down"], root)[0])
         for root in roots:
-            run("down", root)
+            run(["down"], root)
 
     linux_only = pytest.mark.skipif(
         sys.platform != "linux", reason="a script runs as docker; 127.0.0.2 is Linux loopback"
@@ -2260,6 +2266,146 @@ class TestT3CodeRelay:
             assert run_cli(monkeypatch, ["-C", str(workspace), "session", "up"]) == 2
 
         assert f"no free port in 127.0.0.1:{port}-{port}" in capsys.readouterr().err
+
+    @linux_only
+    def test_pairing_links_ui_state_and_no_ui(
+        self,
+        workspace: Path,
+        tmp_path: Path,
+        up_docker: SandboxDocker,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from booley.runtime import session_admission
+
+        caplog.set_level(logging.DEBUG)
+        monkeypatch.setattr(
+            session_admission, "running_project_sandboxes", real_running_project_sandboxes
+        )
+        up_docker.created = _sandbox_state(workspace)
+        t3 = serve_t3_code(monkeypatch)
+        runs = run_registrar_on_post_start(up_docker, workspace, monkeypatch)
+
+        no_ui, _ = relay_cli.run(["up", "--no-ui"], workspace)
+        off, _ = relay_cli.run(["status"], workspace)
+        up, _ = relay_cli.run(["up"], workspace)
+        pair, _ = relay_cli.run(["pair"], workspace)
+        status, _ = relay_cli.run(["status"], workspace)
+
+        assert "pair#token" not in no_ui
+        assert all("t3:off" in run for run in runs[:2])  # the create and the start hook
+        assert off == "running\nUI: off\n"
+        assert len(t3.served) == 1
+        (port,) = re.findall(r"T3 Code relay: 127\.0\.0\.1:(\d+)", up)
+        base = f"http://127.0.0.1:{port}"
+        assert f"{base}/pair#token={TOKEN}-1" in up
+        assert f"{base}/pair#token={TOKEN}-2" in pair
+        assert [
+            (cmd[cmd.index("--ttl") + 1], cmd[cmd.index("--base-url") + 1]) for cmd in t3.paired
+        ] == [("5m", base)] * 2
+        assert status.endswith(f"T3 Code: running\nT3 Code relay: 127.0.0.1:{port}\n")
+        files = (f.read_text(errors="replace") for f in tmp_path.rglob("*") if f.is_file())
+        assert TOKEN not in "".join([caplog.text, *runs, *files])
+
+    def test_session_up_warns_and_succeeds_when_the_pairing_link_fails(
+        self, workspace: Path, up_docker: SandboxDocker, relay_cli: SimpleNamespace
+    ) -> None:
+        up_docker.exec_reply = lambda _argv: completed(1, TOKEN)
+
+        _, err = relay_cli.up(workspace)
+
+        assert "no T3 Code pairing link: t3 auth pairing create failed (exit 1)" in err
+        assert TOKEN not in err
+
+    def test_status_and_pair_report_an_unobservable_relay(
+        self, workspace: Path, attached: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.core.process_identity import ProcessIdentity
+        from booley.runtime import t3_relay
+        from booley.runtime.pid import ProcessState, capture_process_identity
+
+        name = sr.session_container_name(workspace)
+        _running_headless(attached.docker, workspace)
+        attached.docker.exec_reply = lambda argv: completed(stdout="running\n")
+        identity = capture_process_identity(os.getpid())
+        assert isinstance(identity, ProcessIdentity)
+        root = str(workspace.resolve())
+        record = {"schema_version": 1, "project_root": root, "port": 3780, "container": name}
+        t3_relay.relay_store().write(
+            root, json.dumps({**record, "process": identity.to_payload()})
+        )
+        monkeypatch.setattr(
+            t3_relay,
+            "observe_process",
+            lambda _identity: SimpleNamespace(state=ProcessState.UNKNOWN),
+        )
+
+        assert sr.ui_status(workspace) == "T3 Code: running\nT3 Code relay: unknown"
+        with pytest.raises(t3_relay.T3RelayError, match="cannot tell whether"):
+            sr.pairing_link(workspace)
+
+
+@pytest.mark.parametrize(
+    ("reply", "problem"),
+    [
+        (subprocess.CompletedProcess([], 1, TOKEN, TOKEN), r"failed \(exit 1\)"),
+        (subprocess.CompletedProcess([], 0, f"not json {TOKEN}", ""), "is not a link"),
+        (
+            subprocess.CompletedProcess(
+                [], 0, json.dumps({"pairUrl": f"http://localhost:3780/pair#token={TOKEN}"}), ""
+            ),
+            "is not a link",
+        ),
+        (subprocess.TimeoutExpired("docker", 1), r"no pairing link in \d+ seconds"),
+    ],
+    ids=["exit", "not-json", "localhost", "timeout"],
+)
+def test_a_bad_pairing_reply_is_refused_without_its_token(
+    reply: subprocess.CompletedProcess[str] | Exception,
+    problem: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def answer(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setattr(sr, "run_captured_bounded", answer)
+
+    with pytest.raises(sr.SessionError, match=problem) as refused:
+        sr.create_pairing_link("c", 3780)
+
+    assert TOKEN not in f"{refused.value}{caplog.text}"
+
+
+@pytest.mark.parametrize("argv", [[], ["unknown"], ["pair"], ["pair", "not-a-port"]])
+def test_the_in_sandbox_t3_entry_refuses_a_bad_verb_or_port(argv: list[str]) -> None:
+    from booley.harness import incontainer_t3
+
+    with pytest.raises(SystemExit) as refused:
+        incontainer_t3.main(argv)
+
+    assert refused.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("sandbox", "problem"),
+    [(None, "no running Sandbox"), ("editor", "VS Code owns"), ("headless", "the UI is off")],
+)
+def test_pair_is_refused_without_a_headless_sandbox_and_relay(
+    workspace: Path, attached: SimpleNamespace, sandbox: str | None, problem: str
+) -> None:
+    if sandbox is not None:
+        name = sandbox if sandbox == "editor" else sr.session_container_name(workspace)
+        attached.docker.containers[name] = _sandbox_state(
+            workspace, vscode=sandbox == "editor", name=name
+        )
+
+    with pytest.raises(sr.SessionError, match=problem):
+        sr.pairing_link(workspace)
 
 
 class TestDownAndStatus:

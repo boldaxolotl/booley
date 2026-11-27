@@ -136,6 +136,24 @@ def _candidates(recorded: int | None, others: set[int]) -> list[str]:
     return [str(port) for port in ordered]
 
 
+def _unobservable(identity: ProcessIdentity) -> T3RelayError:
+    return T3RelayError(
+        f"cannot tell whether the T3 Code relay (process {identity.pid}) "
+        "still runs; run `booley session up` again"
+    )
+
+
+def running_port(workspace: Path, container: str) -> int | None:
+    """The port of this Project's running relay into *container*, else ``None``."""
+    record = _read(relay_store(), str(workspace.resolve()))
+    if record is None or record.identity is None or record.container != container:
+        return None
+    state = observe_process(record.identity).state
+    if state is ProcessState.UNKNOWN:
+        raise _unobservable(record.identity)
+    return record.port if state is ProcessState.RUNNING else None
+
+
 def start(workspace: Path, container: str) -> RelayStart:
     """Ensure this Project's relay into *container* runs; return its port."""
     store = relay_store()
@@ -144,10 +162,7 @@ def start(workspace: Path, container: str) -> RelayStart:
     if record is not None and record.identity is not None:
         state = observe_process(record.identity).state
         if state is ProcessState.UNKNOWN:
-            raise T3RelayError(
-                f"cannot tell whether the T3 Code relay (process {record.identity.pid}) "
-                "still runs; run `booley session up` again"
-            )
+            raise _unobservable(record.identity)
         if state is ProcessState.RUNNING and record.container == container:
             return RelayStart(record.port, None)
         if state is ProcessState.RUNNING:
