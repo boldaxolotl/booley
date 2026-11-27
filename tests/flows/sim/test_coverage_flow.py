@@ -67,7 +67,7 @@ def _coverage(
 
 def _pin_revision(monkeypatch: pytest.MonkeyPatch, revision: str) -> None:
     """Fix the checkout revision every Flow module reads, as resume requires."""
-    for module in ("flow", "flow_resume", "record.resume"):
+    for module in ("flow", "record.resume"):
         monkeypatch.setattr(f"booley.flows.sim.{module}.git_full_sha", lambda *_args: revision)
 
 

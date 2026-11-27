@@ -28,7 +28,6 @@ from booley.core.boundary import (
     require_uuid4,
 )
 from booley.flows.sim.record_files import canonical_json
-from booley.flows.sim.record_layout import RECORD_DIRECTORY
 from booley.flows.simulation_record_results import OlderBooleyRecordError
 from booley.runtime.timefmt import parse_timestamp
 
@@ -454,8 +453,7 @@ def _read_manifest(value: Mapping[str, object]) -> None:
     _read_workload(value["workload"])
     _read_required_suite(value["required_suite"])
     _read_build_variant_ids(value["build_variants"])
-    for index, item in enumerate(require_list(value["prerequisites"], field="prerequisites")):
-        _read_prerequisite(item, f"prerequisites[{index}]")
+    require_list(value["prerequisites"], field="prerequisites")
     for index, item in enumerate(require_list(value["work_items"], field="work_items")):
         _read_work_item(item, f"work_items[{index}]")
     fingerprints = require_dict(value["fingerprints"], field="fingerprints")
@@ -468,14 +466,6 @@ def _read_strings(value: object, field: str, keys: tuple[str, ...]) -> dict[str,
     for key in keys:
         require_str_value(mapping.get(key), field=f"{field}.{key}")
     return mapping
-
-
-def _read_prerequisite(value: object, field: str) -> None:
-    """Read the prerequisite members resume, the Pre-Sim walk and acceptance use."""
-    entry = _read_strings(value, field, ("simulation_record_id", "work_item_id"))
-    require_dict(entry.get("target"), field=f"{field}.target")
-    reference = _read_strings(entry.get("manifest"), f"{field}.manifest", ("path", "sha256"))
-    require_int(reference.get("bytes"), field=f"{field}.manifest.bytes")
 
 
 def _read_work_item(value: object, field: str) -> None:
@@ -661,25 +651,3 @@ def validate_relative_path(path: object) -> str:
     if any(part in {"", ".", ".."} for part in parts):
         raise SimulationRecordIntegrityError("path must be contained and normalized")
     return parsed
-
-
-def linked_manifest_path(invocation: Path, reference: Mapping[str, object]) -> Path:
-    """The prerequisite manifest *reference* names, inside its *invocation*.
-
-    Decode does not check the path, so every walk checks it before opening it:
-    exactly ``targets/<Target>/record/manifest.json``, relative and contained,
-    which is what planning writes. That also keeps the invocation the same at
-    every hop of a prerequisite walk.
-    """
-    path = reference["path"]
-    parts = path.split("/") if isinstance(path, str) else []
-    if (
-        len(parts) != 4
-        or parts[0] != "targets"
-        or parts[2:] != [RECORD_DIRECTORY, "manifest.json"]
-    ):
-        raise SimulationRecordIntegrityError(
-            f"prerequisite manifest path {path!r} is not "
-            "targets/<Target>/record/manifest.json inside its invocation"
-        )
-    return invocation / validate_relative_path(path)

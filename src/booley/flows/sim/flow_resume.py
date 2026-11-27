@@ -14,9 +14,6 @@ from typing import TYPE_CHECKING
 
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.endpoint_session import default_report_root
-from booley.flows.sim.live_progress import (
-    attempt_scope,
-)
 from booley.flows.test_runs import TestRun
 from booley.fusesoc import fusesoc_registry
 from booley.runtime.endpoint_execution import (
@@ -24,53 +21,33 @@ from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
 )
-from booley.targets.catalog import TargetCatalog
 
-from ..baseline_worktree import (
-    git_full_sha,
-)
-from .execution import (
-    SelectedTestRuns,
-)
 from .record import (
     NewSimulationRecordPreviewRequest,
-    ResumeSimulationRecordRunRequest,
     SimulationRecord,
     SimulationRecordCancellationError,
-    SimulationRecordIntegrityError,
     SimulationRecordManifest,
     SimulationRecordManifestView,
-    SimulationRecordOutcome,
     SimulationRecordPlan,
     SimulationRecordRecoveryStatus,
     ValidatedResumeManifest,
 )
-from .record.flow_planning import (
-    plan_coarse_simulation_record,
-    plan_ordinary_hdl_simulation_record,
-)
 from .record.planning import (
     SimulationRecordWorkloadMismatchError,
     WorkloadDiagnostic,
-    verify_workload,
     workload_diagnostic,
 )
-from .record.serial_execution import OrdinaryHdlSerialExecutor
 from .record_presentation import _simulation_record_recovery_detail
-from .record_scaffold import _group_disclosures, _SimulationRecordRun, _SimulationRecordSteps
+from .record_scaffold import _SimulationRecordRun, _SimulationRecordSteps
 from .test_selection import _get_test_names
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
     from contextlib import ExitStack
 
-    from booley.flows.base import SubprocessResult
-    from booley.flows.job_estimates import JobRequest
     from booley.flows.sim.request import SimRequest
     from booley.flows.target_test_plan import TargetTestPlan
     from booley.targets.domain import TargetHandle
 
-    from .execution import SimulationExecution
     from .flow import (
         OrdinarySimulationRecordPlanning,
         PlannedTarget,
@@ -108,7 +85,6 @@ class SimulationRecordResumeMixin:
         # Host members SimulateFlow provides; Pyright checks them against the host.
         publication_resources: ExitStack[bool | None]
         _held_resume_origins: set[Path]
-        _simulation_record_publication_checkpoint: Callable[[str], None] | None
         endpoint_kind: str
         _args: SimRequest
         _target_handles: dict[str, TargetHandle]
@@ -139,26 +115,6 @@ class SimulationRecordResumeMixin:
             error: SimulationRecordCancellationError,
             detail: Mapping[str, object] | None = None,
         ) -> EndpointOutcome: ...
-        def _write_simulation_record_progress(
-            self,
-            targets: Sequence[str],
-            outcomes: Sequence[SimulationRecordOutcome],
-            *,
-            phase: str,
-            complete: bool,
-        ) -> None: ...
-        def _simulation_record_endpoint_outcome(
-            self, outcomes: list[SimulationRecordOutcome]
-        ) -> EndpointOutcome: ...
-        def _publish_projection(self, outcome: SimulationRecordOutcome) -> bool: ...
-        def work_item_job_request(
-            self, selector: str, runs: Sequence[TestRun], flags: tuple[str, ...]
-        ) -> JobRequest | None: ...
-        def _record_pre_sim_firing(self, key: tuple[str, str, str, int]) -> None: ...
-        def _execute_boundary(
-            self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
-        ) -> SubprocessResult: ...
-        def _simulation_execution(self) -> SimulationExecution: ...
 
     def _refuse_coverage_resume(
         self, validated: ValidatedResumeManifest
@@ -483,148 +439,6 @@ class SimulationRecordResumeMixin:
             exit_code=EXIT_ERROR,
             report_text=f"Simulation Record resume failed: {message}",
             detail=detail,
-        )
-
-    def _resume_ordinary_steps(
-        self,
-        validated: ValidatedResumeManifest,
-        invocation: Path,
-        admission: AdmissionContext,
-        manifest_published: Callable[[Path], None],
-    ) -> _SimulationRecordSteps:
-        target = SimulationRecordManifestView(validated.manifest).target
-        selector = target.selector
-        outcomes: list[SimulationRecordOutcome] = []
-
-        def run() -> EndpointOutcome:
-            self._write_simulation_record_progress(
-                (selector,), outcomes, phase="starting", complete=False
-            )
-            with attempt_scope(
-                selector,
-                identity=target.identity,
-                operation="publication",
-            ):
-                outcome = self._run_validated_resume_simulation_record(
-                    validated, invocation, admission, manifest_published
-                )
-            published = self._publish_projection(outcome)
-            if published:
-                outcomes.append(outcome)
-                self._write_simulation_record_progress(
-                    (selector,), outcomes, phase="running", complete=False
-                )
-            return self._resumed_endpoint_outcome(outcome, published=published)
-
-        return _SimulationRecordSteps(
-            lambda phase: self._write_simulation_record_progress(
-                (selector,), outcomes, phase=phase, complete=True
-            ),
-            run,
-        )
-
-    def _resumed_endpoint_outcome(
-        self, outcome: SimulationRecordOutcome, *, published: bool
-    ) -> EndpointOutcome:
-        """Report the resumed Target; one whose projection failed has no card entry."""
-        result = self._simulation_record_endpoint_outcome([outcome] if published else [])
-        result.detail.update(_simulation_record_recovery_detail(outcome.recovery))
-        return result
-
-    def _run_validated_resume_simulation_record(
-        self,
-        validated: ValidatedResumeManifest,
-        invocation: Path,
-        admission: AdmissionContext,
-        manifest_published: Callable[[Path], None],
-    ) -> SimulationRecordOutcome:
-        plan = self._resume_simulation_record_plan(validated, int(invocation.name))
-        verify_workload(validated.manifest, plan.manifest)
-        manifest_published(validated.path)
-        return SimulationRecord(
-            OrdinaryHdlSerialExecutor(invoke=self._execute_boundary),
-            publication_checkpoint=self._simulation_record_publication_checkpoint,
-            work_item_request=self.work_item_job_request,
-        ).run(
-            ResumeSimulationRecordRunRequest(
-                validated,
-                plan,
-                Path(self.args.work_dir),
-                self.args.report_dir,
-                self._simulation_record_policy(),
-                invocation,
-                admission,
-                pre_sim_firing_published=self._record_pre_sim_firing,
-            )
-        )
-
-    def _resume_simulation_record_plan(
-        self, validated: ValidatedResumeManifest, invocation_id: int
-    ):
-        """Recompute current workload identity for exact resume comparison."""
-        manifest = validated.manifest
-        binding = validated.binding_for(manifest)
-        handle = binding.handle if binding is not None else validated.target_handles[0]
-        inspection = TargetCatalog.build(handle.project_root).inspect(handle)
-        view = SimulationRecordManifestView(manifest)
-        groups = view.selected_name_groups
-        names = tuple(name for group in groups for name in group)
-        # Resume runs the manifest's own Test Runs: nothing is resolved from
-        # tests.toml again and no seed is drawn again.
-        run_groups = view.test_run_groups
-        runs = tuple(run for group in run_groups for run in group)
-        execution = self._simulation_execution()
-        preview = execution.preview(handle, SelectedTestRuns(runs))
-        disclosures = _group_disclosures(execution, handle, groups, run_groups)
-        revision = git_full_sha("HEAD", handle.project_root)
-        if revision is None:
-            raise SimulationRecordIntegrityError(
-                f"cannot verify resume Target revision at {handle.project_root}"
-            )
-        kind = view.work_item_kind
-        if kind == "cocotb_batch":
-            return plan_coarse_simulation_record(
-                handle=handle,
-                inspection=inspection,
-                preview=preview,
-                selected_tests=names,
-                required_suite=view.required_suite_names,
-                revision=revision,
-                invocation_id=invocation_id,
-                execution_id="",
-                trace=view.trace,
-                kind=kind,
-                planning_disclosures=disclosures,
-                required_suite_catalog_backed=not view.required_suite_default_invocation,
-            )
-        return self._ordinary_resume_plan(
-            handle, inspection, preview, view, revision, invocation_id, disclosures
-        )
-
-    def _ordinary_resume_plan(
-        self,
-        handle,
-        inspection,
-        preview,
-        view: SimulationRecordManifestView,
-        revision,
-        invocation_id,
-        disclosures,
-    ) -> SimulationRecordPlan:
-        return plan_ordinary_hdl_simulation_record(
-            handle=handle,
-            inspection=inspection,
-            preview=preview,
-            groups=view.selected_name_groups,
-            required_suite=view.required_suite_names,
-            revision=revision,
-            invocation_id=invocation_id,
-            execution_id="",
-            trace=view.trace,
-            prerequisite_documents=view.prerequisites,
-            planning_disclosures=disclosures,
-            role=view.target.role,
-            required_suite_catalog_backed=not view.required_suite_default_invocation,
         )
 
 

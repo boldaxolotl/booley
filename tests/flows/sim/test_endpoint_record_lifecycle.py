@@ -1427,7 +1427,6 @@ def _kind_request(tmp_path, monkeypatch, kind):
         if kind == "resume":
             for name in (
                 "booley.flows.sim.flow.git_full_sha",
-                "booley.flows.sim.flow_resume.git_full_sha",
                 "booley.flows.sim.record.resume.git_full_sha",
             ):
                 monkeypatch.setattr(name, lambda *_args: "a" * 40)
