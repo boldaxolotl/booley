@@ -33,9 +33,7 @@ def main(argv: list[str]) -> int:
     elif args.verb == "state":
         print("running" if incontainer_setup.t3_serving() else "off")
     else:
-        pairing = incontainer_setup.create_t3_pairing(
-            incontainer_register.hook_start_directory(), f"http://127.0.0.1:{args.port}"
-        )
+        pairing = incontainer_setup.create_t3_pairing(f"http://127.0.0.1:{args.port}")
         if pairing.returncode:
             print(f"t3 auth pairing create failed (exit {pairing.returncode})", file=sys.stderr)
             return 1

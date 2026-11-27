@@ -4045,6 +4045,7 @@ _REFUSALS = {
     "app-outside-record": "Agent CLIs codex=subscription differ from",
     "app-outside-clis-empty-record": "Agent CLI codex is not in",
     "typeless-volume": "agent state is not scoped",
+    "t3-volume-other-project": "agent state is not scoped",
     "claude-config-bind": "credential seed violates",
     "malformed-record": "Agent CLI record is malformed",
     "gateway-record": "Sandbox identity has drifted",
@@ -4115,6 +4116,9 @@ def _damage_spec(spec: dict, project: Path, home: Path, damage: str) -> None:
     elif damage == "stray-volume":
         stray = dc.state_volume_mount("codex", project_id).replace(".codex", "/stray")
         mounts.insert(1, stray)
+    elif damage == "t3-volume-other-project":
+        index = mounts.index(dc.t3_state_volume_mount(project_id))
+        mounts[index] = dc.t3_state_volume_mount("other")
     else:
         raise AssertionError(damage)
 

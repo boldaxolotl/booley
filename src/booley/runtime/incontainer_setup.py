@@ -61,7 +61,7 @@ from booley.runtime.mcp_config import (
     http_port,
 )
 from booley.runtime.runtime_context import in_hand_written_sandbox
-from booley.runtime.sandbox_layout import T3_POLICY_TARGET
+from booley.runtime.sandbox_layout import T3_BASE_DIR, T3_POLICY_TARGET
 
 MCP_SERVER_NAME = "booley"
 _TOOL_TIMEOUT_SEC = 7200
@@ -254,16 +254,12 @@ def t3_serving() -> bool:
     return _port_is_serving(T3_PORT)
 
 
-def _t3_base(project_root: Path) -> Path:
-    return runtime_dir(project_root) / "t3"
-
-
-def create_t3_pairing(project_root: Path, base_url: str) -> subprocess.CompletedProcess[str]:
+def create_t3_pairing(base_url: str) -> subprocess.CompletedProcess[str]:
     """Run ``t3 auth pairing create``; a failure to run it is a failed result.
 
     The result's stdout holds the pairing token, so the caller prints it only to the user.
     """
-    cmd = ["t3", "auth", "pairing", "create", "--base-dir", str(_t3_base(project_root))]
+    cmd = ["t3", "auth", "pairing", "create", "--base-dir", T3_BASE_DIR]
     cmd += ["--ttl", PAIRING_TTL, "--base-url", base_url, "--json"]
     try:
         return subprocess.run(
@@ -294,7 +290,6 @@ def ensure_t3_server(project_root: Path) -> str:
         return "policy-rejected"
     try:
         runtime = runtime_dir(project_root)
-        base = _t3_base(project_root)
         # stdout carries T3 Code's startup pairing token, so it goes to no log.
         with (runtime / "t3-serve.log").open("ab") as log:
             started = _start_detached(
@@ -306,7 +301,7 @@ def ensure_t3_server(project_root: Path) -> str:
                     "--port",
                     str(T3_PORT),
                     "--base-dir",
-                    str(base),
+                    T3_BASE_DIR,
                     str(project_root),
                 ],
                 label="T3 Code server",
@@ -322,7 +317,7 @@ def ensure_t3_server(project_root: Path) -> str:
         return "failed"
     if started != "started":
         return started
-    return "started" if _register_t3_project(base, project_root) else "unregistered"
+    return "started" if _register_t3_project(project_root) else "unregistered"
 
 
 def _t3_policy_accepted() -> bool:
@@ -348,9 +343,9 @@ def _t3_policy_accepted() -> bool:
     return False
 
 
-def _register_t3_project(base: Path, project_root: Path) -> bool:
+def _register_t3_project(project_root: Path) -> bool:
     """Run ``t3 project add``; already registered counts. Never echoes T3's output."""
-    cmd = ["t3", "project", "add", "--base-dir", str(base), str(project_root)]
+    cmd = ["t3", "project", "add", "--base-dir", T3_BASE_DIR, str(project_root)]
     deadline = time.monotonic() + _T3_START_TIMEOUT_SECONDS
     while True:
         try:

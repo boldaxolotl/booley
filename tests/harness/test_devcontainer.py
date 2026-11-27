@@ -414,8 +414,8 @@ class TestAuthMount:
 
     def test_no_auth_when_source_absent(self):
         spec = build_spec(dc.APP_CLAUDE)
-        # project-dir mount + persistent state volume (no auth)
-        assert len(spec["mounts"]) == 2
+        # project-dir mount + the CLI's and T3 Code's state volumes (no auth)
+        assert len(spec["mounts"]) == 3
         assert all("type=bind" in m or "type=volume" in m for m in spec["mounts"])
 
     def test_no_auth_for_app_none(self):
@@ -482,14 +482,16 @@ class TestTokenSeedMount:
 class TestStateVolume:
     def test_claude_persists_claude_home(self):
         spec = build_spec(dc.APP_CLAUDE)
-        vol = spec["mounts"][-1]
+        vol, t3 = spec["mounts"][-2:]
+        assert t3 == dc.t3_state_volume_mount("${localWorkspaceFolderBasename}")
         assert "source=booley-claude-state-${localWorkspaceFolderBasename}" in vol
         assert f"target={dc.AGENT_HOME}/.claude" in vol
         assert "type=volume" in vol
 
     def test_codex_persists_codex_home(self):
         spec = build_spec(dc.APP_CODEX)
-        vol = spec["mounts"][-1]
+        vol, t3 = spec["mounts"][-2:]
+        assert t3 == dc.t3_state_volume_mount("${localWorkspaceFolderBasename}")
         assert "source=booley-codex-state-${localWorkspaceFolderBasename}" in vol
         assert f"target={dc.AGENT_HOME}/.codex" in vol
         assert "type=volume" in vol
@@ -509,7 +511,7 @@ class TestStateVolume:
         seed_mount = spec["mounts"][1]
         assert f"target={dc.AGENT_HOME}/.codex-auth-seed.json" in seed_mount
         assert f"target={dc.AGENT_HOME}/.codex/" not in seed_mount
-        assert "type=volume" in spec["mounts"][2]  # state volume still mounted last
+        assert "type=volume" in spec["mounts"][2]  # state volume still follows the seed
 
     def test_claude_creds_seed_sits_outside_state_dir(self):
         # The Claude creds seed must be a sibling of ~/.claude, not nested under
@@ -534,7 +536,7 @@ class TestStateVolume:
         # basename placeholder — so doctor and the spec never diverge.
         spec = build_spec(dc.APP_CLAUDE)
         expected = dc.state_volume_name("claude", "${localWorkspaceFolderBasename}")
-        assert f"source={expected}" in spec["mounts"][-1]
+        assert f"source={expected}" in spec["mounts"][-2]
 
     def test_canonical_project_identity_separates_same_basename(self, tmp_path):
         first = tmp_path / "one" / "project"
