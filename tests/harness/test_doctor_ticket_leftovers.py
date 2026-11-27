@@ -9,7 +9,7 @@ import pytest
 from booley.audit.diagnostic_results import Severity
 from booley.harness import doctor
 from tests.harness.doctor_environment_support import patch_doctor_environment
-from tests.harness.test_doctor import _write_project
+from tests.harness.doctor_run_support import write_project
 
 _GUIDANCE = Path(__file__).resolve().parents[1] / "fixtures/ticket_guidance"
 _PROVENANCE = json.loads((_GUIDANCE / "provenance.json").read_text(encoding="utf-8"))
@@ -18,7 +18,7 @@ _NAMES = ("ticket_creation.md", "ticket_defaults.md")
 
 def _project(root: Path, monkeypatch) -> Path:
     """A healthy Project (empty Ticket Board directories) ready for a whole Doctor run."""
-    booley_dir = _write_project(root)
+    booley_dir = write_project(root)
     patch_doctor_environment(monkeypatch, root, booley_dir)
     return booley_dir
 

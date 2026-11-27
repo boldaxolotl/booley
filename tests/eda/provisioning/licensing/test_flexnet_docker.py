@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import subprocess
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -616,3 +618,70 @@ def test_cleanup_identity_uses_only_canonical_full_label(docker: FakeDocker) -> 
         ["container", "ls", "-aq", "--filter", expected],
         ["network", "ls", "-q", "--filter", expected],
     ]
+
+
+def _docker_reports(options: list[str]) -> tuple[str, dict]:
+    """``Config.User`` and ``HostConfig`` as Docker reports them for these run options."""
+    words = iter(options)
+    user, host, log = "", {}, {"Config": {}}
+    for flag in words:
+        if flag == "--read-only":
+            host["ReadonlyRootfs"] = True
+            continue
+        value = next(words)
+        if flag == "--user":
+            user = value
+        elif flag == "--tmpfs":
+            host["Tmpfs"] = dict([value.split(":", 1)])
+        elif flag in ("--cap-drop", "--security-opt"):
+            host["CapDrop" if flag == "--cap-drop" else "SecurityOpt"] = [value]
+        elif flag == "--pids-limit":
+            host["PidsLimit"] = int(value)
+        elif flag in ("--memory", "--memory-swap"):
+            key = "Memory" if flag == "--memory" else "MemorySwap"
+            host[key] = int(value.removesuffix("m")) * 1024 * 1024
+        elif flag == "--cpus":
+            host["NanoCpus"] = int(Decimal(value) * 10**9)
+        elif flag == "--ulimit":
+            name, limits = value.split("=")
+            soft, hard = (int(item) for item in limits.split(":"))
+            host["Ulimits"] = [{"Name": name, "Hard": hard, "Soft": soft}]
+        elif flag == "--restart":
+            host["RestartPolicy"] = {"Name": value, "MaximumRetryCount": 0}
+        elif flag == "--log-driver":
+            log["Type"] = value
+        else:
+            assert flag == "--log-opt", flag
+            log["Config"].update([value.split("=", 1)])
+    return user, {**host, "LogConfig": log}
+
+
+@pytest.mark.parametrize(
+    "change", [pytest.param({}, id="shipped"), pytest.param({"cpus": "1.25"}, id="changed")]
+)
+def test_relay_spec_check_accepts_the_container_its_options_run(change: dict) -> None:
+    shipped = flexnet_docker.RELAY_CONTAINER
+    spec = dataclasses.replace(shipped, **change)
+    user, host = _docker_reports(spec.run_options())
+    # Blank the fixture's shipped values first: an option the spec fails to render stays blank.
+    blank = dict.fromkeys(
+        (
+            "ReadonlyRootfs",
+            "Tmpfs",
+            "CapDrop",
+            "SecurityOpt",
+            "PidsLimit",
+            "Memory",
+            "NanoCpus",
+            "Ulimits",
+            "RestartPolicy",
+            "LogConfig",
+        )
+    )
+    state = _relay_state(config_overrides={"User": user}, **(blank | host))
+
+    spec.check(state["Config"], state["HostConfig"], state["Mounts"])
+
+    if change:
+        with pytest.raises(RelayDockerError, match="resource limits"):
+            shipped.check(state["Config"], state["HostConfig"], state["Mounts"])

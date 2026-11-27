@@ -7,15 +7,14 @@ from booley.runtime import handles, session_runtime
 from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import Attachment
 from tests.harness.doctor_environment_support import patch_doctor_environment
-from tests.harness.doctor_run_support import enter_sandbox, findings, run_doctor
-from tests.harness.test_doctor import _write_project
+from tests.harness.doctor_run_support import enter_sandbox, findings, run_doctor, write_project
 
 THRESHOLD = handles.MAX_MAP_BYTES * 3 // 4
 
 
 def _host_with_map(tmp_path, monkeypatch, *, size, jobs=False):
     """Set up the host fixtures for a Project whose handle map is *size* bytes."""
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     store = handles.HandleStore(booley_dir, jobs=jobs)
     store.root.mkdir(parents=True)
