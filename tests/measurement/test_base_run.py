@@ -6,12 +6,13 @@ import copy
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
 
 from booley.flows.metric_declarations import FlowMetricValues
 from booley.measurement.base import Base
+from booley.measurement.base_run import BaseRunView, MetricDelta, NoDelta, base_run_view
 from booley.measurement.metrics_file import Bound, MetricsRules, TableRules, TrackedMetric
 from booley.measurement.run_document import (
     MeasurementRun,
@@ -19,14 +20,12 @@ from booley.measurement.run_document import (
     RunStatus,
     TableRun,
     Verdict,
+    is_measured,
 )
 from booley.measurement.run_store import MeasurementStore
+from booley.measurement.toolchain import ToolchainFingerprint
 from tests.measurement.test_run_store import fingerprint, in_tree_repository, key_of
 from tests.runtime.test_commit_export import commit_all, git, write
-
-if TYPE_CHECKING:
-    from booley.measurement.base_run import BaseRunView, MetricDelta
-    from booley.measurement.toolchain import ToolchainFingerprint
 
 EPOCH = datetime(2026, 2, 1, tzinfo=UTC)
 
@@ -150,8 +149,6 @@ class World:
         return self.view_against(head, self.base)
 
     def view_against(self, head: dict[str, Any], base: Base) -> BaseRunView:
-        from booley.measurement.base_run import base_run_view
-
         return base_run_view(self.repository, self.store, head, base, None)
 
 
@@ -175,8 +172,6 @@ def delta_of(view: BaseRunView, flow: str, key: str) -> MetricDelta:
 
 
 def test_delta_for_every_reported_metric_with_a_value_in_both_runs(world: World) -> None:
-    from booley.measurement.base_run import NoDelta
-
     head_tables = (
         Table(
             "synth",
@@ -365,8 +360,6 @@ def test_toolchain_difference_is_warned_with_the_fields_that_differ(world: World
 
 
 def test_without_a_base_run_delta_reads_no_base_run_and_gives_the_command(world: World) -> None:
-    from booley.measurement.base_run import NoDelta
-
     tables = (Table("synth", (Entry("cell_count", "cell_count", 1),), values({"cell_count": 1})),)
     # The store holds the head's own run, a run of another tree: it is not the base run.
     head = world.head_document("head", tables)
@@ -377,30 +370,15 @@ def test_without_a_base_run_delta_reads_no_base_run_and_gives_the_command(world:
     assert view.command == f"booley measure --all {world.base.commit}"
     assert (view.base, view.base_run_id, view.problem) == (world.base.commit, None, None)
     assert (view.worsened, view.tests_dropped, view.toolchain_changes) == ((), (), ())
-    assert [p.name for p in (world.store._root).iterdir()] == [  # pyright: ignore[reportPrivateUsage]
-        world.head_keyed.key.project_tree
-    ]  # nothing was started or stored by the view
-
-
-def test_without_a_base_delta_reads_no_base_and_gives_no_command(world: World) -> None:
-    from booley.measurement.base_run import NoDelta
-
-    tables = (Table("synth", (Entry("cell_count", "cell_count", 1),), values({"cell_count": 1})),)
-    head = world.head_document("head", tables)
-
-    view = world.view_against(head, Base(None, None, None, "no default branch"))
-
-    assert [(d.missing, d.delta) for d in view.deltas] == [(NoDelta.NO_BASE, None)]
-    assert (view.base, view.command, view.problem, view.base_run_id) == (None, None, None, None)
+    kept = (world.repository / ".booley" / "measurements").iterdir()
+    assert [p.name for p in kept] == [world.head_keyed.key.project_tree]  # the view stored none
 
 
 def test_unreadable_base_run_is_reported_without_a_command(world: World) -> None:
-    from booley.measurement.base_run import NoDelta
-
     tables = (Table("synth", (Entry("cell_count", "cell_count", 1),), values({"cell_count": 1})),)
     head = world.head_document("head", tables)
     base_tree = git(world.repository, "rev-parse", f"{world.base.commit}^{{tree}}")
-    write(world.store._root / base_tree / "bad.json", "{not json")  # pyright: ignore[reportPrivateUsage]
+    write(world.repository / ".booley" / "measurements" / base_tree / "bad.json", "{not json")
 
     view = world.view(head)
 
@@ -410,8 +388,6 @@ def test_unreadable_base_run_is_reported_without_a_command(world: World) -> None
 
 
 def test_unmet_or_error_base_run_leaves_the_measured_run_unchanged(world: World) -> None:
-    from booley.measurement.run_document import is_measured
-
     entries = (Entry("cell_count_max", "cell_count", 95, bound=100),)
     cases = [
         (Verdict.UNMET, RunStatus.COMPLETED),

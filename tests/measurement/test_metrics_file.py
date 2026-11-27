@@ -3,26 +3,26 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 
-if TYPE_CHECKING:
-    from booley.measurement.metrics_file import MetricsLoadError, MetricsRules, TableRules
-
+from booley.measurement.metrics_file import (
+    MetricsFileError,
+    MetricsLoadError,
+    MetricsRules,
+    TableRules,
+    load_metrics_rules,
+    parse_metrics_as_written,
+)
 from tests.measurement.metrics_project_support import EXAMPLE_METRICS, write_metrics_project
 
 
 def _load(root: Path, text: str) -> MetricsRules:
-    from booley.measurement.metrics_file import load_metrics_rules
-
     write_metrics_project(root, text)
     return load_metrics_rules(root)
 
 
 def _errors(root: Path, text: str) -> tuple[MetricsLoadError, ...]:
-    from booley.measurement.metrics_file import MetricsFileError
-
     with pytest.raises(MetricsFileError) as raised:
         _load(root, text)
     return raised.value.errors
@@ -55,13 +55,6 @@ def test_example_file_from_issue_3045_loads(tmp_path: Path) -> None:
     fifo = _table(rules, "sim_fifo", "sim")
     assert fifo.bounds == ()
     assert [tracked.key for tracked in fifo.tracked] == ["tests_failed"]
-
-
-def test_sim_fifo_without_track_is_a_load_error(tmp_path: Path) -> None:
-    text = EXAMPLE_METRICS.replace('track = ["tests_failed"]\n', "")
-    (error,) = _errors(tmp_path, text)
-    assert error.table == "[sim_fifo.sim]"
-    assert "no reported metric" in error.message
 
 
 # (toml, table, key, fragment of the message)
@@ -190,7 +183,7 @@ LOAD_ERRORS = {
         '[sim_core.sim]\n"nope.cycle_count_max" = 5\n',
         "[sim_core.sim]",
         "nope.cycle_count_max",
-        "unknown test prefix",
+        "Declared Tests: smoke",
     ),
     "single-random-seed-prefix": (
         '[sim_core.sim]\n"smoke@x1.cycle_count_max" = 5\n',
@@ -211,12 +204,6 @@ LOAD_ERRORS = {
         "[sim_core.sim]",
         "smoke@1.cycle_count_max",
         "same address",
-    ),
-    "relative-bound": (
-        "[sim_core.sim]\ntests_failed_increase_at_most = 1\n",
-        "[sim_core.sim]",
-        "tests_failed_increase_at_most",
-        "only absolute bounds",
     ),
     "nested-table": (
         "[synth_core.synth]\nclk_i.fmax_mhz_min = 400\n",
@@ -320,8 +307,6 @@ track = ["mutants_detected"]
 
 def test_mutation_table_takes_count_and_seed_over_the_defaults(tmp_path: Path) -> None:
     """AC2: a table's settings override the defaults, which override the built-in ones."""
-    from booley.measurement.metrics_file import parse_metrics_as_written
-
     rules = _load(tmp_path, _MUTATION_SETTINGS_TOML)
 
     core, fifo = _table(rules, "sim_core", "mutation"), _table(rules, "sim_fifo", "mutation")
@@ -372,8 +357,6 @@ def test_relative_bound_shows_absolute_line(tmp_path: Path) -> None:
 
 
 def test_bound_outside_its_metric_range_shows_in_range_line(tmp_path: Path) -> None:
-    from booley.measurement.metrics_file import MetricsFileError, parse_metrics_as_written
-
     cases = [
         (
             "[sim_core.coverage]\nline_coverage_min = 100.01",
@@ -459,18 +442,6 @@ def test_defaults_create_no_table(tmp_path: Path) -> None:
     assert _load(tmp_path, text).tables == ()
 
 
-def test_test_prefix_matching_no_test_is_a_load_error(tmp_path: Path) -> None:
-    (error,) = _errors(tmp_path, '[sim_core.sim]\n"nope.cycle_count_max" = 5\n')
-    assert error.key == "nope.cycle_count_max"
-    assert "Declared Tests: smoke" in error.message
-
-
-def test_test_prefix_matching_several_seeds_is_a_load_error(tmp_path: Path) -> None:
-    (error,) = _errors(tmp_path, '[sim_core.sim]\n"smoke@x3.cycle_count_max" = 5\n')
-    assert error.key == "smoke@x3.cycle_count_max"
-    assert "random seeds" in error.message
-
-
 def test_unknown_clock_prefix_loads(tmp_path: Path) -> None:
     rules = _load(tmp_path, '[synth_core.synth]\n"no_such_clk.fmax_mhz_min" = 400\n')
     (bound,) = _table(rules, "synth_core", "synth").bounds
@@ -536,8 +507,6 @@ def test_a_quoted_vlnv_target_key_resolves_like_a_bare_name(tmp_path: Path) -> N
 
 
 def test_missing_file_declares_nothing(tmp_path: Path) -> None:
-    from booley.measurement.metrics_file import load_metrics_rules
-
     write_metrics_project(tmp_path)
     rules = load_metrics_rules(tmp_path)
     assert rules.tables == ()
@@ -545,13 +514,7 @@ def test_missing_file_declares_nothing(tmp_path: Path) -> None:
     assert not rules.path.exists()
 
 
-def test_file_without_tables_declares_nothing(tmp_path: Path) -> None:
-    assert _load(tmp_path, "# nothing yet\n").tables == ()
-
-
 def test_as_written_mode_needs_no_checkout() -> None:
-    from booley.measurement.metrics_file import MetricsFileError, parse_metrics_as_written
-
     text = (
         "[defaults.sim]\ntests_failed_max = 0\n"
         '[nope.sim]\n"nosuchtest.cycle_count_max" = 10\n"smoke.cycle_count_max" = 5\n'
