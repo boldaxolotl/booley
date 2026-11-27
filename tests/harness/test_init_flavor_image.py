@@ -10,21 +10,11 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-import pytest
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from booley.harness.setup import docker_image as idi
 from booley.runtime import project_image as pi
 from booley.runtime.dockerfile_syntax import build_context_imports
-from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
-
-
-@pytest.fixture(autouse=True)
-def _docker_helper_uses_subprocess_run(monkeypatch):
-    """This module fakes the Docker CLI through ``subprocess.run``."""
-    route_docker_helper_through_subprocess_run(monkeypatch)
-
 
 FLAVOR = "booley-sandbox-riscv"
 
