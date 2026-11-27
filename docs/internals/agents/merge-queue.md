@@ -352,8 +352,15 @@ Read the Mergify check and the underlying Actions failure, then:
       The [flake ledger](../../../.github/ci/README.md#flake-ledger) counts
       them, and the external issue pipeline files or comments on the `flaky`
       issue for a test ID that reaches the ledger's threshold. A test that
-      failed on its rerun too, or a failure the step summary says was not
-      rerun, follows the rules here.
+      failed on its rerun too and is not quarantined, or a failure the step
+      summary says was not rerun, follows the rules here.
+    - A [quarantined](../../../.github/ci/README.md#quarantine-of-flaky-tests)
+      test that fails again in a job that reruns leaves that job green with a
+      warning naming its owner issue, so it does not dequeue the PR. Comment
+      nothing on that issue: the flake ledger counts the hit. The test stays
+      visible until the issue is fixed. A test qualifies for quarantine with at
+      least 3 ledger hits within 7 days, or a new hit after its `flaky` issue
+      was opened.
     - When no open issue covers the failure, first file one, scanned as
       `AGENTS.md` requires, with the run link and error: for a test ID, a
       `bug`, `ci`, `flaky`, `needs-triage` issue titled with that test ID;

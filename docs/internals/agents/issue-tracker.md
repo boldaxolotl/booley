@@ -144,7 +144,10 @@ ID, such as a job that ran out of time, is tracked by its job instead, without
 `flaky`; see the known-flake rule in
 [Recover a dequeued PR](merge-queue.md#recover-a-dequeued-pr). Issues filed
 from the [flake ledger](../../../.github/ci/README.md#flake-ledger) follow the
-same rule.
+same rule. A `flaky` issue may own a
+[quarantine entry](../../../.github/ci/README.md#quarantine-of-flaky-tests):
+closing it fails the `lint` check until the entry is removed, so the fix PR
+removes the entry.
 
 An issue or PR whose only fix for a flaky test is a larger time budget or
 timeout closes as a duplicate of

@@ -7,13 +7,15 @@ import subprocess
 from typing import Any
 
 _ROOT = "repos/{owner}/{repo}/actions/"
+_ISSUES = "repos/{owner}/{repo}/issues"
 
 
 class GhApiFake:
-    """Answers run, artifact, job, and artifact-download requests from canned data."""
+    """Answers run, artifact, job, download, and issue-listing requests from canned data."""
 
     def __init__(self) -> None:
         self.runs: list[dict[str, Any]] = []
+        self.issues: list[dict[str, Any]] = []
         self.artifacts: dict[int, list[dict[str, Any]]] = {}
         self.jobs: dict[int, list[dict[str, Any]]] = {}
         self.zips: dict[int, bytes] = {}
@@ -43,6 +45,19 @@ class GhApiFake:
             self.zips[artifact_id] = data
             listed.append({"id": artifact_id, "name": name, "expired": expired})
 
+    def add_issue(
+        self,
+        number: int,
+        title: str,
+        created_at: str,
+        state: str = "open",
+        label: str = "flaky",
+        pull_request: bool = False,
+    ) -> None:
+        issue = {"number": number, "title": title, "created_at": created_at}
+        issue |= {"state": state, "labels": [{"name": label}]}
+        self.issues.append(issue | ({"pull_request": {}} if pull_request else {}))
+
     def fail(self, path_end: str, stderr: str) -> None:
         self.failures[path_end] = stderr
 
@@ -54,6 +69,16 @@ class GhApiFake:
         for end, stderr in self.failures.items():
             if path.endswith(end):
                 return subprocess.CompletedProcess(args, 1, b"", stderr.encode())
+        if path == _ISSUES:
+            listed = [
+                issue
+                for issue in self.issues
+                if issue["state"] == fields["state"]
+                and {"name": fields["labels"]} in issue["labels"]
+            ]
+            page, size = int(fields["page"]), int(fields["per_page"])
+            data = json.dumps(listed[(page - 1) * size : page * size]).encode()
+            return subprocess.CompletedProcess(args, 0, data, b"")
         parts = path.removeprefix(_ROOT).split("/")
         if parts[0] == "artifacts":
             return subprocess.CompletedProcess(args, 0, self.zips[int(parts[1])], b"")

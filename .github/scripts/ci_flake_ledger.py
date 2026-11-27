@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""List the tests that failed then passed on rerun in recent ``Tests`` runs.
+"""List the tests that flaked or failed while quarantined in recent ``Tests`` runs.
 
 Usage: ``ci_flake_ledger.py [--days N] [--json]``, from a repository checkout with
-``PYTHONPATH=src``. Reads the ``flaky-*`` artifacts through ``gh api`` (``GH_REPO``
-or the checkout names the repository) and writes no file. Exit 1 prints no ledger
-and names the run or run listing that could not be read; see ``.github/ci/README.md``.
+``PYTHONPATH=src``. Reads the ``flaky-*`` artifacts and the open ``flaky`` issues
+through ``gh api`` (``GH_REPO`` or the checkout names the repository) and writes no
+file. Exit 1 prints no ledger and names the run or listing that could not be read;
+see ``.github/ci/README.md``.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import argparse
 import io
 import json
 import math
+import re
 import shutil
 import subprocess
 import sys
@@ -27,7 +29,7 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-from ci_pytest_rerun import FLAKY_TAGS, RerunRefusedError, node_id
+from ci_pytest_rerun import HIT_TAGS, RerunRefusedError, node_id
 
 from booley.core.boundary import (
     parse_positive_int_arg,
@@ -39,9 +41,14 @@ from booley.core.boundary import (
 from booley.runtime.timefmt import format_human_date, parse_timestamp, rfc3339_from_datetime
 
 MIN_HITS = 2
+#: The bar for quarantine: this many hits within this many days, or a hit after
+#: the test's open ``flaky`` issue was opened.
+QUARANTINE_HITS = 3
+QUARANTINE_DAYS = 7
 MARKER_PREFIX = "flaky-"
 _RUNS = "repos/{owner}/{repo}/actions/workflows/test.yml/runs"
 _ACTIONS = "repos/{owner}/{repo}/actions"
+_ISSUES = "repos/{owner}/{repo}/issues"
 _PAGE_SIZE = 100
 _MAX_ITEMS = 1000  # GitHub returns no more than this for a filtered run listing
 _GH_TIMEOUT_SECONDS = 120
@@ -52,7 +59,7 @@ Gh = Callable[[list[str]], "subprocess.CompletedProcess[bytes]"]
 
 
 class LedgerError(Exception):
-    """A run could not be read, so no ledger is reported."""
+    """A run or listing could not be read, so no ledger is reported."""
 
 
 @dataclass(frozen=True)
@@ -79,12 +86,29 @@ class Entry:
 
 
 @dataclass(frozen=True)
+class Issue:
+    number: int
+    title: str
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class Qualified:
+    """A test id that meets the quarantine bar."""
+
+    test_id: str
+    issue: int | None
+    reasons: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class Report:
     start: datetime
     end: datetime
     days: int
     runs_read: int
     ledger: tuple[Entry, ...]
+    quarantine: tuple[Qualified, ...]
 
 
 def run_gh(args: list[str]) -> subprocess.CompletedProcess[bytes]:
@@ -96,7 +120,7 @@ def run_gh(args: list[str]) -> subprocess.CompletedProcess[bytes]:
     )
 
 
-def _api(gh: Gh, where: str, path: str, **fields: str) -> bytes:
+def api_get(gh: Gh, where: str, path: str, **fields: str) -> bytes:
     args = ["api", "--method", "GET", path]
     for key, value in fields.items():
         args += ["-f", f"{key}={value}"]
@@ -124,7 +148,7 @@ def _pages(gh: Gh, where: str, path: str, key: str, **fields: str) -> list[dict[
     total = 0
     page, pages = 1, 1
     while page <= pages:
-        data = _api(gh, where, path, per_page=str(_PAGE_SIZE), page=str(page), **fields)
+        data = api_get(gh, where, path, per_page=str(_PAGE_SIZE), page=str(page), **fields)
         with _reading(where, key):
             body = require_dict(json.loads(data), field="response")
             if page == 1:
@@ -167,8 +191,64 @@ def tests_runs(gh: Gh, start: datetime, end: datetime) -> list[Run]:
     return list(runs.values())
 
 
+def flaky_issues(gh: Gh) -> list[Issue]:
+    """The open ``flaky`` issues; the listing has no total, so a short page ends it."""
+    where = "flaky issues"
+    issues: list[Issue] = []
+    for page in range(1, _MAX_ITEMS // _PAGE_SIZE + 1):
+        fields = {"labels": "flaky", "state": "open", "per_page": str(_PAGE_SIZE)}
+        data = api_get(gh, where, _ISSUES, page=str(page), **fields)
+        with _reading(where, "issues"):
+            items = [require_dict(item, field="issue") for item in require_list(json.loads(data))]
+            issues += [
+                Issue(
+                    require_int(item.get("number"), field="number"),
+                    require_str(item, "title"),
+                    parse_timestamp(require_str(item, "created_at")),
+                )
+                for item in items
+                if "pull_request" not in item
+            ]
+        if len(items) < _PAGE_SIZE:
+            return issues
+    raise LedgerError(f"{where}: {_MAX_ITEMS} or more are open")
+
+
+def names_test(title: str, test_id: str) -> bool:
+    """True when *test_id* stands as a word of an issue *title*."""
+    # A word ends at white space or a backtick; punctuation around it is not part of it.
+    edge, punctuation = r"[\s`]", r"[:,;()]*"
+    pattern = rf"(?:^|{edge}){punctuation}{re.escape(test_id)}{punctuation}(?:$|{edge})"
+    return re.search(pattern, title) is not None
+
+
+def quarantine_reasons(entry: Entry, issue: Issue | None) -> list[str]:
+    """Why *entry* meets the quarantine bar; empty when it does not."""
+    times = [hit.run.created_at for hit in entry.hits]  # oldest first
+    span = timedelta(days=QUARANTINE_DAYS)
+    reasons: list[str] = []
+    runs_of_hits = zip(times, times[QUARANTINE_HITS - 1 :], strict=False)
+    if any(last - first < span for first, last in runs_of_hits):
+        reasons.append(f"{QUARANTINE_HITS} hits within {QUARANTINE_DAYS} days")
+    if issue is not None and any(time > issue.created_at for time in times):
+        reasons.append(f"hit after #{issue.number} was opened")
+    return reasons
+
+
+def _qualified(ledger: tuple[Entry, ...], issues: list[Issue]) -> tuple[Qualified, ...]:
+    found: list[Qualified] = []
+    for entry in ledger:
+        owners = [issue for issue in issues if names_test(issue.title, entry.test_id)]
+        owner = min(owners, key=lambda issue: issue.created_at, default=None)
+        reasons = quarantine_reasons(entry, owner)
+        if reasons:
+            number = None if owner is None else owner.number
+            found.append(Qualified(entry.test_id, number, tuple(reasons)))
+    return tuple(found)
+
+
 def _flaky_cases(data: bytes, where: str) -> list[tuple[str, str, str]]:
-    """The (classname, name, first message line) of each fail-then-pass in one artifact."""
+    """The (classname, name, first message line) of each hit in one artifact."""
     cases: list[tuple[str, str, str]] = []
     try:
         with zipfile.ZipFile(io.BytesIO(data)) as archive:
@@ -179,7 +259,7 @@ def _flaky_cases(data: bytes, where: str) -> list[tuple[str, str, str]]:
     except (zipfile.BadZipFile, zlib.error, ElementTree.ParseError) as error:
         raise LedgerError(f"{where} unreadable: {error}") from error
     for case in (case for root in roots for case in root.iter("testcase")):
-        flaky = [child for child in case if child.tag in FLAKY_TAGS]
+        flaky = [child for child in case if child.tag in HIT_TAGS]
         if flaky:
             lines = flaky[0].get("message", "").splitlines() or [""]
             cases.append((case.get("classname", ""), case.get("name", ""), lines[0]))
@@ -195,7 +275,7 @@ def _test_id(classname: str, name: str, root: Path) -> str:
 
 
 def run_hits(gh: Gh, run: Run, root: Path) -> dict[str, Hit]:
-    """One hit per test id that failed then passed in any job or attempt of *run*."""
+    """One hit per test id that has one in any job or attempt of *run*."""
     where = f"run {run.id}"
     items = _pages(gh, where, f"{_ACTIONS}/runs/{run.id}/artifacts", "artifacts")
     with _reading(where, "artifacts"):
@@ -210,7 +290,7 @@ def run_hits(gh: Gh, run: Run, root: Path) -> dict[str, Hit]:
         artifact = f"{where}: artifact {name}"
         if expired:
             raise LedgerError(f"{artifact} expired")
-        data = _api(gh, artifact, f"{_ACTIONS}/artifacts/{artifact_id}/zip")
+        data = api_get(gh, artifact, f"{_ACTIONS}/artifacts/{artifact_id}/zip")
         for classname, test, message in _flaky_cases(data, artifact):
             test_id = _test_id(classname, test, root)
             jobs.setdefault(test_id, set()).add(name.removeprefix(MARKER_PREFIX))
@@ -262,7 +342,9 @@ def collect(gh: Gh, start: datetime, end: datetime, root: Path) -> Report:
         # A failed upload fails its job, so only a successful first attempt lost nothing.
         if run.conclusion != "success" or run.attempt > 1:
             _check_published(gh, run)
-    return Report(start, end, (end - start).days, len(runs), build(per_run))
+    ledger = build(per_run)
+    quarantine = _qualified(ledger, flaky_issues(gh))
+    return Report(start, end, (end - start).days, len(runs), ledger, quarantine)
 
 
 def _hit_json(hit: Hit) -> dict[str, object]:
@@ -279,7 +361,8 @@ def _hit_json(hit: Hit) -> dict[str, object]:
 def _draft(entry: Entry, report: Report) -> tuple[str, str]:
     """The title and body of the ``flaky`` issue the issue pipeline may file."""
     lines = [
-        f"`{entry.test_id}` failed then passed on rerun in {len(entry.hits)} `Tests` runs "
+        f"`{entry.test_id}` failed then passed on rerun, or failed while quarantined, "
+        f"in {len(entry.hits)} `Tests` runs "
         f"between {format_human_date(report.start)} and {format_human_date(report.end)}.",
         "",
     ]
@@ -321,6 +404,11 @@ def report_json(report: Report) -> str:
         "runs_read": report.runs_read,
         "ledger": ledger,
         "candidates": candidates,
+        "quarantine_bar": {"min_hits": QUARANTINE_HITS, "days": QUARANTINE_DAYS},
+        "quarantine": [
+            {"test_id": item.test_id, "issue": item.issue, "reasons": list(item.reasons)}
+            for item in report.quarantine
+        ],
     }
     return json.dumps(document, indent=2, sort_keys=True)
 
@@ -331,10 +419,14 @@ def render_text(report: Report) -> str:
         f"Flake ledger {format_human_date(report.start)} to "
         f"{format_human_date(report.end)} ({report.days} days): "
         f"{report.runs_read} Tests runs read, {len(report.ledger)} test ids, "
-        f"{candidates} candidates"
+        f"{candidates} candidates, {len(report.quarantine)} meet the quarantine bar"
     ]
+    meets = {item.test_id for item in report.quarantine}
     for entry in report.ledger:
-        mark = " (candidate)" if len(entry.hits) >= MIN_HITS else ""
+        flags = (("candidate", len(entry.hits) >= MIN_HITS),)
+        flags += (("quarantine bar", entry.test_id in meets),)
+        marks = ", ".join(label for label, on in flags if on)
+        mark = f" ({marks})" if marks else ""
         lines.append(f"{entry.test_id}: {len(entry.hits)} hits{mark}")
         lines += [
             f"  run {hit.run.id} {format_human_date(hit.run.created_at)} "
