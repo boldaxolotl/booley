@@ -345,7 +345,8 @@ These keys are host-only: `booley.toml` rejects them, and Booley stops on an
 unknown key or an invalid value.
 
 - **`idle_timeout_seconds`**: a Sandbox stops after this long with no Booley
-  activity and no open editor or terminal session in it.
+  activity and no open editor or terminal session in it. A Job started from the
+  Dashboard counts as activity while it is running or queued.
 - **`max_sessions`**: counts every Booley Sandbox on the Docker daemon, across
   all Projects. At the limit, starting another one fails with a list of the
   running Sandboxes; Booley never stops existing work to make room. Free a

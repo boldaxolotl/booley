@@ -44,7 +44,6 @@ from booley.runtime.image_lifecycle import LifecycleResult
 from booley.runtime.image_lifecycle import Status as ImageLifecycleStatus
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE_PATTERNS
 from tests.conftest import symlink_or_skip, use_terminal_stdin
-from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.docker_host_support import fake_docker_host
 from tests.harness.test_project_initialization import _initialize
 from tests.session_issuance_support import SHIPPED_T3_POLICY
@@ -77,24 +76,15 @@ def _filesystem_snapshot(root: Path) -> dict[Path, tuple[bytes, int]]:
     }
 
 
-def _isolate_docker(monkeypatch) -> None:
-    """Keep Init off the Docker CLI.
-
-    Init's Sandbox git-version probe returns ``None`` ("unknown version", what
-    every run without the image gets), and any other route to the shared Docker
-    CLI helper fails the test instead of starting ``docker``.
-    """
+def _unknown_sandbox_git_version(monkeypatch) -> None:
+    """Init's Sandbox git-version probe answers ``None``, as without the image."""
     # private: the version probe starts Docker; no public input makes it answer without it.
     monkeypatch.setattr(init_cmd, "_sandbox_git_version", lambda *_args, **_kwargs: None)
-    forbid_docker_cli(monkeypatch)
 
 
 @pytest.fixture(autouse=True)
-def _no_docker_cli(monkeypatch):
-    """Every test in this module runs without Docker (also catches swallowed calls)."""
-    _isolate_docker(monkeypatch)
-    yield
-    assert_docker_cli_unused()
+def _no_sandbox_git_version(monkeypatch):
+    _unknown_sandbox_git_version(monkeypatch)
 
 
 @pytest.fixture
@@ -165,7 +155,7 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     pdk_root = tmp_path / "pdk"
     pdk_root.mkdir()
     monkeypatch.setattr(init_cmd.nangate_pdk, "cache_root", lambda: pdk_root)
-    _isolate_docker(monkeypatch)
+    _unknown_sandbox_git_version(monkeypatch)
     return root
 
 
@@ -1210,7 +1200,6 @@ def test_scaffold_after_plain_init_opens_hidden_layout(repo, monkeypatch, capsys
         repo,
         repo / ".booley",
         parsed,
-        tomllib.loads((repo / ".booley/tests.toml").read_text(encoding="utf-8")),
         "sim",
     )
     reporter = doctor._Reporter.create()
@@ -1420,29 +1409,6 @@ def test_symlinked_booley_dir_file_is_refused(repo, capsys, name):
     assert (booley_dir / name).readlink() == planted_target
     assert ("booley_dir", "warn") in [(r.name, r.status) for r in results]
     assert "refusing symlinked" in capsys.readouterr().out
-
-
-@pytest.mark.skipif(
-    os.name == "nt",
-    reason="the hanging docker stub is a POSIX shell script; the module's "
-    "_run_docker guard covers Windows",
-)
-def test_full_init_starts_no_docker_process(repo, tmp_path, monkeypatch):
-    """Init never launches ``docker``, even when one on PATH would hang.
-
-    Catches any route to Docker that bypasses the shared ``_run_docker`` helper
-    (which the module's guard already forbids).
-    """
-    stub_dir = tmp_path / "stub-bin"
-    stub_dir.mkdir()
-    marker = tmp_path / "docker-was-started"
-    stub = stub_dir / "docker"
-    stub.write_text(f"#!/bin/sh\ntouch '{marker}'\nexec sleep 20\n", encoding="utf-8")
-    stub.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
-
-    assert _run_full_init(repo) == 0
-    assert not marker.exists(), "Init started the docker executable"
 
 
 def test_core_projection_step_excludes_relocated_booley_dir_in_stealth(tmp_path, monkeypatch):

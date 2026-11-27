@@ -242,7 +242,8 @@ Try:
   validates in a terminal `result.json` (the grade, `attempt_id` or
   `manifest_sha256`; a well-formed edit to an unvalidated field such as a
   stored digest is accepted by design, ADR 0064) → rc2 before any EDA launch,
-  restore → `booley flow sim --resume-from <manifest>` without rerun.
+  restore → the same resume refuses like any coverage record (rc2, naming a new
+  `--coverage` run) before any EDA launch.
   Cross-check with
   `../../shared/coverage/simulation-record/validate_aggregate.py`.
 Look for: number reuse, a restored work item that reruns.

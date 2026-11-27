@@ -53,7 +53,6 @@ from booley.runtime.session_admission import (
 )
 from booley.runtime.session_refresh import RefreshImage
 from tests.devcontainer_spec_support import build_spec
-from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.harness.booley_dir_support import select_booley_dir
 from tests.harness.session_docker_fake import (
     SandboxDocker,
@@ -65,6 +64,7 @@ from tests.harness.session_docker_fake import (
     run_registrar_on_post_start,
     sandbox_exec_on_path,
     serve_sandbox_docker,
+    serve_standalone_probe,
 )
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 from tests.pipe_holding_tree import (
@@ -76,14 +76,6 @@ from tests.pipe_holding_tree import (
 from tests.subprocess_budget import run_bounded_child
 from tests.t3code_fake import TOKEN, echo_listener, serve_t3_code
 from tests.time_budget import hang_guard_s, scaled
-
-
-@pytest.fixture(autouse=True)
-def _no_docker_cli(monkeypatch):
-    """No test in this module may start a real ``docker`` process."""
-    forbid_docker_cli(monkeypatch)
-    yield
-    assert_docker_cli_unused()
 
 
 @pytest.fixture(autouse=True)
@@ -2029,6 +2021,7 @@ class TestT3CodeRelay:
         monkeypatch.setattr(
             doctor, "observe_deep_status", lambda *_a, **_k: SimpleNamespace(render=lambda: "")
         )
+        serve_standalone_probe(monkeypatch)  # `session down` warns of Standalone Jobs
         roots: dict[Path, None] = {}
         # Any exec answers a pairing request with a link on the relay port it names.
         up_docker.exec_reply = lambda argv: completed(
@@ -3430,7 +3423,9 @@ def test_docker_run_carries_literal_identity_and_cleanup_hooks(tmp_path):
     assert "incontainer_git_identity_cleanup" in spec["postStartCommand"]
 
 
-def test_startup_preserves_identity_drift_diagnostic(tmp_path, monkeypatch):
+def test_startup_preserves_identity_drift_diagnostic(
+    tmp_path, monkeypatch, fake_sandbox_attachment
+):
     monkeypatch.setattr(sr, "_load_spec", lambda _root: {})
 
     def refuse(*_args):

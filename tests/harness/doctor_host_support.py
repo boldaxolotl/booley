@@ -1,4 +1,7 @@
-"""A healthy Doctor host for a Project that lives in a real Git repository."""
+"""A healthy Doctor host for a Project that lives in a real Git repository.
+
+It fakes Doctor's host and Sandbox commands, host inspection and child-process accounting.
+"""
 
 from __future__ import annotations
 
@@ -13,9 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.core.models import AgentCallParams, AgentResult
 from booley.harness import developer_probe, host_diagnostics
-from booley.runtime import agent
 from tests.git_command_fake import REAL_RUN
 from tests.harness.test_doctor import _patch_environment
 
@@ -81,24 +82,12 @@ def hide_container_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(shutil, "which", lambda _name: None)
 
 
-def answer_agent_calls(
-    monkeypatch: pytest.MonkeyPatch, answer: Callable[[AgentCallParams], AgentResult]
-) -> list[AgentCallParams]:
-    """Answer each agent call Doctor's probes make with ``answer(params)``.
+def raise_child_peak_rss(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Child-process accounting reads a rising peak, so Doctor's memory probe measures.
 
-    ``answer`` returns an ``AgentResult`` or raises what the backend would raise.
-    Child-process accounting reads a rising peak so the memory probe measures.
-    Returns every call's params.
+    ``resource`` is POSIX-only, so Windows would skip the probe's measurement.
     """
-    calls: list[AgentCallParams] = []
-
-    async def call_agent(params: AgentCallParams) -> AgentResult:
-        calls.append(params)
-        return answer(params)
-
     peak = itertools.count(1024, 1024)
-    monkeypatch.setattr(agent, "call_agent", call_agent)
-    # ``resource`` is POSIX-only, so Windows would skip the probe's measurement.
     monkeypatch.setattr(
         developer_probe,
         "resource",
@@ -106,4 +95,3 @@ def answer_agent_calls(
             RUSAGE_CHILDREN=0, getrusage=lambda _who: SimpleNamespace(ru_maxrss=next(peak))
         ),
     )
-    return calls

@@ -272,6 +272,8 @@ markers = [
     "native_bwave: tests that execute the compiled native B-Wave binary",
     "slow: marks slow-running tests (deselect with '-m \"not slow\"')",
     "sandbox_only: exercises only code that runs in the Sandbox; skipped on Windows (see .github/ci/README.md#sandbox-only-tests)",
+    "os_specific: the result can differ by OS; listed in tests/os_specific.py (see .github/ci/README.md#os-specific-tests)",
+    "docker_cli: the test may start the Docker CLI; opts out of the Docker CLI guard (see .github/ci/README.md#docker-cli-guard)",
 ]
 filterwarnings = [
     "error",

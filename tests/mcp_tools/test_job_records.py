@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import json
+import re
 from pathlib import Path
-from typing import ClassVar
+from typing import Any
 
 import pytest
 
 from booley.runtime import job_records as jobrec
+from tests.sharing_error_support import hold_opens, hold_replaces
+
+_STARTED = "2026-07-04T13:15:02Z"
+_RUN_STARTED = "2026-07-04T13:45:02Z"  # promoted 30 min after submit
+_ARGV = ["python", "-m", "booley.flows.sim", "--cfg", "top"]
 
 
 @pytest.fixture()
@@ -16,389 +23,223 @@ def _jobs_env(tmp_path: Path):
     return tmp_path / "jobs"
 
 
-class TestTerminalStatus:
-    def test_clean_exit_is_done(self):
-        assert jobrec.terminal_status(0, timed_out=False) == jobrec.STATUS_DONE
+def _rec(**fields: Any) -> jobrec.JobRecord:
+    base: dict[str, Any] = {"run_id": "r", "endpoint": "sim", "started_at": "t", "timeout_s": 60}
+    return jobrec.JobRecord(**{**base, **fields})
 
-    def test_nonzero_exit_is_failed(self):
-        assert jobrec.terminal_status(1, timed_out=False) == jobrec.STATUS_FAILED
 
-    def test_timeout_is_failed_even_on_zero(self):
+def _after(stamp: str, seconds: float) -> float:
+    epoch = jobrec.parse_stamp(stamp)
+    assert epoch is not None
+    return epoch + seconds
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "timed_out", "expected"),
+    [
+        (0, False, jobrec.STATUS_DONE),
+        (1, False, jobrec.STATUS_FAILED),
         # A timeout-killed run must never read as success.
-        assert jobrec.terminal_status(0, timed_out=True) == jobrec.STATUS_FAILED
+        (0, True, jobrec.STATUS_FAILED),
+    ],
+)
+def test_terminal_status(exit_code: int, timed_out: bool, expected: str) -> None:
+    assert jobrec.terminal_status(exit_code, timed_out=timed_out) == expected
 
 
-class TestRecordRoundTrip:
-    def test_write_then_read(self, _jobs_env):
-        import json
+_LIVE: dict[str, Any] = {"pid": 1234}
+_STAMPED: dict[str, Any] = {"pid": 1234, "started_at": _STARTED}
+_QUEUED: dict[str, Any] = {**_STAMPED, "run_started_at": _RUN_STARTED}
+_NAMED: dict[str, Any] = {"pid": 1234, "argv": _ARGV}
+_PAST = 60 + jobrec.DEADLINE_SLACK_SECONDS + 1
 
-        rec = jobrec.JobRecord(
-            run_id="simulate-x-1",
-            endpoint="sim",
-            started_at="2026-07-04T13:15:02Z",
-            timeout_s=1290,
-            argv=["python", "-m", "booley.flows.sim"],
-            pid=4242,
-        )
-        jobrec.write_record(rec, root=_jobs_env)
-        got = jobrec.read_record("simulate-x-1", root=_jobs_env)
-        assert got is not None
-        assert got.endpoint == "sim"
-        assert got.pid == 4242
-        assert got.status == jobrec.STATUS_RUNNING  # default
-        assert got.argv == ["python", "-m", "booley.flows.sim"]
-        path = _jobs_env / f"{rec.run_id}.json"
-        new_payload = json.loads(path.read_text(encoding="utf-8"))
-        path.write_text(
-            json.dumps({**new_payload, "lease_id": "historical-operation"}), encoding="utf-8"
-        )
-        historical = jobrec.read_record(rec.run_id, root=_jobs_env)
-        assert historical is not None
-        assert historical.run_id == rec.run_id
-        assert historical.argv == rec.argv
-        assert jobrec.list_records(_jobs_env) == [historical]
-        assert jobrec.strict_records(_jobs_env) == [historical]
-        assert "lease_id" not in new_payload
 
-    def test_read_missing_returns_none(self, _jobs_env):
-        assert jobrec.read_record("nope-1", root=_jobs_env) is None
+def _status_case(
+    name: str, fields: dict[str, Any], expected: str, *, alive: bool = True, **kwargs: Any
+) -> Any:
+    return pytest.param(fields, alive, kwargs, expected, id=name)
 
-    def test_malformed_record_returns_none(self, _jobs_env):
-        root = _jobs_env
-        assert root is not None
-        root.mkdir(parents=True, exist_ok=True)
-        (root / "broken-1.json").write_text("{not json", encoding="utf-8")
-        assert jobrec.read_record("broken-1", root=_jobs_env) is None
 
-    def test_unreadable_record_raises_instead_of_reading_as_absent(
-        self, _jobs_env, monkeypatch: pytest.MonkeyPatch
-    ):
-        rec = jobrec.JobRecord(run_id="sim-held-1", endpoint="sim", started_at="t", timeout_s=60)
-        jobrec.write_record(rec, root=_jobs_env)
-        from tests.sharing_error_support import retry_delays_target
+@pytest.mark.parametrize(
+    ("fields", "alive", "kwargs", "expected"),
+    [
+        _status_case(
+            "cancelled-terminal",
+            {"status": jobrec.STATUS_CANCELLED, "exit_code": 130},
+            jobrec.STATUS_CANCELLED,
+        ),
+        # Even a live PID cannot override a recorded terminal outcome.
+        _status_case(
+            "terminal-beats-live-pid",
+            {"status": jobrec.STATUS_DONE, "exit_code": 0, "pid": 1},
+            jobrec.STATUS_DONE,
+        ),
+        _status_case("dead-pid-failed", _LIVE, jobrec.STATUS_FAILED, alive=False),
+        # No PID yet means the spawn never happened: nothing to wait on.
+        _status_case("no-pid-failed", {"pid": None}, jobrec.STATUS_FAILED),
+        # Past the deadline nothing can finish this job (the watchdog died with the
+        # server): a live PID is reuse or a hung orphan, and polling would never end.
+        _status_case("past-deadline", _STAMPED, jobrec.STATUS_FAILED, now=_after(_STARTED, _PAST)),
+        _status_case(
+            "within-deadline", _STAMPED, jobrec.STATUS_RUNNING, now=_after(_STARTED, _PAST - 2)
+        ),
+        # A garbage stamp must not crash or fail a live job.
+        _status_case("garbage-start-skips-deadline", _LIVE, jobrec.STATUS_RUNNING, now=9e18),
+        # Container PID namespaces are dense: after a restart the recorded PID can
+        # belong to an unrelated process.
+        _status_case(
+            "recycled-pid",
+            _NAMED,
+            jobrec.STATUS_FAILED,
+            read_cmdline=lambda _pid: ["sleep", "3600"],
+        ),
+        _status_case(
+            "matching-cmdline",
+            _NAMED,
+            jobrec.STATUS_RUNNING,
+            read_cmdline=lambda _pid: list(_ARGV),
+        ),
+        # None means "cannot judge" (no /proc): never a mismatch.
+        _status_case(
+            "unreadable-cmdline", _NAMED, jobrec.STATUS_RUNNING, read_cmdline=lambda _pid: None
+        ),
+        # Queue wait (ADR 0028) must not count against the deadline: this is well
+        # past submit + budget + slack but inside run start + budget.
+        _status_case(
+            "run-anchored-within", _QUEUED, jobrec.STATUS_RUNNING, now=_after(_RUN_STARTED, 30)
+        ),
+        _status_case(
+            "run-anchored-past",
+            _QUEUED,
+            jobrec.STATUS_FAILED,
+            now=_after(_RUN_STARTED, _PAST),
+        ),
+    ],
+)
+def test_derive_status(
+    fields: dict[str, Any], alive: bool, kwargs: dict[str, Any], expected: str
+) -> None:
+    assert jobrec.derive_status(_rec(**fields), lambda _pid: alive, **kwargs) == expected
 
-        monkeypatch.setattr(retry_delays_target(), (0.0,), raising=False)
-        real_open = Path.open
 
-        def held_open(path: Path, *args: object, **kwargs: object):
-            if path.name == "sim-held-1.json":
-                error = PermissionError(13, "The process cannot access the file")
-                error.winerror = 32  # type: ignore[attr-defined]
-                raise error
-            return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+@pytest.mark.parametrize(
+    ("pid", "alive", "age", "active"),
+    [
+        pytest.param(1234, True, 1, True, id="live"),
+        pytest.param(None, False, 1, True, id="fresh-pidless"),
+        pytest.param(None, False, jobrec.SPAWN_GRACE_SECONDS + 1, False, id="stale-pidless"),
+    ],
+)
+def test_is_active(pid: int | None, alive: bool, age: float, active: bool) -> None:
+    rec = _rec(pid=pid, started_at=_STARTED)
+    assert jobrec.is_active(rec, lambda _pid: alive, now=_after(_STARTED, age)) is active
 
-        monkeypatch.setattr(Path, "open", held_open)
-        with pytest.raises(PermissionError):
-            jobrec.read_record("sim-held-1", root=_jobs_env)
-        # Listing keeps its skip semantics; the Finish fence fails closed with the cause.
-        assert jobrec.list_records(_jobs_env) == []
-        with pytest.raises(jobrec.JobRecordError, match=r"sim-held-1\.json"):
-            jobrec.strict_records(_jobs_env)
 
-    def test_write_record_survives_a_transient_windows_reader(
-        self, _jobs_env, monkeypatch: pytest.MonkeyPatch
-    ):
-        rec = jobrec.JobRecord(run_id="sim-busy-1", endpoint="sim", started_at="t", timeout_s=60)
-        real_replace = Path.replace
-        blocked = False
+@pytest.mark.parametrize(
+    ("stamp", "parses"), [(_STARTED, True), ("t", False), (None, False), (1234, False)]
+)
+def test_parse_stamp(stamp: object, parses: bool) -> None:
+    assert (jobrec.parse_stamp(stamp) is not None) is parses
 
-        def replace_after_reader_closes(source: Path, destination: Path):
-            nonlocal blocked
-            if destination.name == "sim-busy-1.json" and not blocked:
-                blocked = True
-                error = PermissionError(13, "A reader holds the record open")
-                error.winerror = 5  # type: ignore[attr-defined]
-                raise error
-            return real_replace(source, destination)
 
-        monkeypatch.setattr(Path, "replace", replace_after_reader_closes)
-        jobrec.write_record(rec, root=_jobs_env)
-        assert blocked
-        got = jobrec.read_record("sim-busy-1", root=_jobs_env)
-        assert got is not None and got.run_id == "sim-busy-1"
+def test_write_then_read(_jobs_env) -> None:
+    rec = jobrec.JobRecord(
+        run_id="simulate-x-1",
+        endpoint="sim",
+        started_at=_STARTED,
+        timeout_s=1290,
+        argv=["python", "-m", "booley.flows.sim"],
+        pid=4242,
+        display_scope="nested",
+        run_started_at=_RUN_STARTED,
+        owner="srv|codex:t1",
+        read_at="2026-01-01T00:00:00Z",
+    )
+    jobrec.write_record(rec, root=_jobs_env)
+    got = jobrec.read_record(rec.run_id, root=_jobs_env)
+    assert got is not None
+    assert (got.endpoint, got.pid, got.argv) == ("sim", 4242, rec.argv)
+    assert got.status == jobrec.STATUS_RUNNING  # default
+    assert (got.display_scope, got.run_started_at) == ("nested", _RUN_STARTED)
+    assert (got.owner, got.read_at) == ("srv|codex:t1", "2026-01-01T00:00:00Z")
+    path = _jobs_env / f"{rec.run_id}.json"
+    new_payload = json.loads(path.read_text(encoding="utf-8"))
+    path.write_text(json.dumps({**new_payload, "lease_id": "historical"}), encoding="utf-8")
+    historical = jobrec.read_record(rec.run_id, root=_jobs_env)
+    assert historical is not None
+    assert (historical.run_id, historical.argv) == (rec.run_id, rec.argv)
+    assert jobrec.list_records(_jobs_env) == [historical]
+    assert jobrec.strict_records(_jobs_env) == [historical]
+    assert "lease_id" not in new_payload
+    # write_record replaces atomically: the second write wins and no tmp file lingers.
+    rec.status, rec.exit_code = jobrec.STATUS_DONE, 0
+    jobrec.write_record(rec, root=_jobs_env)
+    got = jobrec.read_record(rec.run_id, root=_jobs_env)
+    assert got is not None and got.status == jobrec.STATUS_DONE
+    assert not list(_jobs_env.glob("*.tmp"))
+    jobrec.write_record(_rec(run_id="simulate-x-2"), root=_jobs_env)
+    run_ids = {r.run_id for r in jobrec.list_records(root=_jobs_env)}
+    assert run_ids == {"simulate-x-1", "simulate-x-2"}
 
-    def test_list_records(self, _jobs_env):
-        for i in (1, 2):
-            jobrec.write_record(
-                jobrec.JobRecord(
-                    run_id=f"simulate-x-{i}",
-                    endpoint="sim",
-                    started_at="t",
-                    timeout_s=60,
-                ),
-                root=_jobs_env,
-            )
-        run_ids = {r.run_id for r in jobrec.list_records(root=_jobs_env)}
-        assert run_ids == {"simulate-x-1", "simulate-x-2"}
 
-    def test_list_records_from_explicit_root(self, tmp_path: Path):
-        root = tmp_path / "other-jobs"
-        root.mkdir()
-        (root / "sim-x-1.json").write_text(
-            '{"run_id":"sim-x-1","endpoint":"sim","started_at":"t","timeout_s":60}\n',
-            encoding="utf-8",
-        )
-        assert [rec.run_id for rec in jobrec.list_records(root)] == ["sim-x-1"]
-        assert jobrec.list_records(root)[0].display_scope == "developer"
+@pytest.mark.parametrize("content", [None, "{not json"], ids=["missing", "malformed"])
+def test_read_missing_or_malformed_returns_none(_jobs_env, content: str | None) -> None:
+    if content is not None:
+        _jobs_env.mkdir(parents=True)
+        (_jobs_env / "broken-1.json").write_text(content, encoding="utf-8")
+    assert jobrec.read_record("broken-1", root=_jobs_env) is None
 
-    def test_display_scope_round_trip(self, _jobs_env):
-        rec = jobrec.JobRecord(
-            run_id="reviewer-nested-1",
-            endpoint="reviewer",
-            started_at="2026-07-04T13:15:02Z",
-            timeout_s=60,
-            display_scope="nested",
-        )
 
-        jobrec.write_record(rec, root=_jobs_env)
+def test_unreadable_record_raises_instead_of_reading_as_absent(
+    _jobs_env, monkeypatch: pytest.MonkeyPatch
+):
+    rec = jobrec.JobRecord(run_id="sim-held-1", endpoint="sim", started_at="t", timeout_s=60)
+    jobrec.write_record(rec, root=_jobs_env)
+    hold_opens(monkeypatch, {_jobs_env / "sim-held-1.json": 100})
+    with pytest.raises(PermissionError):
+        jobrec.read_record("sim-held-1", root=_jobs_env)
+    # Listing keeps its skip semantics; the Finish fence fails closed with the cause.
+    assert jobrec.list_records(_jobs_env) == []
+    with pytest.raises(jobrec.JobRecordError, match=r"sim-held-1\.json"):
+        jobrec.strict_records(_jobs_env)
 
-        got = jobrec.read_record(rec.run_id, root=_jobs_env)
-        assert got is not None and got.display_scope == "nested"
 
-    def test_overwrite_is_atomic_and_leaves_no_tmp(self, _jobs_env):
-        # write_record goes through tmp + os.replace so a cross-process reader
-        # can never observe a half-written record; the tmp must not linger.
-        rec = jobrec.JobRecord(
-            run_id="simulate-x-1",
-            endpoint="sim",
-            started_at="t",
-            timeout_s=60,
-        )
-        jobrec.write_record(rec, root=_jobs_env)
-        rec.status = jobrec.STATUS_DONE
-        rec.exit_code = 0
-        jobrec.write_record(rec, root=_jobs_env)
-        got = jobrec.read_record("simulate-x-1", root=_jobs_env)
-        assert got is not None and got.status == jobrec.STATUS_DONE
-        root = _jobs_env
-        assert root is not None
-        assert not list(root.glob("*.tmp"))
+def test_write_record_survives_a_transient_windows_reader(
+    _jobs_env, monkeypatch: pytest.MonkeyPatch
+):
+    rec = jobrec.JobRecord(run_id="sim-busy-1", endpoint="sim", started_at="t", timeout_s=60)
+    # winerror 5: Windows refuses to rename onto a record a reader holds open.
+    target = _jobs_env / "sim-busy-1.json"
+    attempts = hold_replaces(monkeypatch, {target: 1}, winerror=5)
+    jobrec.write_record(rec, root=_jobs_env)
+    assert attempts[target] == 2
+    got = jobrec.read_record("sim-busy-1", root=_jobs_env)
+    assert got is not None and got.run_id == "sim-busy-1"
 
-    def test_delete_record_removes_synchronous_activity(self, _jobs_env):
-        rec = jobrec.JobRecord(
-            run_id="lint-sync-1",
-            endpoint="lint",
-            started_at="t",
-            timeout_s=60,
-        )
-        jobrec.write_record(rec, root=_jobs_env)
 
-        jobrec.delete_record(rec.run_id, root=_jobs_env)
+@pytest.mark.parametrize("unlink_fails", [False, True])
+def test_delete_record_is_best_effort(
+    _jobs_env, monkeypatch: pytest.MonkeyPatch, unlink_fails: bool
+) -> None:
+    rec = _rec(run_id="lint-sync-1")
+    jobrec.write_record(rec, root=_jobs_env)
 
-        assert jobrec.read_record(rec.run_id, root=_jobs_env) is None
+    def fail_unlink(*_args: object, **_kwargs: object) -> None:
+        raise OSError
 
-    def test_delete_record_is_best_effort(self, _jobs_env, monkeypatch):
-        def fail_unlink(*_args, **_kwargs):
-            raise OSError
-
+    if unlink_fails:
         monkeypatch.setattr(Path, "unlink", fail_unlink)
 
-        jobrec.delete_record("lint-sync-1", root=_jobs_env)
+    jobrec.delete_record(rec.run_id, root=_jobs_env)
+
+    assert (jobrec.read_record(rec.run_id, root=_jobs_env) is None) is not unlink_fails
 
 
-class TestDisabledStorage:
-    def test_explicit_none_disables_storage(self):
-        rec = jobrec.JobRecord(run_id="x", endpoint="sim", started_at="t", timeout_s=1)
-        jobrec.write_record(rec, None)
-        assert jobrec.read_record("x", None) is None
-        assert jobrec.list_records(None) == []
-
-
-class TestDeriveStatus:
-    def _rec(self, **kw):
-        base = {"run_id": "r", "endpoint": "sim", "started_at": "t", "timeout_s": 60}
-        base.update(kw)
-        return jobrec.JobRecord(**base)
-
-    def test_cancelled_is_terminal(self):
-        rec = self._rec(status=jobrec.STATUS_CANCELLED, exit_code=130)
-        assert jobrec.derive_status(rec, lambda _pid: True) == jobrec.STATUS_CANCELLED
-
-    def test_live_record_is_active(self):
-        rec = self._rec(pid=1234)
-        assert jobrec.is_active(rec, lambda _pid: True)
-
-    def test_fresh_pidless_record_is_active(self):
-        stamp = "2027-01-15T08:00:00Z"
-        started = jobrec.parse_stamp(stamp)
-        assert started is not None
-        rec = self._rec(pid=None, started_at=stamp)
-        assert jobrec.is_active(rec, lambda _pid: False, now=started + 1)
-
-    def test_stale_pidless_record_is_not_active(self):
-        stamp = "2027-01-15T08:00:00Z"
-        started = jobrec.parse_stamp(stamp)
-        assert started is not None
-        rec = self._rec(pid=None, started_at=stamp)
-        assert not jobrec.is_active(
-            rec,
-            lambda _pid: False,
-            now=started + jobrec.SPAWN_GRACE_SECONDS + 1,
-        )
-
-    def test_terminal_record_is_authoritative(self):
-        rec = self._rec(status=jobrec.STATUS_DONE, exit_code=0, pid=1)
-        # Even a live PID cannot override a recorded terminal outcome.
-        assert jobrec.derive_status(rec, lambda _pid: True) == jobrec.STATUS_DONE
-
-    def test_running_with_live_pid_stays_running(self):
-        rec = self._rec(status=jobrec.STATUS_RUNNING, pid=1234)
-        assert jobrec.derive_status(rec, lambda _pid: True) == jobrec.STATUS_RUNNING
-
-    def test_running_with_dead_pid_is_failed(self):
-        rec = self._rec(status=jobrec.STATUS_RUNNING, pid=1234)
-        assert jobrec.derive_status(rec, lambda _pid: False) == jobrec.STATUS_FAILED
-
-    def test_running_without_pid_is_failed(self):
-        # No PID yet means the spawn never happened → nothing to wait on.
-        rec = self._rec(status=jobrec.STATUS_RUNNING, pid=None)
-        assert jobrec.derive_status(rec, lambda _pid: True) == jobrec.STATUS_FAILED
-
-    # -- deadline guard: a live PID cannot keep a job "running" forever --------
-
-    _STARTED = "2026-07-04T13:15:02Z"
-
-    def _epoch(self) -> float:
-        started = jobrec.parse_stamp(self._STARTED)
-        assert started is not None
-        return started
-
-    def test_running_past_deadline_is_failed_despite_live_pid(self):
-        # Past started_at + timeout_s + slack nothing can ever finish this job
-        # (the watchdog died with the server) — a live PID is reuse or a hung
-        # unsupervised orphan, and either way the caller must not poll forever.
-        rec = self._rec(
-            status=jobrec.STATUS_RUNNING, pid=1234, started_at=self._STARTED, timeout_s=60
-        )
-        late = self._epoch() + 60 + jobrec.DEADLINE_SLACK_SECONDS + 1
-        assert (
-            jobrec.derive_status(
-                rec,
-                lambda _pid: True,
-                now=late,
-            )
-            == jobrec.STATUS_FAILED
-        )
-
-    def test_running_within_deadline_stays_running(self):
-        rec = self._rec(
-            status=jobrec.STATUS_RUNNING, pid=1234, started_at=self._STARTED, timeout_s=60
-        )
-        early = self._epoch() + 60 + jobrec.DEADLINE_SLACK_SECONDS - 1
-        assert (
-            jobrec.derive_status(
-                rec,
-                lambda _pid: True,
-                now=early,
-            )
-            == jobrec.STATUS_RUNNING
-        )
-
-    def test_unparseable_started_at_skips_deadline(self):
-        # Best-effort: a garbage stamp must not crash or fail a live job.
-        rec = self._rec(status=jobrec.STATUS_RUNNING, pid=1234, started_at="t")
-        assert (
-            jobrec.derive_status(
-                rec,
-                lambda _pid: True,
-                now=9e18,
-            )
-            == jobrec.STATUS_RUNNING
-        )
-
-    # -- identity guard: the PID must still be OUR process ---------------------
-
-    _ARGV: ClassVar[list[str]] = ["python", "-m", "booley.flows.sim", "--cfg", "top"]
-
-    def test_recycled_pid_is_failed(self):
-        # Container PID namespaces are dense: after a restart the recorded PID
-        # can belong to an unrelated process. argv mismatch → not our job.
-        rec = self._rec(status=jobrec.STATUS_RUNNING, pid=1234, argv=self._ARGV)
-        assert (
-            jobrec.derive_status(
-                rec,
-                lambda _pid: True,
-                read_cmdline=lambda _pid: ["sleep", "3600"],
-            )
-            == jobrec.STATUS_FAILED
-        )
-
-    def test_matching_cmdline_stays_running(self):
-        rec = self._rec(status=jobrec.STATUS_RUNNING, pid=1234, argv=self._ARGV)
-        assert (
-            jobrec.derive_status(
-                rec,
-                lambda _pid: True,
-                read_cmdline=lambda _pid: list(self._ARGV),
-            )
-            == jobrec.STATUS_RUNNING
-        )
-
-    def test_unreadable_cmdline_is_trusted_alive(self):
-        # None means "cannot judge" (no /proc, permission, raced exit) — must
-        # not be treated as a mismatch or live jobs die on non-Linux hosts.
-        rec = self._rec(status=jobrec.STATUS_RUNNING, pid=1234, argv=self._ARGV)
-        assert (
-            jobrec.derive_status(
-                rec,
-                lambda _pid: True,
-                read_cmdline=lambda _pid: None,
-            )
-            == jobrec.STATUS_RUNNING
-        )
-
-
-class TestParseStamp:
-    def test_roundtrips_record_format(self):
-        assert jobrec.parse_stamp("2026-07-04T13:15:02Z") is not None
-
-    def test_garbage_and_non_string_are_none(self):
-        assert jobrec.parse_stamp("t") is None
-        assert jobrec.parse_stamp(None) is None
-        assert jobrec.parse_stamp(1234) is None
-
-
-class TestDeadlineAnchorsAtRunStart:
-    """Queue wait (ADR 0028) must not count against the derive_status deadline."""
-
-    _SUBMITTED = "2026-07-04T13:15:02Z"
-    _RUN_STARTED = "2026-07-04T13:45:02Z"  # promoted 30 min after submit
-
-    def _rec(self):
-        return jobrec.JobRecord(
-            run_id="r",
-            endpoint="sim",
-            started_at=self._SUBMITTED,
-            timeout_s=60,
-            pid=1234,
-            status=jobrec.STATUS_RUNNING,
-            run_started_at=self._RUN_STARTED,
-        )
-
-    def test_within_run_anchored_deadline_stays_running(self):
-        # Well past submit + budget + slack, but inside run_start + budget:
-        # the job queued for its slot, and that wait is not run time.
-        run_started = jobrec.parse_stamp(self._RUN_STARTED)
-        assert run_started is not None
-        now = run_started + 30
-        assert (
-            jobrec.derive_status(self._rec(), lambda _pid: True, now=now) == jobrec.STATUS_RUNNING
-        )
-
-    def test_past_run_anchored_deadline_is_failed(self):
-        run_started = jobrec.parse_stamp(self._RUN_STARTED)
-        assert run_started is not None
-        late = run_started + 60 + jobrec.DEADLINE_SLACK_SECONDS + 1
-        assert (
-            jobrec.derive_status(self._rec(), lambda _pid: True, now=late) == jobrec.STATUS_FAILED
-        )
-
-    def test_run_started_at_round_trips_through_disk(self, _jobs_env):
-        rec = self._rec()
-        jobrec.write_record(rec, root=_jobs_env)
-        loaded = jobrec.read_record("r", root=_jobs_env)
-        assert loaded is not None
-        assert loaded.run_started_at == self._RUN_STARTED
+def test_explicit_none_disables_storage() -> None:
+    rec = _rec(run_id="x")
+    jobrec.write_record(rec, None)
+    assert jobrec.read_record("x", None) is None
+    assert jobrec.list_records(None) == []
 
 
 def test_legacy_schema_loads_missing_goal_facts() -> None:
@@ -412,11 +253,10 @@ def test_legacy_schema_loads_missing_goal_facts() -> None:
     )
     assert rec.work_dir is None and rec.client is None
     assert rec.schema == 2
+    assert (rec.owner, rec.read_at, rec.display_scope) == (None, None, "developer")
 
 
 def test_run_id_has_random_eight_hex_suffix() -> None:
-    import re
-
     first = jobrec.make_run_id("lint", "20261007T100000Z", 1)
     assert re.fullmatch(r"lint-20261007T100000Z-1-[0-9a-f]{8}", first)
     assert jobrec.make_run_id("lint", "20261007T100000Z", 1) != first
@@ -433,8 +273,6 @@ def test_run_id_has_random_eight_hex_suffix() -> None:
     ],
 )
 def test_malformed_routing_envelope_is_job_error(tmp_path, field, value):
-    import json
-
     raw = jobrec.JobRecord("bad-envelope", "lint", "20261007T120000Z", 60).to_dict()
     raw[field] = value
     with pytest.raises(jobrec.JobRecordError, match=field):
@@ -446,22 +284,6 @@ def test_malformed_routing_envelope_is_job_error(tmp_path, field, value):
         jobrec.read_record("bad-envelope", root)
     with pytest.raises(jobrec.JobRecordError, match=field):
         jobrec.strict_records(root)
-
-
-def test_owner_and_read_at_round_trip_and_legacy_load(tmp_path: Path) -> None:
-    rec = jobrec.JobRecord(
-        "run-1", "sim", "t", 60, owner="srv|codex:t1", read_at="2026-01-01T00:00:00Z"
-    )
-    jobrec.write_record(rec, root=tmp_path)
-
-    loaded = jobrec.read_record("run-1", tmp_path)
-    legacy = jobrec.JobRecord.from_dict(
-        {"run_id": "old", "endpoint": "sim", "started_at": "t", "timeout_s": 60}
-    )
-
-    assert loaded is not None
-    assert (loaded.owner, loaded.read_at) == ("srv|codex:t1", "2026-01-01T00:00:00Z")
-    assert (legacy.owner, legacy.read_at) == (None, None)
 
 
 def test_list_records_skips_malformed_envelope(tmp_path: Path) -> None:

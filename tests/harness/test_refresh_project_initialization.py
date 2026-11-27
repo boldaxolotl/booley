@@ -16,9 +16,9 @@ from booley.runtime.session_runtime import SessionError
 from tests.harness import test_init_rerun as init_fixtures
 from tests.subprocess_budget import run_bounded_child
 
-# Reuse the init suite's isolated scratch repo (no Docker, isolated HOME) and its guard.
+# Reuse the init suite's isolated scratch repo (no Docker, isolated HOME).
 repo = init_fixtures.repo
-_no_docker_cli = init_fixtures._no_docker_cli
+_no_sandbox_git_version = init_fixtures._no_sandbox_git_version
 
 CORE_TEXT = "CAPI=2:\nname: example:lib:cpu:1.0\n"
 

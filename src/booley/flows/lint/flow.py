@@ -675,6 +675,8 @@ def _lint_result_parts(
     if target_results:
         detail["metrics"] = _lint_metrics_detail(target_results)
     eda_tools = sorted({cr.eda_tool for cr in (target_results or []) if cr.eda_tool})
+    # Only a direct call reaches the false branch: every Target a run passes
+    # here was prepared, and preparation records its EDA tool or fails it.
     if eda_tools:
         display.append(f"linter: {', '.join(eda_tools)}")
         detail["eda_tools"] = {cr.target: cr.eda_tool or None for cr in (target_results or [])}
@@ -1029,9 +1031,6 @@ class LintFlow(BuiltinFlow[LintRequest]):
         for target in targets:
             result = LintConfigResult(target=target.selector)
             try:
-                prepared_command: (
-                    _PreparedLintCommand | tuple[list[str], fusesoc_registry.ResolvedTarget]
-                )
                 prepared_command = self._prepare_lint_command(target)
             except Exception as exc:  # isolate and normalize a Target setup failure
                 result.error = f"lint setup failed: {exc}"
@@ -1043,10 +1042,6 @@ class LintFlow(BuiltinFlow[LintRequest]):
                 )
                 errors.append(result)
                 continue
-            if not isinstance(prepared_command, _PreparedLintCommand):
-                # Compatibility for focused tests that replace the preparation
-                # boundary with the historical two-tuple.
-                prepared_command = _PreparedLintCommand(*prepared_command, "")
             command = prepared_command.command
             resolved = prepared_command.resolved
             try:

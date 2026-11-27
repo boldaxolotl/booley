@@ -39,7 +39,7 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/doc-change-class/head"
+          bash .github/scripts/retry.sh git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:refs/doc-change-class/head"
           test "$(git rev-parse refs/doc-change-class/head)" = "${HEAD_SHA}"
 
       - name: Classify and label

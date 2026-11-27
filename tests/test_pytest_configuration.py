@@ -25,6 +25,7 @@ sys.path.insert(0, str(REPOSITORY_ROOT / ".github/scripts"))
 
 from ci_changes import (  # pyright: ignore[reportMissingImports]
     CATEGORIES,
+    DEFAULT_WINDOWS_SHARD_COUNT,
     build_test_matrix,
     required_jobs,
 )
@@ -108,11 +109,9 @@ _EXPECTED_NATIVE_BWAVE_NODES = {
     "tests/bwave/test_contract.py::test_env_errors_stay_exit_env",
     "tests/bwave/test_contract.py::test_native_open_ended_range_includes_tail_clock_events",
     "tests/bwave/test_contract.py::test_reset_object_validates_against_published_schema",
-    "tests/bwave/test_sessions.py::test_query_uses_default_session",
-    "tests/bwave/test_sessions.py::test_query_uses_named_alias",
-    "tests/bwave/test_sessions.py::test_query_explicit_overrides_session",
-    "tests/bwave/test_sessions.py::test_stale_session_warning",
-    "tests/bwave/test_sessions.py::test_fresh_trace_with_old_registration_does_not_warn",
+    "tests/bwave/test_sessions.py::test_query_resolves_named_and_explicit_traces[default]",
+    "tests/bwave/test_sessions.py::test_query_resolves_named_and_explicit_traces[alias]",
+    "tests/bwave/test_sessions.py::test_query_resolves_named_and_explicit_traces[explicit]",
     "tests/bwave/test_sessions.py::test_register_reports_trace_identity_and_age",
     "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[list]",
     "tests/bwave/test_scope_relative_globs.py::test_relative_glob_selects_the_list_tree[value]",
@@ -183,7 +182,8 @@ def test_bwave_integration_prebuilds_and_runs_native_tests_without_skips() -> No
 
 def test_ci_mark_expressions_never_deselect_sandbox_only_tests() -> None:
     """Sandbox-only tests skip on Windows only; no `-m` expression may drop them anywhere."""
-    from tests.sandbox_only import SANDBOX_ONLY_PATHS, is_sandbox_only
+    from tests.os_specific import is_os_specific
+    from tests.sandbox_only import is_sandbox_only
 
     workflows = (REPOSITORY_ROOT / ".github" / "workflows").glob("*.yml")
     mentions = [path.name for path in workflows if "sandbox_only" in path.read_text("utf-8")]
@@ -193,26 +193,30 @@ def test_ci_mark_expressions_never_deselect_sandbox_only_tests() -> None:
     )
     paths = [word for word in shlex.split(compatibility["run"]) if word.startswith("tests/")]
     assert paths
-    # A compatibility leg whose paths are all skipped on Windows would pass while testing nothing.
-    # A test file is judged by the registry (its Windows exceptions included); a directory
-    # overlaps when any registry entry sits inside it or contains it.
-    skipped = [
-        path
-        for path in paths
-        if (
-            is_sandbox_only(path)
-            if path.endswith(".py")
-            else any(
-                path.startswith(entry) or entry.startswith(path.rstrip("/") + "/")
-                for entry in SANDBOX_ONLY_PATHS
-            )
-        )
+    # A leg whose paths are all skipped on Windows would pass while testing nothing, and an
+    # unregistered path (a directory included) would run tests with no OS-dependent result.
+    wrong = [path for path in paths if not is_os_specific(path) or is_sandbox_only(path)]
+    assert not wrong, f"Windows compatibility paths must be registered and run there: {wrong}"
+
+
+def test_windows_headroom_only_warns() -> None:
+    """Windows CI reports headroom drift; only the per-test timeout fails a test."""
+    pytest_steps = [
+        (str(job.get("runs-on", "")), f"{step['run']} {step.get('env', {})}")
+        for name in ("test.yml", "full-python-matrix.yml")
+        for job in _workflow(name)["jobs"].values()
+        for step in job.get("steps", [])
+        if re.search(r"\bpytest\s", step.get("run", ""))
     ]
-    assert not skipped, f"Windows compatibility paths overlap the Sandbox-only registry: {skipped}"
+    windows = [text for runner, text in pytest_steps if not runner.startswith("ubuntu")]
+    assert windows
+    assert all("--timeout-headroom-warn=0.5" in text for text in windows)
+    assert not [text for _, text in pytest_steps if "--timeout-headroom=" in text]
 
 
 def test_windows_shards_are_exactly_verified() -> None:
-    jobs = _test_workflow()["jobs"]
+    workflow = _test_workflow()
+    jobs = workflow["jobs"]
     test_verify_steps = jobs["test-verify"]["steps"]
     test_verify_download = next(
         step for step in test_verify_steps if "pattern" in step.get("with", {})
@@ -227,9 +231,13 @@ def test_windows_shards_are_exactly_verified() -> None:
         for step in test_verify_steps
         if step.get("name") == "Prove every sharded test ran exactly once"
     )
-    assert verify_step["env"]["WINDOWS_SHARD_COUNT"] == (
-        "${{ inputs.windows_shard_count || '4' }}"
-    )
+    fallback = f"${{{{ inputs.windows_shard_count || '{DEFAULT_WINDOWS_SHARD_COUNT}' }}}}"
+    assert verify_step["env"]["WINDOWS_SHARD_COUNT"] == fallback
+    assert fallback in _named_step(jobs["changes"], "Classify changed paths")["run"]
+    # PyYAML reads the `on:` key as the boolean True.
+    dispatch = workflow[True]["workflow_dispatch"]["inputs"]["windows_shard_count"]
+    assert dispatch["default"] == str(DEFAULT_WINDOWS_SHARD_COUNT)
+    assert dispatch["default"] in dispatch["options"]
 
 
 def test_coverage_job_exactly_verifies_before_combining() -> None:
@@ -283,7 +291,7 @@ def test_actionlint_download_retries_and_still_verifies_its_checksum() -> None:
     )
     script = " ".join(install["run"].replace("\\\n", " ").split())
 
-    assert "--retry 5 --retry-all-errors --retry-delay 5" in script
+    assert "--retry 8 --retry-all-errors --retry-delay 30" in script
     assert "sha256sum --check --strict" in script
     assert script.index("curl ") < script.index("sha256sum") < script.index("tar ")
 

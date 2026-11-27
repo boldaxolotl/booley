@@ -15,6 +15,7 @@ from ci_flake_stress import (
     StressPlan,
     changed_test_modules,
     module_costs,
+    os_specific_modules,
     plan_stress,
     stress_enabled,
 )
@@ -104,6 +105,10 @@ ALL_JOBS = (*ALWAYS_JOBS, *CONDITIONAL_JOBS)
 # covers. ci_docs_tests.py derives its content-test selection from this.
 DOCUMENTATION_CATEGORIES = frozenset({"docs", "site", "readme"})
 WINDOWS_SHARD_COUNTS = (4, 6, 8, 10)
+# Complete suites leave native_bwave to bwave-integration. Windows legs also run only
+# the registered OS-specific modules (tests/os_specific.py).
+SUITE_MARK_EXPRESSION = "not native_bwave"
+WINDOWS_MARK_EXPRESSION = f"os_specific and {SUITE_MARK_EXPRESSION}"
 # Explicit RISC-V timing arms. "automatic" keeps path-gated selection. "cold"
 # is the forced-local arm of the controlled pairs (ADR 0070): it builds the
 # RISC-V tooling stage instead of reusing the published image, so it must build
@@ -289,7 +294,6 @@ def _release_categories(path: str) -> set[str]:
             ".github/workflows/publish.yml",
             ".github/workflows/docker-publish.yml",
             "CHANGELOG.md",
-            "src/booley/data/refs/CHANGELOG.md",
         }
     ):
         return {"release"}
@@ -448,7 +452,13 @@ def _linux_entries(linux_shard_count: int) -> list[dict[str, object]]:
     """Return the plain Ubuntu legs: one complete-suite job, or shards, per listed Python."""
     if linux_shard_count == 1:
         return [
-            {"name": f"ubuntu-{py}-full", "os": "ubuntu-latest", "python": py, "mode": "full"}
+            {
+                "name": f"ubuntu-{py}-full",
+                "os": "ubuntu-latest",
+                "python": py,
+                "mode": "full",
+                "mark_expression": SUITE_MARK_EXPRESSION,
+            }
             for py in _LINUX_PYTHONS
         ]
     return [
@@ -460,6 +470,7 @@ def _linux_entries(linux_shard_count: int) -> list[dict[str, object]]:
             "group": f"linux-{py}",
             "shard_index": index,
             "shard_count": linux_shard_count,
+            "mark_expression": SUITE_MARK_EXPRESSION,
         }
         for py in _LINUX_PYTHONS
         for index in range(linux_shard_count)
@@ -485,12 +496,14 @@ def build_test_matrix(
             "os": "windows-latest",
             "python": "3.11",
             "mode": "compatibility",
+            "mark_expression": WINDOWS_MARK_EXPRESSION,
         },
         {
             "name": "windows-3.13-compatibility",
             "os": "windows-latest",
             "python": "3.13",
             "mode": "compatibility",
+            "mark_expression": WINDOWS_MARK_EXPRESSION,
         },
     ]
     include.extend(
@@ -502,10 +515,30 @@ def build_test_matrix(
             "group": "windows",
             "shard_index": index,
             "shard_count": windows_shard_count,
+            "mark_expression": WINDOWS_MARK_EXPRESSION,
         }
         for index in range(windows_shard_count)
     )
     return {"include": include}
+
+
+def build_stress_matrix(
+    plan: StressPlan, windows_modules: tuple[str, ...]
+) -> dict[str, list[dict[str, object]]]:
+    """Build one flake-stress leg per OS that has modules to repeat."""
+    legs = (("ubuntu", plan.modules), ("windows", windows_modules))
+    return {
+        "include": [
+            {
+                "name": f"{system}-3.14",
+                "os": f"{system}-latest",
+                "python": "3.14",
+                "modules": list(modules),
+            }
+            for system, modules in legs
+            if modules
+        ]
+    }
 
 
 def _git_diff(repo: Path, base: str, head: str) -> bytes:
@@ -596,6 +629,7 @@ def _write_outputs(
     destination: Path,
     categories: set[str],
     stress: StressPlan,
+    stress_matrix: dict[str, list[dict[str, object]]],
     base: str,
     windows_shard_count: int,
     linux_shard_count: int,
@@ -619,7 +653,7 @@ def _write_outputs(
         )
         print(f"required_jobs={','.join(job for job in ALL_JOBS if job in jobs)}", file=stream)
         print(f"diff_base={base}", file=stream)
-        print(f"stress_modules={json.dumps(stress.modules)}", file=stream)
+        print(f"stress_matrix={json.dumps(stress_matrix, separators=(',', ':'))}", file=stream)
         print(f"stress_count={stress.count}", file=stream)
 
 
@@ -708,6 +742,7 @@ def main() -> int:
         entries = _diff_entries(_git_diff(args.repo, base, args.head))
         paths = [path for _status, entry_paths in entries for path in entry_paths]
         stress = _stress_plan(args.repo, entries, args.event_name, args.head_ref)
+        windows_modules = os_specific_modules(stress.modules, args.repo)
         main_push = is_main_push(args.event_name, args.ref)
         if args.windows_shard_benchmark or args.linux_shard_benchmark:
             categories = {"python_source"}
@@ -722,6 +757,7 @@ def main() -> int:
             args.github_output,
             categories,
             stress,
+            build_stress_matrix(stress, windows_modules),
             base,
             args.windows_shard_count,
             args.linux_shard_count,

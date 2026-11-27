@@ -15,7 +15,6 @@ from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
 from booley.runtime import auth_token, runtime_context
 from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache
-from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.git_command_fake import GitCommandFake
 from tests.harness.test_project_initialization import HOST_PRIVATE_ENVIRONMENT, _repository_state
 from tests.subprocess_budget import run_bounded_child
@@ -92,12 +91,10 @@ def sandbox_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
         *auth_token.CREDENTIAL_ENV_KEYS,
     ):
         monkeypatch.delenv(variable, raising=False)
-    forbid_docker_cli(monkeypatch)
     for name in HOST_PRIVATE_ENVIRONMENT:
         monkeypatch.setenv(name, str(tmp_path / "absent" / name))
     reset_cache()
     yield
-    assert_docker_cli_unused()
 
 
 @pytest.fixture

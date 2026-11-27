@@ -17,9 +17,10 @@ src/*.egg-info/
 # source commit into the package so a wheel install can report it (F-5).
 src/booley/_build_commit.py
 
-# Rendered from SHIPPED_DOCS by the same build step (booley.runtime.packaged_docs);
-# build output, never committed or edited.
+# Rendered from SHIPPED_DOCS, and the changelog copied, by the same build step
+# (booley.runtime.packaged_docs); build output, never committed or edited.
 src/booley/data/docs/
+src/booley/data/refs/CHANGELOG.md
 
 # Rust bwave tool
 crates/bwave/target/

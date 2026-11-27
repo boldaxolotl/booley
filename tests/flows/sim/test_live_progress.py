@@ -330,10 +330,9 @@ def test_active_writer_uses_short_lock_timeout_and_mandatory_keeps_default(tmp_p
 
 
 @pytest.mark.parametrize("origin_phase", ["running", "starting"])
-def test_reap_and_coverage_supersede_remove_active_pointers(tmp_path, origin_phase):
+def test_reap_removes_active_pointers(tmp_path, origin_phase):
     from booley.flows.progress_lifecycle import (
         repair_progress_after_reap,
-        supersede_progress,
         write_progress_json,
     )
 
@@ -356,11 +355,6 @@ def test_reap_and_coverage_supersede_remove_active_pointers(tmp_path, origin_pha
     assert repair_progress_after_reap([root], "sim", "killed")
     repaired = json.loads(path.read_text())
     assert repaired["phase"] == "aborted" and "active" not in repaired
-    write_progress_json(path, document)
-    assert supersede_progress(path, new_invocation=2, new_run_id="new")
-    superseded = json.loads(path.read_text())
-    assert superseded["coverage"] is True and "active" not in superseded
-    assert superseded["phase"] == "superseded"
 
 
 def test_coverage_build_and_launch_stages_survive_observation_failure(tmp_path, monkeypatch):

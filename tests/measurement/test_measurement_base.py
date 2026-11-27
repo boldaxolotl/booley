@@ -2,10 +2,24 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
+from booley.measurement.base import (
+    BaseChoice,
+    BaseError,
+    ChangedFile,
+    ChangedFiles,
+    SubmoduleChange,
+    changed_files,
+    is_protected,
+    protected_edits,
+    resolve_base,
+    resolve_rules_base,
+)
 from tests.runtime.test_commit_export import (
     FAKE_OID,
     add_gitlink,
@@ -34,8 +48,6 @@ def branch_commit(repository: Path, branch: str, start: str, name: str) -> str:
 
 
 def test_default_base_is_the_merge_base_with_the_remote_default_branch(tmp_path: Path) -> None:
-    from booley.measurement.base import BaseChoice, resolve_base
-
     repo = new_repository(tmp_path / "repo")
     write(repo / "rtl.v", "rtl\n")
     pushed = commit_all(repo, "pushed")
@@ -53,8 +65,6 @@ def test_default_base_is_the_merge_base_with_the_remote_default_branch(tmp_path:
 
 
 def test_default_base_falls_back_to_local_main_without_origin_head(tmp_path: Path) -> None:
-    from booley.measurement.base import BaseChoice, resolve_base
-
     repo = new_repository(tmp_path / "repo")
     write(repo / "rtl.v", "rtl\n")
     fork = commit_all(repo)
@@ -68,8 +78,6 @@ def test_default_base_falls_back_to_local_main_without_origin_head(tmp_path: Pat
 def test_rules_base_prefers_local_main_only_when_it_holds_unpushed_commits(
     tmp_path: Path,
 ) -> None:
-    from booley.measurement.base import BaseChoice, resolve_base, resolve_rules_base
-
     def build(name: str, origin: str) -> tuple[Path, dict[str, str]]:
         """A repository with ``c1 <- c2`` on main and ``origin`` at c1, c2, a later c3, or absent."""
         repo = new_repository(tmp_path / name / "repo")
@@ -119,58 +127,49 @@ def test_rules_base_prefers_local_main_only_when_it_holds_unpushed_commits(
     assert (base.commit, base.choice) == (local, BaseChoice.LOCAL_MAIN)
 
 
-def test_commit_on_the_default_branch_has_no_base(tmp_path: Path) -> None:
-    from booley.measurement.base import BaseChoice, resolve_base
-
-    repo = new_repository(tmp_path / "repo")
-    write(repo / "rtl.v", "rtl\n")
+def _on_the_default_branch(repo: Path) -> str:
     head = commit_all(repo)
     with_origin(repo)
-
-    base = resolve_base(repo, head)
-
-    assert base.commit is None
-    assert base.choice is BaseChoice.REMOTE_DEFAULT
-    assert base.no_base is not None and "is its own base" in base.no_base
+    return head
 
 
-def test_no_default_branch_means_no_base_and_says_why(tmp_path: Path) -> None:
-    from booley.measurement.base import resolve_base
-
-    repo = new_repository(tmp_path / "repo")
-    write(repo / "rtl.v", "rtl\n")
+def _without_a_default_branch(repo: Path) -> str:
     head = commit_all(repo)
     git(repo, "branch", "-m", "trunk")
-
-    base = resolve_base(repo, head)
-
-    assert (base.commit, base.choice) == (None, None)
-    assert base.no_base == "neither origin/HEAD nor local main exists"
+    return head
 
 
-def test_default_branch_without_shared_history_means_no_base_and_says_why(
-    tmp_path: Path,
-) -> None:
-    from booley.measurement.base import resolve_base
-
-    repo = new_repository(tmp_path / "repo")
-    write(repo / "rtl.v", "rtl\n")
+def _unrelated_history(repo: Path) -> str:
     commit_all(repo)
     git(repo, "checkout", "-q", "--orphan", "unrelated")
     write(repo / "other.v", "other\n")
-    head = commit_all(repo, "unrelated root")
+    return commit_all(repo, "unrelated root")
+
+
+@pytest.mark.parametrize(
+    ("setup", "choice", "reason"),
+    [
+        (_on_the_default_branch, BaseChoice.REMOTE_DEFAULT, "is its own base"),
+        (_without_a_default_branch, None, "^neither origin/HEAD nor local main exists$"),
+        (_unrelated_history, BaseChoice.LOCAL_MAIN, "local main shares no history"),
+    ],
+)
+def test_no_base_says_why(
+    tmp_path: Path, setup: Callable[[Path], str], choice: BaseChoice | None, reason: str
+) -> None:
+    repo = new_repository(tmp_path / "repo")
+    write(repo / "rtl.v", "rtl\n")
+    head = setup(repo)
 
     base = resolve_base(repo, head)
 
-    assert base.commit is None
-    assert base.no_base is not None and "local main shares no history" in base.no_base
+    assert (base.commit, base.choice) == (None, choice)
+    assert base.no_base is not None and re.search(reason, base.no_base)
 
 
 def test_base_on_another_branch_is_normalized_to_the_merge_base_naming_both_commits(
     tmp_path: Path,
 ) -> None:
-    from booley.measurement.base import BaseChoice, resolve_base
-
     repo = new_repository(tmp_path / "repo")
     write(repo / "rtl.v", "rtl\n")
     fork = commit_all(repo)
@@ -191,8 +190,6 @@ def test_base_on_another_branch_is_normalized_to_the_merge_base_naming_both_comm
 def test_base_that_is_not_a_commit_or_shares_no_history_is_an_error_naming_it(
     tmp_path: Path,
 ) -> None:
-    from booley.measurement.base import BaseError, resolve_base
-
     repo = new_repository(tmp_path / "repo")
     write(repo / "rtl.v", "rtl\n")
     head = commit_all(repo)
@@ -211,8 +208,6 @@ def test_base_that_is_not_a_commit_or_shares_no_history_is_an_error_naming_it(
 def test_file_changed_only_on_the_default_branch_after_the_fork_is_not_listed(
     tmp_path: Path,
 ) -> None:
-    from booley.measurement.base import changed_files, resolve_base
-
     repo = new_repository(tmp_path / "repo")
     write(repo / "a.v", "a\n")
     write(repo / "b.v", "b\n")
@@ -232,8 +227,6 @@ def test_file_changed_only_on_the_default_branch_after_the_fork_is_not_listed(
 
 
 def test_constraint_edit_is_marked(tmp_path: Path) -> None:
-    from booley.measurement.base import ChangedFile, changed_files
-
     repo = new_repository(tmp_path / "repo")
     write(repo / "rtl.v", "rtl\n")
     write(repo / "clk.SDC", "create_clock 10\n")
@@ -260,8 +253,6 @@ def test_constraint_edit_is_marked(tmp_path: Path) -> None:
 def test_submodule_bump_is_one_entry_naming_both_commits_and_its_file_count(
     tmp_path: Path,
 ) -> None:
-    from booley.measurement.base import SubmoduleChange, changed_files
-
     parent, _, sub_pin, _ = make_submodule(tmp_path)
     fork = commit_all(parent)
     sub = parent / "sub"
@@ -281,8 +272,6 @@ def test_submodule_bump_is_one_entry_naming_both_commits_and_its_file_count(
 def test_added_and_removed_submodule_list_the_files_of_the_side_that_exists(
     tmp_path: Path,
 ) -> None:
-    from booley.measurement.base import SubmoduleChange, changed_files
-
     parent, _, sub_pin, _ = make_submodule(tmp_path)
     with_sub = commit_all(parent)
     git(parent, "rm", "-q", "-f", "--cached", "sub")
@@ -299,8 +288,6 @@ def test_added_and_removed_submodule_list_the_files_of_the_side_that_exists(
 def test_submodule_without_objects_has_an_unknown_count_and_is_protected_when_a_protected_path_lies_under_it(
     tmp_path: Path,
 ) -> None:
-    from booley.measurement.base import SubmoduleChange, changed_files, protected_edits
-
     repo = new_repository(tmp_path / "repo")
     write(repo / "top.v", "top\n")
     git(repo, "add", "top.v")
@@ -317,14 +304,6 @@ def test_submodule_without_objects_has_an_unknown_count_and_is_protected_when_a_
 
 
 def test_protected_edits_match_files_directory_prefixes_and_submodule_files() -> None:
-    from booley.measurement.base import (
-        ChangedFile,
-        ChangedFiles,
-        SubmoduleChange,
-        is_protected,
-        protected_edits,
-    )
-
     changed = ChangedFiles(
         tuple(
             ChangedFile(name, "M", constraint=False)

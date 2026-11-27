@@ -37,6 +37,8 @@ JOB_TYPES = {
     "lint_rtl": "LINT",
     "fpga": "FPGA",
     "fpga_impl": "FPGA",
+    "measure": "MEAS",
+    "mutation": "MUT",
 }
 
 

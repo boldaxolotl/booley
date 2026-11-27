@@ -536,6 +536,7 @@ def _non_daemon_threads() -> list[threading.Thread]:
 
 
 @posix_only
+@pytest.mark.docker_cli
 def test_layer_link_audit_returns_promptly_and_leaves_no_thread(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -555,6 +556,7 @@ def test_layer_link_audit_returns_promptly_and_leaves_no_thread(
 
 
 @posix_only
+@pytest.mark.docker_cli
 def test_layer_link_audit_reports_docker_failure_with_stderr(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -565,6 +567,7 @@ def test_layer_link_audit_reports_docker_failure_with_stderr(
 
 
 @posix_only
+@pytest.mark.docker_cli
 def test_layer_link_audit_kills_a_hung_docker_save(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -579,6 +582,7 @@ def test_layer_link_audit_kills_a_hung_docker_save(
 
 
 @posix_only
+@pytest.mark.docker_cli
 def test_layer_link_audit_names_a_docker_save_that_closes_output_but_hangs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -593,6 +597,7 @@ def test_layer_link_audit_names_a_docker_save_that_closes_output_but_hangs(
 
 
 @posix_only
+@pytest.mark.docker_cli
 def test_layer_link_audit_reaps_child_when_parser_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

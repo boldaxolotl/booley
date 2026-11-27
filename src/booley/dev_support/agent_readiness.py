@@ -745,17 +745,6 @@ def _native_test_check(root: Path) -> Check:
 
 def _source_check_commands(python: Path, root: Path) -> tuple[Command, ...]:
     return (
-        # Fails in seconds when the packaged CHANGELOG mirror is stale (the user-doc
-        # copies are Git-ignored build output, not checked). The launcher imports this
-        # checkout's src/, which the shared environment never installs; -B keeps
-        # bytecode out of the checkout.
-        Command(
-            "packaged-copies.check",
-            (str(python), "-B", str(root / ".github/scripts/sync_packaged_copies.py"), "--check"),
-            str(root),
-            "lint",
-            "before-commit",
-        ),
         # The same launcher is CI's required "Check Markdown line length" step in docs-check.
         Command(
             "markdown.line-length",

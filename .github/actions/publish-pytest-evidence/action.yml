@@ -32,6 +32,7 @@ runs:
         python .github/scripts/assert_junit.py "${{ runner.temp }}/junit.xml"
         --label "${{ inputs.label }}"
         --min-tests 1 --summary "${GITHUB_STEP_SUMMARY}"
+        --flaky-copy "${{ runner.temp }}/flaky"
 
     - name: Upload test timing data
       if: always()
@@ -40,6 +41,15 @@ runs:
         name: junit-${{ inputs.label }}
         path: ${{ runner.temp }}/junit.xml
         if-no-files-found: error
+
+    # Read by ci_flake_ledger.py, which downloads no other artifact.
+    - name: Upload flake-ledger hit marker
+      if: always()
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: flaky-${{ inputs.label }}
+        path: ${{ runner.temp }}/flaky/
+        if-no-files-found: ignore
 
     - name: Upload shard selection and timing evidence
       if: always() && inputs.publish-shard == 'true'

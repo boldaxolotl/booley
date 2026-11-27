@@ -13,6 +13,10 @@ concurrency:
   group: full-python-matrix-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  # Network retries for package downloads (#4420): pip backs off about 4 minutes.
+  PIP_RETRIES: "10"
+
 jobs:
   test:
     name: full / ${{ matrix.os }} / Python ${{ matrix.python }}
@@ -55,7 +59,7 @@ jobs:
           pytest tests/ -q --tb=short -n 4
           --dist=${{ matrix.os == 'windows-latest' && 'worksteal' || 'loadscope' }}
           --basetemp "${{ runner.temp }}/pytest" -m "not native_bwave"
-          --timeout=${{ runner.os == 'Windows' && 120 || 60 }} ${{ runner.os == 'Windows' && '--timeout-headroom=0.5' || '' }} --durations=30
+          --timeout=${{ runner.os == 'Windows' && 120 || 60 }} ${{ runner.os == 'Windows' && '--timeout-headroom-warn=0.5' || '' }} --durations=30
           --junitxml="${{ runner.temp }}/junit.xml"
 
       - name: Prove the full suite executed

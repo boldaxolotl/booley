@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 
 from booley.runtime import changelog
-from booley.runtime.paths import changelog_path
+
+_PUBLIC_CHANGELOG = Path(__file__).resolve().parents[2] / "CHANGELOG.md"
 
 
 def _history() -> str:
@@ -83,15 +84,9 @@ def test_release_range_is_oldest_first_and_reports_history_boundary() -> None:
     assert crossing.older_history_gap is True
 
 
-def test_packaged_changelog_is_byte_identical_to_public_document() -> None:
-    public = Path(__file__).resolve().parents[2] / "CHANGELOG.md"
-
-    assert changelog_path().read_bytes() == public.read_bytes()
-
-
-def test_packaged_changelog_retains_pre_review_release_history() -> None:
+def test_changelog_retains_pre_review_release_history() -> None:
     release_range = changelog.releases_between(
-        changelog_path().read_text(encoding="utf-8"),
+        _PUBLIC_CHANGELOG.read_text(encoding="utf-8"),
         "0.2.6",
         "0.2.10",
     )
@@ -112,7 +107,7 @@ def test_next_release_review_lists_entries_drafted_from_unreleased() -> None:
     the section's last line, which comes from the oldest unreleased entry. It is
     taken from the changelog itself because the release drafter rewords entries.
     """
-    text = changelog_path().read_text(encoding="utf-8")
+    text = _PUBLIC_CHANGELOG.read_text(encoding="utf-8")
     repo_version = (
         (Path(__file__).resolve().parents[2] / "VERSION").read_text(encoding="utf-8").strip()
     )

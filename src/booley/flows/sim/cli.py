@@ -35,11 +35,11 @@ class SimArguments(BuiltinArguments):
             (
                 HelpOption(
                     "coverage",
-                    "Default: off for new Simulation Records; resume restores the manifest's coverage policy and rejects this flag.",
+                    "Default: off for new Simulation Records; resume rejects this flag, and a coverage Simulation Record never resumes.",
                 ),
                 HelpOption(
                     "no_waivers",
-                    "When omitted, approved waivers apply on new coverage-collecting Simulation Records; resume restores the manifest's raw-coverage/waiver policy and rejects this flag.",
+                    "When omitted, approved waivers apply on new coverage-collecting Simulation Records; resume rejects this flag, and a coverage Simulation Record never resumes.",
                 ),
                 HelpOption(
                     "mode",
@@ -133,7 +133,7 @@ class SimArguments(BuiltinArguments):
         parser.add_argument(
             "--verbose",
             action="store_true",
-            help="Include full Simulation Record resume mismatch pointers and values",
+            help="Deprecated: has no effect; removed in the next minor release",
         )
         SimArguments._add_run_control_args(parser)
 

@@ -14,9 +14,11 @@ from ci_flake_stress import (
     StressPlan,
     changed_test_modules,
     module_costs,
+    os_specific_modules,
     plan_stress,
     stress_enabled,
 )
+from tests.os_specific import OS_SPECIFIC_TESTS
 
 
 def test_selects_surviving_test_modules_and_marks_added_ones(tmp_path: Path) -> None:
@@ -131,7 +133,17 @@ def test_cost_charges_recorded_time_and_the_default_per_unrecorded_function(
         encoding="utf-8",
     )
 
-    assert module_costs(["tests/test_mixed.py"], tmp_path, model) == {"tests/test_mixed.py": 51.0}
+    linux = tmp_path / "linux-timings.json"
+    linux.write_text(
+        '{"schema": 1, "default_seconds": 0.5, "tests": {'
+        '"tests/test_mixed.py::test_slow[1]": 10.0,'
+        '"tests/test_mixed.py::TestGroup::test_member": 7.0}}',
+        encoding="utf-8",
+    )
+
+    costs = module_costs(["tests/test_mixed.py"], tmp_path, (model, linux))
+
+    assert costs == {"tests/test_mixed.py": 57.5}
 
 
 def test_malformed_timing_model_is_rejected(tmp_path: Path) -> None:
@@ -139,4 +151,16 @@ def test_malformed_timing_model_is_rejected(tmp_path: Path) -> None:
     model.write_text('{"schema": 1, "default_seconds": 1.0}', encoding="utf-8")
 
     with pytest.raises(ValueError, match="tests must be an object"):
-        module_costs(["tests/test_a.py"], tmp_path, model)
+        module_costs(["tests/test_a.py"], tmp_path, (model,))
+
+
+def test_the_registry_is_read_without_importing_it(tmp_path: Path) -> None:
+    """The checked-in registry stays readable as a literal; a missing one is an error."""
+    root = Path(__file__).parents[2]
+    assert os_specific_modules(OS_SPECIFIC_TESTS, root) == OS_SPECIFIC_TESTS
+
+    registry = tmp_path / "tests/os_specific.py"
+    registry.parent.mkdir()
+    registry.write_bytes(b"OTHER_TESTS: tuple[str, ...] = ()\n")
+    with pytest.raises(ValueError, match="assigns no OS_SPECIFIC_TESTS"):
+        os_specific_modules(["tests/test_a.py"], tmp_path)
