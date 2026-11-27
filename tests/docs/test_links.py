@@ -301,7 +301,6 @@ def test_agent_instruction_document_paths_resolve() -> None:
 _RETIRED_SITE_HOST = "boldaxolotl.github.io"
 _RETIRED_HOST_ALLOWED = {
     "CHANGELOG.md",  # release history records the move
-    "src/booley/data/refs/CHANGELOG.md",  # packaged copy of the release history
     "docs/adr/0081-publish-user-docs-on-the-project-site.md",  # amendment records the move
     ".github/workflows/pages.yml",  # documents the redirect setting
     "tests/docs/test_links.py",  # this guard
