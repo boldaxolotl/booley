@@ -2,22 +2,24 @@
 
 A module branches on the platform when it reads an attribute in ``PLATFORM_ATTRIBUTES``,
 imports a package in ``PLATFORM_MODULES``, or imports ``IS_WINDOWS`` from
-``booley.runtime.platform_paths``. The guard requires every such ``test_*.py`` module to be
-registered in ``tests/os_specific.py``, and every such production module to be covered by a
-registered test or listed in ``PLATFORM_EXEMPTIONS`` with a reason. Coverage is mapped as
+``booley.runtime.platform_paths``. The guard requires every such ``test_*.py`` module under
+``tests/`` to be registered in ``tests/os_specific.py``, and every such module under
+``src/booley/`` to be covered by a registered test or listed in ``PLATFORM_EXEMPTIONS`` with a
+reason. Coverage is mapped as
 for Sandbox-only tests (``sandbox_reach.module_test_coverage``).
 
 Blind spots:
 
 * Detection is syntactic and names a fixed list. Feature probes (``hasattr(os, "getuid")``,
-  ``getattr(signal, "SIGKILL", None)``), an aliased ``sys`` or ``os``, and any other
-  platform flag, or ``IS_WINDOWS`` reached another way, pass unnoticed.
+  ``getattr(signal, "SIGKILL", None)``), an aliased or member-imported ``sys``, ``os``, or
+  ``ctypes`` name (``from sys import platform``), any other platform flag, and
+  ``IS_WINDOWS`` imported any other way pass unnoticed.
 * A test that fakes the platform (``monkeypatch.setattr(sys, "platform", ...)``) is not
   detected; register it by its subject.
 * Coverage is per module: one registered test of a module satisfies every branch in it, and
   a registered test counts even when it is Sandbox-only and Windows skips it.
-* Only ``test_*.py`` modules are checked; a branch in a support module or ``conftest.py`` is
-  not attributed to the tests that use it.
+* A test module's own code is all that is checked; a branch or skip marker it takes from a
+  support module, ``conftest.py``, or another test module is not attributed to it.
 """
 
 from __future__ import annotations
@@ -55,12 +57,13 @@ _FLAG = "IS_WINDOWS"
 # Production modules that branch on the platform and need no OS-specific test, with why.
 PLATFORM_EXEMPTIONS: Mapping[str, str] = {
     "booley.data.docker.base_package_inventory": (
-        "Runs only in the Linux runtime image build (Dockerfile.base); platform reads the "
-        "Python version, not the OS."
+        "Runs only in Linux images (the Dockerfile.base build and the image contract probe); "
+        "platform reads the Python version, not the OS."
     ),
     "booley.flows.synth.pdk": (
         "Picks the default PDK directory, which only synthesis reads; synthesis runs in the "
-        "Sandbox (Linux), and the host imports this only for endpoint help."
+        "Sandbox (Linux); the host imports this only for endpoint help and cheat --metrics, "
+        "which do not read it."
     ),
     "booley.runtime.loopback_http": (
         "Not host reachable: only the MCP server and the Dashboard web server, which run in "

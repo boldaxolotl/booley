@@ -1,4 +1,4 @@
-"""Platform-branching code has an OS-specific test module; see ``platform_branches``."""
+"""Platform-branching code has an OS-specific test or an exemption; see ``platform_branches``."""
 
 from __future__ import annotations
 
@@ -33,10 +33,11 @@ def test_platform_dependent_code_has_os_specific_tests() -> None:
         ('import sys\nif sys.platform == "win32":\n    pass\n', "sys.platform (line 2)"),
         ('import os\nWINDOWS = os.name == "nt"\n', "os.name (line 2)"),
         ("import fcntl\n", "import fcntl (line 1)"),
+        ("from fcntl import flock\n", "import fcntl (line 1)"),
         ("from booley.runtime.platform_paths import IS_WINDOWS\n", "IS_WINDOWS (line 1)"),
         ('import os\nfrom pathlib import Path\nPath(os.sep, "sys.platform")\n', None),
     ],
-    ids=["sys-platform", "os-name", "import", "is-windows", "no-branch"],
+    ids=["sys-platform", "os-name", "import", "from-import", "is-windows", "no-branch"],
 )
 def test_platform_evidence(source: str, evidence: str | None) -> None:
     from tests.architecture.platform_branches import platform_evidence
