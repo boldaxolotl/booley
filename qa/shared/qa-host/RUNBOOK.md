@@ -71,7 +71,7 @@ runs.
 4. `qa$ booley bootstrap`. A fresh `qa-host-docker` volume builds the base
    Sandbox Image from scratch (see Measurements). Bootstrap warns that no
    `claude` or `codex` is on PATH, which only affects Project Setup on the QA
-   Host, and that no editor is found, which the QA Host does not need.
+   Host. It also warns that no editor is found; the QA Host does not need one.
 5. Create the Project and its Sandbox:
 
    ```bash
