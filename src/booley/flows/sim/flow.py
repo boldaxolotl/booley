@@ -401,7 +401,7 @@ class SimulateFlow(
     ) -> tuple[JobRequest, ...] | None:
         """What a prepared Simulation Record runs; ``None`` when that is not known yet.
 
-        A resume has no Test Runs resolved before admission.
+        A resume is not sized from its Test Runs before admission.
         """
         if prepared.resume is not None:
             return None
@@ -609,10 +609,10 @@ class SimulateFlow(
     def _shared_baseline_worktree(self, revision: str) -> Path:
         """This invocation's one checkout of *revision*, open until publication ends.
 
-        Resuming a record that kept baseline prerequisites opens their revision. The
-        scratch path depends only on the process and revision, so a second opening
-        while the first is held fails in ``git worktree add`` (#1959); callers share
-        this one. Call from the candidate checkout: ``self.args.work_dir`` is the
+        Only a record with baseline prerequisites names such a revision, and resume
+        refuses that record before opening it. The scratch path depends only on the
+        process and revision, so a second opening while the first is held fails in
+        ``git worktree add`` (#1959); callers share this one. Call from the candidate checkout: ``self.args.work_dir`` is the
         Project Root.
         """
         worktrees = self.baseline_worktrees
