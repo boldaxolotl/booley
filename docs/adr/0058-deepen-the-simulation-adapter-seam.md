@@ -54,8 +54,9 @@ current attempt's evidence.
   attempt and result by attempt ID and ordinal without re-hashing the build
   chain.
 - Project-owned settings (test list, selector, environment, Pre-Sim Commands)
-  resolve from the Target's own checkout on every invocation, never from a
-  cache filled for another checkout.
+  resolve from the Target's own checkout on every invocation, so each
+  checkout is judged by its own configuration, never by a cache filled for
+  another.
 
 ### Pre-Sim and Elaboration Check
 
