@@ -540,14 +540,14 @@ class StepScheduler:
                 if any(w.state == "idle" for w in self.workers):
                     return
                 # The least-stepped first: a supervisor's timed wait must not starve a lane.
-                self.grant(min(waiting, key=lambda w: w.steps))
+                self.grant(min(waiting, key=lambda w: (w.steps, thread_name(w))))
             else:
                 # Operations first: a background retry must not spin while the holder it waits
                 # for is parked.
                 self.grant(
                     min(
                         runnable or waiting,
-                        key=lambda w: (w.root is not w, w.actor.index, w.label),
+                        key=lambda w: (w.root is not w, w.actor.index, w.label, thread_name(w)),
                     )
                 )
             steps += 1
@@ -623,6 +623,11 @@ class StepLock:
         traceback: TracebackType | None,
     ) -> None:
         self._mutex.release()
+
+
+def thread_name(worker: Worker) -> str:
+    """The tie-break among equal workers, whose order of arrival is the host's choice."""
+    return worker.thread.name if worker.thread else ""
 
 
 class StepEvent(threading.Event):

@@ -10,8 +10,8 @@ supervised process, shrink, renew, close), and a supervisor that runs one
 ``reap`` is the independent reaper, recovering with the real ``recover_execution`` (its
 ``/proc`` scan finds no process with a fresh marker, so it proves every lane tree empty).
 Lock waits are scheduling points too: the record's file lock and the registry's lock.
-R may also run the real lane scheduler, whose lane threads, start turn, supervisor pass and
-shutdown deadline are steps on the machine clock.
+The rules never stop the pool after a failed recovery pass. A scenario may run the real lane
+scheduler: its lane threads, start turn, supervisor and deadline are steps on the machine clock.
 Execution recovery scans Linux ``/proc``, so the module runs on Linux only; its fake PIDs are
 above the kernel's PID limit, so no cancellation signal reaches a real process.
 
@@ -95,6 +95,7 @@ from tests.job_slot_steps import (
     stepped_file_lock_wait,
     stepped_root,
     stepped_turn,
+    thread_name,
 )
 from tests.test_job_slot_step_machine import (
     _CLAIM,
@@ -466,7 +467,7 @@ class LaneStepMachine(JobSlotStepMachine):
                 return
             lanes = [w for w in run.lane_workers(self.scheduler) if w.state == "parked"]
             # Runnable before waiting, then the least-stepped, so every waiter gets turns.
-            self.scheduler.grant(min(lanes, key=lambda w: (_waits(w), w.steps)))
+            self.scheduler.grant(min(lanes, key=lambda w: (_waits(w), w.steps, thread_name(w))))
         raise AssertionError("the lanes did not get there")
 
     def start_idle(self, count: int, **kwargs: Any) -> tuple[ScheduledRun, list[Lane]]:
@@ -488,9 +489,12 @@ class LaneStepMachine(JobSlotStepMachine):
         for _ in range(passes):
             if worker.state != "parked":
                 return
-            self.scheduler.grant(worker)
-            while worker.state == "parked" and worker.pending != ("lock_wait", "event"):
+            for _ in range(DRAIN_STEP_CAP):
                 self.scheduler.grant(worker)
+                if worker.state != "parked" or worker.pending == ("lock_wait", "event"):
+                    break
+            else:
+                raise AssertionError("the supervisor pass did not end")
 
     # ---------------------------------------------------------------- rules
 
@@ -1056,8 +1060,8 @@ def test_the_scheduler_starts_only_its_bounded_lane_threads(
         run, lambda: any(w.pending == ("sleep", "") for w in run.lane_workers(machine.scheduler))
     )
     machine._close_lanes()
-    threads = {w.thread.name for w in run.lane_workers(machine.scheduler) if w.thread}
-    assert threads == {"booley-record-outer", "booley-record-child-1", "booley-record-child-2"}
+    threads = sorted(thread_name(w) for w in run.lane_workers(machine.scheduler))
+    assert threads == ["booley-record-child-1", "booley-record-child-2", "booley-record-outer"]
     assert run.worker is not None and run.worker.state == "done" and run.error is None
 
 
@@ -1110,13 +1114,15 @@ def test_a_failed_recovery_pass_still_holds_the_outer_slot_until_lanes_exit(
     run, _ = machine.start_idle(2)
 
     def failing_recovery() -> None:
-        # The owner loop must survive a recovery error (for example a file error).
+        # The owner loop must survive a recovery error (for example a file error). Patched:
+        # no public entry point makes a lost child's recovery write fail.
         raise OSError("recovery write failed")
 
     monkeypatch.setattr(machine.record.capacity, "recover_lost_children", failing_recovery)
     machine.supervise(run)
     machine.world.advance(1.0)
     machine.supervise(run)
+    assert isinstance(run.error, SimulationRecordSchedulingError)
     assert "bounded shutdown" in str(run.error)
     assert _flow_holds(machine)  # past the endpoint's release
     machine._close_lanes()
@@ -1169,6 +1175,7 @@ def test_normal_work_runtime_does_not_consume_the_shutdown_budget(
     run, _ = machine.start_idle(2)
     machine.world.advance(0.04)
     machine.supervise(run, passes=2)
+    assert run.worker is not None and run.worker.state == "parked"  # still supervising
     machine._close_lanes()
     assert run.worker is not None and run.worker.state == "done" and run.error is None
 
