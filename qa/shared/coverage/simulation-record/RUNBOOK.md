@@ -81,13 +81,15 @@ PYTHONPATH=<asset>/simulation-record python3 -c \
    Result, an unchanged attempt inventory, and no EDA process launch. Save
    the rejected corrupt bytes even when the diagnostic differs.
 3. Restore only the archived Result bytes, check their digest, and resume the
-   same Manifest with the same command as the valid control. The completed work
-   item must not rerun. Save the final summary and `simulation.json`.
+   same Manifest with the same command as the valid control. It must exit 2 with
+   the coverage refusal that names a new `booley flow sim --coverage` run, with
+   no EDA process launch and an unchanged attempt inventory. Save the diagnostic
+   and `simulation.json`.
 4. Build the rejection record from the captured exit codes, diagnostic,
    process samples, inventories and digests only; it is an index, not
    evidence. Fields: `exit_code`, `diagnostic`, `attempts_before`,
    `attempts_after`, `attempts_after_restore`, `eda_processes_started` (a
-   list), `control_exit_code`, `control_complete`, `valid_sha256`,
+   list), `control_exit_code`, `control_diagnostic`, `valid_sha256`,
    `corrupt_sha256` and `restored_sha256`.
 5. Call `validate_recovery.validate_corrupt_terminal(archived_result,
    restored_result, rejection_record)`.

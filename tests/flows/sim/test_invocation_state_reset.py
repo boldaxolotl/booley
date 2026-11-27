@@ -97,9 +97,8 @@ def test_build_timeout_is_resolved_again_for_the_next_invocation(tmp_path, monke
 
 
 # Flow state set while preparing a request: a stale value, and what the next invocation starts with.
-# Private seam: set only by coverage, resume and standalone preparation; a second full run of each is the only route.
+# Private seam: set only by coverage and standalone preparation; a second full run of each is the only route.
 _STALE_STATE = {
-    "_resume_coverage_plan": (object(), None),
     "_coverage_prepared": (object(), None),
     "_target_handles": ({"sim": object()}, {}),
     "_current_published_pre_sim_keys": ({("a", "b", "c", 1)}, set()),

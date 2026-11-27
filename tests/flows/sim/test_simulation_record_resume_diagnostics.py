@@ -410,35 +410,26 @@ def test_legacy_record_resumes_only_against_an_unchanged_suite(
 _WORK_DIR_NOTICE = "booley: --work-dir is deprecated; use --project instead (removal after one compatibility release)\n"
 
 
-@pytest.mark.parametrize("mode", ["success", "failure", "mismatch"])
+@pytest.mark.parametrize("mode", ["failure", "mismatch"])
 def test_cli_resume_announces_validated_origin_before_execution(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], mode: str
 ) -> None:
-    from booley.flows.sim.flow import SimulateFlow
-    from tests.flows.sim.test_coverage_flow import _interrupt_coverage_publication
-    from tests.flows.sim.test_coverage_transaction import NativeExecution
-
-    reports, _request, _runs = _interrupt_coverage_publication(tmp_path, monkeypatch)
-    manifest = reports / "sim/1/targets/sim_0/record/manifest.json"
+    _reports, manifest, _executions = _interrupted_simulation_record(tmp_path, monkeypatch)
     destination = tmp_path / "destination reports"
-    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
-    # Private seam: the interrupted record has its collection already recorded, so resume never
-    # calls the injected coverage_execution factory; the executor builder is the first
-    # observable point after the origin is announced.
-    executor = flow._resume_simulation_record_executor
+    flow = SimulateFlow()
     witnessed: list[str] = []
 
-    def before_executor(plan):
+    def before_executor(**_kwargs):
         witnessed.append(capsys.readouterr().err)
         assert witnessed == [
             _WORK_DIR_NOTICE + f"Simulation Record manifest: {manifest.resolve()}\n"
         ]
         assert manifest.is_file()
-        if mode == "failure":
-            raise RuntimeError("resume executor unavailable")
-        return executor(plan)
+        raise RuntimeError("resume executor unavailable")
 
-    monkeypatch.setattr(flow, "_resume_simulation_record_executor", before_executor)
+    # Private seam: building the executor is the first observable point after the origin
+    # is announced.
+    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor", before_executor)
     if mode == "mismatch":
         (tmp_path / "rtl/counter.sv").write_text("module counter; wire changed; endmodule\n")
     capsys.readouterr()
@@ -454,7 +445,7 @@ def test_cli_resume_announces_validated_origin_before_execution(
         ]
     )
     output = capsys.readouterr()
-    assert result.exit_code == (0 if mode == "success" else 2)
+    assert result.exit_code == 2
     if mode == "mismatch":
         assert witnessed == []
         assert "Simulation Record manifest: " not in output.err
