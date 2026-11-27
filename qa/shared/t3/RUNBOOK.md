@@ -216,12 +216,13 @@ qa$ umask 077; booley session up > ~/scratch/session-up.txt 2>&1
 qa$ grep -v 'pair a browser' ~/scratch/session-up.txt; rm ~/scratch/session-up.txt
 ```
 
-Then `preview_navigate` your tab to `http://127.0.0.1:<outer>/` and take a
-`preview_snapshot`. Worked when the page shows the Project and its threads
-with no pairing prompt; a pairing prompt is a finding. Pair again with step
-4.1 only when the filtered output holds `warning: 127.0.0.1:<old> is held by
-another process; the T3 Code relay moved to 127.0.0.1:<new>, ...`: `<new>` is
-the new `<port>`, and one outside 3780-3784 is `blocked: qa host`.
+With no relay warning in the filtered output, `preview_navigate` your tab to
+`http://127.0.0.1:<outer>/` and take a `preview_snapshot`. Worked when the
+page shows the Project and its threads with no pairing prompt; a pairing
+prompt is a finding. Pair again with step 4.1 only when the filtered output
+holds `warning: 127.0.0.1:<old> is held by another process; the T3 Code relay
+moved to 127.0.0.1:<new>, ...`: `<new>` is the new `<port>`, and one outside
+3780-3784 is `blocked: qa host`.
 
 ## 5. Dashboard and threads
 
@@ -230,10 +231,11 @@ from the moment it starts, with T3 Code. Click **Booley Dashboard** in T3
 Code's top bar: the page opens in T3 Code's preview panel and lists the main
 checkout (`/work`) and each T3 Code worktree; pick one. With no T3 Code
 worktree it opens the main checkout. For another worktree, click the button
-again. Never start or stop a Dashboard by hand: a second one finds the port
-taken, and `session down` stops this one with the Sandbox. The relay forwards
-only T3 Code's own port, so your tab can't load the Dashboard directly; it
-appears only inside the panel.
+again. For a path the picker does not list, load
+`http://127.0.0.1:8090/?worktree=<path>` in the panel. Never start or stop a
+Dashboard by hand: a second one finds the port taken, and `session down` stops
+this one with the Sandbox. The relay forwards only T3 Code's own port, so
+your tab can't load the Dashboard directly; it appears only inside the panel.
 
 Worked when `qa$ booley session status` reports `Dashboard: running` and the
 preview panel shows the Dashboard page for the chosen worktree, refreshing
@@ -347,8 +349,8 @@ gap in `log.md` the first time you meet it.
    one snapshot can be another process's short-lived container; still record
    it.
 
-Check: `qa$ booley session status`, run in `$QA_PROJECT` after item 2,
-reports the Sandbox absent, and the outer host's `booley --version` prints
+Check: `qa$ booley session status`, run in `$QA_PROJECT` between items 2 and
+3, reports the Sandbox absent, and the outer host's `booley --version` prints
 the same revision as before the run.
 
 Exception: if a finding needs a live repro, leave the QA Host and its
@@ -363,3 +365,4 @@ in its `log.md`; fix this file where it is wrong:
 - T3 Code creates and prepares a thread's new worktree in the Sandbox.
 - The preview panel loads the Dashboard at Sandbox `127.0.0.1:8090`, and
   whether its DOM is readable from your tab.
+- Clicking **Booley Dashboard** again brings back the worktree picker.
