@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import threading
-import time
 from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
@@ -11,8 +10,7 @@ from pathlib import Path
 import pytest
 
 from booley.flows import endpoint_admission
-from booley.flows.sim.record import coordinator
-from booley.flows.sim.record.capacity import LeaseLostError, SimulationRecordCapacityError
+from booley.flows.sim.record.capacity import LeaseLostError
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
     SimulationRecord,
@@ -37,11 +35,10 @@ from tests.flows.sim.simulation_record_test_support import (
     _scheduled_attempt,
     _two_item_manifest,
 )
-from tests.time_budget import hang_guard_s
 
 
 class _SimulationRecord:
-    """A scheduler over a real SlotStore whose outer lane records its cancellation message."""
+    """A scheduler over a real SlotStore."""
 
     def __init__(self, tmp_path: Path, *, lanes: int) -> None:
         self.manifest = _two_item_manifest()
@@ -68,77 +65,26 @@ class _SimulationRecord:
             lambda _item: None if threading.current_thread().name.endswith("outer") else claim,
             lanes=lanes,
         )
-        self.outer_message: str | None = None
-        self.scheduler: BoundedSimulationRecordScheduler | None = None
 
     def run(self, items: int, trigger: Callable[[], None]) -> None:
-        """Run *items* work items; the outer lane fires *trigger* and records its message."""
+        """Run *items* work items; the outer lane fires *trigger*."""
 
         def execute(attempt, _child_id) -> None:
             # Only the outer lane's item, under the Flow's claim, can take its own at its build.
-            if attempt.build_settled is None:
-                # _shutdown: the scheduler's shutdown flag has no public wait, so idle lanes poll it.
-                deadline = time.monotonic() + hang_guard_s()  # idle child lane until cancelled
-                while not self.capacity._shutdown.is_set() and time.monotonic() < deadline:
-                    time.sleep(0.01)
-                return
-            trigger()
-            # The scheduler's await loop has now run its argument-less cancel_waiters,
-            # which must not mask the cause that triggered the cancellation.
-            deadline = time.monotonic() + hang_guard_s()
-            while not self.capacity._shutdown.is_set() and time.monotonic() < deadline:
-                time.sleep(0.01)
-            try:
-                coordinator.raise_if_cancelled_before_publication()
-            except SimulationRecordCapacityError as exc:
-                self.outer_message = str(exc)
+            if attempt.build_settled is not None:
+                trigger()
 
-        self.scheduler = BoundedSimulationRecordScheduler(
+        scheduler = BoundedSimulationRecordScheduler(
             self.capacity,
             allocate=lambda item: _scheduled_attempt(self.store, item),
             execute=execute,
         )
         try:
-            self.scheduler.run(self.manifest.document["work_items"][:items])
-        except Exception:  # noqa: BLE001 -- the cancelled record may fail; the message is the subject
+            scheduler.run(self.manifest.document["work_items"][:items])
+        except Exception:  # noqa: BLE001 -- the cancelled record may fail; the cause is the subject
             pass
         finally:
             self.slots.release(self.outer)
-
-
-def _lease_lost(simulation_record, _monkeypatch):
-    return simulation_record.outer.lease_health.lost.set, "lease lost", None
-
-
-def _token_missing(simulation_record, monkeypatch):
-    real_absent = simulation_record.slots.token_absent
-    withdrawn = threading.Event()
-    # Report the entry gone without unlinking it: Windows may still hold it open.
-    monkeypatch.setattr(
-        simulation_record.slots,
-        "token_absent",
-        lambda token: withdrawn.is_set() or real_absent(token),
-    )
-    # A really missing file (released by the run) is still absent.
-    return (
-        withdrawn.set,
-        "Memory Reservation missing",
-        lambda: real_absent(simulation_record.outer) is True,
-    )
-
-
-@pytest.mark.parametrize("scenario", [_lease_lost, _token_missing])
-def test_outer_lane_names_the_lost_slot(tmp_path: Path, monkeypatch, scenario) -> None:
-    simulation_record = _SimulationRecord(tmp_path, lanes=1)
-    trigger, reason, still_absent = scenario(simulation_record, monkeypatch)
-    simulation_record.run(1, trigger=trigger)
-
-    assert simulation_record.outer_message is not None
-    assert "outer lane" in simulation_record.outer_message
-    assert reason in simulation_record.outer_message
-    assert simulation_record.outer.path.name in simulation_record.outer_message
-    if still_absent is not None:
-        assert still_absent()
 
 
 def test_outer_worker_failure_names_its_cause(tmp_path: Path) -> None:

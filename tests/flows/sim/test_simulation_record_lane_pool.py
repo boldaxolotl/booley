@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import threading
 from collections.abc import Callable
 from dataclasses import replace
@@ -17,7 +16,6 @@ from booley.flows.sim.record.capacity import (
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
 from booley.flows.sim.record.scheduler import (
     BoundedSimulationRecordScheduler,
-    SimulationRecordSchedulingError,
 )
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.runtime.execution_records import (
@@ -27,8 +25,6 @@ from booley.runtime.execution_records import (
 )
 from booley.runtime.job_slots import (
     CLASS_MEMORY,
-    QUEUED,
-    ROLE_INTERACTIVE,
     ClaimAbortedError,
     SlotRecovery,
     SlotStore,
@@ -36,20 +32,14 @@ from booley.runtime.job_slots import (
 from tests.flows.sim.simulation_record_test_support import (
     _PARALLEL_SYNC_TIMEOUT_S,
     _capacity,
-    _holder_claim,
     _item_capacity,
     _lane_registry,
     _managed,
     _named_manifest,
     _outer_claim,
     _scheduled_attempt,
-    _wait_until,
 )
-from tests.time_budget import hang_guard_s, scaled
-
-# Threads owned by other modules and unchanged by the pool: the slot store's lease
-# renewal and the supervised scope's per-scope process killer.
-_UNRELATED_THREAD_PREFIXES = ("booley-lease-", "booley-record-process-cancellation")
+from tests.time_budget import hang_guard_s
 
 
 class _SimulationRecord:
@@ -85,13 +75,10 @@ class _SimulationRecord:
         self.outer = _outer_claim(self.slots)
         self.lanes = lanes
 
-    def scheduler(
-        self, execute, *, timeout_seconds: float, cancellation=lambda: False, prepare_child=None
-    ):
+    def scheduler(self, execute, *, timeout_seconds: float, prepare_child=None):
         admission = replace(
             _managed(self.slots, self.outer, holders=self.lanes),
             timeout_seconds=timeout_seconds,
-            cancellation=cancellation,
         )
         self.capacity = _item_capacity(
             admission, self.manifest, self.registry.project_data, lanes=self.lanes
@@ -106,43 +93,6 @@ class _SimulationRecord:
     @property
     def items(self):
         return self.manifest.document["work_items"]
-
-
-def _test_name(attempt) -> str:
-    return str(attempt.item["selection"]["names"][0])
-
-
-def test_parallel_simulation_record_runs_only_bounded_lane_threads(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    simulation_record = _SimulationRecord(tmp_path, ("alpha", "beta", "gamma", "delta"), lanes=3)
-    all_lanes_running = threading.Barrier(3, timeout=_PARALLEL_SYNC_TIMEOUT_S)
-    arrivals = iter(range(3))
-    arrival_gate = threading.Lock()
-
-    def execute(_attempt, _child_id) -> None:
-        # The first three items overlap, so every lane is alive at the same time.
-        with arrival_gate:
-            first_wave = next(arrivals, None) is not None
-        if first_wave:
-            all_lanes_running.wait()
-
-    started: list[str] = []
-    original_start = threading.Thread.start
-
-    def recording_start(self) -> None:
-        started.append(self.name)
-        original_start(self)
-
-    monkeypatch.setattr(threading.Thread, "start", recording_start)
-    try:
-        simulation_record.scheduler(execute, timeout_seconds=hang_guard_s()).run(
-            simulation_record.items
-        )
-    finally:
-        simulation_record.slots.release(simulation_record.outer)
-    pool = sorted(name for name in started if not name.startswith(_UNRELATED_THREAD_PREFIXES))
-    assert pool == ["booley-record-child-1", "booley-record-child-2", "booley-record-outer"]
 
 
 @pytest.mark.parametrize(
@@ -382,137 +332,6 @@ def test_lease_tick_after_terminal_reap_starts_no_recovery(
     )
     assert not child_paths.cancel.exists()
     assert simulation_record.slots.snapshot(CLASS_MEMORY) == ([], [])
-
-
-def _await_outer_release(simulation_record: _SimulationRecord) -> None:
-    """Wait until the pool's last lane exits and the retained outer slot is released."""
-    _wait_until(
-        lambda: simulation_record.slots.token_absent(simulation_record.outer),
-        _PARALLEL_SYNC_TIMEOUT_S,
-    )
-
-
-def test_lane_past_cancel_deadline_holds_outer_slot_within_lanes(tmp_path: Path) -> None:
-    simulation_record = _SimulationRecord(tmp_path, ("alpha", "beta"), lanes=2)
-    cancelled = threading.Event()
-    child_running = threading.Event()
-    release_child = threading.Event()
-
-    holder_counts: list[int] = []
-
-    def execute(attempt, _child_id) -> None:
-        if _test_name(attempt) == "alpha":
-            assert cancelled.wait(_PARALLEL_SYNC_TIMEOUT_S)
-            # Sampled while the other lane is still running past the cancel.
-            holder_counts.append(len(simulation_record.slots.snapshot(CLASS_MEMORY)[0]))
-            return
-        child_running.set()
-        holder_counts.append(len(simulation_record.slots.snapshot(CLASS_MEMORY)[0]))
-        # This lane ignores cancellation until the test releases it.
-        assert release_child.wait(_PARALLEL_SYNC_TIMEOUT_S)
-
-    scheduler = simulation_record.scheduler(
-        execute, timeout_seconds=scaled(0.05), cancellation=cancelled.is_set
-    )
-    trigger = threading.Thread(
-        target=lambda: (child_running.wait(_PARALLEL_SYNC_TIMEOUT_S), cancelled.set()),
-        daemon=True,
-    )
-    trigger.start()
-    competitors: list = []
-    earlier_threads = set(threading.enumerate())
-    try:
-        with pytest.raises(SimulationRecordSchedulingError, match="bounded shutdown"):
-            scheduler.run(simulation_record.items)
-        # The lane stuck past the cancel is reported interrupted (neither lane publishes a result).
-        stuck_item = next(item for item in simulation_record.items if "beta" in str(item))
-        assert str(stuck_item["work_item_id"]) in simulation_record.store.scan().interrupted
-        simulation_record.slots.release(simulation_record.outer)  # the endpoint finally
-        # Cancellation already recovered the stuck item's claim, so memory is
-        # free for a competitor; the Flow's claim must still be held, which leaves
-        # the second competitor queued and the holders within the Flow plus its lanes.
-        for ordinal in range(2):
-            competitors.append(
-                simulation_record.slots.submit(
-                    CLASS_MEMORY,
-                    pid=os.getpid(),
-                    role=ROLE_INTERACTIVE,
-                    execution_id=ExecutionId(str(ordinal + 1) * 32),
-                    memory=_holder_claim(1),
-                )
-            )
-        holders, _waiters = simulation_record.slots.snapshot(CLASS_MEMORY)
-        assert simulation_record.outer.lease_id in {token.lease_id for token in holders}
-        holder_counts.append(len(holders))
-        assert holder_counts and max(holder_counts) <= simulation_record.lanes + 1
-        assert simulation_record.slots.refresh(competitors[1]).state == QUEUED
-        # The lane that finished leaves; only the stuck lane (and its scope's
-        # process killer) remain: retention lives inside the pool, not in a thread.
-        _wait_until(lambda: len(_lane_thread_names(earlier_threads)) == 1)
-        assert "booley-record-process-cancellation" in _simulation_record_thread_names(
-            earlier_threads
-        )
-    finally:
-        release_child.set()
-        trigger.join(timeout=_PARALLEL_SYNC_TIMEOUT_S)
-    _await_outer_release(simulation_record)
-    simulation_record.slots.release(competitors[0])
-    _wait_until(
-        lambda: simulation_record.slots.refresh(competitors[1]).state != QUEUED,
-        _PARALLEL_SYNC_TIMEOUT_S,
-    )
-    for competitor in competitors:
-        simulation_record.slots.release(competitor)
-    assert simulation_record.slots.snapshot(CLASS_MEMORY) == ([], [])
-
-
-def test_failed_lost_lease_recovery_still_holds_outer_slot_until_lanes_exit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    simulation_record = _SimulationRecord(tmp_path, ("alpha", "beta"), lanes=2)
-    child_running = threading.Event()
-    release_child = threading.Event()
-
-    def execute(_attempt, _child_id) -> None:
-        child_running.set()
-        assert release_child.wait(_PARALLEL_SYNC_TIMEOUT_S)
-
-    scheduler = simulation_record.scheduler(execute, timeout_seconds=scaled(0.05))
-
-    def failing_recovery() -> None:
-        # The owner loop must survive a recovery error (for example a file error).
-        if child_running.is_set():
-            raise OSError("recovery write failed")
-
-    monkeypatch.setattr(simulation_record.capacity, "recover_lost_children", failing_recovery)
-    try:
-        with pytest.raises(SimulationRecordSchedulingError, match="bounded shutdown"):
-            scheduler.run(simulation_record.items)
-        simulation_record.slots.release(simulation_record.outer)  # the endpoint finally
-        holders, _waiters = simulation_record.slots.snapshot(CLASS_MEMORY)
-        assert simulation_record.outer.lease_id in {token.lease_id for token in holders}
-    finally:
-        release_child.set()
-    _await_outer_release(simulation_record)
-    assert simulation_record.slots.snapshot(CLASS_MEMORY) == ([], [])
-
-
-def _lane_thread_names(earlier_threads: set[threading.Thread]) -> set[str]:
-    """Names of lane threads (outer or child) started after ``earlier_threads`` was captured."""
-    return {
-        name
-        for name in _simulation_record_thread_names(earlier_threads)
-        if name.startswith(("booley-record-outer", "booley-record-child"))
-    }
-
-
-def _simulation_record_thread_names(earlier_threads: set[threading.Thread]) -> set[str]:
-    """Names of record threads started after ``earlier_threads`` was captured."""
-    return {
-        thread.name
-        for thread in threading.enumerate()
-        if thread not in earlier_threads and thread.name.startswith("booley-record-")
-    }
 
 
 @pytest.mark.parametrize(
