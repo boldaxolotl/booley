@@ -24,7 +24,7 @@ default_class = "postreview"
 name = "changelog"
 class = "none"
 check = "changed"
-paths = ["CHANGELOG.md", "*/CHANGELOG.md"]
+paths = ["CHANGELOG.md"]
 
 # The glossaries define terms every other doc relies on.
 [[kind]]

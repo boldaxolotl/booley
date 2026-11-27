@@ -289,7 +289,6 @@ def _release_categories(path: str) -> set[str]:
             ".github/workflows/publish.yml",
             ".github/workflows/docker-publish.yml",
             "CHANGELOG.md",
-            "src/booley/data/refs/CHANGELOG.md",
         }
     ):
         return {"release"}
