@@ -168,7 +168,7 @@ These commands exist mainly for the agent's skills and are left out of
 
 | Command | Where | What it's for |
 |---|---|---|
-| `booley session` | host | Start, enter, or stop the Sandbox without VS Code; see [SANDBOX.md](SANDBOX.md#entering-the-sandbox-without-vs-code) |
+| `booley session` | host | Start, enter, or stop the Sandbox; see [SANDBOX.md](SANDBOX.md#entering-the-sandbox) |
 | `booley upgrade` | either | Review a Booley upgrade; see [Upgrade review](DOCTOR.md#upgrade-review) |
 | `booley feedback` | either | Record Booley bugs and impressions; use `/booley-feedback` instead |
 | `booley cleanup` | either | Remove a skill's scratch files |

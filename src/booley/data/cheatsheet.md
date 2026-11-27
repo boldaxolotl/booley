@@ -233,16 +233,16 @@ do not need these files.
 ### Sandbox & Docker
 
 The `booley-sandbox` image contains Booley's EDA toolchain, Developer Agent
-clients, and development dependencies. It backs the per-folder Sandbox
-(devcontainer) where all Booley work executes; a project image selected by
-`[sandbox].image` can extend it.
+clients, and development dependencies. It backs the per-folder Sandbox where all
+Booley work executes; a project image selected by `[sandbox].image` can extend
+it.
 
 | Command | What it does |
 |---------|-------------|
 | `booley init` | Set up project; on the host also pull or build the image |
 | `booley init --force` | Refresh Booley-managed resources; keep caches and user files |
 | `booley doctor` | Verify image + container EDA tools |
-| `booley session up [--no-ui]` | Start the Sandbox headlessly (no VS Code); print a link that pairs a browser with T3 Code (the Sandbox's web UI); `--no-ui` starts none |
+| `booley session up [--no-ui]` | Start the Sandbox; print a link that pairs a browser with T3 Code (the Sandbox's web UI); `--no-ui` starts none |
 | `booley session pair` | Print a new T3 Code pairing link for the running Sandbox |
 | `booley session enter [-- cmd]` | Shell into it, or run one command |
 | `booley session down` | Stop and remove it |

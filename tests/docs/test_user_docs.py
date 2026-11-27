@@ -3,6 +3,7 @@
 The site (website/hooks/user_docs.py, ADR 0081) renders the user docs with
 Python-Markdown, which needs list-item block content indented four spaces;
 GitHub accepts less. The hook also rewrites links so they work on the site.
+The Sandbox and reference docs name no VS Code route into the Sandbox (#5374).
 """
 
 from __future__ import annotations
@@ -18,6 +19,16 @@ from booley.runtime.docs_links import SITE_URL
 ROOT = Path(__file__).resolve().parents[2]
 _MARKER = re.compile(r"^( *)(?:[-*+]|\d+[.)]) +\S")
 _FENCE = re.compile(r"^ *(```+|~~~+)")
+_NO_VS_CODE_DOCS = (
+    "docs/user/SANDBOX.md",
+    "docs/user/DOCTOR.md",
+    "docs/user/STEALTH.md",
+    "docs/user/CONFIG.md",
+    "docs/user/CLI-REFERENCE.md",
+    "docs/user/FLOW_REFERENCE.md",
+    "docs/user/FLOW-SIM.md",
+    "src/booley/data/cheatsheet.md",
+)
 
 
 def _shallow_list_blocks(text: str) -> list[int]:
@@ -72,6 +83,16 @@ def test_detector_flags_shallow_blocks_only() -> None:
 @pytest.mark.parametrize("doc", sorted((ROOT / "docs/user").glob("*.md")), ids=lambda p: p.name)
 def test_user_doc_list_blocks_are_indented_four_spaces(doc: Path) -> None:
     assert _shallow_list_blocks(doc.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.parametrize("doc", _NO_VS_CODE_DOCS)
+def test_listed_docs_name_no_vs_code_route(doc: str) -> None:
+    # T3 Code's button for opening files in a host editor is host-editor wording.
+    text = (ROOT / doc).read_text(encoding="utf-8").replace("**Open in VS Code**", "")
+
+    assert (
+        re.findall(r"VS\s?Code|Dev\s+Containers?|Codespaces?|Reopen\s+in\s+Container", text) == []
+    )
 
 
 def _hook():

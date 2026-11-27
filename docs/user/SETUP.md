@@ -373,7 +373,7 @@ threads, and the [Dashboard](USAGE.md#the-dashboard) opens in its preview panel.
    Setup, this is where you run `/booley-setup` again.
 
 For the other `booley session` commands, see
-[the Sandbox guide](SANDBOX.md#entering-the-sandbox-without-vs-code).
+[the Sandbox guide](SANDBOX.md#entering-the-sandbox).
 
 ### Your first task
 
