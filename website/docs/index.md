@@ -25,8 +25,17 @@ document: Booley product datasheet
     <div class="order" aria-labelledby="order-h">
       <div class="order__h" id="order-h">Quick start</div>
 <pre><code style="all:unset"><span class="p">$ </span>pipx install booley-rtl
-<span class="p">$ </span>booley bootstrap</code></pre>
-      <div class="order__f">Requirements, upgrades, and troubleshooting: <a href="docs/install/">installation guide</a>.</div>
+<span class="p">$ </span>booley bootstrap
+<span class="p"># in your RTL repository</span>
+<span class="p">$ </span>booley init</code></pre>
+      <div class="order__f">Then run <code>/booley-setup</code> in your Claude
+      Code or Codex chat. It plans the setup with you and hands you to
+      <code>booley session up</code>, whose pairing link opens T3 Code in your
+      browser. Run <code>/booley-setup</code> again in a thread on the main
+      checkout to finish. Commit what setup wrote, then start each task in a
+      thread on a new worktree. Every step:
+      <a href="docs/setup/">setup guide</a>; requirements and upgrades:
+      <a href="docs/install/">installation guide</a>.</div>
     </div>
   </div>
 
@@ -74,8 +83,8 @@ document: Booley product datasheet
           learns how much memory each simulation or synthesis run needs and
           starts as many together as your machine can hold, so small runs don’t
           wait behind big ones and nothing runs out of memory.</p>
-          <p>Agent chats, RTL, terminals and waveforms sit in one VS Code
-          window, and a web dashboard shows each worktree’s Jobs.</p>
+          <p>Agent chats and terminals sit in T3 Code, a web UI in your
+          browser, and a dashboard there shows each worktree’s Jobs.</p>
         </div>
         <div class="feat__fig">
 --8<-- "feature-parallel.svg"
@@ -118,7 +127,9 @@ document: Booley product datasheet
       <button type="button" data-mode="server" aria-pressed="false">Server setup<small>in progress</small></button>
     </div>
     <div class="fig__frame">
-      <svg class="dep-wide" viewBox="0 0 890 460" role="img" aria-label="Local setup: VS Code, the Booley Sandbox, the egress proxy, and licensed EDA tools all run on your PC.">
+      <svg class="dep-wide" viewBox="0 0 890 460" role="img"
+        aria-label="Local setup: a browser, the Booley Sandbox, the egress
+        proxy, and licensed EDA tools all run on your PC.">
         <defs>
           <marker id="f2a" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
         </defs>
@@ -137,17 +148,18 @@ document: Booley product datasheet
           <rect class="mach" x="10" y="64" width="410" height="384"/>
           <text class="m" x="26" y="90">Your PC</text>
           <rect class="bx" x="36" y="114" width="124" height="46"/>
-          <text class="t only-local" x="98" y="142" text-anchor="middle">VS Code</text>
-          <text class="t only-server" x="98" y="134" text-anchor="middle">VS Code</text>
-          <text class="s2 only-server" x="98" y="151" text-anchor="middle">or browser</text>
+          <text class="t" x="98" y="134" text-anchor="middle">Browser</text>
+          <text class="s2" x="98" y="151" text-anchor="middle">T3 Code</text>
           <g class="only-local">
             <path class="ln" d="M98 160 V245 H190" marker-end="url(#f2a)"/>
-            <text class="e" x="106" y="207">attach</text>
+            <text class="e" x="106" y="207">web UI</text>
           </g>
-          <text class="note only-server" x="215" y="300" text-anchor="middle">Only the editor runs here.</text>
+          <text class="note only-server" x="215" y="300"
+            text-anchor="middle">Only the browser runs here.</text>
         </g>
 
-        <!-- server mode: the editor reaches its Sandbox over the network (drawn above the PC box) -->
+        <!-- server mode: the browser reaches its Sandbox over the network
+             (drawn above the PC box) -->
         <g class="only-server">
           <path class="ln" d="M160 137 H560 V245 H650" marker-end="url(#f2a)"/>
           <text class="e" x="310" y="129" text-anchor="middle">SSH / tunnel</text>
@@ -190,7 +202,9 @@ document: Booley product datasheet
         </g>
       </svg>
 
-      <svg class="dep-tall dep-tall--local" viewBox="0 0 390 516" role="img" aria-label="Local setup: VS Code, the Booley Sandbox, the egress proxy, and licensed EDA tools all run on your PC.">
+      <svg class="dep-tall dep-tall--local" viewBox="0 0 390 516" role="img"
+        aria-label="Local setup: a browser, the Booley Sandbox, the egress
+        proxy, and licensed EDA tools all run on your PC.">
         <defs>
           <marker id="f2l" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
         </defs>
@@ -202,11 +216,12 @@ document: Booley product datasheet
         <path class="ln" d="M301 48 V108" marker-start="url(#f2l)" marker-end="url(#f2l)"/>
         <text class="e" x="293" y="84" text-anchor="end">LLM provider only</text>
         <rect class="bx" x="24" y="108" width="140" height="46"/>
-        <text class="t" x="94" y="136" text-anchor="middle">VS Code</text>
+        <text class="t" x="94" y="128" text-anchor="middle">Browser</text>
+        <text class="s2" x="94" y="145" text-anchor="middle">T3 Code</text>
         <rect class="bx" x="236" y="108" width="130" height="46"/>
         <text class="t" x="301" y="136" text-anchor="middle">Egress proxy</text>
         <path class="ln" d="M94 154 V198" marker-end="url(#f2l)"/>
-        <text class="e" x="102" y="182">attach</text>
+        <text class="e" x="102" y="182">web UI</text>
         <path class="ln" d="M301 154 V198"/>
 
         <path class="chip" d="M24 198 H182 A8 8 0 0 0 198 198 H356 V412 H24 Z"/>
@@ -229,7 +244,10 @@ document: Booley product datasheet
         <text class="e" x="132" y="436">read-only</text>
       </svg>
 
-      <svg class="dep-tall dep-tall--server" viewBox="0 40 390 656" role="img" aria-label="Server setup, in progress: your PC runs only VS Code or a browser; one Booley Sandbox per user, the egress proxy, and licensed EDA tools run on a shared server.">
+      <svg class="dep-tall dep-tall--server" viewBox="0 40 390 656" role="img"
+        aria-label="Server setup, in progress: your PC runs only a browser; one
+        Booley Sandbox per user, the egress proxy, and licensed EDA tools run
+        on a shared server.">
         <defs>
           <marker id="f2s" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="10" markerHeight="10" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path class="ah" d="M0 1.5 L10 5 L0 8.5 z"/></marker>
         </defs>
@@ -237,9 +255,10 @@ document: Booley product datasheet
         <rect class="mach" x="4" y="48" width="382" height="122"/>
         <text class="m" x="20" y="72">Your PC</text>
         <rect class="bx" x="24" y="96" width="140" height="46"/>
-        <text class="t" x="94" y="116" text-anchor="middle">VS Code</text>
-        <text class="s2" x="94" y="133" text-anchor="middle">or browser</text>
-        <text class="note" x="275" y="124" text-anchor="middle">Only the editor runs here.</text>
+        <text class="t" x="94" y="116" text-anchor="middle">Browser</text>
+        <text class="s2" x="94" y="133" text-anchor="middle">T3 Code</text>
+        <text class="note" x="275" y="124"
+          text-anchor="middle">Only the browser runs here.</text>
 
         <rect class="bx" x="236" y="184" width="130" height="40"/>
         <text class="t" x="301" y="209" text-anchor="middle">The Internet</text>
@@ -284,7 +303,7 @@ document: Booley product datasheet
       class="dep__cap--server"><b>Figure 1.</b> Server setup (in progress,
       <a href="https://github.com/boldaxolotl/booley/issues/2586">#2586</a>):
       Sandboxes, agents, and EDA tools move to a shared server, one Sandbox per
-      user. Your PC only runs VS Code or a browser.</span> How the parts fit
+      user. Your PC only runs a browser.</span> How the parts fit
       together: <a href="docs/architecture/">architecture</a>.</figcaption>
   </figure>
   <script>
@@ -336,7 +355,7 @@ document: Booley product datasheet
         <tr><td data-l="Parameter">Architecture and design decisions</td><td data-l="Rating">Made by you</td><td data-l="Notes">Booley will not design hardware for you. You write the architecture and specs; it handles the grunt work.</td></tr>
         <tr><td data-l="Parameter">Operator experience</td><td data-l="Rating">Digital design required</td><td data-l="Notes">Booley assumes you can read RTL, judge a waveform, and know what a sane result looks like.</td></tr>
         <tr><td data-l="Parameter">HDL input</td><td data-l="Rating">SystemVerilog, Verilog</td><td data-l="Notes">VHDL and UVM are not supported.</td></tr>
-        <tr><td data-l="Parameter">ADE shell</td><td data-l="Rating">Stock VS Code</td><td data-l="Notes">Agent sessions run in VS Code terminals. Native agent-supervision UI is on the <a href="https://github.com/boldaxolotl/Booley/blob/main/docs/internals/ROADMAP.md#native-ade-surface">roadmap</a>.</td></tr>
+        <tr><td data-l="Parameter">ADE shell</td><td data-l="Rating">T3 Code in your browser</td><td data-l="Notes">Agent threads, terminals and the Dashboard run in T3 Code, the web UI the Sandbox serves.</td></tr>
         <tr><td data-l="Parameter">Setup effort</td><td data-l="Rating">Once per project</td><td data-l="Notes">Complex flows or heavy licensed tools may need project-specific work. Every later session builds on it.</td></tr>
         <tr><td data-l="Parameter">Maturity</td><td data-l="Rating">Work in progress</td><td data-l="Notes">Expect occasional bugs and rough edges in the UI.</td></tr>
       </tbody>

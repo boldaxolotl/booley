@@ -14,8 +14,8 @@ supported. You need:
 - [Git 2.37.2+](https://git-scm.com/downloads/)
 - [Docker](https://www.docker.com/), with about **4 GB** free for the image
   (**6 GB** with the RISC-V toolchain) plus room for build artifacts
-- Optional: [VS Code](https://code.visualstudio.com/) 1.109 or newer, to open
-  the Sandbox in an editor
+- A web browser on this machine. T3 Code, Booley's user interface, is the web
+  UI the Sandbox serves; the T3 Code desktop app is not supported.
 - An agent CLI on the host PATH with credentials configured for Project Setup:
   [Claude Code](https://code.claude.com/docs/en/setup) (`claude`, the default)
   or [Codex](https://developers.openai.com/codex/cli) (`codex`)
@@ -63,10 +63,8 @@ Then recreate each Project's Sandbox and run the upgrade review; see
 
 Host Bootstrap (`booley bootstrap`) prepares this machine once for every Booley
 Project. It checks Git, Docker, and your agent CLI, installs Booley's skills for
-Claude Code and Codex, and downloads or builds the Sandbox Image. If it finds
-the shell command of VS Code or a compatible editor, such as `code`, it also
-installs the Dev Containers extension. It does not touch any Project; you
-connect one later in [Setup](SETUP.md).
+Claude Code and Codex, and downloads or builds the Sandbox Image. It does not
+touch any Project; you connect one later in [Setup](SETUP.md).
 
 Run it again with `--update` after every upgrade. Other useful options:
 
@@ -103,6 +101,7 @@ and run Host Bootstrap again. See
 
 ## Next
 
-- [Try the demo](https://booley.dev/demos/) on a configured project.
-- [Set up your own project](SETUP.md) with Project Initialization and the
-  `booley-setup` skill.
+- Set up your own project: [Setup](SETUP.md) takes you through Project
+  Initialization, the `booley-setup` skill, and your first T3 Code thread.
+- Or start from a Project already set up for Booley, the
+  [PicoRV32 demo](https://github.com/boldaxolotl/booley-prj-picorv32#readme).
