@@ -2,7 +2,8 @@
 
 These tests fail when a README link points at a site section or page that no
 longer exists, when a site colour escapes the theme tokens or fails WCAG AA
-contrast, or when a generated diagram is stale.
+contrast, when a generated diagram is stale, or when the architecture diagram
+names a retired client or omits the T3 Code relay.
 """
 
 import html
