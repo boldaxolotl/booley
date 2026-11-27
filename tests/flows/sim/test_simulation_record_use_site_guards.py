@@ -71,6 +71,8 @@ def test_a_bundle_artifact_path_outside_its_root_is_refused_before_use(tmp_path:
         "ordinal",
         "ready_bundle",
         "bundle_path",
+        "execution_reference",
+        "execution_schema",
     ],
 )
 def test_a_malformed_published_record_is_corrupt_storage(tmp_path: Path, case: str) -> None:
@@ -107,6 +109,11 @@ def test_a_malformed_published_record_is_corrupt_storage(tmp_path: Path, case: s
     else:
         if case == "ready_bundle":
             build_result["bundle"] = None
+        elif case == "execution_reference":
+            build_result["evidence"] = []
+        elif case == "execution_schema":
+            execution = completed.build_dir / "evidence" / "build-execution.json"
+            _write(execution, _read(execution) | {"$schema": "booley.other/v1"})
         else:
             build_result["bundle"]["manifest_path"] = "../escape"
         _write(build_path, build_result)

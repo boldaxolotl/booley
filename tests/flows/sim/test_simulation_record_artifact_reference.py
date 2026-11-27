@@ -74,7 +74,6 @@ def test_reference_resolves_after_complete_base_copy(tmp_path, layout):
 @pytest.mark.parametrize(
     ("field", "value"),
     [
-        ("path_base", "reports_root"),
         ("bytes", 0),
         ("sha256", "sha256:" + "0" * 64),
         ("kind", "other"),

@@ -1028,6 +1028,7 @@ def _observe_pre_sim_reads(monkeypatch):
         return document
 
     monkeypatch.setattr(SimulationRecordStore, "_read", observe(count_results))
+    # No public result exposes how many times a recorded firing is decoded.
     monkeypatch.setattr(store_module, "decode_pre_sim_firing", count_decode)
     return accesses, decodes, results
 

@@ -113,7 +113,7 @@ def decode_pre_sim_firing(raw: bytes) -> Mapping[str, object]:
         document = PreSimFiringRecord(value).document
         if document["$schema"] != _SCHEMA:
             raise ValueError(f"unsupported $schema {document['$schema']!r}")
-    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+    except (KeyError, TypeError, ValueError) as exc:
         raise SimulationRecordIntegrityError(f"invalid Pre-Sim Commands evidence: {exc}") from exc
     return document
 
