@@ -10,7 +10,8 @@ import sys
 import threading
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from itertools import pairwise
 from pathlib import Path
 from types import SimpleNamespace
@@ -450,15 +451,15 @@ def test_child_reacquisition_rejoins_real_slot_fifo_behind_competitor(managed_ca
             store.release(competitor)
 
 
-def _run_interrupted_scheduler(
+@contextmanager
+def _interrupted_scheduler(
     tmp_path: Path,
     slots,
     linger: Callable[[threading.Event, threading.Event], object],
-    check: Callable[[], None],
     *,
     clock: Callable[[], float] = time.monotonic,
-) -> None:
-    """Interrupt the scheduler from its first lane, which then runs *linger*."""
+) -> Iterator[None]:
+    """Interrupt the scheduler from its first lane, which runs *linger*; yield once it raised."""
     manifest, simulation_record_store, project = _record_project(tmp_path)
     registry = ChildExecutionRegistry(manifest, project)
     capacity = _item_capacity(_managed(*slots), manifest, registry.project_data)
@@ -488,7 +489,7 @@ def _run_interrupted_scheduler(
     try:
         with pytest.raises(KeyboardInterrupt):
             scheduler.run(manifest.document["work_items"])
-        check()
+        yield
     finally:
         give_up.set()
         for thread in threading.enumerate():
@@ -503,10 +504,8 @@ def test_interrupted_scheduler_drains_its_lanes_before_it_raises(tmp_path: Path,
         _wait_until(lambda: draining.is_set() or give_up.is_set())
         returned.append(True)
 
-    def check() -> None:
+    with _interrupted_scheduler(tmp_path, slots, linger):
         assert returned == [True], "a lane was still running"
-
-    _run_interrupted_scheduler(tmp_path, slots, linger, check)
     _assert_only_the_outer_claim_remains(slots[0])
 
 
@@ -515,16 +514,11 @@ def test_interrupt_stays_the_outcome_when_a_lane_outlasts_the_drain(
 ) -> None:
     seconds = itertools.count(step=1000)
 
-    def check() -> None:
-        assert "record workers exceeded bounded shutdown" in caplog.text
+    def linger(_draining: threading.Event, give_up: threading.Event) -> None:
+        give_up.wait(hang_guard_s())
 
-    _run_interrupted_scheduler(
-        tmp_path,
-        slots,
-        lambda _draining, give_up: give_up.wait(hang_guard_s()),
-        check,
-        clock=lambda: float(next(seconds)),
-    )
+    with _interrupted_scheduler(tmp_path, slots, linger, clock=lambda: float(next(seconds))):
+        assert "record workers exceeded bounded shutdown" in caplog.text
 
 
 class _ExitsDuringFinalWait(threading.Event):
