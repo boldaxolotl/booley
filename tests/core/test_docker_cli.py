@@ -52,12 +52,20 @@ def _exists(cli: Any, run: Any) -> object:
     return cli.exists(run, "image", "img", timeout=30)
 
 
-_VALUE_ARGS = ["--format", "{{json .X}}"]
-_LABEL_ARGS = ["--format", '{{json (index .Config.Labels "k")}}']
+def _registry(template: str | None) -> Callable[[Any, Any], object]:
+    return lambda cli, run: cli.inspect_registry_image(run, "img", timeout=30, template=template)
+
+
+_VALUE_ARGS = ["image", "inspect", "img", "--format", "{{json .X}}"]
+_LABEL_ARGS = ["image", "inspect", "img", "--format", '{{json (index .Config.Labels "k")}}']
+_EXISTS_ARGS = ["image", "inspect", "img"]
+_REGISTRY_ARGS = ["buildx", "imagetools", "inspect", "img"]
+_FORMAT_ARGS = [*_REGISTRY_ARGS, "--format", "{{json .Manifest}}"]
+_RAW_ARGS = [*_REGISTRY_ARGS, "--raw"]
 
 
 @pytest.mark.parametrize(
-    ("code", "output", "read", "extra", "expected"),
+    ("code", "output", "read", "argv", "expected"),
     [
         pytest.param(0, "true", _value(require_bool_value), _VALUE_ARGS, True, id="bool"),
         pytest.param(0, '["a"]', _value(require_list), _VALUE_ARGS, ["a"], id="list"),
@@ -65,8 +73,17 @@ _LABEL_ARGS = ["--format", '{{json (index .Config.Labels "k")}}']
         pytest.param(0, "null", _label, _LABEL_ARGS, None, id="label-null"),
         pytest.param(0, '""', _label, _LABEL_ARGS, None, id="label-empty"),
         pytest.param(0, '"v"', _label, _LABEL_ARGS, "v", id="label"),
-        pytest.param(0, "{}", _exists, [], True, id="exists"),
-        pytest.param(1, "gone", _exists, [], False, id="absent"),
+        pytest.param(0, "{}", _exists, _EXISTS_ARGS, True, id="exists"),
+        pytest.param(1, "gone", _exists, _EXISTS_ARGS, False, id="absent"),
+        pytest.param(
+            0,
+            '{"a": 1}',
+            _registry("{{json .Manifest}}"),
+            _FORMAT_ARGS,
+            {"a": 1},
+            id="registry-format",
+        ),
+        pytest.param(0, '{"a": 1}', _registry(None), _RAW_ARGS, {"a": 1}, id="registry-raw"),
     ],
 )
 def test_inspect_value_returns_the_validated_template_value(
@@ -75,12 +92,12 @@ def test_inspect_value_returns_the_validated_template_value(
     code: int,
     output: str,
     read: Callable[[Any, Any], object],
-    extra: list[str],
+    argv: list[str],
     expected: object,
 ) -> None:
     from booley.core import docker_cli
 
-    docker = install_fake_docker(tmp_path, monkeypatch, {"image inspect": (code, output)})
+    docker = install_fake_docker(tmp_path, monkeypatch, {"inspect": (code, output)})
 
     try:
         observed = read(docker_cli, docker.runner)
@@ -89,4 +106,4 @@ def test_inspect_value_returns_the_validated_template_value(
         observed = "malformed"
 
     assert observed == expected
-    assert docker.calls == [["image", "inspect", "img", *extra]]
+    assert docker.calls == [argv]

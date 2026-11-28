@@ -2159,6 +2159,7 @@ _NO_FILE = "[Errno 2] No such file or directory: 'docker'"
         (lifecycle.Intent.CHECK, ("image", "inspect"), _lost(), "cannot inspect Docker image"),
         (lifecycle.Intent.ENSURE, ("image", "inspect", ".Id}}"), _DAEMON, "Docker daemon"),
         (lifecycle.Intent.ENSURE, ("tag",), _fails("tag rejected"), "tag rejected"),
+        (lifecycle.Intent.ENSURE, ("tag",), {"stdout": "tag refused", "code": 1}, "tag refused"),
         (lifecycle.Intent.ENSURE, ("tag",), _lost("inspect .Id}}"), "retain image"),
     ],
 )
@@ -2326,7 +2327,7 @@ def test_docker_repo_digests_classify_inspect_output(docker_cli, reply, expected
     # published release chain.
     adapter = lifecycle._DockerCli()
 
-    with _fail(docker_cli, ("image", "inspect", "-f"), reply):
+    with _fail(docker_cli, ("image", "inspect", ".RepoDigests}}"), reply):
         if isinstance(expected, tuple):
             assert adapter.repo_digests("booley-sandbox") == expected
         else:
