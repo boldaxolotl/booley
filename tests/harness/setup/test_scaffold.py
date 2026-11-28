@@ -477,6 +477,9 @@ def test_existing_design_files_finds_rtl_and_cores(tmp_path: Path) -> None:
 
     found = {p.as_posix() for p in existing_design_files(tmp_path)}
     assert found == {"rtl/old.v", "chip.core", ".booley/cores/stealth.core"}
+    # A [project].dir outside the checkout is allowed and skips nothing inside it.
+    (tmp_path / "booley.toml").write_text('[project]\ndir = "../outside"\n')
+    assert Path("state/worktrees/s1/x.sv") in existing_design_files(tmp_path)
 
 
 def test_step_refuses_on_existing_design(tmp_path: Path, monkeypatch, capsys) -> None:

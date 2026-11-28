@@ -325,12 +325,11 @@ def existing_design_files(root: Path, limit: int = 5) -> list[Path]:
     Booley Directory are skipped even when that directory is not hidden.
     """
     found: list[Path] = []
-    base = Path(os.path.normpath(root.absolute()))
-    booley_dir = own_booley_dir(root)
-    own = booley_dir.relative_to(base) if booley_dir.is_relative_to(base) else None
-    for path in sorted(root.rglob("*")):
-        rel = path.relative_to(root)
-        if own and rel.is_relative_to(own) and in_linked_worktree(rel.relative_to(own)):
+    base = Path(os.path.normpath(root.absolute()))  # the spelling own_booley_dir returns
+    booley_dir = own_booley_dir(base)
+    for path in sorted(base.rglob("*")):
+        rel = path.relative_to(base)
+        if path.is_relative_to(booley_dir) and in_linked_worktree(path.relative_to(booley_dir)):
             continue
         hidden = any(part.startswith(".") for part in rel.parts[:-1])
         stealth_core = rel.parts[:2] == (".booley", "cores") and path.suffix == ".core"
