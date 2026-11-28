@@ -599,9 +599,9 @@ _GATEWAY_VALUES = {
 
 
 def _gateway_sandbox(monkeypatch, *, record):
-    """A container process with the gateway settings set; *record* is ``BOOLEY_AGENT_CLIS``."""
+    """A Sandbox process with the gateway settings set; *record* is ``BOOLEY_AGENT_CLIS``."""
 
-    place(monkeypatch, RuntimeLocation.HOST, container_host=True)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     for name, value in _GATEWAY_VALUES.items():
         monkeypatch.setenv(name, value)
     # Register the marker for restoration: the launch writes it straight into os.environ.

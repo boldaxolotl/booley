@@ -27,7 +27,7 @@ from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
 from booley.config.agent import RetiredAuthError
 from booley.config.eda import EdaConfig
-from booley.core import docker_cli
+from booley.core import docker_cli, sandbox_layout
 from booley.core.boundary import require_dict
 from booley.core.host_shell import quote_arg
 from booley.eda.provisioning.licensing.flexnet_docker import (
@@ -46,7 +46,6 @@ from booley.runtime import (
     image_identity,
     platform_paths,
     runtime_context,
-    sandbox_layout,
     session_runtime,
 )
 from booley.runtime import devcontainer as dc

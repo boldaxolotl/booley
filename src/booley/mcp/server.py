@@ -59,10 +59,11 @@ if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
 from booley import __version__
-from booley.config.feature_flags import FeatureConfigError, enabled_features
+from booley.config.feature_flags import FeatureConfigError, enabled_features, readable_features
 from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.booley_layout import JOB_LOGS_DIR_NAME, BooleyLayoutError
 from booley.core.boundary import BoundaryError, require_finite_number
+from booley.core.sandbox_layout import canonical_project_alias_path
 from booley.mcp import (
     call_context,
     catalog,
@@ -133,7 +134,6 @@ from booley.runtime.mcp_config import (
     http_port,
 )
 from booley.runtime.owned_scratch import sweep_stale_scratch
-from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.runtime.session_paths import logs_runtime_dir
 from booley.runtime.timefmt import format_human_datetime
 from booley.runtime.worktree_usage import record_worktree_use
@@ -196,13 +196,9 @@ _HTTP_HOST = "127.0.0.1"
 
 
 def _exposure() -> catalog.Exposure:
-    try:
-        features = enabled_features()
-    except (BooleyLayoutError, OSError, ValueError):
-        # Unreadable configuration keeps every gate closed; the catalog refresh and
-        # startup report the problem, and poll and cancel stay usable meanwhile.
-        features = frozenset()
-    return replace(catalog.Exposure.from_mapping(os.environ), features=features)
+    # Unreadable configuration keeps every gate closed; the catalog refresh and
+    # startup report the problem, and poll and cancel stay usable meanwhile.
+    return replace(catalog.Exposure.from_mapping(os.environ), features=readable_features())
 
 
 def _validate_features() -> None:

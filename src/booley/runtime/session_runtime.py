@@ -35,6 +35,7 @@ from booley.core import docker_cli
 from booley.core.boundary import BoundaryError, require_str_value
 from booley.core.differences import format_differences
 from booley.core.project_identity import project_label_id
+from booley.core.sandbox_layout import BOOLEY_DIR_TARGET
 from booley.runtime import auth_token, image_identity, project_image
 from booley.runtime import devcontainer as dc
 from booley.runtime import host_docker as idk
@@ -52,7 +53,6 @@ from booley.runtime.sandbox_apply import (
     image_is_managed,
     in_sandbox_steps,
 )
-from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
 
 if TYPE_CHECKING:
     from booley.eda.provisioning.authority import LicenseProfile

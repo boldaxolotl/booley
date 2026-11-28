@@ -9,8 +9,8 @@ from pathlib import Path
 
 import pytest
 
-from booley.config import agent
-from booley.runtime import _codex_backend, runtime_context
+from booley.core import sandbox_detection
+from booley.runtime import runtime_context
 from booley.runtime.runtime_context import RuntimeLocation
 from tests.owned_scratch_support import child_environment
 from tests.subprocess_budget import run_bounded_child
@@ -18,24 +18,22 @@ from tests.subprocess_budget import run_bounded_child
 _CHILD = textwrap.dedent(
     """
     import sys
-    from booley.config import agent
-    from booley.runtime import _codex_backend, runtime_context
+    from booley.core import sandbox_detection
+    from booley.runtime import runtime_context
     from booley.runtime.runtime_context import RuntimeLocation
     from tests.sandbox_venue_fake import place_child
 
     place_child(RuntimeLocation[sys.argv[1]])
     print(
         runtime_context.runtime_location().name,
-        runtime_context.container_marker_file(),
-        agent._inside_container(),
-        _codex_backend._inside_container(),
+        sandbox_detection.container_marker_file(),
     )
     """
 )
 
 # A patch of a venue check names it in a string.
 _VENUE_CHECK = re.compile(
-    r"[\"']([\w.]+\.)?(inside_session_runtime|_inside_container|runtime_location)[\"']"
+    r"[\"']([\w.]+\.)?(inside_session_runtime|container_marker_file|runtime_location)[\"']"
 )
 
 
@@ -58,14 +56,12 @@ def test_every_venue_check_sees_the_placed_location(monkeypatch, location, conta
     place(monkeypatch, location, container_host=container_host)
 
     assert runtime_context.runtime_location() is location
-    assert runtime_context.container_marker_file() is marker
-    assert agent._inside_container() is marker
-    assert _codex_backend._inside_container() is marker
+    assert sandbox_detection.container_marker_file() is marker
 
 
 @pytest.mark.parametrize(
     ("location", "seen"),
-    [("HOST", "HOST False False False"), ("ISSUED_SANDBOX", "ISSUED_SANDBOX True True True")],
+    [("HOST", "HOST False"), ("ISSUED_SANDBOX", "ISSUED_SANDBOX True")],
     ids=["host", "issued-sandbox"],
 )
 def test_child_process_sees_the_placed_location(monkeypatch, tmp_path, location, seen):

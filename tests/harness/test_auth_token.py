@@ -194,8 +194,8 @@ class TestAuthStatusReport:
         creds.parent.mkdir(parents=True)
         creds.write_text("{}", encoding="utf-8")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
-        # The visitor mode needs a container, as a hand-written Sandbox is.
-        place(monkeypatch, RuntimeLocation.HOST, container_host=True)
+        # The visitor mode needs a hand-written Sandbox.
+        place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
         monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
 
         _rc, lines = self._status(monkeypatch, capsys)

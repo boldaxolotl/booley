@@ -16,6 +16,7 @@ from unittest.mock import Mock
 import pytest
 import tomli
 
+from booley.core import sandbox_layout
 from booley.harness import incontainer_register as entry
 from booley.mcp import catalog
 from booley.runtime import (
@@ -23,7 +24,6 @@ from booley.runtime import (
     booley_dir,
     mount_history,
     paths,
-    sandbox_layout,
     worktree_mount_repair,
 )
 from booley.runtime import devcontainer as dc

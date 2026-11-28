@@ -17,6 +17,7 @@ from claude_agent_sdk import ClaudeSDKError
 
 from booley.core.boundary import require_dict
 from booley.core.models import AgentCallParams, AgentResult
+from booley.core.sandbox_layout import canonical_project_alias_path
 from booley.flows.cli_help import CliHelp
 from booley.flows.sim.coverage_analysis_input import (
     CoverageAnalysisError,
@@ -49,7 +50,6 @@ from booley.runtime.exception_diagnostics import (
     write_exception_diagnostic,
 )
 from booley.runtime.owned_scratch import owned_tempdir
-from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 from .coverage_analysis import (
     CoverageAnalysisReport,

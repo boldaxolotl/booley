@@ -297,7 +297,7 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
     # Private seam: the hook reference is built at publication for a destination directory the
     # public run cannot choose, so the test builds it for a numbered and an external
     # destination.
-    from booley.flows.sim.record import ArtifactReferenceError, resolve_report_artifact_reference
+    from booley.flows.sim.record import ArtifactReferenceError, resolve_artifact_reference
     from booley.flows.sim.record_presentation import (
         _pre_sim_projection,
         _simulation_record_hook_inputs,
@@ -315,21 +315,19 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
         "expected_owner": owner,
         "maximum": 16 * 1024 * 1024,
     }
-    resolved = resolve_report_artifact_reference(invocation / "report.json", reference, **options)
+    bases = {"report_invocation": invocation, "reports_root": invocation.parent.parent}
+    resolved = resolve_artifact_reference(reference, bases=bases, **options)
     assert resolved.path == outcome.pre_sim_firings[0].path
     destination = tmp_path / "external/reports/2"
     external = _pre_sim_projection(
         *_simulation_record_hook_inputs([outcome], destination), destination
     )[0]["pre_sim_runs"][0]["reference"]
     assert external["path_base"] == "external_origin_target"
-    with pytest.raises(ArtifactReferenceError):
-        resolve_report_artifact_reference(destination / "report.json", external, **options)
-    resolved = resolve_report_artifact_reference(
-        destination / "report.json",
-        external,
-        external_origin_target=outcome.manifest_path.parent.parent,
-        **options,
-    )
+    bases = {"report_invocation": destination, "reports_root": destination.parent.parent}
+    with pytest.raises(ArtifactReferenceError, match="base is unavailable"):
+        resolve_artifact_reference(external, bases=bases, **options)
+    bases["external_origin_target"] = outcome.manifest_path.parent.parent
+    resolved = resolve_artifact_reference(external, bases=bases, **options)
     assert resolved.path == outcome.pre_sim_firings[0].path
 
 

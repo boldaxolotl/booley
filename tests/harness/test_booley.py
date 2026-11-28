@@ -719,8 +719,8 @@ class TestEnforceVenue:
         """`init` is never venue-refused; a Booley-issued Sandbox refuses it itself."""
         import argparse
 
+        from booley.core import sandbox_detection
         from booley.harness import init_cmd
-        from booley.runtime import runtime_context
 
         cases = (
             ("/work/.devcontainer", "cannot run inside a Booley-issued Sandbox"),
@@ -730,7 +730,8 @@ class TestEnforceVenue:
         for mount_point, message in cases:
             mountinfo = tmp_path / "mountinfo"
             mountinfo.write_text(f"1 0 0:1 / {mount_point} rw - ext4 /dev/x rw\n")
-            monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo, raising=False)
+            # boundary: host/Sandbox mounts
+            monkeypatch.setattr(sandbox_detection, "_MOUNTINFO", mountinfo)
             tlr._enforce_runtime_location("init")  # must not raise
             assert init_cmd.run_init(argparse.Namespace(seed=True), tmp_path) == 2
             assert message in capsys.readouterr().err

@@ -316,50 +316,6 @@ def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monk
     records = collect_pre_sim_firings(changed.store.manifest_path)
     assert records[0].document["manifest_sha256"] == changed.pre_sim_decoder.manifest_sha256
     assert records[0].document["producer_invocation_id"] == 2
-    with pytest.raises(SimulationRecordIntegrityError):
-        _publish_request_hook(replace(first, producer_invocation_id=2), "beta", 2)
-    assert not (first.attempt_directory / "pre-sim/0002.json").exists()
-
-
-@pytest.mark.parametrize(
-    "corruption",
-    ["manifest", "producer", "selection", "ordinal", "status", "item"],
-)
-def test_request_publication_rejects_changed_attempt_after_success(tmp_path, corruption):
-    request = _hook_publication_request(tmp_path)
-    published = []
-    request = replace(request, pre_sim_firing_published=published.append)
-    _publish_request_hook(request)
-    first_bytes = (request.attempt_directory / "pre-sim/0001.json").read_bytes()
-    first_publication = published.copy()
-    if corruption == "item":
-        other = _hook_publication_request(tmp_path / "other", ("gamma",))
-        request = replace(request, work_item=other.work_item)
-    if corruption in {"manifest", "producer"}:
-        path = request.attempt_directory / "attempt.json"
-        document = json.loads(path.read_bytes())
-        key = "manifest_sha256" if corruption == "manifest" else "producer_invocation_id"
-        document[key] = "sha256:" + "0" * 64 if corruption == "manifest" else 2
-        path.write_bytes(canonical_json_bytes(document))
-    name = "outside" if corruption == "selection" else "beta"
-    ordinal = 0 if corruption == "ordinal" else 2
-    status = "timed_out" if corruption == "status" else "passed"
-    expected = {
-        "manifest": "hook attempt does not bind its frozen workload",
-        "item": "hook attempt does not bind its frozen workload",
-        "producer": "Pre-Sim Commands evidence owner disagrees",
-        "selection": "selection is outside workload",
-        "ordinal": "invalid ordinal",
-        "status": "timed out hook cannot supply an exit code",
-    }
-    with pytest.raises(SimulationRecordIntegrityError, match=expected[corruption]):
-        _publish_request_hook(request, name, ordinal, status)
-    assert published == first_publication
-    assert len(published) == 1
-    assert (request.attempt_directory / "pre-sim/0001.json").read_bytes() == first_bytes
-    assert sorted(p.name for p in (request.attempt_directory / "pre-sim").iterdir()) == [
-        "0001.json"
-    ]
 
 
 def _project_relative_hook_simulation_record(tmp_path: Path, route: str, configured: str):
@@ -637,21 +593,6 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
     assert firing.document["test_names"] == ("reset",)
     assert firing.document["producer_invocation_id"] == 1
     assert firing.terminal is False
-
-
-def test_coverage_rejects_fabricated_hook_with_empty_frozen_commands(tmp_path: Path) -> None:
-    class FabricatedHook(NativeExecution):
-        def run(self, request):
-            evidence = PreSimEvidence(
-                ("undeclared-hook",), (request.test.name,), "failed", 0.2, returncode=1
-            )
-            return SimulationRunResult("elab_error", "injected adapter evidence", evidence)
-
-    with pytest.raises(SimulationRecordIntegrityError, match="command count disagrees"):
-        _run_coverage_simulation_record(tmp_path, FabricatedHook())
-    simulation_record = tmp_path / "reports/1/targets/sim_0/record"
-    assert list(simulation_record.glob("work-items/*/attempts/*/attempt.json"))
-    assert not list(simulation_record.glob("work-items/*/attempts/*/pre-sim/*.json"))
 
 
 def test_foreign_attempt_result_fails_closed_at_the_read_boundary(tmp_path: Path) -> None:

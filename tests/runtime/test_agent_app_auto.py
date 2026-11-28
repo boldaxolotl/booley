@@ -50,7 +50,7 @@ _CREDENTIAL_ENV = (
 
 
 def _pin_venue(monkeypatch, *, inside: bool) -> None:
-    place(monkeypatch, RuntimeLocation.HOST, container_host=inside)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX if inside else RuntimeLocation.HOST)
 
 
 def _use_home(monkeypatch, home: Path) -> Path:
