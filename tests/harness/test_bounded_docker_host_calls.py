@@ -583,8 +583,8 @@ def _check_site(
 
     with monkeypatch.context() as patch:
         patch.setattr(site.module, "run_captured_bounded", bounded, raising=False)
-        # boundary: host_docker._run_docker, the Docker CLI command the migrated sites reach
-        patch.setattr(host_docker, "run_captured_bounded", bounded)
+        # The migrated sites reach the Docker CLI through host_docker._run_docker.
+        patch.setattr(host_docker, "run_captured_bounded", bounded)  # boundary: the Docker CLI
         patch.setattr(subprocess, "run", unbounded)
         patch.setattr(shutil, "which", lambda name: name)
         shown = _observe(lambda: site.drive(tmp_path))
