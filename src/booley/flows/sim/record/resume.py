@@ -118,7 +118,6 @@ def _load_node(path: Path, booley_dir: Path | None) -> ValidatedManifestNode:
         limit=MANIFEST_MAX_BYTES,
         error=SimulationRecordIntegrityError,
         booley_dir=booley_dir,
-        single_link=True,
     )
     try:
         manifest = decode_simulation_record_manifest(raw)

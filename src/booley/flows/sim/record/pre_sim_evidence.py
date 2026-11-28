@@ -58,11 +58,10 @@ _FIELDS = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class PreSimFiring:
-    """Authenticated record with its immutable origin and terminal provenance."""
+    """Parsed firing with its origin and terminal provenance."""
 
     manifest_path: Path
     path: Path
-    reference: Mapping[str, object]
     document: Mapping[str, object]
     terminal: bool
 

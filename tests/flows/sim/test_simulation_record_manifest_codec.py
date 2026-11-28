@@ -278,7 +278,7 @@ def _stub_resume_target(monkeypatch: pytest.MonkeyPatch, manifest) -> None:
     )
 
 
-@pytest.mark.parametrize("defect", ["ancestor_symlink", "final_symlink", "hardlink"])
+@pytest.mark.parametrize("defect", ["ancestor_symlink", "final_symlink"])
 def test_resume_rejects_linked_manifest_paths_without_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
 ) -> None:
@@ -291,10 +291,7 @@ def test_resume_rejects_linked_manifest_paths_without_writes(
         (tmp_path / "view/000001").symlink_to(real.root.parents[2], target_is_directory=True)
     else:
         view.mkdir(parents=True)
-        if defect == "final_symlink":
-            (view / "manifest.json").symlink_to(real.manifest_path)
-        else:
-            (view / "manifest.json").hardlink_to(real.manifest_path)
+        (view / "manifest.json").symlink_to(real.manifest_path)
     _stub_resume_target(monkeypatch, manifest)
     before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
 

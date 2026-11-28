@@ -375,10 +375,10 @@ def _is_pre_sim_card_line(line: str) -> bool:
 
 
 def _pre_sim_integrity_failure(
-    result: EndpointOutcome, error: Exception, *, retain_authenticated: bool = False
+    result: EndpointOutcome, error: Exception, *, retain_hook_evidence: bool = False
 ) -> EndpointOutcome:
     result.exit_code = EXIT_ERROR
-    if not retain_authenticated:
+    if not retain_hook_evidence:
         references = [record.get("reference") for record in result.detail.get("pre_sim_runs", ())]
         result.detail = {
             key: value for key, value in result.detail.items() if not key.startswith("pre_sim_")
