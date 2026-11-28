@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from tests.conftest import require_symlinks, symlink_or_skip
 
-from booley.runtime import sandbox_layout
+from booley.core import sandbox_layout
 
 
 def configure_project_alias(
@@ -121,7 +121,6 @@ def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
     from booley.flows.sim.coverage_reference import (
         CoverageRecordReferenceError,
         resolve_coverage_record_reference,
-        resolve_persisted_coverage_record_reference,
     )
     from booley.flows.sim.record import SimulationRecordIntegrityError
     from booley.flows.sim.record.resume import validate_resume_manifest
@@ -133,10 +132,6 @@ def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
         (
             lambda selected: load_coverage_record_bytes(selected, b"{}"),
             CoverageRecordStoreError,
-        ),
-        (
-            lambda selected: resolve_persisted_coverage_record_reference(selected, {}),
-            CoverageRecordReferenceError,
         ),
         (read_coverage_record, CoverageAnalysisError),
         (resolve_coverage_record_reference, CoverageRecordReferenceError),

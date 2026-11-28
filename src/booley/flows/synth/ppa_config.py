@@ -8,6 +8,7 @@ from typing import Any
 
 from booley.core.boundary import (
     BoundaryError,
+    as_positive_int,
     require_bool,
     require_dict,
     require_finite_number,
@@ -203,24 +204,28 @@ def _append_yosys_config(
         cmd.extend(["--abc-recipe", validate_abc_recipe(recipe)])
     if script is not None:
         cmd.extend(["--abc-script", validate_abc_script(script)])
-    _append_bool_config(cmd, cfg, "generic_abc_before_mapping")
-    _append_positive_int_config(cmd, cfg, "abc_delay_ps")
+    _append_bool_config(cmd, cfg, "generic_abc_before_mapping", field="generic_abc_before_mapping")
+    _append_positive_int_config(cmd, cfg, "abc_delay_ps", field="abc_delay_ps")
 
 
 def _append_openroad_config(
     cmd: list[str],
     cfg: Mapping[str, Any],
     *,
-    section: str = "Target flow_options.advanced_settings_openroad",
+    section: str,
 ) -> None:
     """Validate and append OpenROAD expert overrides."""
-    _append_number_config(cmd, cfg, "utilization_pct", positive=True)
-    _append_number_config(cmd, cfg, "placement_density", positive=True)
-    _append_bool_config(cmd, cfg, "repair_setup")
-    _append_bool_config(cmd, cfg, "repair_hold")
-    _append_bool_config(cmd, cfg, "gate_cloning")
-    _append_number_config(cmd, cfg, "setup_margin_ns")
-    _append_number_config(cmd, cfg, "repair_tns_percent")
+    _append_number_config(
+        cmd, cfg, "utilization_pct", positive=True, field=f"{section}.utilization_pct"
+    )
+    _append_number_config(
+        cmd, cfg, "placement_density", positive=True, field=f"{section}.placement_density"
+    )
+    _append_bool_config(cmd, cfg, "repair_setup", field=f"{section}.repair_setup")
+    _append_bool_config(cmd, cfg, "repair_hold", field=f"{section}.repair_hold")
+    _append_bool_config(cmd, cfg, "gate_cloning", field=f"{section}.gate_cloning")
+    _append_number_config(cmd, cfg, "setup_margin_ns", field=f"{section}.setup_margin_ns")
+    _append_number_config(cmd, cfg, "repair_tns_percent", field=f"{section}.repair_tns_percent")
 
 
 def _reject_unknown_keys(cfg: Mapping[str, Any], allowed: set[str], section: str) -> None:
@@ -233,34 +238,36 @@ def _reject_unknown_keys(cfg: Mapping[str, Any], allowed: set[str], section: str
         )
 
 
-def _append_bool_config(cmd: list[str], cfg: Mapping[str, Any], key: str) -> None:
+def _append_bool_config(cmd: list[str], cfg: Mapping[str, Any], key: str, *, field: str) -> None:
     """Append a strict boolean backend config as a positive/negative flag."""
     if key not in cfg:
         return
-    value = require_bool(cfg, key, field=key)
+    value = require_bool(cfg, key, field=field)
     option = key.replace("_", "-")
     cmd.append(f"--{option}" if value else f"--no-{option}")
 
 
 def _append_number_config(
-    cmd: list[str], cfg: Mapping[str, Any], key: str, *, positive: bool = False
+    cmd: list[str], cfg: Mapping[str, Any], key: str, *, field: str, positive: bool = False
 ) -> None:
     """Append one strict finite backend numeric config."""
     if key not in cfg:
         return
-    value = require_finite_number(cfg[key], field=key)
+    value = require_finite_number(cfg[key], field=field)
     if positive and value <= 0:
-        raise BoundaryError(f"{key} must be greater than zero")
+        raise BoundaryError(f"{field} must be greater than zero")
     cmd.extend([f"--{key.replace('_', '-')}", f"{value:g}"])
 
 
-def _append_positive_int_config(cmd: list[str], cfg: Mapping[str, Any], key: str) -> None:
+def _append_positive_int_config(
+    cmd: list[str], cfg: Mapping[str, Any], key: str, *, field: str
+) -> None:
     """Append one strictly positive integer backend config."""
     if key not in cfg:
         return
     value = cfg[key]
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise BoundaryError(f"{key} must be a positive integer, got {value!r}")
+    if as_positive_int(value, 0) == 0:
+        raise BoundaryError(f"{field} must be a positive integer, got {value!r}")
     cmd.extend([f"--{key.replace('_', '-')}", str(value)])
 
 

@@ -30,6 +30,7 @@ from booley.config.gateway import (
     GATEWAY_URL_ENV,
 )
 from booley.config.host_config import HostConfigError, load_host_policy
+from booley.core import docker_cli
 from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.booley_dir_pin import BooleyDirPinError, require_pinned_entry
 from booley.core.boundary import (
@@ -42,8 +43,16 @@ from booley.core.boundary import (
 from booley.core.config_paths import BooleyTomlError, resolve_toml
 from booley.core.differences import format_differences
 from booley.core.egress_modes import declared_egress
+from booley.core.file_hash import file_sha256
 from booley.core.private_store import PrivateStore, ProjectStore
 from booley.core.project_identity import project_label_id
+from booley.core.sandbox_layout import (
+    DEVCONTAINER_TARGET,
+    T3_BASE_DIR,
+    T3_BASE_DIR_ENV,
+    T3_POLICY_TARGET,
+    t3_project_base_dir,
+)
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
@@ -53,13 +62,13 @@ from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPIL
 from booley.runtime.devcontainer import (
     BOOLEY_DIR_TARGET,
     EGRESS_NETWORK,
+    INTERACTIVE_ROLE_LABEL,
     UNPROXIED_NETWORK,
     devcontainer_path,
     render_devcontainer_json,
 )
 from booley.runtime.filesystem_utils import (
     open_with_sharing_retry,
-    read_file_bytes,
     replace_file,
     unlink_file,
 )
@@ -73,13 +82,6 @@ from booley.runtime.incontainer_git_identity import (
 from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.private_store import session_store_repair
-from booley.runtime.sandbox_layout import (
-    DEVCONTAINER_TARGET,
-    T3_BASE_DIR,
-    T3_BASE_DIR_ENV,
-    T3_POLICY_TARGET,
-    t3_project_base_dir,
-)
 from booley.runtime.t3code_policy import narrowed_policy
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
@@ -122,12 +124,16 @@ _FIXED_SEED_FRAGMENTS = frozenset(
         "chmod 600 /home/agent/.codex/auth.json) 2>/dev/null || true",
     }
 )
+_SPEC_DIGEST_LABEL = "booley.spec-digest"
+_EDA_POLICY_LABEL = "booley.eda-policy"
+_EDA_INSTALLATION_LABEL = "booley.eda-installation"
+_LICENSE_PROFILE_LABEL = "booley.license-profile"
 _FIXED_RUN_ARGS = (
     "--init",
     "--network",
     EGRESS_NETWORK,
     "--label",
-    "booley.role=interactive",
+    INTERACTIVE_ROLE_LABEL,
     "--cap-drop",
     "ALL",
     "--security-opt",
@@ -1001,11 +1007,11 @@ def authenticate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> I
 def labels(issuance: Issuance) -> tuple[str, ...]:
     """Return exact resource labels for lifecycle, revoke, Doctor, and reaping."""
     values = {
-        "booley.project-id": project_label_id(issuance.project_root),
-        "booley.spec-digest": issuance.spec_sha256,
-        "booley.eda-policy": str(issuance.policy_revision),
-        "booley.eda-installation": issuance.installation or "none",
-        "booley.license-profile": issuance.license_profile or "none",
+        docker_cli.PROJECT_ID_LABEL: project_label_id(issuance.project_root),
+        _SPEC_DIGEST_LABEL: issuance.spec_sha256,
+        _EDA_POLICY_LABEL: str(issuance.policy_revision),
+        _EDA_INSTALLATION_LABEL: issuance.installation or "none",
+        _LICENSE_PROFILE_LABEL: issuance.license_profile or "none",
     }
     return tuple(f"{key}={value}" for key, value in values.items())
 
@@ -1024,11 +1030,11 @@ def labels_cover(issuance: Issuance, container_labels: Mapping[str, object]) -> 
 _ISSUANCE_LABEL_PREFIXES = tuple(
     f"{key}="
     for key in (
-        "booley.project-id",
-        "booley.spec-digest",
-        "booley.eda-policy",
-        "booley.eda-installation",
-        "booley.license-profile",
+        docker_cli.PROJECT_ID_LABEL,
+        _SPEC_DIGEST_LABEL,
+        _EDA_POLICY_LABEL,
+        _EDA_INSTALLATION_LABEL,
+        _LICENSE_PROFILE_LABEL,
     )
 )
 
@@ -2283,7 +2289,7 @@ def _require_string(spec: dict[str, Any], key: str) -> str:
 
 def _file_sha256(path: Path) -> str:
     try:
-        return hashlib.sha256(read_file_bytes(path)).hexdigest()
+        return file_sha256(path, retry_sharing=True)
     except OSError as exc:
         raise RuntimeSpecError(f"cannot hash generated Sandbox spec: {exc}") from exc
 

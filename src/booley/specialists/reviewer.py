@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, ClassVar, cast
 from uuid import uuid4
 
+from booley.core.atomic_files import atomic_write_json
 from booley.core.boundary import as_dict, as_str_list
 from booley.core.models import AgentCallParams
 from booley.evidence.review_guides import (
@@ -63,7 +64,6 @@ from booley.mcp.base import (
 )
 from booley.runtime.booley_dir import own_booley_dir, resolve_common_booley_dir
 from booley.runtime.exception_diagnostics import exception_report_text, log_exception
-from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.model_fallback import ModelRun
 from booley.runtime.paths import refs_dir
 from booley.targets.flow_names import config_section

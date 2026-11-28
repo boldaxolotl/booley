@@ -83,7 +83,6 @@ from booley.targets.domain import (
 
 from ..base import BuiltinFlow, SubprocessResult
 from ..baseline_worktree import (
-    baseline_worktree,
     git_full_sha,
 )
 from ..invocation import default_timeout_ms
@@ -205,11 +204,9 @@ class SimulateFlow(
             AuthenticatedSimulationExecutionPort,
         ]
         | None = None,
-        simulation_record_publication_checkpoint: Callable[[str], None] | None = None,
     ) -> None:
         super().__init__()
         self._coverage_execution_factory = coverage_execution
-        self._simulation_record_publication_checkpoint = simulation_record_publication_checkpoint
 
     def _start_invocation(self, request: FlowRequest | None = None) -> None:
         """Start an invocation with no Simulation Record outcomes: only this Flow keeps them."""
@@ -401,7 +398,7 @@ class SimulateFlow(
     ) -> tuple[JobRequest, ...] | None:
         """What a prepared Simulation Record runs; ``None`` when that is not known yet.
 
-        A resume has no Test Runs resolved before admission.
+        A resume is not sized from its Test Runs before admission.
         """
         if prepared.resume is not None:
             return None
@@ -450,12 +447,11 @@ class SimulateFlow(
             targets, resume, selected_targets, test_names_map = prepared
             if resume is None:
                 self.set_report_targets(list(selected_targets))
-            if (
-                resume is not None
-                and (refusal := self._refuse_coverage_resume(resume)) is not None
-            ):
-                return refusal
-            if resume is None:
+            if resume is not None:
+                if (refusal := self._refuse_coverage_resume(resume)) is not None:
+                    return refusal
+                selected_targets, test_names_map = self._replay_simulation_record(resume)
+            else:
                 selection_error = self._validate_prepared_selection(
                     list(selected_targets), test_names_map
                 )
@@ -485,7 +481,7 @@ class SimulateFlow(
     ) -> EndpointOutcome:
         """Run one immutable preflight with its explicitly borrowed admission."""
         if prepared.resume is not None:
-            simulation_record = self._resume_simulation_record(prepared.resume)
+            simulation_record = self._resume_simulation_record(prepared)
         elif getattr(self.args, "coverage", False):
             simulation_record = (
                 self._preview_coverage_simulation_records()
@@ -508,13 +504,13 @@ class SimulateFlow(
         return self._attach_published_pre_sim(result)
 
     def _record_pre_sim_firing(self, key: tuple[str, str, str, int]) -> None:
-        """Record only authenticated firings durably published by this execution."""
+        """Record only the firings durably published by this execution."""
         self._current_published_pre_sim_keys.add(key)
 
     def _attach_published_pre_sim(
         self, result: EndpointOutcome, origin_manifest: Path | None = None
     ) -> EndpointOutcome:
-        """Attach authentic hook evidence even when no terminal Simulation Record outcome exists."""
+        """Attach hook evidence even when no terminal Simulation Record outcome exists."""
         from .record import collect_pre_sim_firings
 
         invocation = self._reserved_invocation_dir
@@ -548,32 +544,23 @@ class SimulateFlow(
     def _retain_pre_sim_after_scan_error(
         self, result: EndpointOutcome, error: Exception
     ) -> EndpointOutcome:
-        from .record import collect_pre_sim_firings
-
+        # A failed scan cannot vouch for a terminal result.
         firings = tuple(
-            firing
+            replace(firing, terminal=False)
             for outcome in self._simulation_record_outcomes
             for firing in outcome.pre_sim_firings
         )
         retained = False
-        invocation = self._reserved_invocation_dir
         if firings:
             try:
                 result = self._project_published_pre_sim(
-                    result,
-                    collect_pre_sim_firings(
-                        prior=firings,
-                        booley_dir=None
-                        if invocation is None
-                        else invocation_booley_dir(invocation),
-                    ),
-                    invocation,
+                    result, firings, self._reserved_invocation_dir
                 )
                 retained = True
             except (OSError, ValueError):
                 pass
         self._simulation_record_outcomes = ()
-        return _pre_sim_integrity_failure(result, error, retain_authenticated=retained)
+        return _pre_sim_integrity_failure(result, error, retain_hook_evidence=retained)
 
     def _prepare_simulation_record_targets(
         self,
@@ -587,16 +574,8 @@ class SimulateFlow(
         | EndpointOutcome
     ):
         if self.args.resume_from is not None:
-
-            def revision_root(target: Mapping[str, str]) -> Path:
-                if target["role"] == "candidate":
-                    return Path(self.args.work_dir)
-                return self._shared_baseline_worktree(target["revision"])
-
             resume = validate_resume_manifest(
-                self.args.resume_from,
-                project_root=Path(self.args.work_dir),
-                revision_root=revision_root,
+                self.args.resume_from, project_root=Path(self.args.work_dir)
             )
             return resume.target_handles, resume, (), {}
         requested = self._resolve_requested_targets()
@@ -606,29 +585,6 @@ class SimulateFlow(
             return missing
         selected = [self._target_handle(target) for target in requested]
         return tuple(selected), None, tuple(requested), _get_test_names(self.args.work_dir)
-
-    def _shared_baseline_worktree(self, revision: str) -> Path:
-        """This invocation's one checkout of *revision*, open until publication ends.
-
-        Resuming a record that kept baseline prerequisites opens their revision. The
-        scratch path depends only on the process and revision, so a second opening
-        while the first is held fails in ``git worktree add`` (#1959); callers share
-        this one. Call from the candidate checkout: ``self.args.work_dir`` is the
-        Project Root.
-        """
-        worktrees = self.baseline_worktrees
-        if revision not in worktrees:
-            resources = self.publication_resources
-            worktrees[revision] = resources.enter_context(
-                baseline_worktree(
-                    Path(self.args.work_dir),
-                    revision,
-                    paired_project=self._paired_project_baseline,
-                )
-            )
-            # Unwinds before the worktree is removed: no entry outlives its checkout.
-            resources.callback(worktrees.pop, revision)
-        return worktrees[revision]
 
     # The MCP server computes mode-aware build, hook, execution, and finalization
     # headroom. This class default is only its defensive floor.
@@ -643,7 +599,7 @@ class SimulateFlow(
         # Not used — _run() is overridden for multi-config logic
         return []
 
-    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
+    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:  # noqa: ARG002 — overrides Flow._interpret_result
         # Not used — _run() handles interpretation directly
         return EndpointOutcome()
 
@@ -970,11 +926,9 @@ class SimulateFlow(
         executor = CoverageAggregateExecutor(
             plans=plans,
             execution_factory=self._coverage_simulation_record_execution,
-            publication_checkpoint=self._simulation_record_publication_checkpoint,
         )
         simulation_record = SimulationRecord(
             executor,
-            publication_checkpoint=self._simulation_record_publication_checkpoint,
             manifest_published=manifest_published,
             work_item_request=self.work_item_job_request,
         )
@@ -1284,7 +1238,9 @@ class SimulateFlow(
         return result
 
     def _ordinary_simulation_record_run(
-        self, planning: OrdinarySimulationRecordPlanning
+        self,
+        planning: OrdinarySimulationRecordPlanning,
+        record_directory: Path | None = None,
     ) -> _SimulationRecordRun:
         """Describe running every planned Target as one ordinary Simulation Record."""
         targets = [planned.selector for planned in planning.candidates]
@@ -1297,7 +1253,6 @@ class SimulateFlow(
         ) -> _SimulationRecordSteps:
             simulation_record = SimulationRecord(
                 OrdinaryHdlSerialExecutor(invoke=self._execute_boundary),
-                publication_checkpoint=self._simulation_record_publication_checkpoint,
                 manifest_published=manifest_published,
                 work_item_request=self.work_item_job_request,
             )
@@ -1307,7 +1262,7 @@ class SimulateFlow(
                     targets, outcomes, phase="starting", complete=False
                 )
                 candidate_requests = self._candidate_simulation_record_requests(
-                    planning, invocation, admission
+                    planning, invocation, admission, record_directory
                 )
                 self._publish_and_run_simulation_record_requests(
                     simulation_record,
@@ -1368,6 +1323,7 @@ class SimulateFlow(
         planning: OrdinarySimulationRecordPlanning,
         invocation: Path,
         admission: AdmissionContext,
+        record_directory: Path | None = None,
     ) -> list[NewSimulationRecordRunRequest]:
         execution_id = str(admission.execution_id or "")
         requests = []
@@ -1388,6 +1344,7 @@ class SimulateFlow(
                     invocation,
                     admission,
                     pre_sim_firing_published=self._record_pre_sim_firing,
+                    record_directory=record_directory,
                 )
             )
         return requests
@@ -1513,12 +1470,11 @@ class SimulateFlow(
         )
 
     def _ordinary_simulation_record_inputs(self, planned: PlannedTarget, test_names_map):
-        target, handle, preview = planned.selector, planned.handle, planned.preview
+        handle, preview = planned.handle, planned.preview
         inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         execution = self._simulation_execution()
         disclosures = _group_disclosures(execution, handle, preview.groups, preview.run_groups)
         suite = resolve_target_test_suite(
-            target,
             identity=handle.identity,
             test_names=test_names_map,
             test_skips=_get_test_skips(self.args.work_dir),
@@ -1668,8 +1624,8 @@ class SimulateFlow(
     def _target_handle(self, target: str) -> TargetHandle:
         """Return the selected handle for the active checkout.
 
-        Cycle-count baselines intentionally materialize another checkout, so
-        they reselect and verify the planned selector in that checkout.
+        A handle selected for another checkout is not reused: the selector is
+        selected again in this one.
         """
         root = Path(self.args.work_dir).resolve()
         selected = self._target_handles.get(target)

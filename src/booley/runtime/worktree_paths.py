@@ -7,13 +7,14 @@ import re
 import subprocess
 from pathlib import Path, PurePosixPath
 
+from booley.core import sandbox_layout
 from booley.core.booley_dir import (
     BOOLEY_DIR_NAME,
     own_booley_dir_relative,
     resolve_checkout_booley_dir,
     resolve_common_booley_dir,
 )
-from booley.runtime import platform_paths, sandbox_layout
+from booley.runtime import platform_paths
 
 
 class BooleyDirMismatchError(ValueError):

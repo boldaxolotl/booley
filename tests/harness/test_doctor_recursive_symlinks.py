@@ -10,10 +10,8 @@ import pytest
 from booley.harness import doctor
 from tests.conftest import symlink_or_skip
 from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
-from tests.harness.test_doctor import (
-    _patch_environment,
-    _write_project,
-)
+from tests.harness.doctor_environment_support import patch_doctor_environment
+from tests.harness.doctor_run_support import write_project
 
 
 @pytest.fixture(autouse=True)
@@ -39,8 +37,8 @@ def _ancestor_links(root: Path, count: int) -> list[str]:
 def test_public_doctor_groups_54_links_with_complete_verbose_paths(
     tmp_path, monkeypatch, capsys, verbose, concise
 ):
-    booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    booley_dir = write_project(tmp_path)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     paths = _ancestor_links(tmp_path, 54)
 
     result = doctor.run_doctor_result(

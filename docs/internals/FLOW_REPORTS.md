@@ -102,16 +102,13 @@ component):
     coverage.json                      coverage runs only: the Coverage Record reference
 ```
 
-Three cases add to this layout:
+Two cases add to this layout:
 
 - **Coverage** nests a Coverage Record inside one attempt (see
   [Coverage Record files](#coverage-record-files)).
 - **Resume** takes a new run number for its own `report.json` and
   `progress.json`, but writes results into the original run's `record/`
   directory, so one Record stays in one place.
-- **A Cycle Count baseline** gets its own Target directory beside the
-  candidate's, for the selector `<target>@baseline-<first 12 characters of the
-  baseline revision>`.
 
 ### Attempt files
 
@@ -182,9 +179,10 @@ the attempt it measured:
 
 The reference's `coverage_record` object has `path`, `path_base`, `schema`,
 `coverage_record_id`, `bytes`, and `sha256`. Its `path_base: origin_target`
-resolves `path` against the Target directory to the nested manifest; size,
-digest, and identities authenticate it. Native paths inside the manifest
-resolve from the **Coverage Record directory**, not the Target directory.
+resolves `path` against the Target directory to the nested manifest.
+Identities bind the reference to that manifest; `bytes` and `sha256` are
+recorded but not re-hashed on read. Native paths inside the manifest resolve
+from the **Coverage Record directory**, not the Target directory.
 
 Give the Coverage Analyst the numbered Target-level `coverage.json`: it
 resolves the reference and checks the enclosing Simulation Record and the

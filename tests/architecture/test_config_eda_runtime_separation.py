@@ -9,7 +9,7 @@ from tests.architecture.contract import ArchitectureContract, evaluate_contract
 from tests.architecture.import_graph import Dependency, analyze_imports, top_level_package_sccs
 
 
-@pytest.mark.parametrize("owner", ["private_store", "file_lock", "resources"])
+@pytest.mark.parametrize("owner", ["private_store", "file_lock", "resources", "docker_cli"])
 @pytest.mark.parametrize(
     "target", ["config.eda", "eda.provisioning.authority", "runtime.private_store"]
 )

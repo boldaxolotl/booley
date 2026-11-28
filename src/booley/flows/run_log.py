@@ -8,11 +8,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.atomic_files import Durability, atomic_replace_bytes
 from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.runtime.filesystem_utils import (
     is_transient_read_error,
     open_with_sharing_retry,
-    replace_file,
 )
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -183,17 +183,6 @@ def cap_log_bytes(data: bytes, max_bytes: int) -> bytes:
     return marker + tail
 
 
-def _atomic_write(path: Path, data: bytes) -> None:
-    """Atomically replace a log so concurrent readers never see torn output."""
-    temporary = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_bytes(data)
-        replace_file(temporary, path)
-    except BaseException:
-        temporary.unlink(missing_ok=True)
-        raise
-
-
 def write_run_log_progress(
     work_dir: str | Path,
     tail_text: str,
@@ -216,7 +205,7 @@ def write_run_log_progress(
     ).encode()
     body = tail_text.encode("utf-8", errors="replace")
     data = header + status + cap_log_bytes(body, max(0, max_bytes - len(status)))
-    _atomic_write(path, data)
+    atomic_replace_bytes(path, data, mode=None, durability=Durability.NONE)
     return path
 
 
@@ -236,7 +225,7 @@ def write_run_log(
         if max_bytes is None
         else header + cap_log_bytes(body, max(0, max_bytes - len(header)))
     )
-    _atomic_write(path, data)
+    atomic_replace_bytes(path, data, mode=None, durability=Durability.NONE)
     return path
 
 

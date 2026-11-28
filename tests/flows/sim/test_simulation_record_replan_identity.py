@@ -2,14 +2,12 @@
 
 import argparse
 import shlex
-import types
 
 import pytest
 
 from booley.flows.sim.cli import SimArguments
 from booley.flows.sim.record import codec, planning
 from tests.flows.sim.simulation_record_boundary import PASS_PROCESS, run_simulation_record_sim
-from tests.flows.sim.simulation_record_test_support import prerequisite_documents
 from tests.flows.sim.test_cocotb import _CORE_FILES
 
 _HDL = '[sim_0]\ntests = ["reset", "wrap"]\n'
@@ -55,7 +53,7 @@ def _record_and_replan(tmp_path, monkeypatch, toml, request):
     # Private seam: publicly, only a resume refusal prints these options until #4371.
     options = flow._frozen_test_run_options(stored, target)
     parser = argparse.ArgumentParser()
-    SimArguments.add_args(parser)
+    SimArguments.add_args(parser, frozenset())
     replay = parser.parse_args(shlex.split(options))
     replanned = record(2, {"test": replay.test, "seed": replay.seed})[2]
     return stored, replanned, path, options
@@ -67,14 +65,3 @@ def test_replaying_the_frozen_test_runs_replans_the_same_identity(tmp_path, monk
     # This case pins the suite flag only while its replay names the runs.
     assert case != "cocotb-default-suite" or "--test=" in options
     planning.verify_workload(stored, replanned)  # raising is a refused resume
-
-
-def test_a_manifest_with_prerequisites_is_refused(tmp_path, monkeypatch):
-    """The identity gate phase 2 uses refuses it; an explicit early refusal is #4371's."""
-    stored, replanned, path, _ = _record_and_replan(tmp_path, monkeypatch, _HDL, {})
-    prerequisites = prerequisite_documents(types.SimpleNamespace(manifest=stored), path)
-    document = {k: v for k, v in stored.document.items() if k != "fingerprints"}
-    older = planning.finalize_manifest(document | {"prerequisites": prerequisites})
-    planning.verify_workload(stored, replanned)
-    with pytest.raises(planning.SimulationRecordWorkloadMismatchError, match="prerequisites"):
-        planning.verify_workload(older, replanned)

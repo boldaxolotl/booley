@@ -15,8 +15,9 @@ import pytest
 from booley.core.host_shell import quote_arg
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
-from booley.runtime import runtime_context
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -31,7 +32,7 @@ def test_worktree_requires_a_subcommand(capsys) -> None:
 def test_worktree_is_sandbox_only_and_project_bound(monkeypatch, capsys) -> None:
     assert tlr.COMMAND_LOCATIONS["worktree"] is tlr.CommandLocation.SESSION_RUNTIME
     assert tlr.COMMAND_PROJECT_BINDINGS["worktree"] is tlr.ProjectBinding.REQUIRED
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
 
     with pytest.raises(SystemExit) as exc:
         tlr._enforce_runtime_location("worktree")
@@ -263,7 +264,7 @@ def test_prepare_outside_a_project_changes_nothing(
     if git_repository:
         assert _git(folder, "init").returncode == 0
     before = _bytes_of(folder)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setattr(sys, "argv", ["booley", "worktree", "prepare", str(folder)])
 
     assert tlr.main() == 0

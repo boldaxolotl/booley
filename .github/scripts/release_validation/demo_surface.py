@@ -9,7 +9,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.core.atomic_files import atomic_replace_bytes
 
 
 def _run(command: list[str], *, project: Path, env: dict[str, str]) -> str:

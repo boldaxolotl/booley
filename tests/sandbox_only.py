@@ -49,7 +49,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/flows/sim/test_isolated_sim_headers.py",
     "tests/flows/sim/test_rerun_command_execution.py",
     "tests/flows/sim/test_simulation_record_acceptance.py",
-    "tests/flows/sim/test_simulation_record_build_execution_validation.py",
     "tests/flows/sim/test_simulation_record_build_records.py",
     "tests/flows/sim/test_simulation_record_cancellation_cause.py",
     "tests/flows/sim/test_simulation_record_characterization.py",

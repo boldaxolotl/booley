@@ -9,7 +9,9 @@ A rule matches a call when every word equals some argument; the first matching r
 Answers given with the same words form a sequence: the n-th matching call gets the n-th
 answer and the last one repeats. A call no rule matches exits 127 on stderr, so a stray
 call fails loudly. The fake logs a call only after it wrote its whole answer (a call that
-hangs logs first), so a logged call is a handshake the test can poll.
+hangs logs first), so a logged call is a handshake the test can poll. A ``script``
+computes the answer from ``args`` and the input ``text``, and may reassign ``stdout``,
+``stderr``, ``returncode`` and ``output``.
 """
 
 from __future__ import annotations
@@ -49,15 +51,18 @@ if rule["hang_s"] is not None:
         handle.write(json.dumps(entry) + "\\n")
     time.sleep(rule["hang_s"])
     raise SystemExit(rule["returncode"])
-if rule["output"] is not None:
-    Path(args[args.index("-o") + 1]).write_bytes(base64.b64decode(rule["output"]))
-sys.stdout.write(rule["stdout"])
+output = None if rule["output"] is None else base64.b64decode(rule["output"])
+answer = dict(rule, args=args, text=text, output=output)
+exec(rule["script"] or "", answer)
+if answer["output"] is not None:
+    Path(args[args.index("-o") + 1]).write_bytes(answer["output"])
+sys.stdout.write(answer["stdout"])
 sys.stdout.flush()
-sys.stderr.write(rule["stderr"])
+sys.stderr.write(answer["stderr"])
 sys.stderr.flush()
 with log.open("a", encoding="utf-8", newline="\\n") as handle:
     handle.write(json.dumps(entry) + "\\n")
-raise SystemExit(rule["returncode"])
+raise SystemExit(answer["returncode"])
 """
 
 
@@ -109,6 +114,7 @@ class PathToolFake:
         reads_input: bool = False,
         hang_s: float | None = None,
         output: bytes | None = None,  # written to the file after ``-o``
+        script: str | None = None,
     ) -> None:
         self.rules.append(
             {
@@ -119,6 +125,7 @@ class PathToolFake:
                 "reads_input": reads_input,
                 "hang_s": hang_s,
                 "output": None if output is None else base64.b64encode(output).decode("ascii"),
+                "script": script,
             }
         )
         self.save()

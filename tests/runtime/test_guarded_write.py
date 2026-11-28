@@ -11,8 +11,8 @@ from pathlib import Path
 import pytest
 from tests.conftest import symlink_or_skip
 
+from booley.core import atomic_files
 from booley.harness.setup import common
-from booley.runtime import atomic_files
 from booley.runtime.guarded_write import WriteOutcome, guarded_write
 
 MARKER = "# managed by test"

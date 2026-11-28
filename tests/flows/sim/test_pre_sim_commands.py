@@ -89,6 +89,7 @@ def _fire_with(
     }
     with (
         patch("booley.flows.sim.execution.pre_sim.MeasuredPopen", spawn),
+        patch("booley.flows.sim.execution.pre_sim.own_process_group"),  # boundary: no OS process
         patch("booley.flows.sim.execution.pre_sim.kill_process_tree") as kill,
         patch("booley.flows.sim.execution.pre_sim.record_command") as record,
     ):
@@ -525,6 +526,7 @@ def test_a_monitor_that_cannot_start_does_not_leave_the_hook_running(tmp_path: P
     hook = _HookProcess()
     with (
         patch("booley.flows.sim.execution.pre_sim.MeasuredPopen", return_value=hook),
+        patch("booley.flows.sim.execution.pre_sim.own_process_group"),  # boundary: no OS process
         patch("booley.flows.sim.execution.pre_sim.kill_process_tree") as kill,
         patch("booley.flows.sim.execution.pre_sim.record_command") as record,
         patch(

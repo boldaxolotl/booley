@@ -454,8 +454,7 @@ define along with it.
 ## Elaboration checks
 
 `--mode elab-only` compiles, elaborates and links the simulator without running
-any tests: a fast "does it still build?" check. A later full run can reuse the
-build.
+any tests: a fast "does it still build?" check.
 
 `--mode elab-only-standalone` also elaborates each reusable RTL module on its
 own. This catches a module that compiles only thanks to a define or include
@@ -482,7 +481,7 @@ starts,
 and the verdict card repeats it. Ask the agent to resume the run, or:
 
 ```bash
-booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
+booley flow sim --resume-from <manifest.json> --dry-run   # list the Test Runs still to run; runs nothing
 booley flow sim --resume-from <manifest.json>
 ```
 
@@ -498,9 +497,11 @@ booley flow sim --resume-from <manifest.json>
   command, with the same Test Runs, seeds and report directory.
 - A test with a recorded result is finished, even if it failed. Resume never
   re-runs failures; start a new run for that.
-- Resume refuses (exit `2`) when the Target's sources, Tests or simulation
-  settings have changed since the original run. The refusal names what changed
-  and, like the coverage refusal above, prints the command for a new run.
+- Resume refuses (exit `2`) after a new commit, or when the Target's sources,
+  Tests or simulation settings have changed since the original run: start a new
+  run. For uncommitted changes the refusal names what changed and, like the
+  coverage refusal above, prints the command. A moved checkout or a changed
+  simulator refuses too.
 - Don't edit Simulation Record files by hand: resume checks that they are
   intact.
 
@@ -612,19 +613,10 @@ available.
 
 ## Build reuse
 
-A repeat run skips the build when nothing that goes into it has changed:
-sources, cores, toolchain, flags and environment. Each Target's result says
-why a build was or wasn't reused.
-
-<details markdown>
-<summary>With Icarus</summary>
-
-Booley reuses an Icarus build only for a run without `--trace`, on a Target
-built from one local `.core` with no dependency cores, generators, VPI
-modules or `user` files, whose sources are plain Verilog or SystemVerilog
-files without `` `include ``. Any other Icarus build is rebuilt on every run.
-
-</details>
+A repeat Verilator run skips the build when nothing that goes into it has
+changed: sources, cores, toolchain, flags and environment. Icarus builds
+again on every run. Each Target's result says why a build was or wasn't
+reused.
 
 <details markdown>
 <summary>With a cocotb testbench</summary>

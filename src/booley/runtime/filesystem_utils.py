@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
-import errno
 import logging
 import os
 import shutil
 import stat
 import sys
-from collections.abc import Iterator
-from contextlib import contextmanager
 from pathlib import Path
 
-from booley.core.booley_layout import BOOLEY_DIR_NAME
+from booley.core.atomic_files import fsync_directory
+from booley.core.directories import (
+    RemovedDirectoryError,
+    make_directories,
+    missing_directories,
+    run_roots,
+)
 from booley.core.sharing_retry import (
     is_transient_read_error,
     is_transient_sharing_error,
@@ -21,11 +24,13 @@ from booley.core.sharing_retry import (
     replace_file,
     unlink_file,
 )
+from booley.runtime import timefmt
 
 __all__ = [
     "RemovedDirectoryError",
     "is_transient_read_error",
     "is_transient_sharing_error",
+    "keep_unreadable",
     "make_directories",
     "missing_directories",
     "open_with_sharing_retry",
@@ -38,68 +43,25 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-# Directories the running endpoint must not recreate (its checkout and Booley Directory).
-_run_roots: tuple[Path, ...] = ()
 
+def keep_unreadable(path: Path) -> Path:
+    """Move an unreadable state file aside, beside itself, and return the kept path.
 
-class RemovedDirectoryError(FileNotFoundError):
-    """Creating a directory would recreate a checkout or Booley Directory someone removed."""
-
-    def __init__(self, directory: Path) -> None:
-        super().__init__(
-            errno.ENOENT, f"{directory} was removed; not recreating it", str(directory)
-        )
-        self.directory = directory
-
-
-@contextmanager
-def run_roots(*roots: Path) -> Iterator[None]:
-    """Refuse recreating *roots* in :func:`make_directories` while the block runs.
-
-    The roots are process-wide, not per thread: Flows write from worker threads. A
-    process runs one endpoint invocation at a time, so nested blocks only add roots.
+    The copy is named ``<name>.unreadable-<UTC time>``, with ``-2``, ``-3``, ...
+    appended when that name is taken, so an earlier kept copy is never replaced.
+    The caller holds the lock that serializes writers of *path*. ``OSError``
+    propagates; one raised by the rename leaves *path* in place, one raised by
+    the directory sync after it leaves the file at the kept path.
     """
-    global _run_roots
-    previous = _run_roots
-    _run_roots = (*previous, *(root.absolute() for root in roots))
-    try:
-        yield
-    finally:
-        _run_roots = previous
-
-
-def missing_directories(path: Path) -> list[Path]:
-    """The directories ``mkdir -p path`` would create, outermost first.
-
-    Raises :class:`RemovedDirectoryError` when that would recreate a run root, or a
-    ``.booley`` whose parent is gone: someone removed it, so recreating it would
-    leave an orphan that no worktree owns.
-    """
-    missing: list[Path] = []
-    current = path.absolute()
-    while not current.is_dir():
-        missing.append(current)
-        if current.parent == current:
-            break
-        current = current.parent
-    missing.reverse()
-    for index, directory in enumerate(missing):
-        if directory in _run_roots:
-            raise RemovedDirectoryError(directory)
-        # Outside a run (a child process has no run roots) the name is the only signal.
-        if directory.name == BOOLEY_DIR_NAME and index > 0:
-            raise RemovedDirectoryError(missing[index - 1])
-    return missing
-
-
-def make_directories(path: Path) -> None:
-    """``mkdir -p`` that never recreates a run root or a removed checkout.
-
-    Directories are created one level at a time, so a root removed meanwhile fails
-    the next ``mkdir`` instead of coming back.
-    """
-    for directory in missing_directories(path):
-        directory.mkdir(exist_ok=True)
+    stem = f"{path.name}.unreadable-{timefmt.compact_utc_now()}"
+    kept = path.with_name(stem)
+    number = 1
+    while kept.exists():
+        number += 1
+        kept = path.with_name(f"{stem}-{number}")
+    replace_file(path, kept)
+    fsync_directory(path.parent)
+    return kept
 
 
 def _strip_windows_reparse_points(root: Path) -> None:

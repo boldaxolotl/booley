@@ -79,6 +79,7 @@ from booley.core.boundary import (
     require_str,
 )
 from booley.core.host_shell import quote_arg
+from booley.core.sandbox_layout import CHROME_VERSION_RECORD, T3_BROWSER_VERSION_RECORD
 from booley.flows import execution, runtime_reality, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.fpga import vivado_startup
@@ -160,7 +161,6 @@ from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.resource_history import DOCTOR_RUN_ENV
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
-from booley.runtime.sandbox_layout import CHROME_VERSION_RECORD, T3_BROWSER_VERSION_RECORD
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.runtime.worktree_evidence import untracked_common_paths
@@ -2024,10 +2024,11 @@ def _check_runtime_location(
     """
     _warn = _warning_sink(_warn, "sandbox.runtime-marker")
 
+    from booley.core import sandbox_detection
     from booley.runtime import runtime_context
 
     if not runtime_context.inside_session_runtime():
-        if os.environ.get("BOOLEY_CONTAINER") == "0" and runtime_context.container_marker_file():
+        if os.environ.get("BOOLEY_CONTAINER") == "0" and sandbox_detection.container_marker_file():
             _pass(
                 warning(
                     "sandbox.runtime-marker",
@@ -2794,7 +2795,7 @@ def _check_current_runtime_git_identity(
     for result in (
         sandbox_git_identity.inspect_override(project.project_root, project.booley_dir),
         sandbox_git_identity.inspect_gitconfig_identity(project.project_root),
-        sandbox_git_identity.inspect_credential_helpers(project.project_root),
+        *sandbox_git_identity.inspect_credential_helpers(project.project_root),
     ):
         if result.warning is not None:
             _warn(result.warning, result.fix)
@@ -4518,8 +4519,8 @@ def _check_target_metadata(
     _check_doctor_target_compatibility(audit.root, audit.pass_, audit.fail)
     _check_synth_recipe_migrations(refs, audit.warn)
     _check_target_flow_option_defines(audit.root, audit.fail)
-    _check_yosys_targets_have_arch(audit.root, refs, audit.pass_, audit.warn)
-    _check_sim_traceable(audit.root, refs, audit.pass_, audit.warn)
+    _check_yosys_targets_have_arch(refs, audit.pass_, audit.warn)
+    _check_sim_traceable(refs, audit.pass_, audit.warn)
     diagnostics(
         cocotb_target_checks.inspect_cocotb_targets(
             cocotb_target_checks.CocotbTargetRequest(
@@ -4589,7 +4590,6 @@ def _check_target_sources(
     """Run Target checks that share source partitions."""
     _check_sim_target_setup(audit.project, inputs, audit.pass_, audit.warn, audit.fail, audit.note)
     _check_icarus_sv_language_mode(
-        audit.root,
         refs,
         audit.pass_,
         audit.warn,
@@ -4813,7 +4813,6 @@ def _check_sim_verdict_setup(
 
 
 def _check_yosys_targets_have_arch(
-    root: Path,
     refs: dict,
     _pass: Check,
     _warn: Check,
@@ -4912,7 +4911,6 @@ def _report_missing_icarus_sv_flag(
 
 
 def _check_icarus_sv_language_mode(
-    root: Path,
     refs: dict,
     _pass: Check,
     _warn: Check,
@@ -4960,7 +4958,6 @@ _VERILATOR_AUTO_MAIN_FLAGS = frozenset({"--main", "--binary"})
 
 
 def _check_sim_traceable(
-    root: Path,
     refs: dict,
     _pass: Check,
     _warn: Check,

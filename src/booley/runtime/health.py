@@ -25,9 +25,10 @@ from typing import Any
 from booley.audit import health as policy
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.audit.health import HealthSnapshot
+from booley.core.atomic_files import atomic_write_text
 from booley.core.boundary import as_dict
+from booley.core.file_hash import file_sha256_or_none
 from booley.runtime import doctor_stamp
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import (
     contains,
     resolve_common_booley_dir,
@@ -43,6 +44,8 @@ _TRANSCRIPT_NAME = "last.log"
 _ANNOUNCEMENTS_NAME = "announcements.json"
 _ANNOUNCE_LOCK_NAME = "announcements.lock"
 _INVALIDATION_NAME = "invalidated.json"
+# World-readable like the files it replaces: host and Sandbox both read them.
+_SHARED_MODE = 0o644
 _INPUT_LABELS = {
     "booley_toml_sha256": "booley.toml",
     "doctor_waivers_sha256": "doctor-waivers.toml",
@@ -73,26 +76,13 @@ def transcript_path(booley_dir: Path) -> Path:
     return state_dir(booley_dir) / _TRANSCRIPT_NAME
 
 
-def _sha256_or_none(path: Path, *, retry_sharing: bool = False) -> str | None:
-    """Hash ``path``; ``retry_sharing`` rides out a concurrent atomic replace.
-
-    Only Booley-written, polled inputs retry: user-authored inputs stay a
-    single attempt because an error there just reports drift.
-    """
-    try:
-        raw = read_file_bytes(path) if retry_sharing else path.read_bytes()
-        return hashlib.sha256(raw).hexdigest()
-    except OSError:
-        return None
-
-
 def _path_identity(path: Path) -> str | None:
     """Fingerprint a generated link without erasing link-vs-copy drift."""
     try:
         if path.is_symlink():
             return f"symlink:{path.readlink()}"
         if path.is_file():
-            return f"file:{_sha256_or_none(path)}"
+            return f"file:{file_sha256_or_none(path)}"
     except OSError:
         return None
     return None
@@ -113,7 +103,7 @@ def _core_digest(project_root: Path, booley_dir: Path) -> str:
     digest = hashlib.sha256()
     for label, path in sorted(entries):
         digest.update(label.encode() + b"\0")
-        value = _sha256_or_none(path) or "unreadable"
+        value = file_sha256_or_none(path) or "unreadable"
         digest.update(value.encode() + b"\0")
     return digest.hexdigest()
 
@@ -130,14 +120,15 @@ def compute_fingerprint(booley_dir: Path, project_root: Path) -> dict[str, Any]:
 
     fingerprint: dict[str, Any] = doctor_stamp.compute_fingerprint(booley_dir, project_root)
     for name in ("tests.toml", "AGENTS.md"):
-        fingerprint[f"{name}_sha256"] = _sha256_or_none(booley_dir / name)
+        fingerprint[f"{name}_sha256"] = file_sha256_or_none(booley_dir / name)
     # Booley ignores configs.toml: Doctor only warns that the file exists.
     fingerprint["configs_toml_present"] = (booley_dir / "configs.toml").exists()
     for name in ("AGENTS.md", "CLAUDE.md"):
         fingerprint[f"root_{name}_identity"] = _path_identity(project_root / name)
     fingerprint["core_files_sha256"] = _core_digest(project_root, booley_dir)
     fingerprint["booley_version"] = booley.__version__
-    fingerprint["upgrade_review_sha256"] = _sha256_or_none(
+    # Only this input retries: Booley writes and polls it; elsewhere an error just reports drift.
+    fingerprint["upgrade_review_sha256"] = file_sha256_or_none(
         booley_dir / "runtime" / "upgrade_review.json", retry_sharing=True
     )
     return fingerprint
@@ -236,11 +227,6 @@ def try_state_lock(path: Path) -> Iterator[bool]:
         yield acquired
 
 
-def _atomic_write(path: Path, text: str) -> None:
-    # World-readable like the files it replaces: host and Sandbox both read them.
-    atomic_replace_bytes(path, text.encode("utf-8"), mode=0o644)
-
-
 def _finding_hash(diagnostics: DiagnosticReport) -> str:
     """Identify the active findings; every clean observation shares one identity."""
     value: object = policy.finding_documents(diagnostics.active_findings) or "clean"
@@ -289,8 +275,10 @@ def publish_result(
         "deep_status": deep_status,
         "finding_hash": _finding_hash(diagnostics),
     }
-    _atomic_write(transcript_path(booley_dir), transcript)
-    _atomic_write(report_path(booley_dir), json.dumps(payload, indent=2) + "\n")
+    atomic_write_text(transcript_path(booley_dir), transcript, mode=_SHARED_MODE)
+    atomic_write_text(
+        report_path(booley_dir), json.dumps(payload, indent=2) + "\n", mode=_SHARED_MODE
+    )
     return payload
 
 
@@ -311,7 +299,9 @@ def invalidate(project_root: Path, *, reason: str) -> None:
     """
     booley_dir = resolve_common_booley_dir(project_root)
     document = {"at": run_start_stamp(), "reason": reason}
-    _atomic_write(state_dir(booley_dir) / _INVALIDATION_NAME, json.dumps(document) + "\n")
+    atomic_write_text(
+        state_dir(booley_dir) / _INVALIDATION_NAME, json.dumps(document) + "\n", mode=_SHARED_MODE
+    )
 
 
 def _load_announcements(path: Path) -> dict[str, str]:
@@ -350,7 +340,9 @@ def consume_changed_snapshot(
             if announcements.get(channel) == snapshot.finding_hash:
                 return None
             announcements[channel] = snapshot.finding_hash
-            _atomic_write(announcements_path, json.dumps(announcements, indent=2) + "\n")
+            atomic_write_text(
+                announcements_path, json.dumps(announcements, indent=2) + "\n", mode=_SHARED_MODE
+            )
     except (FileNotFoundError, OSError):
         return None
     return snapshot

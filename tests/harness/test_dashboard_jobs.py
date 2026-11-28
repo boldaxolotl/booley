@@ -14,7 +14,9 @@ from booley.harness.dashboard.resources import Resources, ResourceSampler
 from booley.harness.standalone_job import standalone_jobs_dir
 from booley.runtime import job_records, job_slots
 from booley.runtime.pid import ProcessIdentity
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.git_support import git
+from tests.sandbox_venue_fake import place
 
 
 @pytest.fixture
@@ -287,7 +289,6 @@ def test_standalone_job_lists_with_log_and_report(layout, monkeypatch, capsys):
     from booley.flows.lint.flow import LintFlow
     from booley.harness import booley as cli
     from booley.mcp.registry import McpToolInfo
-    from booley.runtime import runtime_context
     from booley.runtime.endpoint_execution import EndpointOutcome
     from tests.flows.invocation_doubles import replace_run
 
@@ -297,7 +298,7 @@ def test_standalone_job_lists_with_log_and_report(layout, monkeypatch, capsys):
         return flow
 
     info = McpToolInfo(name="lint", path="lint.py", description="lint", kind="flow")
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setattr(cli, "_discover_project_mcp_tools", lambda _root: [info])
     monkeypatch.setattr(cli, "_load_mcp_tool_class", lambda _info: make_lint)
     monkeypatch.delenv("BOOLEY_RUN_ID", raising=False)

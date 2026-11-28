@@ -10,9 +10,9 @@ from pathlib import Path
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.core.boundary import require_dict, require_str
 from booley.core.resources import package_data_dir
+from booley.core.sandbox_layout import DASHBOARD_PORT
 from booley.runtime import incontainer_setup, platform_paths, runtime_context, session_runtime
 from booley.runtime.incontainer_setup import T3_PORT
-from booley.runtime.sandbox_layout import DASHBOARD_PORT
 
 _VERSION_TIMEOUT_S = 30
 _SERVER = f"127.0.0.1:{T3_PORT} in the Sandbox"

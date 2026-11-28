@@ -14,6 +14,7 @@ from mcp.types import TextContent
 
 from booley.mcp import catalog, server
 from booley.runtime.booley_dir import reset_cache
+from tests import mcp_runner_fake
 from tests.time_budget import hang_guard_s, scaled
 
 
@@ -197,14 +198,8 @@ def test_refresh_preserves_job_and_dispatch_state(project, monkeypatch):
     seen, runs = [], []
     entered = asyncio.Event()
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(project / "logs"))
-
-    async def child(*args, **kwargs):
-        kwargs["on_spawn"](os.getpid())
-        entered.set()
-        await asyncio.Event().wait()
-
-    # Replaced so a call parks a job without running a Flow subprocess.
-    monkeypatch.setattr(server, "_run_subprocess", child)
+    # A call parks a job without running a Flow subprocess.
+    mcp_runner_fake.install(monkeypatch, pid=os.getpid(), started=entered, gate=asyncio.Event())
 
     async def dispatch(name, arguments, definition, counts, jobs, **kwargs):
         counts[name] += 1
@@ -760,6 +755,30 @@ def test_booley_review_exists_only_while_reviewed_commits_is_on(project, feature
             refused = await client.call_tool("booley_review", {"json": "yes"})
             assert refused.is_error
             assert "Unknown MCP tool" not in refused.content[0].text
+
+    asyncio.run(exercise())
+
+
+def test_sim_schema_follows_the_verbose_removal_flag(project, feature_flags):
+    config = project / "booley.toml"
+    config.write_bytes(b"[flows.sim]\nenabled = true\n")
+    sdk, _ = build_server()
+
+    async def exercise():
+        async def sim_fields(client):
+            return (await tools(client))["sim"].input_schema["properties"]
+
+        async with live_client(sdk) as client:
+            assert "verbose" in await sim_fields(client)
+
+            feature_flags.enable(project, "sim-verbose-removal")
+            assert "verbose" not in await sim_fields(client)
+            refused = await client.call_tool("sim", {"target": "sim", "verbose": True})
+            assert refused.is_error
+            assert "'verbose' was unexpected" in refused.content[0].text
+
+            config.write_bytes(b"[flows.sim]\nenabled = true\n")
+            assert "verbose" in await sim_fields(client)
 
     asyncio.run(exercise())
 

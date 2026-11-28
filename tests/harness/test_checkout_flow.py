@@ -33,7 +33,9 @@ from booley.harness.standalone_job import (
 from booley.runtime import booley_dir, job_records, job_slots
 from booley.runtime.commit_export import export_commit
 from booley.runtime.resource_history import load_records
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.harness.process_fake import FakeProcess
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s, scaled
 
@@ -235,15 +237,11 @@ def make_world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Worl
     ``{ctl}`` name the live tree and the control directory) are committed too, and
     ``config`` is appended to the committed and to Main's ``booley.toml``.
     """
-    from booley.runtime import runtime_context, sandbox_layout
+    from booley.core import sandbox_layout
 
     built: list[World] = []
     # The tests' verdict must not depend on the mounts of the host that runs them.
-    monkeypatch.setattr(
-        runtime_context,
-        "runtime_location",
-        lambda: runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX,
-    )
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
 
     def build(
         files: Mapping[str, str] | None = None,
@@ -413,7 +411,7 @@ def refusal_requests(
     world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> dict[str, CheckoutFlowRequest]:
     """One request per refusal rule; each names the path it is refused for."""
-    from booley.runtime import runtime_context, sandbox_layout
+    from booley.core import sandbox_layout
 
     plain_main, env_dir = tmp_path / "main-bd", tmp_path / "env-bd"
     live_checkout = world.live / "exported"
@@ -427,11 +425,7 @@ def refusal_requests(
     # The Sandbox's ``/work`` mount: a live tree whose ``.git`` marker the walk cannot see.
     monkeypatch.setattr(sandbox_layout, "WORK_DIR", str(sandbox_work))
     # Only the issued Sandbox trusts ``/work`` without a ``.git`` marker.
-    monkeypatch.setattr(
-        runtime_context,
-        "runtime_location",
-        lambda: runtime_context.RuntimeLocation.ISSUED_SANDBOX,
-    )
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setenv("BOOLEY_DIR", str(env_dir))
     return {
         "work-dir": world.request("pass", checkout=exported(sandbox_work / "co")),
@@ -577,8 +571,7 @@ def test_checkout_flow_refuses_an_unusable_request_or_runner(
         raise OSError(30, "read-only file system")
 
     if case == "outside-sandbox":
-        # Tells the host from the Sandbox: the boundary of the runner.
-        monkeypatch.setattr(checkout_flow.runtime_context, "inside_session_runtime", lambda: False)
+        place(monkeypatch, RuntimeLocation.HOST)
     if case == "runner-env":
         # A retired selection variable in the runner's environment is not the checkout's fault.
         monkeypatch.setenv(RETIRED_ENV, "")
@@ -1126,9 +1119,9 @@ def test_checkout_flow_refuses_live_paths_in_inputs(
 def test_checkout_flow_derives_the_live_tree(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
 ) -> None:
+    from booley.core import sandbox_layout
     from booley.harness import checkout_flow
     from booley.harness.checkout_flow import CheckoutFlowError, run_checkout_flow
-    from booley.runtime import sandbox_layout
 
     world = make_world(files={"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")})
     if case != "git-work":  # that case keeps the world's ``/work``, a Git checkout
@@ -1228,18 +1221,17 @@ def test_checkout_flow_refuses_a_pdk_root_in_a_live_root(
 def test_checkout_flow_in_the_issued_sandbox_trusts_the_work_mount_alone(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
+    from booley.core import sandbox_layout
     from booley.harness import checkout_flow
     from booley.harness.checkout_flow import (
         CheckoutFlowError,
         CheckoutFlowStatus,
         run_checkout_flow,
     )
-    from booley.runtime import runtime_context, sandbox_layout
 
     files = {"ip.core": PROBE_CORE.format(files="{live}/rtl/top.v")} if case == "live-path" else {}
     world = make_world(files=files)
-    issued = runtime_context.RuntimeLocation.ISSUED_SANDBOX
-    monkeypatch.setattr(runtime_context, "runtime_location", lambda: issued)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     # The issued Sandbox's Main has an empty ``.git`` sentinel, not a repository around it.
     monkeypatch.setattr(checkout_flow, "has_git_worktree_marker", lambda _path: False)
     monkeypatch.chdir(world.checkout.parent)
@@ -1260,8 +1252,8 @@ def test_checkout_flow_in_the_issued_sandbox_trusts_the_work_mount_alone(
 def test_checkout_flow_runs_when_no_input_reads_the_live_tree(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str
 ) -> None:
+    from booley.core import sandbox_layout
     from booley.harness.checkout_flow import CheckoutFlowStatus, run_checkout_flow
-    from booley.runtime import sandbox_layout
 
     if case == "empty-work-path":
         # The image's ``WORKDIR /work`` exists in a hand-written Sandbox without being the

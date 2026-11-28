@@ -43,7 +43,7 @@ def add_subparser(sub: argparse._SubParsersAction) -> None:
     )
 
 
-def run(args: argparse.Namespace, project_root: Path) -> int:
+def run(args: argparse.Namespace, project_root: Path) -> int:  # noqa: ARG001 — _EARLY_COMMANDS handlers take (args, project_root)
     """List the uncovered points of one record; the Project is not consulted."""
     from booley.flows.sim.coverage_analysis_input import read_coverage_record
     from booley.flows.sim.coverage_point_query import uncovered_points

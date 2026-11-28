@@ -23,6 +23,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
+from booley.core.atomic_files import atomic_write_json
 from booley.core.build_paths import work_root_for
 from booley.flows import eda_parsers
 from booley.flows.cli_help import CliHelp
@@ -65,7 +66,6 @@ from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
     EndpointOutcome,
 )
-from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import format_duration, utc_now_rfc3339
@@ -736,7 +736,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         """Not used вЂ” LintFlow overrides _run() for multi-config logic."""
         return []
 
-    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
+    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:  # noqa: ARG002 — overrides Flow._interpret_result
         """Not used вЂ” LintFlow overrides _run()."""
         return EndpointOutcome()
 

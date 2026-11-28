@@ -159,6 +159,22 @@ def observe_process(
     return _observe_procfs_process(identity, proc_root=proc_root)
 
 
+def open_windows_process(pid: int, access: int) -> int | None:
+    """Open a Windows handle to *pid* with *access* rights; ``None`` when refused.
+
+    The caller closes the handle. After ``None``, ``ctypes.get_last_error`` says why.
+    """
+    if sys.platform != "win32":
+        raise OSError("open_windows_process is Windows-only")
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    return kernel32.OpenProcess(access, False, pid) or None
+
+
 def _windows_pid_alive(pid: int) -> bool:
     """Return whether a Windows PID is live, treating uncertainty as live."""
     if sys.platform != "win32":

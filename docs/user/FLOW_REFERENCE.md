@@ -230,9 +230,9 @@ resumed run continued from.
 ### Cleaning up Simulation builds
 
 Simulation keeps each Target's latest reusable build under
-`.booley/.runtime/edalize/sim/` in the checkout, so an unchanged rerun skips
-the build. Booley deletes a build once a newer one replaces it or nothing can
-reuse it.
+`.booley/.runtime/edalize/sim/` in the checkout for
+[build reuse](FLOW-SIM.md#build-reuse). Booley deletes a build once a newer
+one replaces it or nothing can reuse it.
 
 You can delete the whole directory when no simulation is running. The next
 run rebuilds.

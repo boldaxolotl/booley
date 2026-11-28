@@ -11,6 +11,10 @@ import pytest
 from booley.harness import booley as cli
 from booley.harness.terminal_status import section_header
 from booley.presentation import colors
+from booley.runtime.booley_dir import reset_cache
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.harness.doctor_run_support import write_project
+from tests.sandbox_venue_fake import place
 
 PUBLIC_COMMANDS: list[str] = [
     "dashboard",
@@ -67,7 +71,7 @@ def _grouped_rows(help_text: str) -> tuple[dict[str, list[str]], set[int]]:
 
 
 def _run_cli(monkeypatch: pytest.MonkeyPatch, capsys, *argv: str) -> str:
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr("sys.argv", ["booley", *argv])
     with pytest.raises(SystemExit) as exc:
         cli._parse_cli()
@@ -181,9 +185,7 @@ def test_command_locations_enforce_the_audited_boundary(
 ) -> None:
     for command, location in COMMAND_LOCATION_TABLE:
         for inside in (False, True):
-            monkeypatch.setattr(
-                cli.runtime_context, "inside_session_runtime", lambda inside=inside: inside
-            )
+            place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if inside else RuntimeLocation.HOST)
             monkeypatch.setattr("sys.argv", ["booley", command])
             assert cli.COMMAND_LOCATIONS[command].value == location, command
             refused = (location == "Sandbox" and not inside) or (location == "host" and inside)
@@ -279,3 +281,45 @@ def test_dispatch_refuses_a_gated_command_the_selected_project_keeps_off(
         cli.main()
     assert refused.value.code == 2
     assert "invalid choice: 'targets'" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("tail", [False, True], ids=["outer", "tail"])
+def test_sim_verbose_follows_the_selected_projects_removal_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    feature_flags,
+    tail: bool,
+) -> None:
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
+    on, off = tmp_path / "on", tmp_path / "off"
+    for root in (on, off):
+        root.mkdir()
+        write_project(root)
+    feature_flags.enable(on / ".booley", "sim-verbose-removal")
+
+    def run(cwd: Path, selected: Path, *argv: str) -> tuple[object, str, str]:
+        selector = ["-C", str(selected)]
+        endpoint = ["flow", "sim", *argv]
+        words = [*endpoint, *selector] if tail else [*selector, *endpoint]
+        monkeypatch.chdir(cwd)
+        monkeypatch.setattr("sys.argv", ["booley", *words])
+        reset_cache()
+        try:
+            code: object = cli.main()
+        except SystemExit as stopped:
+            code = stopped.code
+        captured = capsys.readouterr()
+        return code, captured.out, captured.err
+
+    dry_run = ("--target", "nope", "--dry-run")
+    plain_code, _, plain_err = run(on, off, *dry_run)
+    code, _, err = run(on, off, *dry_run, "--verbose")
+    assert (code, err) == (plain_code, plain_err)
+    assert "--verbose" in run(on, off, "--help")[1]
+
+    code, _, err = run(off, on, *dry_run, "--verbose")
+    assert "unrecognized arguments: --verbose" in err
+    assert code == 2
+    assert "--verbose" not in run(off, on, "--help")[1]

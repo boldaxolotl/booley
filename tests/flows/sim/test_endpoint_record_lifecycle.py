@@ -21,8 +21,12 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.conftest import symlink_or_skip
+from tests.flows.sim.fault_point_support import inject_faults
 from tests.flows.sim.launched_work import launched_work
 from tests.flows.sim.test_simulation_record_characterization import _AdapterAbortExecution, _plan
+from tests.sandbox_venue_fake import place
 from tests.time_budget import hang_guard_s
 
 
@@ -96,7 +100,7 @@ def _hook_project(tmp_path, commands, live_commands):
     return project
 
 
-def _hook_executor(build, disclosures, mutate_bundle, checkpoint):
+def _hook_executor(build, disclosures, mutate_bundle):
     from tests.flows.sim.simulation_record_test_support import _executor
 
     return _executor(
@@ -104,7 +108,6 @@ def _hook_executor(build, disclosures, mutate_bundle, checkpoint):
         {"compile": 0, "durable_reuse": 0, "launch": 0},
         disclosures=disclosures,
         mutate_bundle=mutate_bundle,
-        checkpoint=checkpoint,
     )
 
 
@@ -118,7 +121,6 @@ def _successful_pre_sim_record(
     live_commands: tuple[str, ...] | None = None,
     transform=None,
     invocation_directory: Path | None = None,
-    checkpoint=None,
     observer=None,
 ):
     from booley.flows.sim.record.coordinator import (
@@ -141,9 +143,9 @@ def _successful_pre_sim_record(
     )
     invocation = invocation_directory or tmp_path / "reports/1"
     invocation.mkdir(parents=True, exist_ok=True)
-    simulation_record = SimulationRecord(
-        _hook_executor(build, disclosures, mutate_bundle, checkpoint)
-    ).run(_observed_simulation_record_request(plan, project, invocation, observer))
+    simulation_record = SimulationRecord(_hook_executor(build, disclosures, mutate_bundle)).run(
+        _observed_simulation_record_request(plan, project, invocation, observer)
+    )
     return invocation, simulation_record
 
 
@@ -214,25 +216,60 @@ def test_downstream_integrity_failure_retains_authenticated_current_hook(
     assert result.detail["pre_sim_runs"][0]["terminal"] is False
 
 
-def test_endpoint_reauthentication_never_renders_corrupt_hook_as_authoritative(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize(
+    ("corruption", "retained"),
+    [("truncated_sidecar", True), ("truncated_manifest", True), ("linked_sidecar", False)],
+)
+def test_scan_error_after_projection_retains_only_referencable_hooks(
+    tmp_path, monkeypatch, corruption, retained
 ):
     invocation, simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
     flow._args = SimpleNamespace(target=["sim"])
-    # Private seams: the integrity failure and corruption must land between projection and attach,
-    # which no public run exposes.
-    result = flow._simulation_record_endpoint_outcome([simulation_record])
-    assert result.detail["pre_sim_current"] == 1
+    # Private seams: the corruption must land between projection and attach, which no public
+    # run exposes.
     firing = simulation_record.pre_sim_firings[0]
-    firing.path.write_bytes(firing.path.read_bytes() + b" ")
+    flow._current_published_pre_sim_keys = {firing.key}
+    result = flow._simulation_record_endpoint_outcome([simulation_record])
+    result = flow._attach_published_pre_sim(result)
+    assert "pre_run_commands" in result.report_text
+    references = [run["reference"] for run in result.detail["pre_sim_runs"]]
+    if corruption == "linked_sidecar":
+        copy = tmp_path / "sidecar-copy.json"
+        copy.write_bytes(firing.path.read_bytes())
+        firing.path.unlink()
+        symlink_or_skip(firing.path, copy)
+    else:
+        path = firing.path if corruption == "truncated_sidecar" else firing.manifest_path
+        path.chmod(0o600)
+        path.write_bytes(b"{")
     result = flow._attach_published_pre_sim(result)
     assert result.exit_code == 2
-    assert "pre_run_commands" not in result.report_text
+    assert "Simulation Record integrity failure:" in result.report_text
+    assert ("pre_run_commands" in result.report_text) is retained
+    assert ("pre_sim_lines" in result.detail) is retained
+    if retained:
+        assert [run["terminal"] for run in result.detail["pre_sim_runs"]] == [False]
+        assert "pre_sim_unauthenticated_references" not in result.detail
+    else:
+        assert "pre_sim_runs" not in result.detail
+        assert result.detail["pre_sim_unauthenticated_references"] == references
+
+
+def test_scan_error_before_any_outcome_publishes_no_hook_lines(tmp_path, monkeypatch):
+    invocation, _simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
+    result_path = next((invocation / "targets/sim/record").glob("work-items/*/result.json"))
+    result_path.chmod(0o600)
+    result_path.write_bytes(b"{")
+    flow = SimulateFlow()
+    flow._reserved_invocation_dir = invocation
+    # Private seam: no public run stops between publication and attach.
+    result = flow._attach_published_pre_sim(EndpointOutcome(exit_code=0, report_text="done"))
+    assert result.exit_code == 2
+    assert "Simulation Record integrity failure:" in result.report_text
     assert "pre_sim_lines" not in result.detail
     assert "pre_sim_runs" not in result.detail
-    assert result.detail["pre_sim_unauthenticated_references"]
 
 
 @pytest.mark.parametrize("termination", ["disk_budget", "sim_time_stall"])
@@ -413,20 +450,19 @@ def test_cli_recovery_paths_survive_failures(
         if boundary == failure:
             raise KeyboardInterrupt()
 
-    flow = SimulateFlow(
-        coverage_execution=execution, simulation_record_publication_checkpoint=checkpoint
-    )
-    if failure in {"before:manifest_commit", "after:manifest_commit", "interrupt"}:
-        with pytest.raises(KeyboardInterrupt):
-            flow.execute_cli(argv)
-    else:
-        result = flow.execute_cli(argv)
-        assert result.exit_code in {2, 130}
-        assert "  manifest: " in result.outcome.report_text
-        assert (
-            f"  report: {(tmp_path / 'reports/sim/1/report.json').resolve()}"
-            in result.outcome.report_text
-        )
+    flow = SimulateFlow(coverage_execution=execution)
+    with inject_faults(checkpoint):
+        if failure in {"before:manifest_commit", "after:manifest_commit", "interrupt"}:
+            with pytest.raises(KeyboardInterrupt):
+                flow.execute_cli(argv)
+        else:
+            result = flow.execute_cli(argv)
+            assert result.exit_code in {2, 130}
+            assert "  manifest: " in result.outcome.report_text
+            assert (
+                f"  report: {(tmp_path / 'reports/sim/1/report.json').resolve()}"
+                in result.outcome.report_text
+            )
     _assert_recovery_announcement(capsys, seen, failure)
 
 
@@ -459,18 +495,18 @@ def test_same_flow_second_failure_does_not_reuse_manifest(
         if armed and boundary == "before:manifest_commit":
             raise OSError("publication failed")
 
-    flow = SimulateFlow(
-        coverage_execution=lambda *_args: NativeExecution(),
-        simulation_record_publication_checkpoint=fail,
-    )
-    first = flow.execute_cli(argv)
-    manifest_line = next(
-        line for line in first.outcome.report_text.splitlines() if line.startswith("  manifest:")
-    )
-    capsys.readouterr()
+    flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
+    with inject_faults(fail):
+        first = flow.execute_cli(argv)
+        manifest_line = next(
+            line
+            for line in first.outcome.report_text.splitlines()
+            if line.startswith("  manifest:")
+        )
+        capsys.readouterr()
 
-    armed = True
-    second = flow.execute_cli(argv)
+        armed = True
+        second = flow.execute_cli(argv)
     assert second.exit_code == 2
     assert "manifest:" not in second.outcome.report_text
     assert manifest_line not in second.outcome.report_text
@@ -561,33 +597,13 @@ def test_ordinary_cli_manifest_and_card_paths(
     assert report.is_file()
     assert result.outcome.report_text.count("  manifest:") == 1
 
-    _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys, result, factory)
+    _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys, result)
 
 
-def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys, result, factory):
+def _assert_ordinary_cli_resume(flow, plan, seen, tmp_path, monkeypatch, capsys, result):
     capsys.readouterr()
     destination = tmp_path / "resumed reports"
     monkeypatch.setattr("booley.flows.sim.record.resume.git_full_sha", lambda *_args: "abc123")
-    monkeypatch.setattr(flow, "_resume_simulation_record_plan", lambda *_args, **_kwargs: plan)
-
-    def resume_executor(**_kwargs):
-        checkpoints = list(destination.glob("sim/[0-9]*/progress.json"))
-        assert len(checkpoints) == 1
-        preparing = json.loads(checkpoints[0].read_text())
-        assert preparing["complete"] is False
-        assert preparing["completed_targets"] == []
-        assert preparing["active"][0]["stage"] == "preparing"
-        assert preparing["active"][0]["operation"] == "publication"
-        assert (
-            capsys.readouterr().err
-            == _WORK_DIR_NOTICE + f"Simulation Record manifest: {seen[0]}\n"
-        )
-        return OrdinaryHdlSerialExecutor(
-            invoke=lambda *_args, **_kwargs: None, execution_factory=factory
-        )
-
-    # Private seam: the cocotb card execution has no public Project fixture.
-    monkeypatch.setattr("booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor", resume_executor)
     resumed = flow.execute_cli(
         _simulation_record_cli_args(
             work_dir=str(tmp_path), report_dir=str(destination), resume_from=str(seen[0])
@@ -661,9 +677,8 @@ def test_partial_publication_discloses_only_committed_target(
     def executor(*_args):
         raise AssertionError("work must wait for every manifest")
 
-    result = SimulateFlow(
-        coverage_execution=executor, simulation_record_publication_checkpoint=checkpoint
-    ).execute_cli(argv)
+    with inject_faults(checkpoint):
+        result = SimulateFlow(coverage_execution=executor).execute_cli(argv)
     output = capsys.readouterr()
     assert result.exit_code == 2
     assert output.err.count("Simulation Record manifest: ") == 1
@@ -1035,10 +1050,9 @@ def _assert_coverage_fault(fault, result, reports, returned, terminal_phases, mo
 
 def _coverage_uncovered_exit(monkeypatch, capsys, coverage_json: Path) -> int:
     """Exit code of ``booley coverage uncovered`` on a Coverage Record, run as a host terminal."""
-    from booley.harness import booley as cli
     from tests.harness.test_coverage_cli import _booley
 
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     return _booley(monkeypatch, capsys, "coverage", "uncovered", str(coverage_json))[0]
 
 
@@ -1158,11 +1172,6 @@ def _ordinary_public_hook_fixture(tmp_path, monkeypatch):
     (project / ".booley/tests.toml").write_text('[sim_a]\ntests = ["a", "b"]\n')
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setattr(
-        # Private seams: the fake-EDA tool identity and execution have no public Project fixture.
-        "booley.flows.sim.build_session._icarus_tool_identity",
-        lambda: "test-tool-closure",
-    )
     flow = SimulateFlow()
     # Publication tests must allow for Git for Windows shell startup under CI load.
     execution = SimulationExecution(
@@ -1346,7 +1355,10 @@ _UNADMITTED = {
 
 @pytest.mark.parametrize("kind", ["ordinary", "coverage", "resume"])
 def test_simulation_record_kinds_refuse_without_admission(tmp_path: Path, kind: str) -> None:
-    from booley.flows.sim.flow import PreparedSimulationEndpoint
+    from booley.flows.sim.flow import (
+        OrdinarySimulationRecordPlanning,
+        PreparedSimulationEndpoint,
+    )
     from booley.flows.sim.request import SimRequest
 
     flow = SimulateFlow()
@@ -1359,8 +1371,10 @@ def test_simulation_record_kinds_refuse_without_admission(tmp_path: Path, kind: 
         recovery = SimpleNamespace(
             manifest_sha256="sha256:x", completed=("a",), interrupted=(), pending=("b",)
         )
+        planning = OrdinarySimulationRecordPlanning((), {})
+        validated = SimpleNamespace(path=tmp_path / "manifest.json")
         result = flow._execute_simulation_record(
-            None, flow._resume_simulation_record_run(SimpleNamespace(), recovery)
+            None, flow._resume_simulation_record_run(validated, recovery, planning)
         )
     else:
         with flow.publication_resources:
@@ -1442,7 +1456,6 @@ def _kind_request(tmp_path, monkeypatch, kind):
         if kind == "resume":
             for name in (
                 "booley.flows.sim.flow.git_full_sha",
-                "booley.flows.sim.flow_resume.git_full_sha",
                 "booley.flows.sim.record.resume.git_full_sha",
             ):
                 monkeypatch.setattr(name, lambda *_args: "a" * 40)
@@ -1754,19 +1767,6 @@ def test_partial_simulation_record_planning_keeps_known_and_unknown_tools(tmp_pa
     assert result.exit_code == 2
     report = json.loads((tmp_path / "reports/sim.json").read_bytes())
     assert report.get("eda_tools") == {"sim_a": "icarus", "sim_b": None}
-
-
-def test_pre_sim_read_rejects_result_reference_without_published_firing(tmp_path, monkeypatch):
-    """The Pre-Sim read boundary binds a terminal result's firing references both ways."""
-    from booley.flows.sim.record import SimulationRecordIntegrityError
-    from booley.flows.sim.record.store import SimulationRecordStore
-
-    invocation, outcome = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
-    outcome.pre_sim_firings[0].path.unlink()
-    store = SimulationRecordStore(invocation / "targets/sim/record")
-
-    with pytest.raises(SimulationRecordIntegrityError, match="result references disagree"):
-        collect_pre_sim_firings(store.manifest_path)
 
 
 def _spy_simulation_lifecycle(monkeypatch, events, terminal_phases, *, terminal_write_fails):

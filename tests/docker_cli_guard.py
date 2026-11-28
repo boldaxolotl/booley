@@ -28,7 +28,6 @@ from booley.runtime import (
     inspection,
     platform_paths,
     project_image,
-    session_admission,
     session_runtime,
 )
 
@@ -68,7 +67,7 @@ def route_docker_helper_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) 
     tree on timeout), which those fakes cannot see.  Modules that fake
     ``subprocess.run`` call this from an autouse fixture so the helper reaches
     their fake again, exactly as it did before.  It also routes the session
-    runtime's and admission's bounded capture (see
+    runtime's and ``host_docker``'s bounded capture (see
     :func:`route_session_helpers_through_subprocess_run`) and that of every other
     host-side module that runs a timed Docker CLI command (``HOST_DOCKER_MODULES``).
     """
@@ -90,7 +89,7 @@ def route_docker_helper_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) 
     route_bounded_capture_through_subprocess_run(monkeypatch, *HOST_DOCKER_MODULES)
 
 
-#: Host-side modules, besides the session runtime and admission, whose timed Docker CLI
+#: Host-side modules, besides the session runtime and ``host_docker``, whose timed Docker CLI
 #: commands go through ``platform_paths.run_captured_bounded``.
 HOST_DOCKER_MODULES = (
     bootstrap,
@@ -162,8 +161,8 @@ def route_bounded_capture_through_subprocess_run(
 
 
 def route_session_helpers_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Run the session runtime's and admission's timed captures through ``subprocess.run``."""
-    route_bounded_capture_through_subprocess_run(monkeypatch, session_runtime, session_admission)
+    """Run the session runtime's and ``host_docker``'s timed captures through ``subprocess.run``."""
+    route_bounded_capture_through_subprocess_run(monkeypatch, session_runtime, host_docker)
 
 
 def route_bounded_captures_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:

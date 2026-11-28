@@ -11,17 +11,17 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from booley.core.atomic_files import atomic_write_once
 from booley.core.boundary import (
     BoundaryError,
     require_dict,
     require_int,
     require_str,
 )
-from booley.runtime.atomic_files import atomic_write_once
+from booley.core.sandbox_layout import canonical_project_alias_path
 from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.regular_file import open_regular_nofollow
-from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 from .coverage_json import (
     MANIFEST_JSON,

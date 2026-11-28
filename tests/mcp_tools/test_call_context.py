@@ -15,6 +15,7 @@ from booley.mcp import (
 from booley.mcp.call_context import CallContext, resolve_call_context, resolve_work_dir
 from booley.runtime import job_records as jobrec
 from booley.runtime.session_paths import session_jobs_dir
+from tests import mcp_runner_fake
 
 try:
     from booley.mcp import server as mcp_server
@@ -251,13 +252,7 @@ class TestDispatchWithoutCwd:
         # A deleted cwd must not stop a work_dir-less Specialist call: the
         # transcript dir, timeout, and attach scan come from the environment.
         release = asyncio.Event()
-
-        async def run(_cmd, *, timeout, on_spawn=None, **_kwargs):
-            on_spawn(4242)
-            await release.wait()
-            return 0, "DONE", "", False
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", run)
+        mcp_runner_fake.install(monkeypatch, (0, "DONE", "", False), pid=4242, gate=release)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
         monkeypatch.setattr(jobrec, "derive_status", lambda rec, _alive, **_kw: rec.status)
         monkeypatch.setattr(jobrec, "is_active", lambda _rec, _alive, **_kw: True)
@@ -308,11 +303,7 @@ class TestManagerReadsPinnedRoot:
     def test_completion_rendering_reads_the_submit_root(
         self, job_env: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        async def run(_cmd, *, timeout, on_spawn=None, **_kwargs):
-            on_spawn(4242)
-            return 0, "DONE", "", False
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", run)
+        mcp_runner_fake.install(monkeypatch, (0, "DONE", "", False), pid=4242)
         pinned = session_jobs_dir()
 
         async def scenario() -> tuple[mcp_server._JobManager, str]:
@@ -336,13 +327,7 @@ class TestManagerReadsPinnedRoot:
         self, job_env: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         started = asyncio.Event()
-
-        async def run(_cmd, *, timeout, on_spawn=None, **_kwargs):
-            on_spawn(4242)
-            started.set()
-            await asyncio.Event().wait()
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", run)
+        mcp_runner_fake.install(monkeypatch, pid=4242, started=started, gate=asyncio.Event())
         monkeypatch.setattr(
             jobrec, "derive_status", lambda _rec, _alive, **_kw: jobrec.STATUS_RUNNING
         )

@@ -1,8 +1,8 @@
 """FAIL and WARN branches of Doctor probes, driven through a whole Doctor run.
 
 Each test answers the commands Doctor runs through the shared fake in
-``tests/harness/test_doctor.py`` and lets every Booley step between the run and
-that fake execute.
+``tests/harness/doctor_host_support.py`` and lets every Booley step between the run
+and that fake execute.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from booley.runtime import agent_config as runtime_agent_config
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 from tests.diagnostic_helpers import _Rec, _record_environment
 from tests.harness.doctor_host_support import serve_healthy_doctor_host
-from tests.harness.test_doctor import _doctor_run, _messages, _write_project
+from tests.harness.doctor_run_support import finding_messages, run_doctor, write_project
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -38,7 +38,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, list
     """
     root = tmp_path / "project"
     root.mkdir()
-    _write_project(root)
+    write_project(root)
     _git(root, "init", "-q")
     _git(root, "add", ".")
     _git(root, "commit", "-qm", "project")
@@ -80,7 +80,7 @@ def test_backend_health_row(project, cli, deep, rows):
         config.read_bytes().replace(b"[agent]", f'[agent]\ndefault = "{cli}"'.encode())
     )
 
-    result = _doctor_run(root, deep=deep)
+    result = run_doctor(root, deep=deep)
 
     assert [
         (f.severity, f.message) for f in result.findings if f.message.startswith("worker backend")
@@ -97,7 +97,7 @@ def test_backend_config_failure_is_a_warning_not_a_crash(project, monkeypatch):
     # so no Project file makes this later read fail; only the replaced load can.
     monkeypatch.setattr(runtime_agent_config, "load_backend_config", unreadable)
 
-    warnings = _messages(_doctor_run(root), Severity.WARN, check_id="agent.backend-health")
+    warnings = finding_messages(run_doctor(root), Severity.WARN, check_id="agent.backend-health")
 
     assert warnings == ["worker backend health check failed: models.toml is garbage"]
 
@@ -110,7 +110,7 @@ def test_git_state_reports_an_unfinished_merge_and_a_dirty_tree(project, dirty):
         (root / "rtl" / "dut.sv").write_bytes(b"module dut; wire w; endmodule\n")
         (root / "untracked.txt").write_bytes(b"new\n")
 
-    result = _doctor_run(root)
+    result = run_doctor(root)
 
     git_rows = [
         (finding.severity, finding.message)
@@ -142,7 +142,7 @@ def test_sim_dry_run_pins_the_first_test_of_the_selected_cores_section(project):
         b'["::unit:0#sim_fast"]\ntests = ["unit_first"]\n'
     )
 
-    _doctor_run(root)
+    run_doctor(root)
 
     [dry_run] = [argv for argv in calls if "booley.flows.sim" in argv and "--dry-run" in argv]
     assert dry_run[dry_run.index("--target") + 1] == "unit#sim_fast"

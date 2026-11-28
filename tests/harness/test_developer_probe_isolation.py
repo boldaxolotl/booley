@@ -15,7 +15,9 @@ from booley.harness import developer_probe
 from booley.runtime import _claude_backend, _codex_backend
 from booley.runtime import agent_config as backend_config
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.agent_call_fake import install_agent
+from tests.sandbox_venue_fake import place
 
 
 @pytest.fixture
@@ -33,9 +35,7 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "project" / ".booley"))
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
     (tmp_path / "tmp").mkdir()
-    # Private: the one function in each module that tells the host from the Sandbox.
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
-    monkeypatch.setattr(_codex_backend, "_inside_container", lambda: True)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     # Private: a process-wide cache of nested Codex homes; an earlier test's home must not leak in.
     monkeypatch.setattr(_codex_backend, "_NESTED_HOMES", {})
     agent_config.set_agent_settings(None)

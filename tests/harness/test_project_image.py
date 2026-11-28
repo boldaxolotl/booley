@@ -2,52 +2,49 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import pytest
 
 from booley.runtime import project_image as pi
-from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.fake_docker_executable import FakeDocker, install_fake_docker
 
 # ===========================================================================
 # project_image_name
 # ===========================================================================
 
 
-@pytest.fixture(autouse=True)
-def _route_bounded_capture_through_subprocess_run(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Let this file's ``subprocess.run`` fakes see the bounded Docker commands of pi."""
-    route_bounded_capture_through_subprocess_run(monkeypatch, pi)
+@pytest.fixture
+def docker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """The fake Docker CLI, alone on ``PATH``; the layout probe's cache is emptied."""
+    pi.project_data_alias_capable.cache_clear()
+    yield install_fake_docker(tmp_path / "docker-fake", monkeypatch, {}, images={})
+    pi.project_data_alias_capable.cache_clear()
 
 
 class TestImageName:
-    def test_slug_from_dir(self, tmp_path):
-        d = tmp_path / "myproj"
+    @pytest.mark.parametrize(
+        ("directory", "slug"), [("myproj", "myproj"), ("My Proj!", "my-proj")]
+    )
+    def test_slugs_the_directory_name(self, tmp_path, directory, slug):
+        d = tmp_path / directory
         d.mkdir()
-        assert pi.project_image_name(d).startswith("myproj-booley-sandbox-")
-
-    def test_sanitizes(self, tmp_path):
-        d = tmp_path / "My Proj!"
-        d.mkdir()
-        assert pi.project_image_name(d).startswith("my-proj-booley-sandbox-")
+        assert pi.project_image_name(d).startswith(f"{slug}-booley-sandbox-")
 
 
 class TestProjectSandboxImage:
-    def test_non_table_sandbox_uses_default(self, tmp_path):
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        (booley_dir / "booley.toml").write_text('sandbox = "wrong shape"\n')
-
-        assert pi.project_sandbox_image(tmp_path) == pi.project_image_name(tmp_path)
-
-    def test_riscv_with_requirements_selects_generated_final_image(self, tmp_path):
-        booley_dir = tmp_path / ".booley"
-        booley_dir.mkdir()
-        (booley_dir / "booley.toml").write_text(
+    @pytest.mark.parametrize(
+        "toml",
+        [
+            'sandbox = "wrong shape"\n',
             '[sandbox]\nimage = "booley-sandbox-riscv"\npip_requirements = ["requirements.txt"]\n',
-            encoding="utf-8",
-        )
+        ],
+        ids=["non-table-sandbox", "riscv-with-requirements"],
+    )
+    def test_selects_the_generated_image(self, tmp_path, toml):
+        booley_dir = tmp_path / ".booley"
+        booley_dir.mkdir()
+        (booley_dir / "booley.toml").write_text(toml, encoding="utf-8")
 
         assert pi.project_sandbox_image(tmp_path) == pi.project_image_name(tmp_path)
 
@@ -64,14 +61,11 @@ class TestResolve:
         assert [p.name for p in existing] == ["a.txt"]
         assert missing == ["nope.txt"]
 
-    def test_none_bakes_nothing(self, tmp_path):
+    @pytest.mark.parametrize("listed", [None, []])
+    def test_nothing_listed_bakes_nothing(self, tmp_path, listed):
         # No auto-discovery: a root requirements.txt is ignored unless listed.
         (tmp_path / "requirements.txt").write_text("root-pkg==1.0\n", encoding="utf-8")
-        assert pi.resolve_requirements(tmp_path, None) == ([], [])
-
-    def test_empty_list_bakes_nothing(self, tmp_path):
-        (tmp_path / "requirements.txt").write_text("root-pkg==1.0\n", encoding="utf-8")
-        assert pi.resolve_requirements(tmp_path, []) == ([], [])
+        assert pi.resolve_requirements(tmp_path, listed) == ([], [])
 
 
 # ===========================================================================
@@ -106,7 +100,10 @@ class TestConsolidate:
             "git+https://github.com/x/y.git@v1\n",  # remote VCS is bakeable
             encoding="utf-8",
         )
-        body, kept, skipped, _ = pi.consolidated_requirements(tmp_path, [a])
+        all_local = tmp_path / "all-local.txt"
+        all_local.write_text("./only-local\n", encoding="utf-8")
+        body, kept, skipped, _ = pi.consolidated_requirements(tmp_path, [a, all_local])
+        assert "# from all-local.txt" not in body  # nothing of it is baked
         assert "alpha-pkg==1.2.3" in kept
         assert "git+https://github.com/x/y.git@v1" in kept
         assert "localpkg @ file:../ext/localpkg" in skipped
@@ -115,13 +112,6 @@ class TestConsolidate:
         assert "-r other.txt" in skipped
         for s in skipped:
             assert s not in body
-
-    def test_all_local_yields_no_kept(self, tmp_path):
-        a = tmp_path / "a.txt"
-        a.write_text("pkg @ file:../sub\n-e ./x\n", encoding="utf-8")
-        _, kept, skipped, _ = pi.consolidated_requirements(tmp_path, [a])
-        assert kept == []
-        assert len(skipped) == 2
 
     def test_drops_managed_package_pins(self, tmp_path):
         # SETUP-5: a design repo's fusesoc/edalize pin would shadow the image's
@@ -162,56 +152,51 @@ def _write_managed_files(docker_dir: Path, requirements_body: str) -> None:
     (docker_dir / "requirements.txt").write_bytes(requirements_content.encode("utf-8"))
 
 
+@pytest.fixture
+def managed_docker_dir(tmp_path: Path) -> Path:
+    """The managed file pair as init writes it for a Project with no requirements."""
+    docker_dir = tmp_path / "docker"
+    body, _, _, _ = pi.consolidated_requirements(tmp_path, [])
+    _write_managed_files(docker_dir, body)
+    return docker_dir
+
+
 class TestManagedFileGuard:
     def test_absent_is_managed(self, tmp_path):
         assert pi.is_managed_generated_file(tmp_path / "nope") is True
 
-    def test_generated_header_is_managed(self, tmp_path):
-        docker_dir = tmp_path / "docker"
-        body, _, _, _ = pi.consolidated_requirements(tmp_path, [])
-        _write_managed_files(docker_dir, body)
-        assert pi.is_managed_generated_file(docker_dir / "Dockerfile") is True
-        assert pi.is_managed_generated_file(docker_dir / "requirements.txt") is True
+    def test_generated_header_is_managed(self, managed_docker_dir):
+        assert pi.is_managed_generated_file(managed_docker_dir / "Dockerfile") is True
+        assert pi.is_managed_generated_file(managed_docker_dir / "requirements.txt") is True
 
     def test_hand_written_is_user_owned(self, tmp_path):
         f = tmp_path / "Dockerfile"
         f.write_text("FROM booley-sandbox\nRUN apt-get install -y gcc\n", encoding="utf-8")
         assert pi.is_managed_generated_file(f) is False
 
-    def test_edited_generated_file_is_user_owned(self, tmp_path):
+    def test_edited_generated_file_is_user_owned(self, managed_docker_dir):
         # SETUP-6 hole: an edit that KEEPS the generated header used to read
         # as managed and was clobbered on re-init; the stamped self-hash now
         # flags any edit as user-owned.
-        docker_dir = tmp_path / "docker"
-        body, _, _, _ = pi.consolidated_requirements(tmp_path, [])
-        _write_managed_files(docker_dir, body)
-        df = docker_dir / "Dockerfile"
+        df = managed_docker_dir / "Dockerfile"
         df.write_text(df.read_text(encoding="utf-8") + "RUN echo mine\n", encoding="utf-8")
         assert pi.is_managed_generated_file(df) is False
 
-    def test_legacy_generated_file_without_hash_stays_managed(self, tmp_path):
-        # Files written before hash stamping carry only the header — they must
-        # keep regenerating (legacy behavior), not freeze as user-owned.
+    @pytest.mark.parametrize(
+        "header",
+        ["# AUTO-GENERATED by `booley init`.", "# AUTO-GENERATED by `booley init` (ADR 0018)."],
+        ids=["without-hash", "v0.4.0"],
+    )
+    def test_released_headers_without_hash_stay_managed(self, tmp_path, header):
+        # Files written before hash stamping carry only a header, a persisted-format
+        # contract: they keep regenerating rather than freeze as user-owned.
         f = tmp_path / "Dockerfile"
-        f.write_text(f"{pi._GENERATED_HEADER}\nFROM booley-sandbox\n", encoding="utf-8")
+        f.write_text(f"{header}\nFROM booley-sandbox\n", encoding="utf-8")
         assert pi.is_managed_generated_file(f) is True
 
-    def test_released_header_file_stays_managed(self, tmp_path):
-        # booley v0.4.0 wrote this header; the literal is a persisted-format
-        # contract of Projects initialized by that release.
-        f = tmp_path / "Dockerfile"
-        f.write_text(
-            "# AUTO-GENERATED by `booley init` (ADR 0018).\nFROM booley-sandbox\n",
-            encoding="utf-8",
-        )
-        assert pi.is_managed_generated_file(f) is True
-
-    def test_keep_directive_is_user_owned(self, tmp_path):
+    def test_keep_directive_is_user_owned(self, managed_docker_dir):
         # Still has the generated header but flagged hands-off.
-        docker_dir = tmp_path / "docker"
-        body, _, _, _ = pi.consolidated_requirements(tmp_path, [])
-        _write_managed_files(docker_dir, body)
-        df = docker_dir / "Dockerfile"
+        df = managed_docker_dir / "Dockerfile"
         df.write_text(df.read_text() + "# booley:keep\nRUN echo mine\n", encoding="utf-8")
         assert pi.is_managed_generated_file(df) is False
 
@@ -253,23 +238,16 @@ class TestDockerfile:
         )
         assert pi.dockerfile_parent_image(dockerfile) == "booley-sandbox"
 
-    def test_installs_as_root_into_system(self, tmp_path):
+    def test_installs_as_root_into_system_in_isolation(self, tmp_path):
         docker_dir = tmp_path / "docker"
-        pi.consolidated_requirements(tmp_path, [])
-        _write_managed_files(docker_dir, "alpha-pkg==1.2.3\n")
+        _write_managed_files(docker_dir, "legacy-package==1.0\n")
         body = (docker_dir / "Dockerfile").read_text(encoding="utf-8")
         assert "FROM booley-sandbox" in body
         assert "USER root" in body
         assert "USER agent" in body
         # System install (not --user) so the pip-local volume can't shadow it.
         assert "--user" not in body
-
-    def test_builds_legacy_source_distributions_in_isolation(self, tmp_path):
-        docker_dir = tmp_path / "docker"
-        _write_managed_files(docker_dir, "legacy-package==1.0\n")
-
-        body = (docker_dir / "Dockerfile").read_text(encoding="utf-8")
-
+        # Legacy source distributions build in isolation.
         assert "pip install --use-pep517" in body
 
 
@@ -282,26 +260,18 @@ BASE_VERSIONS = {"cocotb": "2.1.0", "cocotbext-axi": "0.1.28", "pytest": "8.0.0"
 
 
 class TestBaseImagePackages:
-    def _run(self, monkeypatch, *, stdout: str = "", returncode: int = 0, exc=None):
-        def _fake(cmd, **kwargs):
-            if exc is not None:
-                raise exc
-            return subprocess.CompletedProcess(cmd, returncode, stdout, "")
-
-        monkeypatch.setattr(pi.subprocess, "run", _fake)
-
-    def test_parses_pip_freeze_and_normalizes_names(self, monkeypatch):
-        self._run(monkeypatch, stdout="cocotb==2.1.0\ncocotb_ext.AXI==0.1.28\nnoversion\n")
+    def test_parses_pip_freeze_and_normalizes_names(self, docker: FakeDocker):
+        docker.answer("pip list", stdout="cocotb==2.1.0\ncocotb_ext.AXI==0.1.28\nnoversion\n")
 
         assert pi.base_image_packages() == {"cocotb": "2.1.0", "cocotb-ext-axi": "0.1.28"}
 
-    def test_unqueryable_image_is_not_an_error(self, monkeypatch):
+    def test_unqueryable_image_is_not_an_error(self, docker: FakeDocker):
         """Advisory by contract: no base image means nothing to advise about."""
-        self._run(monkeypatch, returncode=125)
+        docker.answer("pip list", code=125)
         assert pi.base_image_packages() == {}
 
-        self._run(monkeypatch, exc=FileNotFoundError("docker"))
-        assert pi.base_image_packages() == {}
+        with docker.absent():
+            assert pi.base_image_packages() == {}
 
 
 class TestCuratedOverrides:
@@ -344,72 +314,61 @@ _IMAGE_ID = "sha256:" + "d" * 64
 
 
 @pytest.mark.parametrize(
-    ("stdout", "expected"), [("canonical-alias\n", True), ("directory\n", False)]
+    ("stdout", "expected"),
+    [("canonical-alias\n", True), ("directory\n", False), ("absent\n", None)],
 )
-def test_layout_probe_reads_alias_and_directory(
-    monkeypatch: pytest.MonkeyPatch, stdout: str, expected: bool
+def test_layout_probe(docker: FakeDocker, stdout: str, expected: bool | None) -> None:
+    """``None``: an image without the Booley Directory mount point is refused."""
+    docker.answer("--entrypoint=python3", stdout=stdout)
+
+    if expected is None:
+        with pytest.raises(pi.DockerImageError, match="booley init") as caught:
+            pi.project_data_alias_capable(_IMAGE_ID)
+        assert isinstance(caught.value, pi.ImageLayoutMissingError)
+        assert _IMAGE_ID in str(caught.value)
+        assert "/booley " in str(caught.value)
+        assert "'/booley'" in docker.calls[-1][-1]
+    else:
+        assert pi.project_data_alias_capable(_IMAGE_ID) is expected
+
+
+@pytest.mark.parametrize(
+    ("code", "stdout", "detail"),
+    [(1, "exec format error", "exec format error"), (125, "", "exit 125")],
+    ids=["stdout-only", "no-output"],
+)
+def test_layout_probe_failure_names_what_docker_reported(
+    docker: FakeDocker, code: int, stdout: str, detail: str
 ) -> None:
-    pi.project_data_alias_capable.cache_clear()
-    monkeypatch.setattr(
-        subprocess,
-        "run",
-        lambda argv, **_kwargs: subprocess.CompletedProcess(argv, 0, stdout, ""),
-    )
+    docker.answer("--entrypoint=python3", code=code, stdout=stdout)
 
-    assert pi.project_data_alias_capable(_IMAGE_ID) is expected
-    pi.project_data_alias_capable.cache_clear()
-
-
-def test_layout_probe_refuses_image_without_booley_mount_point(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    pi.project_data_alias_capable.cache_clear()
-    scripts: list[str] = []
-
-    def run(argv, **_kwargs):
-        scripts.append(argv[-1])
-        return subprocess.CompletedProcess(argv, 0, "absent\n", "")
-
-    monkeypatch.setattr(subprocess, "run", run)
-
-    with pytest.raises(pi.DockerImageError, match="booley init") as caught:
+    with pytest.raises(pi.DockerImageError, match=f"layout of {_IMAGE_ID}: {detail}"):
         pi.project_data_alias_capable(_IMAGE_ID)
-    pi.project_data_alias_capable.cache_clear()
-
-    assert isinstance(caught.value, pi.ImageLayoutMissingError)
-    assert _IMAGE_ID in str(caught.value)
-    assert "/booley " in str(caught.value)
-    assert "'/booley'" in scripts[0]
 
 
-def test_probe_docker_host_memory(monkeypatch: pytest.MonkeyPatch) -> None:
-    argvs: list[list[str]] = []
-    result = {
-        "value": subprocess.CompletedProcess([], 0, "MemTotal: 2048 kB\nSwapTotal: 1024 kB\n", "")
-    }
-
-    def run(argv, **_kwargs):
-        argvs.append(argv)
-        return result["value"]
-
-    monkeypatch.setattr(subprocess, "run", run)
+def test_probe_docker_host_memory(docker: FakeDocker) -> None:
+    docker.answer("--entrypoint=cat", stdout="MemTotal: 2048 kB\nSwapTotal: 1024 kB\n")
 
     host = pi.probe_docker_host_memory("img")
 
     assert (host.memory_bytes, host.swap_bytes) == (2048 * 1024, 1024 * 1024)
-    assert "--network=none" in argvs[0]
-    assert "--pull=never" in argvs[0]
-    assert argvs[0][-2:] == ["img", "/proc/meminfo"]
-    result["value"] = subprocess.CompletedProcess([], 1, "", "no such image")
+    assert "--network=none" in docker.calls[-1]
+    assert "--pull=never" in docker.calls[-1]
+    assert docker.calls[-1][-2:] == ["img", "/proc/meminfo"]
+    docker.answer("--entrypoint=cat", code=1, stderr="no such image")
     with pytest.raises(pi.DockerImageError, match="no such image"):
         pi.probe_docker_host_memory("img")
-    result["value"] = subprocess.CompletedProcess([], 0, "garbage\n", "")
+    docker.answer("--entrypoint=cat", code=1, stdout="daemon refused")
+    with pytest.raises(pi.DockerImageError, match="daemon refused"):
+        pi.probe_docker_host_memory("img")
+    docker.answer("--entrypoint=cat", code=125)
+    with pytest.raises(pi.DockerImageError, match="exit status 125"):
+        pi.probe_docker_host_memory("img")
+    docker.answer("--entrypoint=cat", stdout="garbage\n")
     with pytest.raises(pi.DockerImageError, match="MemTotal"):
         pi.probe_docker_host_memory("img")
-
-    def missing(_argv, **_kwargs):
-        raise FileNotFoundError("docker")
-
-    monkeypatch.setattr(subprocess, "run", missing)
-    with pytest.raises(pi.DockerImageError, match="cannot read the Docker host's swap"):
+    with (
+        docker.absent(),
+        pytest.raises(pi.DockerImageError, match="cannot read the Docker host's swap"),
+    ):
         pi.probe_docker_host_memory("img")

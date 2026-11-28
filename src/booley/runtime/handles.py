@@ -9,9 +9,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.boundary import require_dict, require_int, require_str_value
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.filesystem_utils import open_with_sharing_retry
 from booley.runtime.job_records import STATUS_RUNNING, JobRecord, parse_stamp
 from booley.runtime.safe_storage import refuse_symlinks

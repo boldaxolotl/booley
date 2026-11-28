@@ -156,8 +156,9 @@ def test_backfill_preserves_already_tracked_findings(versioned_project):
 
 def _publish_bookkeeping(root, data, repo):
     """Doctor, MCP sessions/jobs, supervision: runtime/ and .runtime/."""
+    from booley.core.atomic_files import atomic_write_json
     from booley.runtime.doctor_stamp import record_clean_run
-    from booley.runtime.execution_records import atomic_write_json, execution_paths
+    from booley.runtime.execution_records import execution_paths
     from booley.runtime.job_records import JobRecord, write_record
 
     stamp = record_clean_run(data, root, deep=False)
@@ -402,7 +403,7 @@ def test_default_mutation_log_storage_keeps_project_clean(versioned_project, mon
 
 
 def test_retained_ticket_storage_families_keep_project_clean(versioned_project):
-    from booley.runtime.atomic_files import atomic_write_once
+    from booley.core.atomic_files import atomic_write_once
 
     _root, data, repo = versioned_project
     board = data / "tickets/board/audit.md"

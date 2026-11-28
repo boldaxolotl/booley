@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import sys
 import traceback
 from hashlib import sha256
 from pathlib import Path
-from tempfile import NamedTemporaryFile
 from uuid import uuid4
 
-from booley.runtime.filesystem_utils import RemovedDirectoryError, make_directories
+from booley.core.atomic_files import Durability, atomic_write_text
+from booley.runtime.filesystem_utils import RemovedDirectoryError
 
 logger = logging.getLogger(__name__)
 
@@ -76,29 +75,6 @@ def _safe_path_component(value: str) -> str:
     return f"{prefix}-{digest}"
 
 
-def _atomic_write_text(path: Path, content: str) -> None:
-    """Publish UTF-8 text atomically beside its final destination."""
-    temporary: Path | None = None
-    try:
-        with NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.",
-            suffix=".tmp",
-            delete=False,
-        ) as stream:
-            temporary = Path(stream.name)
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-        temporary.replace(path)
-        temporary = None
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
-
-
 def _bounded_traceback(exc: Exception) -> str:
     diagnostic = "".join(traceback.format_exception(exc))
     if len(diagnostic) > _MAX_DIAGNOSTIC_CHARS:
@@ -135,8 +111,7 @@ def write_exception_diagnostic(
         else:
             return None
         diagnostic = _bounded_traceback(exc)
-        make_directories(path.parent)
-        _atomic_write_text(path, diagnostic)
+        atomic_write_text(path, diagnostic, durability=Durability.FILE)
     except RemovedDirectoryError:
         print_exception_diagnostic(exc)
         return None

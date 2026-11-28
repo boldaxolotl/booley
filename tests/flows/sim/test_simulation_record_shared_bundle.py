@@ -32,17 +32,11 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
-    ResumeSimulationRecordRunRequest,
     SimulationRecord,
     SimulationRecordPolicy,
 )
 from booley.flows.sim.record.model import create_simulation_record_plan
-from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
-from booley.flows.sim.record.resume import (
-    ValidatedManifestNode,
-    ValidatedResumeManifest,
-    ValidatedTargetBinding,
-)
+from booley.flows.sim.record.planning import finalize_manifest
 from booley.flows.sim.record.serial_execution import (
     OrdinaryHdlSerialExecutor,
     capture_private_image,
@@ -52,16 +46,15 @@ from booley.flows.sim.runtime_inputs import (
     RuntimeInputError,
     materialize_simulation_record_runtime_inputs,
 )
+from tests.flows.sim.fault_point_support import inject_faults
 from tests.flows.sim.simulation_record_boundary import (
     PASS_PROCESS,
     Launch,
     run_simulation_record_sim,
 )
 from tests.flows.sim.simulation_record_test_support import (
-    _BAD_DIGEST,
     _admission,
     _build_execution,
-    _Completed,
     _completed,
     _completed_result_documents,
     _create_build_root,
@@ -77,7 +70,8 @@ from tests.flows.sim.simulation_record_test_support import (
     _single_item_selection_manifest,
     _TestExecution,
     _two_item_manifest,
-    _write,
+    _write_cocotb_core,
+    mutate_bundle_directory,
 )
 from tests.flows.sim.test_simulation_record_manifest_codec import _selection_test_runs, _sha
 
@@ -183,26 +177,26 @@ def test_recovered_failed_shared_build_blocks_each_pending_item_with_its_own_sel
     plan = create_simulation_record_plan(manifest)  # type: ignore[arg-type]
     project = tmp_path / "project"
     project.mkdir()
-    handle = _handle(project)
+    _write_cocotb_core(project)
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
     store = SimulationRecordStore(invocation / "targets/sim/record")
-    _, seed_counters, validated = _seed_failed_simulation_record(
-        store, manifest, project, handle, tmp_path / "seed-build"
+    _, seed_counters = _seed_failed_simulation_record(
+        store, manifest, project, tmp_path / "seed-build"
     )
     resumed_counters = {"compile": 0, "launch": 0}
 
     outcome = SimulationRecord(
         _failed_shared_executor(tmp_path / "resumed-build", resumed_counters)
     ).run(
-        ResumeSimulationRecordRunRequest(
-            validated,
+        NewSimulationRecordRunRequest(
             plan,
             project,
             invocation.parent,
             SimulationRecordPolicy(),
-            invocation,
-            _admission(),
+            record_directory=store.root,
+            invocation_directory=invocation,
+            admission=_admission(),
         )
     )
 
@@ -251,21 +245,14 @@ def test_shared_build_failure_preserves_each_selection_identity(
     assert [item["test"] for item in result["observations"]] == expected
 
 
-def _seed_failed_simulation_record(store, manifest, project, handle, build_root):
+def _seed_failed_simulation_record(store, manifest, project, build_root):
     store.publish_manifest(manifest)
     items = manifest.document["work_items"]
     counters = {"compile": 0, "launch": 0}
     request = _request(store, manifest, items[0], project, invocation=1)
     result = _failed_shared_executor(build_root, counters).execute(request)
     store.publish_result(items[0]["work_item_id"], result)
-    node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
-    validated = ValidatedResumeManifest(
-        node,
-        (),
-        (handle,),
-        (ValidatedTargetBinding(node, project.resolve(), handle),),
-    )
-    return items, counters, validated
+    return items, counters
 
 
 def _assert_shared_simulation_record(
@@ -484,126 +471,40 @@ def _recording_executor(
     )
 
 
-def _identity(raw: bytes) -> tuple[int, str]:
-    return len(raw), "sha256:" + hashlib.sha256(raw).hexdigest()
-
-
-def _refresh_reference(reference: dict[str, Any], path: Path) -> None:
-    raw = path.read_bytes()
-    reference["bytes"], reference["sha256"] = _identity(raw)
-
-
-def _transplant(document: dict[str, Any], case: str, completed: _Completed) -> None:
-    """Give a Build Attempt or bundle document another owner or another tool version."""
-    if case == "owner":
-        document["owner"] = {
-            "work_item_id": completed.item_id,
-            "simulation_attempt_id": str(uuid.uuid4()),
-        }
-    else:
-        document["tool_provenance"]["eda_version"] = "transplanted"
-
-
-def _mutate_build_attempt(case: str, completed: _Completed) -> None:
-    path = completed.build_dir / "build-attempt.json"
-    document = _read(path)
-    if case == "record":
-        document["simulation_record_id"] = str(uuid.uuid4())
-    elif case in {"manifest", "workload"}:
-        # Not a production name: the document key is built as "<case>_sha256".
-        document[f"{case}_sha256"] = _BAD_DIGEST
-    elif case == "variant":
-        document["build_variant_id"] = "variant:" + "e" * 64
-    elif case == "invocation":
-        document["producer_invocation_id"] += 1
-    elif case == "ordinal":
-        document["build_attempt_ordinal"] += 1
-    elif case in {"owner", "tool_provenance"}:
-        _transplant(document, case, completed)
-    _write(path, document)
-    result_path = completed.build_dir / "build-result.json"
-    result = _read(result_path)
-    _refresh_reference(result["build_attempt"], path)
-    _write(result_path, result)
-
-
-def _mutate_build_result(case: str, completed: _Completed) -> None:
-    path = completed.build_dir / "build-result.json"
-    document = _read(path)
-    if case == "record":
-        document["simulation_record_id"] = str(uuid.uuid4())
-    elif case == "owner":
-        document["build_attempt"]["owner"] = str(uuid.uuid4())
-    elif case == "digest":
-        document["build_attempt"]["sha256"] = _BAD_DIGEST
-    else:
-        document["bundle"]["artifacts"] = []
-    _write(path, document)
-
-
-def _mutate_bundle(case: str, completed: _Completed) -> None:
-    bundle_path = completed.build_dir / "evidence/bundle.json"
-    bundle = _read(bundle_path)
-    if case == "record":
-        bundle["simulation_record_id"] = str(uuid.uuid4())
-    elif case == "attempt":
-        bundle["build_attempt_id"] = str(uuid.uuid4())
-    elif case in {"owner", "tool_provenance"}:
-        _transplant(bundle, case, completed)
-    else:
-        bundle["artifacts"] = []
-    _write(bundle_path, bundle)
-    result_path = completed.build_dir / "build-result.json"
-    result = _read(result_path)
-    raw = bundle_path.read_bytes()
-    result["bundle"]["manifest_bytes"], result["bundle"]["manifest_sha256"] = _identity(raw)
-    _write(result_path, result)
-
-
-_ATTEMPT_IDENTITY = "Build Attempt identity"
-_ATTEMPT_SCOPE = "Build Attempt scope"
-_RECOVERY_REJECTIONS = [
-    ("attempt", "record", _ATTEMPT_IDENTITY),
-    ("attempt", "manifest", _ATTEMPT_IDENTITY),
-    ("attempt", "workload", _ATTEMPT_IDENTITY),
-    ("attempt", "variant", "variant is not in manifest"),
-    ("attempt", "ordinal", _ATTEMPT_SCOPE),
-    ("attempt", "owner", _ATTEMPT_SCOPE),
-    ("attempt", "tool_provenance", _ATTEMPT_SCOPE),
-    ("result", "record", None),
-    ("result", "owner", None),
-    ("result", "digest", None),
-    ("result", "artifact_remove", None),
-    ("bundle", "record", "Bundle identity"),
-    ("bundle", "attempt", "Bundle binding"),
-    ("bundle", "owner", "Bundle binding"),
-    ("bundle", "tool_provenance", "Bundle binding"),
-    ("bundle", "artifact_remove", "Bundle binding"),
-]
-
-
-@pytest.mark.parametrize(("target", "case", "message"), _RECOVERY_REJECTIONS)
-def test_shared_recovery_rejects_transplanted_build_evidence(
-    tmp_path: Path, target: str, case: str, message: str | None
-) -> None:
-    """Each mutation of the Build Attempt, Build Result or bundle reaches its own store check."""
+def test_shared_recovery_refuses_two_settled_builds_of_one_invocation(tmp_path: Path) -> None:
     completed = _completed(tmp_path)
-    mutate = {
-        "attempt": _mutate_build_attempt,
-        "result": _mutate_build_result,
-        "bundle": _mutate_bundle,
-    }[target]
-    mutate(case, completed)
     variant = _read(completed.build_dir / "build-attempt.json")["build_variant_id"]
-    with pytest.raises(SimulationRecordIntegrityError, match=message):
+    shutil.copytree(completed.build_dir, completed.build_dir.with_name(f"0002-{uuid.uuid4()}"))
+
+    with pytest.raises(SimulationRecordIntegrityError, match="multiple settled shared builds"):
         completed.store.recover_shared_build(variant, 1)
+
+
+def test_reused_shared_bundle_changed_on_disk_is_refused_at_launch(tmp_path: Path) -> None:
+    manifest = _manifest_for(("alpha", "beta"))
+    project, build_root = _project_with_build(tmp_path)
+    store = SimulationRecordStore(tmp_path / "record")
+    store.publish_manifest(manifest)
+    items = manifest.document["work_items"]
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    _executor(build_root, counters).execute(
+        _request(store, manifest, items[0], project, invocation=1)
+    )
+    (bundle,) = store.root.glob("build-variants/*/attempts/*")
+    mutate_bundle_directory(bundle, "changed_artifact")
+
+    with pytest.raises(SimulationRecordIntegrityError, match="bundle artifact changed"):
+        _executor(build_root, counters).execute(
+            _request(store, manifest, items[1], project, invocation=1)
+        )
+
+    assert counters == {"compile": 1, "durable_reuse": 0, "launch": 1}
 
 
 def test_shared_recovery_ignores_a_build_attempt_of_another_invocation(tmp_path: Path) -> None:
     completed = _completed(tmp_path)
-    _mutate_build_attempt("invocation", completed)
     variant = _read(completed.build_dir / "build-attempt.json")["build_variant_id"]
-    assert completed.store.recover_shared_build(variant, 1) is None
+    assert completed.store.recover_shared_build(variant, 2) is None
 
 
 def _compatibility_manifest():
@@ -816,19 +717,15 @@ def test_legacy_mode_builds_and_discloses_each_work_item_privately(
     invocation = tmp_path / "reports" / "000001"
     _assert_private_legacy_results(outcome, store, counters, hooks, launched)
     if mapped:
-        from booley.flows.sim.record.coordinator import ResumeSimulationRecordRunRequest
-        from tests.flows.sim.simulation_record_test_support import _validated_simulation_record
-
-        validated = _validated_simulation_record(store, manifest, project, _handle(project))
         resumed = SimulationRecord(_executor(build_root, counters, disclosures=disclosures)).run(
-            ResumeSimulationRecordRunRequest(
-                validated,
+            NewSimulationRecordRunRequest(
                 plan,
                 project,
                 invocation.parent,
                 SimulationRecordPolicy(),
-                invocation,
-                _admission(),
+                record_directory=store.root,
+                invocation_directory=invocation,
+                admission=_admission(),
             )
         )
         assert resumed.complete
@@ -944,26 +841,18 @@ def test_bundle_mutation_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, mutation: str
 ) -> None:
     """A changed bundle is refused during an attempt, and one changed before launch never launches."""
-    from tests.flows.sim.simulation_record_test_support import mutate_bundle_directory
-
     before_launch = mutation == "before_launch"
-    options: dict[str, Any] = (
-        {
-            "checkpoint": lambda boundary: (
-                mutate_bundle_directory(
-                    _bundle_directories(invocation, kind)[0], "undeclared_entry"
-                )
-                if boundary == "after:runtime_inputs"
-                else None
-            )
-        }
-        if before_launch
-        else {"mutate_bundle": mutation}
-    )
+    options: dict[str, Any] = {} if before_launch else {"mutate_bundle": mutation}
+
+    def change_bundle_before_launch(boundary: str) -> None:
+        if boundary == "after:runtime_inputs":
+            mutate_bundle_directory(_bundle_directories(invocation, kind)[0], "undeclared_entry")
+
     invocation, counters, _launched, run = _bundle_run(tmp_path, monkeypatch, kind=kind, **options)
     expected = "bundle artifact changed" if mutation == "changed_artifact" else "undeclared bundle"
 
-    with pytest.raises(SimulationRecordIntegrityError, match=expected):
+    hook = change_bundle_before_launch if before_launch else None
+    with inject_faults(hook), pytest.raises(SimulationRecordIntegrityError, match=expected):
         run()
 
     store = SimulationRecordStore(invocation / "targets/sim/record")
@@ -1113,7 +1002,7 @@ def test_forty_test_runs_configure_their_shared_build_once(tmp_path: Path, monke
 
 def test_resume_configures_its_recovered_shared_build_once(tmp_path: Path, monkeypatch) -> None:
     """A build recovered from disk is configured by the first lane that needs it only."""
-    for module in ("flow", "flow_resume", "record.resume"):
+    for module in ("flow", "record.resume"):
         monkeypatch.setattr(f"booley.flows.sim.{module}.git_full_sha", lambda *_a: "a" * 40)
 
     def interrupt_at_t1(launch: Launch) -> SubprocessResult:

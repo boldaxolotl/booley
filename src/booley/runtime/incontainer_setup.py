@@ -60,6 +60,15 @@ from typing import IO, cast
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.config.project_config import configured_project_name
 from booley.core.boundary import require_dict, require_int, require_str
+from booley.core.sandbox_layout import (
+    CHROME_VERSION_RECORD,
+    DASHBOARD_PORT,
+    HEADLESS_CHROME_DIR,
+    T3_BASE_DIR,
+    T3_BASE_DIR_ENV,
+    T3_BROWSER_VERSION_RECORD,
+    T3_POLICY_TARGET,
+)
 from booley.runtime import auth_token
 from booley.runtime.booley_dir import resolve_booley_dir, runtime_dir
 from booley.runtime.mcp_config import (
@@ -72,15 +81,6 @@ from booley.runtime.mcp_config import (
 )
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.runtime_context import in_hand_written_sandbox
-from booley.runtime.sandbox_layout import (
-    CHROME_VERSION_RECORD,
-    DASHBOARD_PORT,
-    HEADLESS_CHROME_DIR,
-    T3_BASE_DIR,
-    T3_BASE_DIR_ENV,
-    T3_BROWSER_VERSION_RECORD,
-    T3_POLICY_TARGET,
-)
 
 MCP_SERVER_NAME = "booley"
 _TOOL_TIMEOUT_SEC = 7200

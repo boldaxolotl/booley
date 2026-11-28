@@ -140,14 +140,14 @@ def test_unreadable_existing_target_aborts_planning(
 ) -> None:
     target = tmp_path / "managed.txt"
     target.write_text("managed old\n", encoding="utf-8")
-    read_bytes = Path.read_bytes
+    real_open = Path.open
 
-    def fail_for_target(path: Path) -> bytes:
+    def fail_for_target(path: Path, *args: object, **kwargs: object) -> object:
         if path == target:
             raise PermissionError("denied")
-        return read_bytes(path)
+        return real_open(path, *args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(Path, "read_bytes", fail_for_target)
+    monkeypatch.setattr(Path, "open", fail_for_target)
 
     with pytest.raises(PermissionError, match="denied"):
         plan_init_filesystem(

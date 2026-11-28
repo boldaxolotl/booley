@@ -314,7 +314,7 @@ def test_dashboard_help_and_port_range(tmp_path, monkeypatch, capsys, port, code
 def test_dashboard_serves_the_web_dashboard(world, monkeypatch, capsys):
     served = capture_serving(monkeypatch)
     # The default port belongs to the host; an ephemeral one keeps parallel workers apart.
-    monkeypatch.setattr("booley.runtime.sandbox_layout.DASHBOARD_PORT", 0)
+    monkeypatch.setattr("booley.core.sandbox_layout.DASHBOARD_PORT", 0)
 
     assert _booley(monkeypatch, world.main, "dashboard") == 0
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import itertools
 import json
 import os
 import shutil
@@ -66,11 +67,6 @@ from booley.flows.sim.record.model import (
     create_simulation_record_plan,
 )
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
-from booley.flows.sim.record.resume import (
-    ValidatedManifestNode,
-    ValidatedResumeManifest,
-    ValidatedTargetBinding,
-)
 from booley.flows.sim.record.scheduler import (
     ScheduledAttempt,
 )
@@ -889,11 +885,9 @@ def _executor(
     *,
     mutate_bundle: str = "",
     disclosures: dict[str, object] | None = None,
-    checkpoint=None,
     launched_bundles: list[Path] | None = None,
 ) -> OrdinaryHdlSerialExecutor:
     return OrdinaryHdlSerialExecutor(
-        publication_checkpoint=checkpoint,
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: _Execution(
             build_root,
@@ -1005,7 +999,7 @@ def _publish_request_hook(request, name="alpha", ordinal=1, status="passed", ret
 def _observe_pre_sim_reads(monkeypatch):
     from collections import Counter
 
-    from booley.flows.sim.record.pre_sim_evidence import PreSimFiringDecoder
+    from booley.flows.sim.record import store as store_module
 
     accesses, decodes, results = Counter(), Counter(), Counter()
 
@@ -1024,18 +1018,16 @@ def _observe_pre_sim_reads(monkeypatch):
             results[path] += 1
         return read_bytes(store, path, **kwargs)
 
-    decode = PreSimFiringDecoder.decode
+    decode = store_module.decode_pre_sim_firing
 
-    def count_decode(decoder, raw, item, attempt):
-        document = decode(decoder, raw, item, attempt)
+    def count_decode(raw):
+        document = decode(raw)
         decodes[(document["attempt_id"], document["ordinal"])] += 1
         return document
 
     monkeypatch.setattr(SimulationRecordStore, "_read", observe(count_results))
-    monkeypatch.setattr(
-        SimulationRecordStore, "_identity", observe(SimulationRecordStore._identity)
-    )
-    monkeypatch.setattr(PreSimFiringDecoder, "decode", count_decode)
+    # No public result exposes how many times a recorded firing is decoded.
+    monkeypatch.setattr(store_module, "decode_pre_sim_firing", count_decode)
     return accesses, decodes, results
 
 
@@ -1201,9 +1193,7 @@ class _ParallelState:
         self.build_root = build_root
         self.run_log = run_log
         self.handle = handle
-        self.clock: Callable[[], float] = time.monotonic
-        self.barrier = threading.Barrier(2, timeout=_PARALLEL_SYNC_TIMEOUT_S)
-        self.first_finished = threading.Event()
+        self.clock: Callable[[], float] = itertools.count().__next__  # a tick per reading
         self.interval_gate = threading.Lock()
         self.intervals: list[tuple[str, float, float]] = []
         self.completion_order: list[str] = []
@@ -1243,7 +1233,6 @@ class _ParallelGroup:
         del bundle_root, evidence_root, run_cwd
         name = self.names[0]
         started = self.state.clock()
-        self._coordinate(name)
         finished = self.state.clock()
         with self.state.interval_gate:
             self.state.intervals.append((name, started, finished))
@@ -1262,17 +1251,6 @@ class _ParallelGroup:
             0.1,
             (test,),
         )
-
-    def _coordinate(self, name: str) -> None:
-        # The first item builds under the Flow's claim, then the others are admitted beside
-        # it; only the last two meet here.
-        if name not in {"beta", "gamma"}:
-            return
-        self.state.barrier.wait()
-        if name == "beta":
-            self.state.first_finished.set()
-        else:
-            assert self.state.first_finished.wait(timeout=_PARALLEL_SYNC_TIMEOUT_S)
 
 
 class _ParallelExecution:
@@ -1308,24 +1286,12 @@ class _SimulationRecordAdmissionEndpoint:
         return _Claim(self._slots, token)
 
 
-def _validated_simulation_record(store, manifest, project, handle) -> ValidatedResumeManifest:
-    node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
-    return ValidatedResumeManifest(
-        node,
-        (),
-        (handle,),
-        (ValidatedTargetBinding(node, project.resolve(), handle),),
-    )
-
-
 def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
     manifest = _three_item_manifest(runtime_execution_id or "")
     plan = create_simulation_record_plan(manifest)
     project, state = _parallel_environment(tmp_path)
-    monkeypatch.setattr(
-        "booley.flows.sim.record.serial_execution.TargetCatalog.build",
-        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
-    )
+    _write_cocotb_core(project)
+    state.handle = TargetCatalog.build(project).select("sim", for_flow="sim")
     executor = OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
@@ -1380,7 +1346,6 @@ def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
     finally:
         slots.release(outer)
     store = SimulationRecordStore(invocation / "targets/sim/record")
-    validated = _validated_simulation_record(store, manifest, project, state.handle)
     return SimpleNamespace(
         simulation_record=simulation_record,
         fault_enabled=fault_enabled,
@@ -1391,7 +1356,6 @@ def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
         slots=slots,
         state=state,
         store=store,
-        validated=validated,
     )
 
 
@@ -1598,7 +1562,6 @@ def _run_coverage_simulation_record(
     *,
     runtime_input: bool = False,
     pre_sim_commands: tuple[str, ...] = (),
-    publication_checkpoint=None,
 ):
     plan, target = _coverage_simulation_record_plan(
         root, runtime_input=runtime_input, pre_sim_commands=pre_sim_commands
@@ -1618,7 +1581,6 @@ def _run_coverage_simulation_record(
     executor = CoverageAggregateExecutor(
         plans={target.handle.identity: target},
         execution_factory=execution_factory,
-        publication_checkpoint=publication_checkpoint,
     )
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
@@ -1921,18 +1883,6 @@ def _own_attempt_run_directory(
     return run.path, document
 
 
-def _validated_resume(store, plan, target, root: Path) -> ValidatedResumeManifest:
-    node = ValidatedManifestNode(
-        store.manifest_path, plan.manifest, manifest_digest(plan.manifest)
-    )
-    return ValidatedResumeManifest(
-        node,
-        (),
-        (target.handle,),
-        (ValidatedTargetBinding(node, root.resolve(), target.handle),),
-    )
-
-
 @dataclass(frozen=True)
 class CoverageInvocation:
     """One completed coverage run in the embedded layout the Simulation Flow writes."""
@@ -1989,7 +1939,7 @@ def coverage_invocation(tmp_path, monkeypatch, *, prepare=None) -> CoverageInvoc
 def prerequisite_documents(plan: Any, manifest_path: Path) -> list[Mapping[str, object]]:
     """The ``cycle_count_baseline`` prerequisite documents a record of *plan* would be given.
 
-    A record that kept baseline prerequisites still resumes; this builds that format.
+    Resume refuses a record with prerequisites; this builds that format.
     """
     raw = encode_simulation_record_manifest(plan.manifest)
     manifest_ref = {

@@ -30,11 +30,12 @@ from booley.flows.sim.record_invocation import SimulationRecordInvocation
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.synth.request import SynthRequest
 from booley.mcp.base import EXIT_ERROR
-from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import DuplicateTargetError
 from tests.flows.invocation_doubles import prepare_as, replace_run
+from tests.sandbox_venue_fake import place
 
 BUILTINS = (
     (SimulateFlow, "sim", 600_000),
@@ -114,7 +115,7 @@ def test_duplicate_target_fails_before_admission(
                 "which was already selected by 'a'"
             )
 
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setattr(
         TargetCatalog, "build", classmethod(lambda _cls, _root: DuplicateCatalog())
@@ -254,7 +255,7 @@ def test_unusable_report_dir_is_refused_before_any_job_work(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     runtime = tmp_path / "runtime"
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
     for flow_type in (LintFlow, _CustomTimeoutFlow):
@@ -343,7 +344,7 @@ def test_cli_report_preserves_authored_repeated_target_argv(
         "--report-dir",
         str(report_dir),
     ]
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     replace_run(
         monkeypatch,
         flow,
@@ -478,7 +479,7 @@ def test_state_backed_simulation_coverage_verdict_reaches_stdout(
 ) -> None:
     flow = SimulateFlow()
     prepared_simulation_record = PreparedSimulationEndpoint((), None, (), {})
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     prepare_as(monkeypatch, flow, SimulationRecordInvocation(flow, prepared_simulation_record))
     monkeypatch.setattr(
         flow,

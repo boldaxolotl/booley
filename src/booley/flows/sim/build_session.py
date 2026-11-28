@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import collections
 import contextvars
 import hashlib
 import importlib.metadata
@@ -12,10 +11,8 @@ import logging
 import os
 import re
 import secrets
-import shlex
 import shutil
 import stat
-import subprocess
 import time
 from collections.abc import Mapping
 from contextlib import AbstractContextManager
@@ -25,9 +22,9 @@ from typing import IO, Any
 
 import yaml
 
-from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.boundary import as_dict
 from booley.core.build_paths import work_root_for
+from booley.core.file_hash import file_sha256
 from booley.core.file_lock import (
     LockTimeoutError,
     release_file_lock,
@@ -46,8 +43,6 @@ from booley.targets.domain import TargetHandle
 
 from . import build_reuse
 from .build import PreparedSimulationBuild
-from .build_reuse import hash_file
-from .record_reports import simulation_booley_dir
 
 
 class SimulationBuildSlotError(RuntimeError):
@@ -188,7 +183,7 @@ def _hash_generation(prepared: PreparedSimulationBuild, *, skip_reserved: bool) 
             if not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
                 raise SimulationBuildSlotError(f"unsafe generated build input: {path}")
             relative = path.relative_to(root).as_posix()
-            hashes[relative] = hash_file(path)
+            hashes[relative] = file_sha256(path)
         return hashes
     except OSError as exc:
         raise SimulationBuildSlotError(f"cannot read generated build input: {exc}") from exc
@@ -238,11 +233,11 @@ def project_compile_surface(
                 continue
             if not path.is_file():
                 raise SimulationBuildSlotError(f"Project compile input is not a file: {path}")
-            result[identity] = hash_file(path)
+            result[identity] = file_sha256(path)
         for path in surface.optional_paths:
             identity = _compile_input_identity(surface.project_root, path)
             if path.is_file():
-                result[identity] = hash_file(path)
+                result[identity] = file_sha256(path)
             elif path.is_symlink() or path.exists():
                 raise SimulationBuildSlotError(f"Project compile input is not a file: {path}")
             else:
@@ -250,37 +245,6 @@ def project_compile_surface(
     except OSError as exc:
         raise SimulationBuildSlotError(f"cannot capture Project compile inputs: {exc}") from exc
     return result
-
-
-def _icarus_tool_identity() -> str | None:
-    """Hash the installed Icarus executables, modules, and dynamic libraries."""
-    commands = ("iverilog", "vvp", "make", "sh")
-    resolved = tuple(shutil.which(name) for name in commands)
-    if any(path is None for path in resolved):
-        return None
-    paths = [Path(path).resolve() for path in resolved if path is not None]
-    ivl = paths[0].parent.parent / "lib" / "ivl"
-    if not ivl.is_dir() or ivl.is_symlink():
-        return None
-    paths.extend(path for path in ivl.rglob("*") if path.is_file())
-    try:
-        for path in tuple(paths):
-            if not build_reuse.is_elf(path):
-                continue
-            dependencies = build_reuse.elf_dependencies(path)
-            if dependencies is None:
-                return None
-            paths.extend(dependencies)
-        digest = hashlib.sha256()
-        for path in sorted(set(paths)):
-            if not path.is_file():
-                return None
-            digest.update(str(path).encode("utf-8"))
-            digest.update(str(path.resolve()).encode("utf-8"))
-            digest.update(hash_file(path).encode("ascii"))
-        return digest.hexdigest()
-    except (OSError, subprocess.TimeoutExpired):
-        return None
 
 
 def _python_recipe_identity() -> str | None:
@@ -302,177 +266,10 @@ def _python_recipe_identity() -> str | None:
                 for path in sorted(package.rglob("*.py")):
                     digest.update(name.encode("utf-8"))
                     digest.update(path.relative_to(package).as_posix().encode("utf-8"))
-                    digest.update(hash_file(path).encode("ascii"))
+                    digest.update(file_sha256(path).encode("ascii"))
         return digest.hexdigest()
     except OSError:
         return None
-
-
-def _has_unsupported_source(prepared: PreparedSimulationBuild, core_file: Path) -> bool:
-    for item in prepared.resolved.files:
-        if item.file_type not in {"verilogSource", "systemVerilogSource"}:
-            return True
-        source = item.absolute(prepared.build_root)
-        parts = Path(item.name).parts
-        if len(parts) < 3 or parts[0] != "src":
-            return True
-        original = core_file.parent.joinpath(*parts[2:])
-        if not original.is_file() or original.is_symlink():
-            return True
-        if hash_file(original) != hash_file(source):
-            raise SimulationBuildSlotError(
-                f"Project source changed during FuseSoC preparation: {original}"
-            )
-        if not source.is_relative_to(prepared.work_root.resolve()) or re.search(
-            r"`include\b|#\s*include\b", source.read_text(encoding="utf-8")
-        ):
-            return True
-    return False
-
-
-_ICARUS_TOKEN = re.compile(r"[A-Za-z0-9_.=+,:/-]+")
-_ICARUS_MAKEFILE_TEXT = re.compile(r"[\x20-\x7e\t\n]*")
-_ICARUS_FILE_TOKEN = r"[A-Za-z0-9_.+,/-]+"
-_ICARUS_COMMENT = re.compile(r"#[A-Za-z0-9 _.,:/-]*")
-# Each ``.scr`` line is empty or a relative name of non-empty ``/``-separated segments
-# whose first character is not ``+``, ``-`` or ``/``; Edalize ends every line with ``\n``.
-_ICARUS_SCRIPT = re.compile(rb"(?:(?:[A-Za-z0-9_.][A-Za-z0-9_.+,-]*(?:/[A-Za-z0-9_.+,-]+)*)?\n)*")
-# Rule headers Edalize writes per target; ``run`` appears twice (recipe, then ``run: pre_run``).
-_ICARUS_STOCK_HEADERS = {"run": 2}
-
-
-def _has_unstock_iverilog_command(command: str, script_name: str) -> bool:
-    """Return whether *command* carries an ``iverilog`` option beyond the stock ones.
-
-    Stock means Edalize's attached ``-s<top>``, one ``-c <script_name>``, one
-    ``-o <image>`` and attached ``-g<x>``/``-D<x>`` options from the Target. Make
-    expands ``$`` and ``/bin/sh`` runs the recipe, so every token also has to be
-    plain characters. Anything else may read files the reuse key never hashes.
-    """
-    tokens = command.removeprefix("$(EDALIZE_LAUNCHER) ").split(" ")
-    if tokens[0] != "iverilog" or not all(_ICARUS_TOKEN.fullmatch(token) for token in tokens):
-        return True
-    seen: set[str] = set()
-    index = 1
-    while index < len(tokens):
-        token = tokens[index]
-        if token in {"-c", "-o"}:
-            if token in seen or index + 1 >= len(tokens):
-                return True
-            operand = tokens[index + 1]
-            if operand.startswith("-") or (token == "-c" and operand != script_name):
-                return True
-            seen.add(token)
-            index += 2
-            continue
-        if not (len(token) > 2 and token[:2] in {"-s", "-g", "-D"}):
-            return True
-        index += 1
-    return seen != {"-c", "-o"}
-
-
-def _has_unstock_icarus_makefile(text: str, iverilog_command: str) -> bool:
-    """Return whether the Makefile holds a line Make honours but the recipe split misses.
-
-    *iverilog_command* has passed ``_has_unstock_iverilog_command``, so it holds
-    one ``-o <image>`` pair; the image is a legal rule header.
-
-    Make splits on ``\\n`` only and reads non-recipe lines as assignments,
-    directives or rules, so every such line must be blank, a plain comment or one
-    of Edalize's rule headers. Edalize writes each rule header once (``run`` twice),
-    so an extra header is an inserted line, and Make would merge its prerequisites
-    (for example pulling the ``run`` recipe into the build).
-    """
-    if not _ICARUS_MAKEFILE_TEXT.fullmatch(text):
-        return True
-    tokens = iverilog_command.split(" ")
-    image = tokens[tokens.index("-o") + 1]
-    targets = "|".join(
-        re.escape(name)
-        for name in ("all", "pre_build", "post_build", "pre_run", "run", "post_run", image)
-    )
-    header = re.compile(
-        rf"(?P<target>{targets}):(?: {_ICARUS_FILE_TOKEN})*(?: \|(?: {_ICARUS_FILE_TOKEN})+)? *"
-    )
-    counts: collections.Counter[str] = collections.Counter()
-    for line in text.split("\n"):
-        if not line or line.startswith("\t") or _ICARUS_COMMENT.fullmatch(line):
-            continue
-        match = header.fullmatch(line)
-        if match is None:
-            return True
-        counts[match["target"]] += 1
-    return any(count > _ICARUS_STOCK_HEADERS.get(target, 1) for target, count in counts.items())
-
-
-def _has_unsupported_icarus_recipe(prepared: PreparedSimulationBuild, project_root: Path) -> bool:
-    """Allow only local source operands and the stock Edalize Icarus commands.
-
-    An isolated Project (#2895) also has to use the stock ``iverilog`` options and
-    Makefile shape, because option operands name files the reuse key does not hash.
-    """
-    root = prepared.build_root
-    scripts = tuple(root.glob("*.scr"))
-    if len(scripts) != 1:
-        return True
-    isolated = fusesoc_registry.native_cores_ignored(project_root)
-    # iverilog's command-file reader splits and quotes differently from ``shlex``, so an
-    # isolated Project accepts only plain file-name lines.
-    if isolated and not _ICARUS_SCRIPT.fullmatch(scripts[0].read_bytes()):
-        return True
-    for line in scripts[0].read_text(encoding="utf-8").splitlines():
-        tokens = shlex.split(line)
-        if not tokens:
-            continue
-        if len(tokens) != 1 or tokens[0].startswith("-"):
-            return True
-        source = root / tokens[0]
-        if not source.is_file() or not source.resolve().is_relative_to(
-            prepared.work_root.resolve()
-        ):
-            return True
-    # Make drops a CR only before a LF, so read the bytes: universal newlines would
-    # turn a lone CR into a line break the Makefile check below could not see.
-    makefile_text = (root / "Makefile").read_bytes().decode("utf-8").replace("\r\n", "\n")
-    commands = [line.strip() for line in makefile_text.splitlines() if line.startswith("\t")]
-    if len(commands) != 2 or not (
-        commands[0].startswith("$(EDALIZE_LAUNCHER) iverilog ")
-        and commands[1].startswith("$(EDALIZE_LAUNCHER) vvp ")
-    ):
-        return True
-    return isolated and (
-        _has_unstock_iverilog_command(commands[0], scripts[0].name)
-        or _has_unstock_icarus_makefile(makefile_text, commands[0])
-    )
-
-
-def _eligible_core_file(prepared: PreparedSimulationBuild, project_root: Path) -> Path | None:
-    """Accept a single local core without generators, VPI, or textual includes."""
-    edam = yaml.safe_load(prepared.resolved.edam_path.read_text(encoding="utf-8"))
-    if not isinstance(edam, dict) or edam.get("hooks") or edam.get("vpi"):
-        return None
-    cores = edam.get("cores")
-    if not isinstance(cores, dict) or len(cores) != 1:
-        return None
-    core = next(iter(cores.values()))
-    if not isinstance(core, dict) or core.get("dependencies"):
-        return None
-    core_path = prepared.resolved.edam_path.parent / core["core_file"]
-    # normpath applies FuseSoC's lexical ``..`` first; the re-spelling keeps a core
-    # behind a symlinked Booley Directory project-relative (#2191).
-    core_file = lexical_booley_path(
-        simulation_booley_dir(project_root), Path(os.path.normpath(core_path)).resolve()
-    )
-    if core_path.is_symlink() or not core_file.is_relative_to(project_root.resolve()):
-        return None
-    core_data = fusesoc_registry.read_core(core_file)
-    if (
-        build_reuse.has_generated_core_behavior(core_data)
-        or _has_unsupported_source(prepared, core_file)
-        or _has_unsupported_icarus_recipe(prepared, project_root)
-    ):
-        return None
-    return core_file
 
 
 def _json_digest(value: object) -> str:
@@ -485,59 +282,7 @@ def _recipe_package_versions() -> dict[str, str]:
     return {name: importlib.metadata.version(name) for name in ("fusesoc", "edalize")}
 
 
-def _reuse_input_key(
-    prepared: PreparedSimulationBuild,
-    inputs: Mapping[str, str],
-    variant: str,
-    project_root: Path,
-    environment: Mapping[str, str],
-) -> str | None:
-    """Recognize the closed, ordinary Icarus recipe; decline all others."""
-    if (
-        variant
-        or prepared.eda_tool != "icarus"
-        or prepared.resolved.cocotb_module
-        or any(item.file_type.lower() == "user" for item in prepared.resolved.files)
-    ):
-        return None
-    if any(environment.get(name) for name in _REUSE_DECLINING_ENVIRONMENT):
-        return None
-    try:
-        core_file = _eligible_core_file(prepared, project_root)
-        if core_file is None:
-            return None
-        tool = _icarus_tool_identity()
-        recipe = _python_recipe_identity()
-        if tool is None or recipe is None:
-            return None
-        record = {
-            "schema": 1,
-            "target": prepared.target_identity,
-            "inputs": dict(inputs),
-            "core": hash_file(core_file),
-            "core_path": build_reuse.generation_neutral_core_path(
-                core_file, project_root, prepared.work_root
-            )
-            or str(core_file),
-            "tool": tool,
-            "recipe": recipe,
-            "versions": _recipe_package_versions(),
-            "environment": _json_digest(sorted(environment.items())),
-            "target_environment": _json_digest(sorted(prepared.environment.items())),
-        }
-        return _json_digest(record)
-    except (
-        OSError,
-        KeyError,
-        UnicodeError,
-        yaml.YAMLError,
-        fusesoc_registry.FuseSocError,
-        importlib.metadata.PackageNotFoundError,
-    ):
-        return None
-
-
-# Make variables that can rewrite either recipe out of sight; reuse declines.
+# Make variables that can rewrite the recipe out of sight; reuse declines.
 _REUSE_DECLINING_ENVIRONMENT = ("EDALIZE_LAUNCHER", "MAKEFLAGS", "MFLAGS")
 
 
@@ -550,8 +295,8 @@ def _verilator_reuse_key(
 
     Trace and coverage variants each own a slot, so the variant needs no
     gate; Doctor's deliberately broken self-test image is never retained.
-    Unlike Icarus, includes, dependency cores and C++/DPI sources are
-    accepted: the post-build read closure proves what was actually read.
+    Includes, dependency cores and C++/DPI sources are accepted: the
+    post-build read closure proves what was actually read.
     """
     if (
         prepared.resolved.cocotb_module
@@ -642,7 +387,7 @@ def _ambient_environment(prepared: PreparedSimulationBuild) -> dict[str, str]:
 def _matching_hashes(root: Path, recorded: Mapping[str, str]) -> bool:
     """Whether every recorded file exists under *root* with its recorded digest."""
     return all(
-        (root / name).is_file() and hash_file(root / name) == digest
+        (root / name).is_file() and file_sha256(root / name) == digest
         for name, digest in recorded.items()
     )
 
@@ -754,26 +499,27 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
     ) -> str | None:
         """Return a key only for an input and installation closure we can prove.
 
-        *hooks* reports that Pre-Sim Commands wrote into this generation; such
-        a candidate is never reused because the hook output would be lost.
+        Only a Verilator build is keyed; an Icarus build is cheap, so it always
+        builds fresh. *hooks* reports that Pre-Sim Commands wrote into this
+        generation; such a candidate is never reused because the hook output
+        would be lost.
         """
         # A declined call must not leave an earlier identity scoping closures.
         self._verilator_identity = None
-        if hooks or (
-            fusesoc_registry.native_cores_ignored(self.handle.project_root)
-            and _has_unhashed_source_name(prepared)
+        if (
+            hooks
+            or prepared.eda_tool != "verilator"
+            or (
+                fusesoc_registry.native_cores_ignored(self.handle.project_root)
+                and _has_unhashed_source_name(prepared)
+            )
         ):
             return None
-        environment = os.environ
-        if prepared.eda_tool == "verilator":
-            keyed = _verilator_reuse_key(prepared, inputs, environment)
-            if keyed is None:
-                return None
-            key, self._verilator_identity = keyed
-            return key
-        return _reuse_input_key(
-            prepared, inputs, self.variant, self.handle.project_root, environment
-        )
+        keyed = _verilator_reuse_key(prepared, inputs, os.environ)
+        if keyed is None:
+            return None
+        key, self._verilator_identity = keyed
+        return key
 
     def try_reuse(
         self, candidate: PreparedSimulationBuild, key: str | None
@@ -791,7 +537,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                 (build_root / ".booley-build-manifest.json").read_text(encoding="utf-8")
             )
             rejection = self._hit_rejection(root, build_root, manifest, key)
-            if rejection is None and not self._read_closure_matches(root, manifest, candidate):
+            if rejection is None and not self._read_closure_matches(root, manifest):
                 rejection = CacheDecision.CHANGED_SOURCE
             if rejection is not None:
                 self.cache_decision = rejection
@@ -807,12 +553,8 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         """Return the launch artifacts of an image ``try_reuse`` just verified."""
         return _runtime_artifacts(prepared)
 
-    def _read_closure_matches(
-        self, root: Path, manifest: Mapping[str, object], candidate: PreparedSimulationBuild
-    ) -> bool:
+    def _read_closure_matches(self, root: Path, manifest: Mapping[str, object]) -> bool:
         """Re-hash every file a retained Verilator build reported reading."""
-        if candidate.eda_tool != "verilator":
-            return True
         identity = self._verilator_identity
         if identity is None:
             return False
@@ -885,7 +627,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                 key = None
             artifacts = _runtime_artifacts(prepared)
             hashes = {
-                path.relative_to(prepared.build_root).as_posix(): hash_file(path)
+                path.relative_to(prepared.build_root).as_posix(): file_sha256(path)
                 for path in artifacts
             }
             self._write_manifest(prepared, inputs, key, hashes, closure or {}, reason)
@@ -902,8 +644,6 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
         unproven = "complete compiler input closure not established"
         if key is None:
             return None, unproven
-        if prepared.eda_tool != "verilator":
-            return {}, ""
         identity = self._verilator_identity
         captured_ns = self._captured_ns.get(prepared.work_root)
         if identity is None or captured_ns is None:

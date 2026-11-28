@@ -14,7 +14,8 @@ from booley.config.gateway import (
     GatewayConfigError,
     gateway_settings_from_env,
 )
-from booley.runtime import atomic_files, auth_token, health, incontainer_setup
+from booley.core import atomic_files
+from booley.runtime import auth_token, health, incontainer_setup
 from booley.runtime.booley_dir import resolve_booley_dir, resolve_common_booley_dir
 
 

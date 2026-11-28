@@ -23,8 +23,11 @@ from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp import server
 from booley.mcp.flow_adapter import flow_schema
 from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
+from tests import mcp_runner_fake
 from tests.memory_budget_support import fail_budget, pin_budget
+from tests.sandbox_venue_fake import place
 
 FLOWS = {"sim": SimulateFlow, "lint": LintFlow, "synth": AsicSynthesizeFlow, "fpga": FpgaImplFlow}
 CASES = [(entry, flow) for entry in ("cli", "mcp") for flow in FLOWS]
@@ -57,10 +60,9 @@ def write_targets(root: Path, flow: str, count: int = 1, *, core: str = "demo") 
 @pytest.fixture
 def project(tmp_path, monkeypatch):
     from booley.flows import endpoint_admission
-    from booley.runtime import runtime_context
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     # Seat Caps are covered by the admission tests; these tests are about Target omission.
     monkeypatch.setattr(endpoint_admission, "required_seats", lambda _tools, _config: ())
     for name in ("BOOLEY_STATE_FILE", "BOOLEY_TICKET_FILE", "BOOLEY_LOGS_DIR", "BOOLEY_DIR"):
@@ -70,7 +72,7 @@ def project(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_MCP_JOB_INLINE_WAIT_SECONDS", "0")
     # The MCP tool's public boundary is the SDK server over a live session; the
     # subprocess runner is the seam that keeps schema, argv and Job handling real.
-    monkeypatch.setattr(server, "_run_subprocess", _transport_child)
+    mcp_runner_fake.install(monkeypatch, _transport_child)
     return tmp_path
 
 
@@ -265,15 +267,16 @@ def test_omitted_target_with_resume_is_accepted(entry, project, monkeypatch):
 
     write_targets(project, "sim")
     handle = TargetCatalog.build(project).select("chosen", for_flow="sim")
+    target = dict.fromkeys(("vlnv", "name", "role", "revision"), "") | {"selector": "chosen"}
     manifest = SimpleNamespace(
-        document={"work_items": (), "required_suite": {"names": [], "default_invocation": True}}
+        document={"target": target, "workload": {"trace": False}, "work_items": ()}
+        | {"required_suite": {"names": [], "default_invocation": True}}
     )
     validated = SimpleNamespace(
         target_handles=(handle,),
         manifest=manifest,
         path=project / "manifest.json",
         candidate=SimpleNamespace(manifest=manifest),
-        binding_for=lambda document: SimpleNamespace(handle=handle),
     )
     # The authenticated manifest boundary already owns an exact Target. Stub
     # its disk authentication and expensive execution, keeping public preflight.
@@ -283,8 +286,8 @@ def test_omitted_target_with_resume_is_accepted(entry, project, monkeypatch):
     observed = []
 
     def resume(self, selected):
-        assert selected is validated
-        observed.append(selected.target_handles[0].identity)
+        assert selected.resume is validated
+        observed.append(selected.resume.target_handles[0].identity)
         return EndpointOutcome(report_text="RESULT: PASS")
 
     # Resuming runs EDA tools and needs an authenticated manifest.
