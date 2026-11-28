@@ -54,6 +54,8 @@ class CliInvocation:
 
     project: Path | None = None
     transport: bool = False
+    # The selected Project's enabled Feature Flags; None reads the ambient Project.
+    features: frozenset[str] | None = None
 
     @classmethod
     def of(cls, endpoint) -> CliInvocation:

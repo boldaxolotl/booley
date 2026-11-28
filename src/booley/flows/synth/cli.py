@@ -106,7 +106,7 @@ class SynthArguments(BuiltinArguments):
     )
 
     @staticmethod
-    def add_args(parser: argparse.ArgumentParser) -> None:
+    def add_args(parser: argparse.ArgumentParser, features: frozenset[str]) -> None:
         parser.add_argument(
             "--baseline",
             default=None,
