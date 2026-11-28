@@ -21,7 +21,7 @@ class BooleyDirMismatchError(ValueError):
 
 
 def worktree_state_dir(project_root: Path, *, booley_dir: Path | None = None) -> Path:
-    """Return the Booley Directory for worktree state: *booley_dir*, else the Main one.
+    """Return the Booley Directory for worktrees and baselines: *booley_dir*, else the Main one.
 
     A checkout-local spelling is used only when it names that same directory.
     """

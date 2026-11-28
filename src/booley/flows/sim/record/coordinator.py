@@ -632,7 +632,7 @@ class SimulationRecord:
         )
         project_root = binding.project_root if binding is not None else request.project_root
         project_data = resolve_checkout_booley_dir(project_root)
-        main_dir = main_booley_dir_of(project_root)  # execution records are Common State
+        main_dir = main_booley_dir_of(project_root)  # records are Common Booley State
         interrupted = {
             work_item_id: attempt.document
             for work_item_id in recovery.interrupted

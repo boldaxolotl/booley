@@ -510,9 +510,10 @@ def test_managed_simulation_record_publishes_lane_results_in_plan_order_and_clea
     assert state.compile_count == 1
     lanes = _assert_child_claim_integrity(invocation, slot_store, plan, common)
     if checkout is not None:
-        for lane in lanes:  # the default location is what Job status and cancel read
-            expected = common / ".runtime" / "executions" / lane.root.name
-            assert execution_paths(lane.root.name).root == expected
+        for lane in lanes:  # Job status and cancel take the default location
+            assert SlotRecovery().execution_is_terminal(lane.root.name)
+            SlotRecovery().cancel_execution(lane.root.name)
+            assert (common / ".runtime" / "executions" / lane.root.name / "cancel.json").is_file()
         assert untracked_common_paths(project, project / ".booley") == []
 
 

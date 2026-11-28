@@ -630,21 +630,23 @@ def test_post_setup_hook_runs_in_the_baseline_checkout(tmp_path: Path, fails: bo
             assert (baseline / "gen.txt").read_text() == "built\n"
 
 
+@pytest.mark.parametrize("layout", ["snapshot", "paired"])
 @pytest.mark.parametrize("runtime", ["host", "sandbox"])
 @pytest.mark.parametrize("with_cores", [True, False], ids=["stealth-cores", "config-only"])
 def test_linked_worktree_baseline_mirrors_its_own_booley_directory(
-    tmp_path: Path, monkeypatch, with_cores: bool, runtime: str
+    tmp_path: Path, monkeypatch, with_cores: bool, runtime: str, layout: str
 ) -> None:
     """A linked worktree's baseline reads that worktree's cores and configuration.
 
     In the Sandbox ``BOOLEY_DIR`` selects the Main Booley Directory, but the
     baseline of a worktree must still be built from the worktree's own files.
     """
+    from booley.evidence.acceptance import PairedProjectBaseline
     from booley.runtime.booley_dir import reset_cache, resolve_checkout_booley_dir
     from booley.runtime.worktree_evidence import untracked_common_paths
     from tests.booley_checkouts_support import linked_worktree
 
-    main, worktree = linked_worktree(tmp_path, monkeypatch, layout="snapshot", runtime=runtime)
+    main, worktree = linked_worktree(tmp_path, monkeypatch, layout=layout, runtime=runtime)
     own = worktree / ".booley"
     (main / ".booley" / "booley.toml").write_text("# main\n", encoding="utf-8")
     (own / "booley.toml").write_text("# worktree\n", encoding="utf-8")
@@ -656,8 +658,12 @@ def test_linked_worktree_baseline_mirrors_its_own_booley_directory(
                 f"CAPI=2:\nname: {label}:ip:top:1.0\n", encoding="utf-8"
             )
     reset_cache()
+    pair = PairedProjectBaseline.standalone()
+    if layout == "paired":  # a Paired Checkout's baseline reads a commit of its own repository
+        _commit_all(own, "worktree files")
+        pair = PairedProjectBaseline.entry_pinned(_git(own, "rev-parse", "HEAD"))
 
-    with baseline_worktree(worktree, "HEAD") as baseline:
+    with baseline_worktree(worktree, "HEAD", paired_project=pair) as baseline:
         assert baseline.parent == (main / ".booley").resolve()
         assert untracked_common_paths(worktree, own) == []
         copied = resolve_checkout_booley_dir(baseline)
