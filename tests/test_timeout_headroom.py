@@ -307,9 +307,7 @@ def _run_case(
         environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     # Stay well inside this test's own 60 s CI budget (#1202).
     return run_nested_pytest(
-        ["test_case.py", "-q", *plugins, *options],
-        cwd=tmp_path,
-        env=environment,
+        ["test_case.py", "-q", *plugins, *options], cwd=tmp_path, env=environment
     )
 
 

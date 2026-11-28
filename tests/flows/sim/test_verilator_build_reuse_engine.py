@@ -199,8 +199,7 @@ def _write_fake_verilator(root: Path) -> Path:
     tools = root / "toolbin"
     tools.mkdir()
     _write_executable(
-        tools / "fakecxx",
-        _FAKE_CXX.replace("@ROOT@", str(vroot)).replace("@SYSINC@", str(sysinc)),
+        tools / "fakecxx", _FAKE_CXX.replace("@ROOT@", str(vroot)).replace("@SYSINC@", str(sysinc))
     )
     return vroot / "bin"
 

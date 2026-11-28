@@ -77,10 +77,7 @@ def derive_runtime_input_declarations(
                 f"duplicate runtime input destination {normalized!r}"
             )
         seen.add(normalized)
-        identity = {
-            "source_artifact_path": normalized,
-            "destination": normalized,
-        }
+        identity = {"source_artifact_path": normalized, "destination": normalized}
         declarations.append({"declaration_id": document_digest(identity), **identity})
     return tuple(declarations)
 
@@ -167,8 +164,7 @@ def _manifest_fingerprints(mutable: Mapping[str, object]) -> dict[str, str]:
 
 
 def workload_diagnostic(
-    expected: SimulationRecordManifest,
-    current: SimulationRecordManifest,
+    expected: SimulationRecordManifest, current: SimulationRecordManifest
 ) -> WorkloadDiagnostic:
     """Decide workload identity and, only when it differs, name the changed areas."""
     suite = cast("Mapping[str, Any]", expected.document["required_suite"])
@@ -191,10 +187,7 @@ def workload_diagnostic(
     return WorkloadDiagnostic(tuple(areas))
 
 
-def verify_workload(
-    expected: SimulationRecordManifest,
-    current: SimulationRecordManifest,
-) -> None:
+def verify_workload(expected: SimulationRecordManifest, current: SimulationRecordManifest) -> None:
     """Reject resume of a changed workload, naming what changed."""
     diagnostic = workload_diagnostic(expected, current)
     if diagnostic.areas:
@@ -207,10 +200,7 @@ def manifest_digest(manifest: SimulationRecordManifest) -> str:
 
 
 def _identity_document(
-    manifest: SimulationRecordManifest,
-    *,
-    legacy: bool,
-    recorded: Mapping[str, Any],
+    manifest: SimulationRecordManifest, *, legacy: bool, recorded: Mapping[str, Any]
 ) -> Mapping[str, object]:
     document = manifest.document
     identity: dict[str, object] = {

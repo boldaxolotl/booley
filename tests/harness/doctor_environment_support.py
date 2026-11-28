@@ -80,9 +80,7 @@ def patch_doctor_environment(
     monkeypatch.setattr(session_issuance, "validate", lambda *_args: issuance)
     monkeypatch.setattr(session_issuance, "requested_license", lambda _root: None)
     monkeypatch.setattr(
-        doctor.session_runtime,
-        "up_without_recovery",
-        lambda _root: "booley-session-test",
+        doctor.session_runtime, "up_without_recovery", lambda _root: "booley-session-test"
     )
     monkeypatch.setattr(
         doctor.idk,

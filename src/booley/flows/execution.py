@@ -6,10 +6,6 @@ Runtime.
 
 from __future__ import annotations
 
-from booley.config.flow_enablement import (
-    FlowConfigError,
-    flow_enabled,
-    flow_enabled_from_config,
-)
+from booley.config.flow_enablement import FlowConfigError, flow_enabled, flow_enabled_from_config
 
 __all__ = ["FlowConfigError", "flow_enabled", "flow_enabled_from_config"]

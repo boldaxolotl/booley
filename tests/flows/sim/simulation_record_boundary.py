@@ -296,8 +296,7 @@ def _process_output(process: SubprocessResult) -> str:
 
 
 def adapter_result_for_test_process(
-    names: tuple[str, ...],
-    process: SubprocessResult,
+    names: tuple[str, ...], process: SubprocessResult
 ) -> AdapterResult:
     """The result the native adapter publishes for *process* (sentinels, SVA, return code).
 

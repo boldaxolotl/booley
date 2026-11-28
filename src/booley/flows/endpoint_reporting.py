@@ -162,18 +162,11 @@ class _StdoutWitness:
         still counts as the report having been shown.
         """
         return _contains_whole_line_block(
-            strip_ansi("".join(self._chunks)),
-            text,
-            leading_truncated=self._truncated,
+            strip_ansi("".join(self._chunks)), text, leading_truncated=self._truncated
         )
 
 
-def _contains_whole_line_block(
-    blob: str,
-    text: str,
-    *,
-    leading_truncated: bool = False,
-) -> bool:
+def _contains_whole_line_block(blob: str, text: str, *, leading_truncated: bool = False) -> bool:
     """Return whether *text* appears in *blob* as complete lines.
 
     Leading indentation belongs to the needle: a block that begins with an
@@ -461,11 +454,7 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
             print(host_line, file=sys.stderr, flush=True)
         return
     # A note appended after the report the witness already saw is all that is new.
-    for opening in (
-        "\nCompletion failure (",
-        f"\n{OOM_REQUEUE_NOTE}",
-        f"\n{OOM_KILL_NOTE}",
-    ):
+    for opening in ("\nCompletion failure (", f"\n{OOM_REQUEUE_NOTE}", f"\n{OOM_KILL_NOTE}"):
         original, separator, rest = text.partition(opening)
         if separator and witness is not None and witness.saw(original):
             print(

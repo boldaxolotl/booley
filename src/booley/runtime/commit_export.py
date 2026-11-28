@@ -143,10 +143,7 @@ def transformed_path(attrs: Mapping[bytes, Mapping[str, str]]) -> bytes | None:
 
 
 def materialize_tree(
-    repository: Path,
-    commit: str,
-    destination: Path,
-    rows: Mapping[bytes, bytes],
+    repository: Path, commit: str, destination: Path, rows: Mapping[bytes, bytes]
 ) -> None:
     """Write the commit's blobs under *destination* with Git's built-in conversion.
 

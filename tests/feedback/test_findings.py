@@ -274,11 +274,7 @@ def _paused_feedback_writer(directory, connection, operation, attempted):
 
 
 def _sidecar_is_held(directory):
-    from booley.core.file_lock import (
-        LockContentionError,
-        acquire_file_lock,
-        release_file_lock,
-    )
+    from booley.core.file_lock import LockContentionError, acquire_file_lock, release_file_lock
 
     sidecar = directory / ".runtime" / "findings.lock"
     sidecar.parent.mkdir(parents=True, exist_ok=True)

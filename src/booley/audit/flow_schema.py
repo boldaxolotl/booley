@@ -64,10 +64,7 @@ _MOVED_TARGET_RECIPE_KEYS = frozenset(
 )
 
 
-def audit_flow_tables(
-    data: Mapping[str, Any],
-    required_flows: Sequence[str],
-) -> ConfigTableAudit:
+def audit_flow_tables(data: Mapping[str, Any], required_flows: Sequence[str]) -> ConfigTableAudit:
     """Audit all configured Flow tables and retired Flow configuration."""
     if data.get("tools") is not None:
         return failure(
@@ -78,10 +75,7 @@ def audit_flow_tables(
         )
     flows = as_dict(data.get("flows", {}))
     if flows is None:
-        return failure(
-            "booley.toml [flows] must be a table",
-            "rewrite [flows] as a TOML table",
-        )
+        return failure("booley.toml [flows] must be a table", "rewrite [flows] as a TOML table")
     findings = _retired_flow_findings(flows)
     findings.extend(_required_flow_findings(flows, required_flows))
     findings.extend(_additional_flow_findings(flows, required_flows))
@@ -102,16 +96,14 @@ def _retired_flow_findings(flows: Mapping[str, Any]) -> list[ConfigFinding]:
         if old in flows:
             findings.append(
                 fail_finding(
-                    f"booley.toml [flows.{old}] is retired",
-                    f"rename it to [flows.{new}]",
+                    f"booley.toml [flows.{old}] is retired", f"rename it to [flows.{new}]"
                 )
             )
     return findings
 
 
 def _required_flow_findings(
-    flows: Mapping[str, Any],
-    required_flows: Sequence[str],
+    flows: Mapping[str, Any], required_flows: Sequence[str]
 ) -> list[ConfigFinding]:
     findings: list[ConfigFinding] = []
     for flow_name in required_flows:
@@ -133,8 +125,7 @@ def _required_flow_findings(
 
 
 def _additional_flow_findings(
-    flows: Mapping[str, Any],
-    required_flows: Sequence[str],
+    flows: Mapping[str, Any], required_flows: Sequence[str]
 ) -> list[ConfigFinding]:
     findings: list[ConfigFinding] = []
     validated = set(required_flows)
@@ -154,8 +145,7 @@ def audit_flow_table(flow_name: str, section: Any) -> ConfigTableAudit:
     section_table = as_dict(section)
     if section_table is None:
         return failure(
-            f"booley.toml [flows.{flow_name}] must be a table",
-            f"fix [flows.{flow_name}]",
+            f"booley.toml [flows.{flow_name}] must be a table", f"fix [flows.{flow_name}]"
         )
     findings = _retired_flow_key_findings(flow_name, section_table)
     findings.extend(_target_recipe_findings(flow_name, section_table))
@@ -164,10 +154,7 @@ def audit_flow_table(flow_name: str, section: Any) -> ConfigTableAudit:
     return ConfigTableAudit(tuple(findings))
 
 
-def _retired_flow_key_findings(
-    flow_name: str,
-    section: Mapping[str, Any],
-) -> list[ConfigFinding]:
+def _retired_flow_key_findings(flow_name: str, section: Mapping[str, Any]) -> list[ConfigFinding]:
     findings: list[ConfigFinding] = []
     if "selftest" in section:
         findings.append(
@@ -215,10 +202,7 @@ def _retired_flow_key_findings(
     return findings
 
 
-def _target_recipe_findings(
-    flow_name: str,
-    section: Mapping[str, Any],
-) -> list[ConfigFinding]:
+def _target_recipe_findings(flow_name: str, section: Mapping[str, Any]) -> list[ConfigFinding]:
     if flow_name not in {"synth", "fpga"}:
         return []
     moved = sorted(set(section) & _MOVED_TARGET_RECIPE_KEYS)
@@ -233,10 +217,7 @@ def _target_recipe_findings(
     ]
 
 
-def _shared_knob_findings(
-    flow_name: str,
-    section: Mapping[str, Any],
-) -> list[ConfigFinding]:
+def _shared_knob_findings(flow_name: str, section: Mapping[str, Any]) -> list[ConfigFinding]:
     findings: list[ConfigFinding] = []
     for knob, reader in flow_knobs.SHARED_KNOBS.items():
         try:
@@ -246,10 +227,7 @@ def _shared_knob_findings(
     return findings
 
 
-def _ignored_flow_knob_findings(
-    flow_name: str,
-    section: Mapping[str, Any],
-) -> list[ConfigFinding]:
+def _ignored_flow_knob_findings(flow_name: str, section: Mapping[str, Any]) -> list[ConfigFinding]:
     findings: list[ConfigFinding] = []
     for knob, readers in SELECTIVE_FLOW_KNOBS.items():
         if knob not in section or flow_name in readers:

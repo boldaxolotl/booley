@@ -129,10 +129,7 @@ def _child_sweep(worktree: str, fifo: str, stage: str, barrier_s: int) -> None:
         entry = {"name": name, "core": "acme:test:dut:1", "file_type": "systemVerilogSource"}
         edam.write_text(
             yaml.safe_dump(
-                {
-                    "cores": {"acme:test:dut:1": {"core_file": str(core)}},
-                    "files": [entry],
-                }
+                {"cores": {"acme:test:dut:1": {"core_file": str(core)}}, "files": [entry]}
             )
         )
         resolved = types.SimpleNamespace(build_root=build_dir, edam_path=edam)
@@ -244,23 +241,14 @@ def test_sigkill_sweep_preserves_dirty_scope(dirty_worktree, tmp_path, stage):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stage", ["build", "test"])
 async def test_public_job_cancel_preserves_dirty_scope(
-    dirty_worktree,
-    tmp_path,
-    monkeypatch,
-    stage,
+    dirty_worktree, tmp_path, monkeypatch, stage
 ):
     overrides = _environment(tmp_path)
     for key, value in overrides.items():
         monkeypatch.setenv(key, value)
     monkeypatch.setattr(job_results, "project_booley_dir", lambda: None)
     runtime = tmp_path / "runtime"
-    context = CallContext(
-        dirty_worktree,
-        runtime / "jobs",
-        tmp_path / "logs",
-        runtime,
-        overrides,
-    )
+    context = CallContext(dirty_worktree, runtime / "jobs", tmp_path / "logs", runtime, overrides)
     before = _snapshot(dirty_worktree)
     jobs = JobLifecycle()
     with _readiness_pipe(tmp_path) as (fifo, descriptor):

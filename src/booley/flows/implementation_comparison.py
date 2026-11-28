@@ -47,17 +47,13 @@ def _execution_ref(handle: TargetHandle) -> TargetExecutionRef:
 
 
 def _make_plan(
-    flow: str,
-    baseline: TargetExecutionRef,
-    candidate: TargetExecutionRef,
+    flow: str, baseline: TargetExecutionRef, candidate: TargetExecutionRef
 ) -> TargetPairPlan:
     return TargetPairPlan(flow, baseline, candidate, _PLAN_FACTORY_KEY)
 
 
 def target_pair_plans_for_handles(
-    candidates: Sequence[TargetHandle],
-    *,
-    flow: str,
+    candidates: Sequence[TargetHandle], *, flow: str
 ) -> tuple[TargetPairPlan, ...]:
     """Pair each already-normalized public Flow candidate with itself."""
     plans: list[TargetPairPlan] = []
@@ -91,10 +87,7 @@ def target_pair_for_candidate(
 
 
 def target_plan_for_handle(
-    plans: Sequence[TargetPairPlan],
-    handle: TargetHandle,
-    *,
-    flow: str,
+    plans: Sequence[TargetPairPlan], handle: TargetHandle, *, flow: str
 ) -> TargetPairPlan:
     """Look up a canonical plan, defaulting to the Target paired with itself."""
     if plans:
@@ -104,11 +97,7 @@ def target_plan_for_handle(
 
 
 def selected_target_handle(
-    handles: Mapping[str, TargetHandle],
-    project_root: Path | str,
-    target: str,
-    *,
-    flow: str,
+    handles: Mapping[str, TargetHandle], project_root: Path | str, target: str, *, flow: str
 ) -> TargetHandle:
     """Reuse a selected handle in its Project, otherwise reselect there."""
     root = Path(project_root).resolve()
@@ -119,8 +108,7 @@ def selected_target_handle(
 
 
 def candidate_execution_refs(
-    handles: Sequence[TargetHandle],
-    plans: Sequence[TargetPairPlan],
+    handles: Sequence[TargetHandle], plans: Sequence[TargetPairPlan]
 ) -> dict[str, TargetExecutionRef]:
     """Index planned candidate references by each Flow's selected key."""
     return {
@@ -130,8 +118,7 @@ def candidate_execution_refs(
 
 
 def baseline_execution_context(
-    plans: Sequence[TargetPairPlan],
-    project_root: Path | str,
+    plans: Sequence[TargetPairPlan], project_root: Path | str
 ) -> tuple[dict[str, TargetHandle], dict[str, TargetExecutionRef]]:
     """Reselect and identity-check every planned baseline in its checkout."""
     handles: dict[str, TargetHandle] = {}

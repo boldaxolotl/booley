@@ -86,17 +86,10 @@ from booley.flows.sim.live_progress import (
     prepare_attempt_log,
 )
 from booley.flows.sim.record_reports import simulation_booley_dir
-from booley.flows.sim.runtime_inputs import (
-    declared_runtime_inputs,
-    preview_runtime_inputs,
-)
+from booley.flows.sim.runtime_inputs import declared_runtime_inputs, preview_runtime_inputs
 from booley.flows.sim.trace_recipe import TraceMode
 from booley.flows.simulator_family import normalize_eda_tool
-from booley.flows.target_test_plan import (
-    TargetTestPlan,
-    TestRunLaunch,
-    batch_test_runs,
-)
+from booley.flows.target_test_plan import TargetTestPlan, TestRunLaunch, batch_test_runs
 from booley.flows.target_test_plan_loading import (
     launches_cocotb,
     load_target_test_plan,
@@ -131,10 +124,7 @@ from .contract import (
     SimulationTestOutcome,
     SimulationVerdict,
 )
-from .freshness import (
-    ArtifactValidationError,
-    validate_fresh_artifact,
-)
+from .freshness import ArtifactValidationError, validate_fresh_artifact
 from .pre_sim import test_run_environment
 from .telemetry import parse_build_seconds, parse_run_seconds, process_resources
 
@@ -165,12 +155,7 @@ def _is_packaged_dump_source(attempt: _Attempt, source: Path, project_root: Path
 
 
 def _prepared_source_identity(
-    name: str,
-    source: Path,
-    project_root: Path,
-    *,
-    is_packaged_dump: bool,
-    mirrored: str | None,
+    name: str, source: Path, project_root: Path, *, is_packaged_dump: bool, mirrored: str | None
 ) -> Path:
     """Name one prepared source; *mirrored* is its Project-relative private-mirror path."""
     declared = Path(name)
@@ -771,13 +756,7 @@ class PreparedOrdinaryGroup:
             log=log,
         )
         prepared = replace(self._attempt.prepared, build_root=evidence_root)
-        return replace(
-            self._attempt,
-            prepared=prepared,
-            identity=identity,
-            work=work,
-            log=log,
-        )
+        return replace(self._attempt, prepared=prepared, identity=identity, work=work, log=log)
 
     def _launch(self, attempt: _Attempt) -> AdapterAttemptOutcome:
         request = AdapterAttemptRequest(
@@ -829,11 +808,7 @@ def _planning_disclosure(entries: tuple[dict[str, object], ...]) -> dict[str, ob
         "planner": "fusesoc_setup",
         "scratch_inputs": [],
         "generated_files": list(entries),
-        "tool_provenance": {
-            "kind": "fusesoc",
-            "version": version,
-            "contract_version": "2",
-        },
+        "tool_provenance": {"kind": "fusesoc", "version": version, "contract_version": "2"},
         "cleanup": {"removed": True},
     }
 
@@ -841,12 +816,7 @@ def _planning_disclosure(entries: tuple[dict[str, object], ...]) -> dict[str, ob
 class SimulationExecution:
     """Preview, plan and prepare ordinary Simulation groups of one Target."""
 
-    def __init__(
-        self,
-        *,
-        invoke: ProcessInvoker,
-        options: SimulationOptions,
-    ) -> None:
+    def __init__(self, *, invoke: ProcessInvoker, options: SimulationOptions) -> None:
         self._invoke = invoke
         self._options = options
         self._build_session: SimulationBuildSession | None = None
@@ -925,11 +895,7 @@ class SimulationExecution:
                     group._release_lease()
                 self._build_session = None
 
-    def preview(
-        self,
-        handle: TargetHandle,
-        selection: SimulationSelection,
-    ) -> SimulationPreview:
+    def preview(self, handle: TargetHandle, selection: SimulationSelection) -> SimulationPreview:
         """Describe the same work grouping and adapter rendering without side effects."""
         inspection = TargetCatalog.build(handle.project_root).inspect(handle)
         cocotb = launches_cocotb(inspection.flow_options)
@@ -972,10 +938,7 @@ class SimulationExecution:
         return disclosure
 
     def _select_generation_for_group(
-        self,
-        handle: TargetHandle,
-        attempt: _Attempt,
-        generation_before: Mapping[str, str],
+        self, handle: TargetHandle, attempt: _Attempt, generation_before: Mapping[str, str]
     ) -> _Attempt:
         """Resolve a post-hook cache decision without leaking candidate paths.
 
@@ -1118,10 +1081,7 @@ class SimulationExecution:
                 ),
             )
             if overlay is not None and prepared.resolved.cocotb_module:
-                trace_overlay.validate_cocotb_trace_mode(
-                    handle.selector,
-                    overlay.mode,
-                )
+                trace_overlay.validate_cocotb_trace_mode(handle.selector, overlay.mode)
             mode = overlay.mode if overlay is not None else TraceMode.VCD_FIFO
             return prepared, mode
         finally:
@@ -1164,23 +1124,9 @@ class SimulationExecution:
             adapter = _with_trace_diagnosis(
                 adapter, _trace_candidates_clause(handle, attempt, trace_policy)
             )
-        tests = _test_outcomes(
-            handle,
-            attempt,
-            process,
-            build,
-            adapter,
-            output,
-            logs,
-            trace,
-        )
+        tests = _test_outcomes(handle, attempt, process, build, adapter, output, logs, trace)
         tests = _attach_group_telemetry(
-            tests,
-            attempt,
-            process,
-            build,
-            output,
-            time.monotonic() - processing_started,
+            tests, attempt, process, build, output, time.monotonic() - processing_started
         )
         artifacts = (*logs, *compatibility, *((trace,) if trace is not None else ()))
         return _group_outcome(
@@ -1205,11 +1151,7 @@ class SimulationExecution:
         root = handle.project_root
         announce_unit("configure", target=handle.selector)
         build_root = preview_generation_root(handle, _build_variant(self._options.trace))
-        setup = simulation_setup_command(
-            handle,
-            build_root=build_root,
-            inspection=inspection,
-        )
+        setup = simulation_setup_command(handle, build_root=build_root, inspection=inspection)
         rel = edam_layer.relpath_for_make(build_root, root)
         work = _preview_work(self, handle, inspection, test_names, cocotb, rel, test_runs)
         steps = [
@@ -1350,9 +1292,7 @@ def target_test_plan(
 
 
 def group_test_runs(
-    plan: TargetTestPlan,
-    test_names: tuple[str, ...],
-    test_runs: tuple[TestRun, ...] | None,
+    plan: TargetTestPlan, test_names: tuple[str, ...], test_runs: tuple[TestRun, ...] | None
 ) -> tuple[TestRun, ...]:
     """The Test Runs of one simulator process.
 
@@ -1581,21 +1521,14 @@ def _preview_work(
         top=inspection.toplevel,
         cocotb_module=str(inspection.flow_options.get("cocotb_module") or ""),
         **_process_launch_fields(
-            handle,
-            "cocotb" if cocotb else eda_tool,
-            inspection.parameters,
-            test_names,
-            test_runs,
+            handle, "cocotb" if cocotb else eda_tool, inspection.parameters, test_names, test_runs
         ),
         **_project_run_fields(root),
     )
 
 
 def _preview_exports(
-    handle: TargetHandle,
-    names: tuple[str, ...],
-    build_root: Path,
-    test_runs: tuple[TestRun, ...],
+    handle: TargetHandle, names: tuple[str, ...], build_root: Path, test_runs: tuple[TestRun, ...]
 ) -> list[str]:
     root = handle.project_root
     values = {
@@ -1613,8 +1546,7 @@ def _preview_exports(
 
 
 def _artifact_policies(
-    handle: TargetHandle,
-    attempt: _Attempt,
+    handle: TargetHandle, attempt: _Attempt
 ) -> tuple[TraceArtifactPolicy | None, CompatibilityArtifactPolicy]:
     trace = _trace_artifact_policy(handle, attempt) if attempt.trace_requested else None
     # Cocotb writes its compatibility files to its work directory when a record
@@ -1779,9 +1711,7 @@ def _group_infrastructure_failure(
     if aborted is None:
         return None
     return SimulationInfrastructureFailure(
-        aborted.termination,
-        aborted.reason,
-        detail=aborted.reason,
+        aborted.termination, aborted.reason, detail=aborted.reason
     )
 
 
@@ -1794,8 +1724,7 @@ def _group_verdict(failure, passed: bool, inconclusive: bool):
 
 
 def _target_phase_timings(
-    tests: tuple[SimulationTestOutcome, ...],
-    elapsed_s: float,
+    tests: tuple[SimulationTestOutcome, ...], elapsed_s: float
 ) -> dict[str, float]:
     phases: dict[str, float] = {}
     for test in tests:
@@ -1867,9 +1796,7 @@ def _test_outcomes(
 
 
 def _outcome_names(
-    handle: TargetHandle,
-    attempt: _Attempt,
-    adapter: AdapterResult | None,
+    handle: TargetHandle, attempt: _Attempt, adapter: AdapterResult | None
 ) -> tuple[str, ...]:
     if adapter and adapter.test_results:
         return tuple(test.name for test in adapter.test_results)
@@ -2015,8 +1942,7 @@ def _build_failure_test(
 
 
 def _run_log_for(
-    artifacts: tuple[SimulationArtifactEvidence, ...],
-    name: str,
+    artifacts: tuple[SimulationArtifactEvidence, ...], name: str
 ) -> SimulationArtifactEvidence | None:
     return next(
         (item for item in artifacts if item.kind == "live_run_log" and name in item.test_names),
@@ -2038,9 +1964,7 @@ def _persist_run_logs(attempt: _Attempt, output: str) -> tuple[SimulationArtifac
 
 
 def _trace_artifact(
-    attempt: _Attempt,
-    adapter: AdapterResult | None,
-    trace_policy: TraceArtifactPolicy | None,
+    attempt: _Attempt, adapter: AdapterResult | None, trace_policy: TraceArtifactPolicy | None
 ) -> SimulationArtifactEvidence | None:
     trace = adapter.trace if adapter is not None else None
     if trace_policy is None or trace is None or trace.status != "ok":
@@ -2062,8 +1986,7 @@ def _trace_artifact(
 
 
 def _compatibility_artifacts(
-    attempt: _Attempt,
-    policy: CompatibilityArtifactPolicy,
+    attempt: _Attempt, policy: CompatibilityArtifactPolicy
 ) -> tuple[SimulationArtifactEvidence, ...]:
     return tuple(
         SimulationArtifactEvidence(kind, str(item.path), item.size, attempt.test_names)
@@ -2071,17 +1994,12 @@ def _compatibility_artifacts(
     )
 
 
-def _trace_artifact_policy(
-    handle: TargetHandle,
-    attempt: _Attempt,
-) -> TraceArtifactPolicy:
+def _trace_artifact_policy(handle: TargetHandle, attempt: _Attempt) -> TraceArtifactPolicy:
     run_cwd = Path(attempt.work.run_cwd)
     if not run_cwd.is_absolute():
         run_cwd = handle.project_root / run_cwd
     return TraceArtifactPolicy.capture(
-        run_cwd=run_cwd,
-        build_root=attempt.prepared.build_root,
-        patterns=attempt.work.trace_files,
+        run_cwd=run_cwd, build_root=attempt.prepared.build_root, patterns=attempt.work.trace_files
     )
 
 
@@ -2107,9 +2025,7 @@ def _is_artifact_failure(adapter: AdapterResult | None) -> TypeGuard[AdapterResu
 
 
 def _trace_candidates_clause(
-    handle: TargetHandle,
-    attempt: _Attempt,
-    trace_policy: TraceArtifactPolicy,
+    handle: TargetHandle, attempt: _Attempt, trace_policy: TraceArtifactPolicy
 ) -> str:
     """Name waveform files this attempt wrote that no trace setting declared.
 
@@ -2124,9 +2040,7 @@ def _trace_candidates_clause(
     ignored = {(in_checkout_booley_dir(root) / ".runtime").resolve()}
     ignored.add((resolve_checkout_booley_dir(root) / ".runtime").resolve())
     listed, omitted = trace_policy.fresh_candidates(
-        owned=frozenset(owned),
-        ignored_dirs=tuple(sorted(ignored)),
-        limit=_MAX_TRACE_CANDIDATES,
+        owned=frozenset(owned), ignored_dirs=tuple(sorted(ignored)), limit=_MAX_TRACE_CANDIDATES
     )
     if not listed:
         return ""
@@ -2158,9 +2072,7 @@ def _with_trace_diagnosis(adapter: AdapterResult, clause: str) -> AdapterResult:
 
 
 def _cycle_observation(
-    output: str,
-    name: str,
-    configured_sentinels: tuple[str, ...],
+    output: str, name: str, configured_sentinels: tuple[str, ...]
 ) -> tuple[str, int | None]:
     """Classify the Cycle Count records of *output* for test *name*.
 

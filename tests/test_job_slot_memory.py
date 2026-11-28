@@ -71,13 +71,7 @@ def companion(reservation_mb: float, *, budget_mb: float = BUDGET_MB):
 
 
 def join(
-    store: SlotStore,
-    world: FakeWorld,
-    pid: int,
-    memory,
-    *,
-    role: str = ROLE_INTERACTIVE,
-    job=None,
+    store: SlotStore, world: FakeWorld, pid: int, memory, *, role: str = ROLE_INTERACTIVE, job=None
 ):
     """Start simulated process *pid* and submit its memory claim (with its *job* label)."""
     spawn(world, pid)
@@ -513,10 +507,7 @@ def test_a_requeued_claim_queues_behind_a_long_queue(root, world):
     blocked = [join(store, world, 110 + n, claim(run_alone=True)) for n in range(12)]
     spawn(world, 102)
     requeued = store.submit(
-        job_slots.CLASS_MEMORY,
-        pid=102,
-        memory=claim(run_alone=True),
-        queue_reason=REQUEUE_REASON,
+        job_slots.CLASS_MEMORY, pid=102, memory=claim(run_alone=True), queue_reason=REQUEUE_REASON
     )
     assert store.state_for_pid(102) == TokenState(QUEUED, position=12, reason=REQUEUE_REASON)
     store.release(holder)
@@ -1165,9 +1156,6 @@ def test_a_busy_promotion_gate_leaves_a_takeover_unsubmitted(root, world):
     assert [token.pid for token in store.observe(job_slots.CLASS_MEMORY)[1]] == [102]
     # Once the gate is free the takeover goes through at the holder's place.
     successor = store.acquire(
-        job_slots.CLASS_MEMORY,
-        pid=101,
-        memory=claim(None, run_alone=True),
-        succeeds=flow,
+        job_slots.CLASS_MEMORY, pid=101, memory=claim(None, run_alone=True), succeeds=flow
     )
     assert successor.seq == flow.seq

@@ -30,9 +30,7 @@ from booley.mcp.job_results import _read_report_json
 from booley.runtime.file_lock import LockContentionError
 from tests.conftest import symlink_or_skip
 from tests.flows.sim.fault_point_support import inject_faults
-from tests.flows.sim.simulation_record_test_support import (
-    _recorded_simulation_record,
-)
+from tests.flows.sim.simulation_record_test_support import _recorded_simulation_record
 from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.fusesoc_test_support import symlinked_booley_dir
 from tests.runtime.test_sandbox_layout import project_alias
@@ -1217,10 +1215,7 @@ def test_simulation_reservation_releases_its_lock_when_publication_fails(
         mkdir(path, *args, **kwargs)
 
     monkeypatch.setattr(type(reports), "mkdir", disk_full_for_one)
-    with (
-        flow.publication_resources,
-        pytest.raises(OSError, match="No space left") as raised,
-    ):
+    with flow.publication_resources, pytest.raises(OSError, match="No space left") as raised:
         flow.reserve_invocation_dir()
 
     # The retained traceback keeps the reservation frame alive, so only an

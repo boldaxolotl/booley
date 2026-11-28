@@ -8,11 +8,7 @@ from types import SimpleNamespace
 import pytest
 from jsonschema.exceptions import SchemaError
 
-from booley.mcp.application import (
-    McpApplication,
-    McpDispatchResult,
-    UnknownMcpToolError,
-)
+from booley.mcp.application import McpApplication, McpDispatchResult, UnknownMcpToolError
 from tests.time_budget import hang_guard_s
 
 

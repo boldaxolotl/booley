@@ -66,9 +66,7 @@ def test_supervised_pre_sim_process_propagates_identity_and_unregisters(
     )
     processes = _Processes()
     scope = SimpleNamespace(
-        cancelled=lambda: False,
-        execution_id=ExecutionId("e" * 32),
-        processes=processes,
+        cancelled=lambda: False, execution_id=ExecutionId("e" * 32), processes=processes
     )
     popen_envs: list[dict[str, str]] = []
 

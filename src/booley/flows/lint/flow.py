@@ -378,10 +378,7 @@ def _errored_verdict(errored: list[LintConfigResult]) -> tuple[int, str]:
 
 
 def _classify_lint_failure(
-    result: LintConfigResult,
-    family: str,
-    combined: str,
-    attempt_token: str | None = None,
+    result: LintConfigResult, family: str, combined: str, attempt_token: str | None = None
 ) -> None:
     """Record *why* a non-zero lint run failed, and whose fault it was.
 
@@ -432,8 +429,7 @@ def _classify_lint_failure(
 
 
 def deduplicate_warnings(
-    warnings: list[LintWarning],
-    eda_tool_by_target: Mapping[str, str] | None = None,
+    warnings: list[LintWarning], eda_tool_by_target: Mapping[str, str] | None = None
 ) -> list[LintWarning]:
     """Deduplicate warnings while retaining each contributing Target."""
     seen: dict[tuple[str, str, int], LintWarning] = {}
@@ -515,11 +511,7 @@ def _require_declared_toplevel(inspection: TargetInspection, project_root: Path)
         raise ValueError(_vacuous_toplevel_error(inspection.toplevel, len(hdl_files)))
 
 
-def _toplevel_declared(
-    hdl_files: list[Any],
-    build_root: Path,
-    toplevel: str,
-) -> bool:
+def _toplevel_declared(hdl_files: list[Any], build_root: Path, toplevel: str) -> bool:
     """True when *toplevel* is declared by one of the linted HDL sources.
 
     A Target may lint a fileset that excludes its own toplevel (e.g. a style
@@ -600,9 +592,7 @@ def _target_summary_line(result: LintConfigResult) -> str:
 
 
 def _lint_findings(
-    targets: list[str],
-    warnings: list[LintWarning],
-    results: list[LintConfigResult],
+    targets: list[str], warnings: list[LintWarning], results: list[LintConfigResult]
 ) -> dict[str, Any]:
     """Bound the preview while counting all scoped, distinct warning provenance."""
     findings = [
@@ -683,9 +673,7 @@ def _lint_result_parts(
     return display, detail
 
 
-def _build_warning_details(
-    unique_warnings: list[LintWarning],
-) -> list[dict[str, Any]]:
+def _build_warning_details(unique_warnings: list[LintWarning]) -> list[dict[str, Any]]:
     """Build warning detail dicts for reports."""
     details: list[dict[str, Any]] = []
     for w in unique_warnings:
@@ -752,10 +740,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         """
         return self._selected_target_handles()
 
-    def _prepare_lint_command(
-        self,
-        target: TargetHandle,
-    ) -> _PreparedLintCommand:
+    def _prepare_lint_command(self, target: TargetHandle) -> _PreparedLintCommand:
         """Resolve a lint Target and retain its authenticated command evidence.
 
         The :class:`ResolvedTarget` rides along so the caller can report what
@@ -837,10 +822,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         """
         build_root = work_root_for(self.args.work_dir, "lint", target.selector)
         try:
-            setup_cmd = fusesoc_registry.setup_command_for_handle(
-                target,
-                build_root=build_root,
-            )
+            setup_cmd = fusesoc_registry.setup_command_for_handle(target, build_root=build_root)
         except fusesoc_registry.TargetResolutionError as exc:
             return [f"ERROR: lint dry-run: {exc}"]
         rel = edam_layer.relpath_for_make(build_root, self.args.work_dir)
@@ -874,10 +856,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
                 errors.append(f"{target.selector}: {exc}")
         return FlowPlan(
-            flow="lint",
-            mode="lint",
-            work_units=tuple(units),
-            aggregate_errors=tuple(errors),
+            flow="lint", mode="lint", work_units=tuple(units), aggregate_errors=tuple(errors)
         )
 
     def _lint_work_unit(self, target: TargetHandle) -> WorkUnitPlan:
@@ -908,9 +887,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             },
             commands=(
                 CommandPlan(
-                    normalize_plan_argv(command, self.args.work_dir),
-                    cwd=".",
-                    template=True,
+                    normalize_plan_argv(command, self.args.work_dir), cwd=".", template=True
                 ),
             ),
             expected_artifacts=(normalize_plan_path(build_root / "run.log", self.args.work_dir),),
@@ -953,9 +930,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             return ""
 
     def _run_lint_target(
-        self,
-        target: TargetHandle,
-        prepared: _PreparedLintTarget,
+        self, target: TargetHandle, prepared: _PreparedLintTarget
     ) -> LintConfigResult:
         """Run lint for a single Target via the Edalize lint flow, parse warnings.
 
@@ -970,10 +945,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         selector = target.selector
         # Claim this Target's run.log before preparation, so a concurrent tail
         # can never mistake a previous invocation's findings for current work.
-        self._open_run_log(
-            selector,
-            work_root_for(self.args.work_dir, "lint", selector),
-        )
+        self._open_run_log(selector, work_root_for(self.args.work_dir, "lint", selector))
         result = prepared.result
         self.record_eda_tool(selector, prepared.resolved.configured_eda_tool)
         cmd = prepared.command
@@ -1022,8 +994,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         return ""
 
     def _prepare_lint_targets(
-        self,
-        targets: tuple[TargetHandle, ...],
+        self, targets: tuple[TargetHandle, ...]
     ) -> tuple[dict[str, _PreparedLintTarget], list[LintConfigResult]]:
         """Resolve and coverage-check the complete aggregate before execution."""
         prepared: dict[str, _PreparedLintTarget] = {}
@@ -1035,11 +1006,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
             except Exception as exc:  # isolate and normalize a Target setup failure
                 result.error = f"lint setup failed: {exc}"
                 result.error_is_eda_tool_failure = True
-                logger.debug(
-                    "lint EDAM/configure failed for %s",
-                    target.selector,
-                    exc_info=True,
-                )
+                logger.debug("lint EDAM/configure failed for %s", target.selector, exc_info=True)
                 errors.append(result)
                 continue
             command = prepared_command.command
@@ -1064,10 +1031,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         return prepared, errors
 
     def _record_coverage_facts(
-        self,
-        result: LintConfigResult,
-        resolved: fusesoc_registry.ResolvedTarget,
-        family: str,
+        self, result: LintConfigResult, resolved: fusesoc_registry.ResolvedTarget, family: str
     ) -> bool:
         """Record what the resolution already knows; False = vacuous hard-fail.
 
@@ -1089,9 +1053,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         result.toplevel = resolved.toplevel
         if resolved.toplevel:
             result.toplevel_linted = _toplevel_declared(
-                hdl_files,
-                resolved.build_root,
-                resolved.toplevel,
+                hdl_files, resolved.build_root, resolved.toplevel
             )
         if not result.toplevel_linted:
             result.error = _vacuous_toplevel_error(resolved.toplevel, result.files_linted)
@@ -1157,10 +1119,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         }
         payload = json.dumps(report, indent=2).encode()
         artifacts.publish_bytes(
-            invocation_dir,
-            ("lint_report.json",),
-            payload,
-            work_dir=self.args.work_dir,
+            invocation_dir, ("lint_report.json",), payload, work_dir=self.args.work_dir
         )
         stable_report = report_dir / "lint_report.json"
         atomic_write_json(stable_report, report)
@@ -1170,9 +1129,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
     # --- Main execution ---
 
     def _run_all_targets(
-        self,
-        targets: tuple[TargetHandle, ...],
-        prepared: dict[str, _PreparedLintTarget],
+        self, targets: tuple[TargetHandle, ...], prepared: dict[str, _PreparedLintTarget]
     ) -> tuple[list[LintConfigResult], list[LintWarning]]:
         """Run lint per Target sequentially, print per-Target summary."""
         all_warnings: list[LintWarning] = []
@@ -1194,9 +1151,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
 
     @staticmethod
     def _build_summary(
-        unique: list[LintWarning],
-        report_path: Path | None = None,
-        warnings_as_errors: bool = True,
+        unique: list[LintWarning], report_path: Path | None = None, warnings_as_errors: bool = True
     ) -> tuple[int, str]:
         """Compute (exit_code, summary_string) from results.
 
@@ -1240,8 +1195,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
 
     @staticmethod
     def _linted_paths(
-        prepared: Mapping[str, _PreparedLintTarget],
-        warnings: Iterable[LintWarning],
+        prepared: Mapping[str, _PreparedLintTarget], warnings: Iterable[LintWarning]
     ) -> list[str]:
         """Sorted unique file paths a ``--scope`` entry can be checked against.
 
@@ -1352,8 +1306,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         self._lint_invocation_dir = invocation_dir
         for target in targets:
             self._open_run_log(
-                target.selector,
-                work_root_for(self.args.work_dir, "lint", target.selector),
+                target.selector, work_root_for(self.args.work_dir, "lint", target.selector)
             )
         prepared, preparation_errors = self._prepare_lint_targets(targets)
         if preparation_errors:
@@ -1400,11 +1353,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
 
         elapsed = time.monotonic() - overall_start
         report_path = self._write_lint_report(
-            selectors,
-            unique,
-            elapsed,
-            errored,
-            target_results=target_results,
+            selectors, unique, elapsed, errored, target_results=target_results
         )
 
         display, detail = _lint_result_parts(selectors, unique, elapsed, target_results)
@@ -1427,10 +1376,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         print(f"\n{summary}")
 
         return EndpointOutcome(
-            exit_code=exit_code,
-            report_text=summary,
-            detail=detail,
-            display_lines=display,
+            exit_code=exit_code, report_text=summary, detail=detail, display_lines=display
         )
 
 

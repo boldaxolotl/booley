@@ -57,14 +57,7 @@ _CONFIG_CACHE: dict[str, Any] | None = None
 # Names resolved lazily from project config. Exposed via ``__getattr__`` and
 # read internally via ``_get`` (which honors test monkeypatches).
 _LAZY_NAMES = frozenset(
-    {
-        "PROJECT_NAME",
-        "ENV_PREFIX",
-        "TEST_NAMES",
-        "TEST_SELECT",
-        "TEST_SKIP",
-        "TEST_ENV",
-    }
+    {"PROJECT_NAME", "ENV_PREFIX", "TEST_NAMES", "TEST_SELECT", "TEST_SKIP", "TEST_ENV"}
 )
 
 
@@ -343,10 +336,7 @@ def load_test_configuration(work_dir: Path | str) -> dict[str, dict[str, Any]]:
         return {}
 
 
-def load_test_configuration_field(
-    work_dir: Path | str,
-    field: str,
-) -> TargetFieldMap:
+def load_test_configuration_field(work_dir: Path | str, field: str) -> TargetFieldMap:
     """Project-root-scoped mapping for one normalized ``tests.toml`` field."""
     return _field_map(load_test_configuration(work_dir), field)
 
@@ -397,9 +387,7 @@ def _validate_unique_tests(where: str, names: list[str]) -> None:
 
 
 def _resolve_test_list(
-    target: str,
-    normalized: dict[str, Any],
-    test_lists: Mapping[str, list[str]],
+    target: str, normalized: dict[str, Any], test_lists: Mapping[str, list[str]]
 ) -> str | None:
     """Replace ``test_list`` by the shared list's ``tests``; return the list name."""
     list_ref = normalized.pop("test_list", None)
@@ -418,9 +406,7 @@ def _resolve_test_list(
 
 
 def _normalize_tests_section(
-    target: str,
-    section: Any,
-    test_lists: Mapping[str, list[str]],
+    target: str, section: Any, test_lists: Mapping[str, list[str]]
 ) -> dict[str, Any]:
     if not isinstance(section, Mapping):
         raise ValueError(f"tests.toml [{target}] must be a table")
@@ -527,10 +513,7 @@ def _validate_variants(target: str, normalized: Mapping[str, Any]) -> dict[str, 
 
 
 def _validate_variant_inputs(
-    where: str,
-    variant: TestVariant,
-    reserved: Mapping[str, str],
-    target_env: Mapping[str, str],
+    where: str, variant: TestVariant, reserved: Mapping[str, str], target_env: Mapping[str, str]
 ) -> None:
     """Refuse a Variant argument or variable that something else already owns."""
     for argument in variant.args:

@@ -37,8 +37,7 @@ def private_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_pending_revoke_invalidates_stamp_then_cleans_resources(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_identity = str((tmp_path / "project").resolve())
     events = []
@@ -58,19 +57,14 @@ def test_pending_revoke_invalidates_stamp_then_cleans_resources(
 
 
 def test_legacy_journal_keys_still_recover_with_cleanup(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_identity = str((tmp_path / "project").resolve())
     events = []
     issuance_invalidation.journal_store().write(
         project_identity,
         json.dumps(
-            {
-                "schema_version": 1,
-                "project_root": project_identity,
-                "cleanup_resources": False,
-            }
+            {"schema_version": 1, "project_root": project_identity, "cleanup_resources": False}
         ),
     )
     monkeypatch.setattr(
@@ -89,8 +83,7 @@ def test_legacy_journal_keys_still_recover_with_cleanup(
 
 
 def test_interrupted_cleanup_remains_pending_until_a_later_recovery(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project_identity = str((tmp_path / "project").resolve())
     issuance_invalidation.prepare(project_identity)
@@ -106,9 +99,7 @@ def test_interrupted_cleanup_remains_pending_until_a_later_recovery(
 
     assert issuance_invalidation.pending_invalidations() == (project_identity,)
     monkeypatch.setattr(
-        flexnet_docker,
-        "cleanup_project_resources_for_identity",
-        lambda _root, **_kwargs: (),
+        flexnet_docker, "cleanup_project_resources_for_identity", lambda _root, **_kwargs: ()
     )
     assert issuance_invalidation.recover_all_locked() == (project_identity,)
     assert issuance_invalidation.pending_invalidations() == ()
@@ -178,8 +169,7 @@ def test_misnamed_journal_repair_names_the_cleanup_it_still_owes(tmp_path: Path)
 
 @pytest.mark.parametrize("identity_kind", ["relative", "parent-segment"])
 def test_invalidation_journal_rejects_noncanonical_project_identity(
-    tmp_path: Path,
-    identity_kind: str,
+    tmp_path: Path, identity_kind: str
 ) -> None:
     identity = (
         "relative/project"
@@ -213,9 +203,7 @@ def _make_invalidation_store_unsafe(tmp_path: Path) -> tuple[Path, Path]:
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
 @pytest.mark.parametrize("operation", ["up", "up_without_recovery", "status", "validate"])
 def test_public_session_runtime_translates_unsafe_invalidation_store(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    operation: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, operation: str
 ) -> None:
     project, booley_config = _make_invalidation_store_unsafe(tmp_path)
     monkeypatch.setattr(
@@ -235,8 +223,7 @@ def test_public_session_runtime_translates_unsafe_invalidation_store(
 
 
 def test_shared_recovery_reacts_only_to_invalidations(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     identity = str((tmp_path / "project").resolve())
     leftover = _leftover_refresh_journal("old-refresh-journal")
@@ -272,8 +259,7 @@ def _leftover_refresh_journal(name: str) -> Path:
 
 
 def test_leftover_refresh_journal_blocks_no_command(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = (tmp_path / "project").resolve()
     project.mkdir()
@@ -295,17 +281,12 @@ def test_leftover_refresh_journal_blocks_no_command(
 
 
 def _waiting_runtime_command(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    runtime_command: str,
-    events: list[str],
+    project: Path, monkeypatch: pytest.MonkeyPatch, runtime_command: str, events: list[str]
 ) -> Callable[[], object]:
     if runtime_command == "up":
         monkeypatch.setattr(session_runtime, "_recover_before_lifecycle", lambda *_args: None)
         monkeypatch.setattr(
-            session_runtime,
-            "_up_unlocked",
-            lambda *_args, **_kwargs: events.append("up"),
+            session_runtime, "_up_unlocked", lambda *_args, **_kwargs: events.append("up")
         )
 
         def run() -> object:
@@ -340,9 +321,7 @@ def _waiting_runtime_command(
 
 
 def _run_runtime_command(
-    operation: Callable[[], object],
-    errors: list[RuntimeError],
-    done: threading.Event,
+    operation: Callable[[], object], errors: list[RuntimeError], done: threading.Event
 ) -> None:
     try:
         operation()
@@ -376,9 +355,7 @@ def _start_grant_mutation(project, mutation, monkeypatch, done, errors) -> threa
 
 @pytest.mark.parametrize("runtime_command", ["up", "refresh"])
 def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    runtime_command: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runtime_command: str
 ) -> None:
     project = (tmp_path / "project").resolve()
     project.mkdir()
@@ -407,10 +384,7 @@ def test_grant_mutation_excludes_concurrent_runtime_start_or_refresh(
 
     runtime_waiting = observe_lifecycle_contention(monkeypatch)
     operation = _waiting_runtime_command(project, monkeypatch, runtime_command, events)
-    runtime = threading.Thread(
-        target=_run_runtime_command,
-        args=(operation, errors, runtime_done),
-    )
+    runtime = threading.Thread(target=_run_runtime_command, args=(operation, errors, runtime_done))
     runtime.start()
     assert runtime_waiting.wait(hang_guard_s())
     assert events == []

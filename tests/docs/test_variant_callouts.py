@@ -331,10 +331,7 @@ def test_fence_with_info_string_does_not_end_a_code_block() -> None:
 
 @pytest.mark.parametrize(
     "line",
-    [
-        "<details markdown><summary>On windows</summary>",
-        '<summary class="x">On windows</summary>',
-    ],
+    ["<details markdown><summary>On windows</summary>", '<summary class="x">On windows</summary>'],
 )
 def test_summary_not_alone_on_its_line_fails(line: str) -> None:
     [problem] = callout_problems(f"Baseline.\n\n{line}\n", "X.md")

@@ -16,11 +16,7 @@ from booley.flows.sim.execution.pre_sim_reporting import pre_sim_document
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.runtime.timefmt import utc_now_rfc3339
 
-from .codec import (
-    MANIFEST_MAX_BYTES,
-    SimulationRecordIntegrityError,
-    canonical_json_bytes,
-)
+from .codec import MANIFEST_MAX_BYTES, SimulationRecordIntegrityError, canonical_json_bytes
 from .model import FrozenJson, SimulationRecordDocument
 from .planning import manifest_digest
 
@@ -70,10 +66,7 @@ def _reference(path: Path, raw: bytes, owner: str) -> dict[str, object]:
 
 
 def publish_pre_sim_firing(
-    request: WorkExecutionRequest,
-    evidence: PreSimEvidence,
-    *,
-    ordinal: int = 1,
+    request: WorkExecutionRequest, evidence: PreSimEvidence, *, ordinal: int = 1
 ) -> Mapping[str, object]:
     """Publish before later build checks or simulator work can fail."""
     decoder = request.pre_sim_decoder

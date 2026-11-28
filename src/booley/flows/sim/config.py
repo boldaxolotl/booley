@@ -9,12 +9,7 @@ from string import Formatter
 from typing import Any, Final
 
 from booley.config import flow_knobs
-from booley.core.boundary import (
-    BoundaryError,
-    require_bool,
-    require_dict,
-    require_str_value,
-)
+from booley.core.boundary import BoundaryError, require_bool, require_dict, require_str_value
 from booley.flows.invocation import default_timeout_ms, resolve_timeout_ms
 from booley.flows.sim.record_reports import is_report_link
 from booley.targets.flow_names import config_section

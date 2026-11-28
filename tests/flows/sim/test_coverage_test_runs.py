@@ -22,10 +22,7 @@ from booley.flows.sim.coverage_invocation import (
 from booley.flows.sim.coverage_json import coverage_mapping_document
 from booley.flows.sim.coverage_record_store import load_coverage_record
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.verilator_coverage import (
-    SelectedCoverageRun,
-    SimulationRunResult,
-)
+from booley.flows.sim.verilator_coverage import SelectedCoverageRun, SimulationRunResult
 from booley.flows.target_test_plan import MAX_TEST_RUNS_PER_REQUEST
 from booley.flows.target_test_plan_loading import load_target_test_plan
 from booley.flows.test_runs import TestRun, build_test_run, test_run_document

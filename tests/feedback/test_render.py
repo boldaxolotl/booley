@@ -26,8 +26,7 @@ from tests.sandbox_venue_fake import place, point_mounts
 
 
 @pytest.mark.parametrize(
-    ("value", "rendered"),
-    [(True, "yes"), (False, "no"), (None, "not recorded")],
+    ("value", "rendered"), [(True, "yes"), (False, "no"), (None, "not recorded")]
 )
 def test_environment_renders_resolved_doctor_observation(value, rendered):
     environment = Environment(doctor_deep_clean=value)

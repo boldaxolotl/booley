@@ -87,12 +87,7 @@ class HandleMap:
         return by_alias | {k: session_title(v, names.get(k)) for k, v in entries.items()}
 
     def reserve(
-        self,
-        key: str,
-        prefix: str,
-        *,
-        predecessors: tuple[str, ...] = (),
-        name: str | None = None,
+        self, key: str, prefix: str, *, predecessors: tuple[str, ...] = (), name: str | None = None
     ) -> str:
         """Reserve *key*'s handle; *name* replaces the stored label, ``None`` keeps it."""
         require_str_value(key, field="handle key")

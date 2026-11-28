@@ -29,11 +29,7 @@ class TimedProcess:
 
 
 def _start_timed(
-    command: list[str],
-    time_bin: Path,
-    scratch: Path,
-    label: str,
-    stdout: int | BinaryIO,
+    command: list[str], time_bin: Path, scratch: Path, label: str, stdout: int | BinaryIO
 ) -> TimedProcess:
     metrics_path = scratch / f"{label}.time"
     stderr_path = scratch / f"{label}.stderr"
@@ -128,9 +124,7 @@ def _run_pair(
 
 
 def _pair_record(
-    corpus: regular.Corpus,
-    producer: regular.ProcessMetrics,
-    consumer: regular.ProcessMetrics,
+    corpus: regular.Corpus, producer: regular.ProcessMetrics, consumer: regular.ProcessMetrics
 ) -> dict[str, object]:
     return {
         "producer": {
@@ -161,11 +155,7 @@ def _fifo_summary(trials: list[dict[str, object]]) -> dict[str, float | int]:
 
 
 def _run_trials(
-    args: argparse.Namespace,
-    corpus: regular.Corpus,
-    scratch: Path,
-    kind: str,
-    command: list[str],
+    args: argparse.Namespace, corpus: regular.Corpus, scratch: Path, kind: str, command: list[str]
 ) -> tuple[list[dict[str, object]], dict[str, float | int]]:
     for index in range(args.warmups):
         _run_pair(args, corpus, scratch, f"{corpus.profile}-{kind}-warmup-{index}", command)
@@ -253,11 +243,7 @@ def _benchmark_corpus(
     }
     failures.extend(
         regular._comparison_violations(
-            corpus.profile,
-            candidate,
-            baseline,
-            args.max_output_ratio,
-            args.max_query_ratio,
+            corpus.profile, candidate, baseline, args.max_output_ratio, args.max_query_ratio
         )
     )
     return record, failures

@@ -35,11 +35,7 @@ class VivadoProfile:
 
 
 VIVADO_PROFILES: dict[str, VivadoProfile] = {
-    "compact": VivadoProfile(
-        "compact",
-        "Flow_AreaOptimized_high",
-        "Area_Explore",
-    ),
+    "compact": VivadoProfile("compact", "Flow_AreaOptimized_high", "Area_Explore"),
     "balanced": VivadoProfile(
         "balanced",
         "Vivado Synthesis Defaults",
@@ -56,10 +52,7 @@ VIVADO_PROFILES: dict[str, VivadoProfile] = {
 
 
 def resolve_fpga_profile(
-    flow_options: Mapping[str, Any],
-    *,
-    override: Any = None,
-    target: str,
+    flow_options: Mapping[str, Any], *, override: Any = None, target: str
 ) -> VivadoProfile:
     """Resolve call override, Target setting, then the portable default."""
     configured = flow_options.get("ppa_profile", DEFAULT_PPA_PROFILE)

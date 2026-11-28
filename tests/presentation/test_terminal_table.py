@@ -24,10 +24,7 @@ def _plain(lines: list[str]) -> list[str]:
 @pytest.mark.parametrize("color", [True, False], ids=["color", "plain"])
 def test_colored_cells_align_by_visible_width(monkeypatch, color):
     monkeypatch.setattr(colors, "COLORS_ENABLED", color)
-    rows = [
-        [colors.green("x"), colors.bold("yyyy"), "z"],
-        ["longer", "q", colors.dim("w")],
-    ]
+    rows = [[colors.green("x"), colors.bold("yyyy"), "z"], ["longer", "q", colors.dim("w")]]
     lines = render_table(("A", "BB", "C"), rows)
 
     assert any("\x1b" in line for line in lines) is color

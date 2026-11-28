@@ -85,10 +85,7 @@ def _scope_hashes(work_dir: Path, scope: tuple[str, ...]) -> dict[str, str]:
 def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]:
     """Build the canonical persisted identity for a Reviewer invocation."""
     ticket = _ticket_path(invocation.work_dir)
-    spec = _resolved(
-        invocation.spec_path,
-        invocation.work_dir,
-    )
+    spec = _resolved(invocation.spec_path, invocation.work_dir)
     scope = tuple(sorted(path.replace("\\", "/").removeprefix("./") for path in invocation.scope))
     contract: dict[str, Any] = {
         "version": REVIEW_DETAIL_VERSION,

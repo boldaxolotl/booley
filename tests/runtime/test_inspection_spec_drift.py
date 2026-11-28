@@ -398,10 +398,7 @@ _DRIFT_CASES = {
     ),
     "attach-patch": (_unpatch_attach, "postAttachCommand"),
     "hdl-vsix": (_remove_extension(dc.HDL_VSIX), "customizations.vscode.extensions[]"),
-    "retired-extension": (
-        _add_extension("bitwisecook.tcl"),
-        "customizations.vscode.extensions[]",
-    ),
+    "retired-extension": (_add_extension("bitwisecook.tcl"), "customizations.vscode.extensions[]"),
     "retired-file-association": (
         _set_setting("files.associations", {"*.sdc": "tcl"}),
         "customizations.vscode.settings.files.associations.*.sdc",
@@ -570,9 +567,7 @@ def test_hand_written_sandbox_unparseable_spec_names_no_init_rerun(
 
 @pytest.mark.parametrize("hand_written", [True, False])
 def test_inconclusive_image_comparison_names_host_doctor_only_off_a_hand_written_sandbox(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    hand_written: bool,
+    project: Path, monkeypatch: pytest.MonkeyPatch, hand_written: bool
 ) -> None:
     if hand_written:
         place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)

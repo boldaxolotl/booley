@@ -17,13 +17,7 @@ from booley.flows.endpoint_diff import read_source_dirs_from_toml
 from booley.flows.endpoint_reporting import _StdoutWitness
 from booley.flows.endpoint_session import _transcript_diagnostic_path
 from booley.flows.source_fingerprint import as_str_list
-from booley.mcp.base import (
-    EXIT_ERROR,
-    EXIT_FAILURE,
-    EXIT_SUCCESS,
-    McpTool,
-    McpToolResult,
-)
+from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpTool, McpToolResult
 from booley.runtime import job_slots
 from booley.runtime.endpoint_execution import EndpointOutcome
 from tests.flows.report_headline import assert_paired_headline
@@ -72,10 +66,7 @@ def test_mcp_adapter_passes_neutral_outcome_to_extension_hooks() -> None:
         finalized_label: str | None = None
 
         def _run(self) -> EndpointOutcome:
-            return EndpointOutcome(
-                report_text="ok",
-                display_label="target demo · 2 tests",
-            )
+            return EndpointOutcome(report_text="ok", display_label="target demo · 2 tests")
 
         def _finalize_result(self, result: McpToolResult) -> None:
             self.finalized_label = result.display_label
@@ -543,10 +534,7 @@ class TestHumanModeStderr:
         name = "failing_endpoint"
 
         def _run(self) -> McpToolResult:
-            return McpToolResult(
-                exit_code=EXIT_FAILURE,
-                report_text="boom: the actual reason",
-            )
+            return McpToolResult(exit_code=EXIT_FAILURE, report_text="boom: the actual reason")
 
     def test_report_text_to_stderr_on_human_failure(self, capsys):
         endpoint = self._FailingMcpTool()
@@ -709,10 +697,7 @@ class TestHumanModeStderr:
 
             def _pre_state_gate(self) -> McpToolResult | None:
                 if self.reject_during_preparation:
-                    return McpToolResult(
-                        exit_code=EXIT_ERROR,
-                        report_text="same verdict",
-                    )
+                    return McpToolResult(exit_code=EXIT_ERROR, report_text="same verdict")
                 return None
 
             def _run(self) -> McpToolResult:
@@ -971,8 +956,7 @@ class TestMcpToolMain:
                 raise ValueError("boom")
 
         with mock.patch(
-            "booley.flows.endpoint_session.write_exception_diagnostic",
-            return_value=None,
+            "booley.flows.endpoint_session.write_exception_diagnostic", return_value=None
         ):
             result = FailingMcpTool().execute_cli([])
 
@@ -999,13 +983,7 @@ class TestMcpToolMain:
                 raise ValueError("boom")
 
         result = FailingDryRunMcpTool().execute_cli(
-            [
-                "--dry-run",
-                "--report-dir",
-                str(report_dir),
-                "--transcript-dir",
-                str(transcript_dir),
-            ]
+            ["--dry-run", "--report-dir", str(report_dir), "--transcript-dir", str(transcript_dir)]
         )
 
         assert result.exit_code == EXIT_ERROR
@@ -1216,9 +1194,7 @@ class TestReportDirRejectsMangledHostPath:
         # the only thing that can't be meant — is false.
         if not Path(self._MANGLED).is_absolute():
             pytest.skip("POSIX host: C:/… is the mangled form here, not a host path")
-        assert self._parse(["--report-dir", self._MANGLED]).report_dir == Path(
-            self._MANGLED,
-        )
+        assert self._parse(["--report-dir", self._MANGLED]).report_dir == Path(self._MANGLED)
 
     def test_an_ordinary_relative_path_still_works(self, tmp_path: Path):
         args = self._parse(["--report-dir", "reports/lint"])

@@ -121,11 +121,7 @@ class JobSlotStepMachine(RuleBasedStateMachine):
     """Three processes over one slots directory, interleaved one filesystem step at a time."""
 
     def __init__(
-        self,
-        parent: Path,
-        *,
-        recovery: job_slots.SlotRecovery | None = None,
-        renews: bool = False,
+        self, parent: Path, *, recovery: job_slots.SlotRecovery | None = None, renews: bool = False
     ) -> None:
         super().__init__()
         parent.mkdir(parents=True, exist_ok=True)
@@ -587,11 +583,7 @@ def test_actors_interleave_between_filesystem_steps(
     ],
 )
 def test_injected_sharing_violation_is_retried_like_windows(
-    build_machine: Callable[[], JobSlotStepMachine],
-    op: str,
-    kind: str,
-    prefix: str,
-    faults: int,
+    build_machine: Callable[[], JobSlotStepMachine], op: str, kind: str, prefix: str, faults: int
 ) -> None:
     machine = build_machine()
     owner, other = machine.actors[:2]
@@ -642,10 +634,7 @@ def _plant_entry_without_token(machine: JobSlotStepMachine) -> None:
 
 
 def test_checks_run_after_every_step(build_machine: Callable[[], JobSlotStepMachine]) -> None:
-    for invariant_name, plant in (
-        ("I1", _plant_third_holder),
-        ("I4", _plant_entry_without_token),
-    ):
+    for invariant_name, plant in (("I1", _plant_third_holder), ("I4", _plant_entry_without_token)):
         machine = build_machine()
         reaper = machine.start_operation(machine.actors[1], "reap", job_slots.ROLE_INTERACTIVE, 0)
         plant(machine)

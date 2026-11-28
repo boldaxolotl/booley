@@ -129,8 +129,7 @@ def test_managed_write_plans_and_heals_line_endings_and_modes(
 
 
 def test_dry_run_ignores_unrepresentable_windows_executable_bits(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from booley.runtime import guarded_write as guarded_write_module
 
@@ -139,13 +138,7 @@ def test_dry_run_ignores_unrepresentable_windows_executable_bits(
     target.write_text(content, encoding="utf-8")
     monkeypatch.setattr(guarded_write_module.os, "name", "nt")
 
-    outcome = guarded_write(
-        target,
-        content,
-        owner_marker=MARKER,
-        executable=True,
-        dry_run=True,
-    )
+    outcome = guarded_write(target, content, owner_marker=MARKER, executable=True, dry_run=True)
 
     assert outcome is WriteOutcome.UNCHANGED
 

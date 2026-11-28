@@ -432,8 +432,7 @@ class TestStealthCores:
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir()
         (booley_dir / "booley.toml").write_text(
-            "[stealth]\nenabled = true\nignore_native_cores = true\n",
-            encoding="utf-8",
+            "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
         )
         canonical = _write_core(_stealth_root(tmp_path), create_sources=False)
         (tmp_path / "native.core").write_text("CAPI=1\n", encoding="utf-8")
@@ -449,10 +448,7 @@ class TestStealthCores:
 
         booley_dir = tmp_path / ".booley"
         booley_dir.mkdir()
-        (booley_dir / "booley.toml").write_text(
-            "[stealth]\nenabled = true\n",
-            encoding="utf-8",
-        )
+        (booley_dir / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
         canonical = _write_core(_stealth_root(tmp_path), create_sources=False)
         projected = projected_core_path(tmp_path, canonical)
         foreign_content = "CAPI=2:\nname: foreign::core:0\n"
@@ -587,10 +583,7 @@ class TestDoctorTargetMetadata:
             ("booley: {doctor_selftest: bad}", "doctor_selftest must be a boolean"),
             ("booley: {doctor: [sim], mystery: true}", "mystery is not a supported"),
             ("booley: {coverage: whole-run}", "coverage must be a mapping"),
-            (
-                "booley: {coverage: {reset_included: bad}}",
-                "reset_included must be a boolean",
-            ),
+            ("booley: {coverage: {reset_included: bad}}", "reset_included must be a boolean"),
             (
                 "booley: {coverage: {custom_main_hooks: write_hook}}",
                 "custom_main_hooks must be an array",
@@ -603,14 +596,8 @@ class TestDoctorTargetMetadata:
                 "booley: {coverage: {custom_main_hooks: [write_hook, write_hook]}}",
                 "must not contain duplicates",
             ),
-            (
-                "booley: {coverage: {custom_main_hooks: [mystery]}}",
-                "contains unknown hook",
-            ),
-            (
-                "booley: {coverage: {mystery: true}}",
-                "mystery is not a supported coverage key",
-            ),
+            ("booley: {coverage: {custom_main_hooks: [mystery]}}", "contains unknown hook"),
+            ("booley: {coverage: {mystery: true}}", "mystery is not a supported coverage key"),
         ],
     )
     def test_schema_rejects_invalid_metadata(self, tmp_path: Path, metadata: str, needle: str):
@@ -741,15 +728,9 @@ def test_selector_resolves_one_declaring_core(
 def test_too_short_qualifier_matching_two_cores_is_ambiguous(tmp_path: Path):
     # Two distinct cores share the VLNV name segment 'ibex_top' and 'lint'.
     _write_core(
-        tmp_path / "a",
-        _min_core("lowrisc:ibex:ibex_top:0", ["lint"]),
-        create_sources=False,
+        tmp_path / "a", _min_core("lowrisc:ibex:ibex_top:0", ["lint"]), create_sources=False
     )
-    _write_core(
-        tmp_path / "b",
-        _min_core("acme:other:ibex_top:0", ["lint"]),
-        create_sources=False,
-    )
+    _write_core(tmp_path / "b", _min_core("acme:other:ibex_top:0", ["lint"]), create_sources=False)
     with pytest.raises(AmbiguousTargetError, match="matches 2 cores"):
         _handle(tmp_path, "ibex_top#lint")
     # A longer (library-qualified) form disambiguates.
@@ -794,21 +775,13 @@ class TestParseEdam:
                 "icarus",
             ),
             ("flow_options: {}\ntool_options: {icarus: {}}\n", None, "icarus"),
-            (
-                "flow_options: {}\ntool_options: {icarus: {}, verilator: {}}\n",
-                None,
-                None,
-            ),
+            ("flow_options: {}\ntool_options: {icarus: {}, verilator: {}}\n", None, None),
             ("flow_options: {tool: ''}\ntool_options: {icarus: {}}\n", "", ""),
             ("flow_options: {}\ntool_options: {}\n", None, None),
         ),
     )
     def test_configured_eda_tool_uses_capi2_api_precedence(
-        self,
-        tmp_path: Path,
-        edam_fields: str,
-        declared: str | None,
-        configured: str | None,
+        self, tmp_path: Path, edam_fields: str, declared: str | None, configured: str | None
     ) -> None:
         resolved = _parsed(
             tmp_path,
@@ -822,10 +795,7 @@ class TestParseEdam:
 
     def test_rtl_tb_partition_by_tag(self, tmp_path: Path):
         r = _parsed(tmp_path, _EDAM_TEXT, "sim", "::demo_core:0")
-        assert [f.name.split("/")[-1] for f in r.rtl_files] == [
-            "counter_pkg.sv",
-            "counter.sv",
-        ]
+        assert [f.name.split("/")[-1] for f in r.rtl_files] == ["counter_pkg.sv", "counter.sv"]
         assert [f.name.split("/")[-1] for f in r.tb_files] == ["tb_counter.sv"]
         assert (
             r.files[0].absolute(r.build_root)
@@ -908,10 +878,7 @@ class TestIncludePartition:
             "pkg.sv",
             "dut.sv",
         ]
-        assert [f.name.split("/")[-1] for f in r.rtl_source_files] == [
-            "pkg.sv",
-            "dut.sv",
-        ]
+        assert [f.name.split("/")[-1] for f in r.rtl_source_files] == ["pkg.sv", "dut.sv"]
         # Two headers share one dir → a single de-duplicated, absolute include dir.
         assert r.rtl_include_dirs == ((tmp_path / "src/syn_demo_0/rtl/include").resolve(),)
 
@@ -1035,9 +1002,7 @@ class TestResolveTargetHandleMocked:
 
         with pytest.raises(TargetResolutionError) as excinfo:
             resolve_target_handle(
-                _handle(project),
-                build_root=build_root,
-                runner=fusesoc_setup_runner(),
+                _handle(project), build_root=build_root, runner=fusesoc_setup_runner()
             )
 
         assert "::demo_core:0" in str(excinfo.value)
@@ -1341,8 +1306,7 @@ class TestResolveTargetHandleReal:
         cores = project / ".booley" / "cores"
         cores.mkdir(parents=True)
         (project / ".booley" / "booley.toml").write_text(
-            "[stealth]\nenabled = true\nignore_native_cores = true\n",
-            encoding="utf-8",
+            "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
         )
         (project / "rtl").mkdir()
         (project / "constraints").mkdir()
@@ -1376,9 +1340,7 @@ class TestResolveTargetHandleReal:
         )
 
         resolved = resolve_target_handle(
-            _handle(project, "synth"),
-            build_root=project / "out",
-            fusesoc_cmd=_fusesoc_cmd(),
+            _handle(project, "synth"), build_root=project / "out", fusesoc_cmd=_fusesoc_cmd()
         )
 
         assert resolved.sdc_files[0].name == physical.resolve().as_posix()
@@ -1406,9 +1368,7 @@ class TestResolveTargetHandleReal:
         _write_core(project / ".booley" / "cores", create_sources=False)
 
         resolved = resolve_target_handle(
-            _handle(project, "sim"),
-            build_root=project / "out",
-            fusesoc_cmd=_fusesoc_cmd(),
+            _handle(project, "sim"), build_root=project / "out", fusesoc_cmd=_fusesoc_cmd()
         )
 
         assert resolved.toplevel == "tb_counter"
@@ -1419,8 +1379,7 @@ class TestResolveTargetHandleReal:
         project = tmp_path / "proj"
         (project / ".booley" / "cores").mkdir(parents=True)
         (project / ".booley" / "booley.toml").write_text(
-            "[stealth]\nenabled = true\nignore_native_cores = true\n",
-            encoding="utf-8",
+            "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
         )
         (project / "rtl").mkdir()
         (project / "tb").mkdir()
@@ -1434,9 +1393,7 @@ class TestResolveTargetHandleReal:
         )
 
         resolved = resolve_target_handle(
-            _handle(project, "sim"),
-            build_root=project / "out",
-            fusesoc_cmd=_fusesoc_cmd(),
+            _handle(project, "sim"), build_root=project / "out", fusesoc_cmd=_fusesoc_cmd()
         )
 
         assert resolved.toplevel == "tb_counter"
@@ -1454,15 +1411,12 @@ class TestResolveTargetHandleReal:
             "module counter(input logic clk); endmodule\n", encoding="utf-8"
         )
         (project / "tb" / "tb_counter.sv").write_text(
-            "module tb_counter; counter dut(.clk(1'b0)); endmodule\n",
-            encoding="utf-8",
+            "module tb_counter; counter dut(.clk(1'b0)); endmodule\n", encoding="utf-8"
         )
         _write_core(project)
 
         result = resolve_target_handle(
-            _handle(project, "sim"),
-            build_root=tmp_path / "build",
-            fusesoc_cmd=_fusesoc_cmd(),
+            _handle(project, "sim"), build_root=tmp_path / "build", fusesoc_cmd=_fusesoc_cmd()
         )
         assert result.toplevel == "tb_counter"
         assert result.eda_tool == "verilator"
@@ -1855,8 +1809,7 @@ class TestCoreSchemaErrors:
         for key in sorted(consumed):
             core = tmp_path / f"{key}.core"
             core.write_text(
-                f"CAPI=2:\nname: ::demo:0\ntargets:\n  sim: {{{key}: scalar}}\n",
-                encoding="utf-8",
+                f"CAPI=2:\nname: ::demo:0\ntargets:\n  sim: {{{key}: scalar}}\n", encoding="utf-8"
             )
             assert f"targets.sim.{key} must be array" in core_schema_errors(core)
 
@@ -1864,19 +1817,14 @@ class TestCoreSchemaErrors:
 def test_possible_target_parameters_preserve_values_and_conditionals() -> None:
     target = {
         "parameters": ["MESSAGE=hello world"],
-        "parameters_append": [
-            "tool_icarus ? (ENABLE_ZBB=1)",
-            "!tool_icarus ? (ENABLE_ZBB=0)",
-        ],
+        "parameters_append": ["tool_icarus ? (ENABLE_ZBB=1)", "!tool_icarus ? (ENABLE_ZBB=0)"],
     }
 
     assert possible_target_parameter_names(target) == ["MESSAGE", "ENABLE_ZBB"]
 
 
 def test_target_parameter_definitions_return_only_local_declarations() -> None:
-    document = {
-        "parameters": {"WIDTH": {"datatype": "int", "paramtype": "vlogparam"}},
-    }
+    document = {"parameters": {"WIDTH": {"datatype": "int", "paramtype": "vlogparam"}}}
     target = {"parameters": ["WIDTH=8", "DEPENDENCY_MODE=fast"]}
 
     assert target_parameter_definitions(document, target) == {
@@ -2078,9 +2026,7 @@ class TestSetupCommandEdaToolFlag:
             handle, build_root=tmp_path / "b", backend_arguments=()
         )
         injected = setup_command_for_handle(
-            handle,
-            build_root=tmp_path / "b",
-            backend_arguments=("-j4", "VM_PARALLEL_BUILDS=1"),
+            handle, build_root=tmp_path / "b", backend_arguments=("-j4", "VM_PARALLEL_BUILDS=1")
         )
 
         assert default == explicit_empty

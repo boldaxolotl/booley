@@ -30,13 +30,7 @@ FLOW_PAGES = {
     "fpga": ("FLOW-FPGA.md",),
     "mutation": ("FLOW-MUTATION.md",),
 }
-FLOW_TYPES = (
-    SimulateFlow,
-    LintFlow,
-    AsicSynthesizeFlow,
-    FpgaImplFlow,
-    MutationFlow,
-)
+FLOW_TYPES = (SimulateFlow, LintFlow, AsicSynthesizeFlow, FpgaImplFlow, MutationFlow)
 
 
 def _reference_text(doc: Path = REFERENCE) -> str:
@@ -152,12 +146,7 @@ def test_flow_reference_documents_the_target_omission_rule() -> None:
     text = " ".join(REFERENCE.read_text(encoding="utf-8").split())
     assert all(
         fragment in text
-        for fragment in (
-            "exactly one eligible Target",
-            "zero or multiple",
-            "announced",
-            "resume",
-        )
+        for fragment in ("exactly one eligible Target", "zero or multiple", "announced", "resume")
     ), "documented Target omission rule missing"
     assert "Every run needs `--target`" not in REFERENCE.read_text(encoding="utf-8")
 

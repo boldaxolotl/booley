@@ -31,10 +31,7 @@ def install_agent_clis(home: Path) -> None:
 def credential_findings(root: Path, booley_toml: dict[str, Any]) -> list[DiagnosticFinding]:
     """Run Doctor's agent credential checks for a Project and return its findings."""
     audit = doctor.ProjectAudit(
-        project_root=root,
-        booley_dir=root / ".booley",
-        booley_toml=booley_toml,
-        first_target="",
+        project_root=root, booley_dir=root / ".booley", booley_toml=booley_toml, first_target=""
     )
     # private: run_doctor_result runs every host, Docker and Flow probe first; this is its
     # agent credential section alone.

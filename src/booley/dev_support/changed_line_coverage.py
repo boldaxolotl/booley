@@ -178,11 +178,7 @@ def _is_ancestor(root: Path, ancestor: str, descendant: str) -> bool:
 
 def _git(root: Path, *args: str, check: bool = True) -> bytes:
     result = subprocess.run(
-        ("git", *args),
-        cwd=root,
-        capture_output=True,
-        timeout=_GIT_TIMEOUT_S,
-        check=False,
+        ("git", *args), cwd=root, capture_output=True, timeout=_GIT_TIMEOUT_S, check=False
     )
     if check and result.returncode != 0:
         detail = result.stderr.decode(errors="replace").strip()

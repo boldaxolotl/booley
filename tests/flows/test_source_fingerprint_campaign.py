@@ -38,10 +38,7 @@ def test_campaign_fingerprint_tracks_tests_and_selected_core(tmp_path) -> None:
     )
     unrelated_changed = compute_source_fingerprint(tmp_path, target="sim_unit")["campaign"]
     assert unrelated_changed["digest"] == tests_changed["digest"]
-    assert unrelated_changed["files"] == [
-        ".booley/tests.toml",
-        "design.core",
-    ]
+    assert unrelated_changed["files"] == [".booley/tests.toml", "design.core"]
 
 
 def test_campaign_fingerprint_names_files_through_symlinked_booley_dir(tmp_path) -> None:

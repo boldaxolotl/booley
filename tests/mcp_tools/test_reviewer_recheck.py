@@ -614,10 +614,7 @@ def test_invalid_waiver_proposal_is_refused(
     cases = {
         "unknown": (["--waive", "0123456789abcdef", WHY], "0123456789abcdef"),
         "advisory": (["--waive", ids[NAMING], WHY], ids[NAMING]),
-        "repeated": (
-            ["--waive", ids[RESET], WHY, "--waive", ids[RESET], "Again"],
-            ids[RESET],
-        ),
+        "repeated": (["--waive", ids[RESET], WHY, "--waive", ids[RESET], "Again"], ids[RESET]),
         "blank": (["--waive", ids[RESET], "  "], ids[RESET]),
     }
     for case, (flags, named) in cases.items():

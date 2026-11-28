@@ -247,9 +247,7 @@ def _mint_claude_token(credential: AppCredential, project_root: Path | None) -> 
         from booley.runtime import session_runtime
 
         returncode = session_runtime.run_project_command(
-            project_root,
-            command,
-            tty=sys.stdin.isatty() and sys.stdout.isatty(),
+            project_root, command, tty=sys.stdin.isatty() and sys.stdout.isatty()
         )
     else:
         returncode = subprocess.run(credential.mint_cmd, check=False).returncode

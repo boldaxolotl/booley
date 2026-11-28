@@ -198,10 +198,7 @@ def _param_datatype(spec: Any) -> str | None:
 
 
 def _check_script_provenance(
-    core_doc: Mapping[str, Any],
-    core_file: Path,
-    project_root: Path,
-    scope: list[str],
+    core_doc: Mapping[str, Any], core_file: Path, project_root: Path, scope: list[str]
 ) -> list[CoreViolation]:
     """Require every ``scripts:``/``generators:`` file to be out of the write Scope.
 
@@ -271,9 +268,7 @@ def _in_scope_script_violation(
     )
 
 
-def _imperative_specs(
-    core_doc: Mapping[str, Any],
-) -> list[tuple[str, str, Mapping[str, Any]]]:
+def _imperative_specs(core_doc: Mapping[str, Any]) -> list[tuple[str, str, Mapping[str, Any]]]:
     """Yield ``(section, name, spec)`` for every top-level script and generator."""
     specs: list[tuple[str, str, Mapping[str, Any]]] = []
     for section in ("scripts", "generators"):

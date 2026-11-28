@@ -25,11 +25,7 @@ from booley.flows.sim import flow as sim
 from booley.flows.sim import record_presentation
 
 # private: standalone recipe types, as above.
-from booley.flows.sim.standalone import (
-    StandaloneMixin,
-    _StandalonePlanRecipe,
-    _StandaloneProbe,
-)
+from booley.flows.sim.standalone import StandaloneMixin, _StandalonePlanRecipe, _StandaloneProbe
 from booley.flows.synth.flow import AsicSynthesizeFlow, SynthMetrics
 from booley.mcp.report_encoding import ReportEncoder
 from booley.runtime.endpoint_execution import EndpointOutcome
@@ -71,9 +67,7 @@ def _one_probe_recipe():
     """
     probe = _StandaloneProbe("top", "top.sv", "verilator", (), False, ())
     return _StandalonePlanRecipe(
-        probes=(probe,),
-        shared=(),
-        commands=(("verilator", "--lint-only", "top.sv"),),
+        probes=(probe,), shared=(), commands=(("verilator", "--lint-only", "top.sv"),)
     )
 
 

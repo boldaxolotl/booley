@@ -22,12 +22,8 @@ from booley.flows.sim.record.codec import (
     decode_simulator_bundle,
 )
 from booley.flows.sim.record.store import SimulationRecordStore
-from tests.flows.sim.simulation_record_test_support import (
-    _retained_invocation,
-)
-from tests.flows.sim.test_simulation_record_manifest_codec import (
-    _manifest,
-)
+from tests.flows.sim.simulation_record_test_support import _retained_invocation
+from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
 
 _MANIFEST = "booley.simulation-campaign-manifest/"
 _UNSUPPORTED = "UnsupportedSimulationRecordFormatError"
@@ -146,10 +142,7 @@ _PREVIOUS_BUNDLE = "booley.simulator-bundle/v2"
 
 @pytest.mark.parametrize(
     ("schema", "decode"),
-    [
-        (_PREVIOUS_BUNDLE, decode_simulator_bundle),
-        (_SNAPSHOT_V2, "refuse_retired_document"),
-    ],
+    [(_PREVIOUS_BUNDLE, decode_simulator_bundle), (_SNAPSHOT_V2, "refuse_retired_document")],
 )
 def test_previous_version_documents_are_refused(schema: str, decode) -> None:
     if isinstance(decode, str):

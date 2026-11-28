@@ -120,12 +120,7 @@ def test_complete_evidence_audit_is_validated_into_public_and_private_parts():
 
 @pytest.mark.parametrize(
     ("field", "invalid"),
-    [
-        ("total_points", True),
-        ("budget_exhausted", "false"),
-        ("queries", [{}]),
-        ("point_ids", [7]),
-    ],
+    [("total_points", True), ("budget_exhausted", "false"), ("queries", [{}]), ("point_ids", [7])],
 )
 def test_evidence_audit_rejects_invalid_persisted_fields(field, invalid):
     session = CoverageEvidenceSession(_coverage_record_with_waiver(), None)
@@ -178,12 +173,7 @@ def test_points_cursor_advances_within_the_same_filtered_query():
 
     first = session.query({"view": "points", "disposition": "waived", "limit": 1})
     second = session.query(
-        {
-            "view": "points",
-            "disposition": "waived",
-            "limit": 1,
-            "cursor": first["next_cursor"],
-        }
+        {"view": "points", "disposition": "waived", "limit": 1, "cursor": first["next_cursor"]}
     )
 
     assert first["points"][0]["point_ref"] != second["points"][0]["point_ref"]
@@ -243,12 +233,7 @@ def test_points_encode_only_returned_pages_and_reuse_filtered_selection(monkeypa
     first = session.query({"view": "points", "disposition": "waived", "limit": 1})
     after_first = match_calls
     second = session.query(
-        {
-            "view": "points",
-            "disposition": "waived",
-            "limit": 1,
-            "cursor": first["next_cursor"],
-        }
+        {"view": "points", "disposition": "waived", "limit": 1, "cursor": first["next_cursor"]}
     )
 
     assert after_first == len(coverage_record.points)
@@ -294,13 +279,7 @@ def test_source_view_is_limited_to_exact_coverage_record_point_ids():
     sources = CoverageSourceClosure(
         coverage_record.target.identity,
         freeze_coverage_mapping(
-            {
-                "rtl/counter.sv": {
-                    "category": "rtl",
-                    "sha256": "sha256:" + "6" * 64,
-                    "text": source,
-                }
-            }
+            {"rtl/counter.sv": {"category": "rtl", "sha256": "sha256:" + "6" * 64, "text": source}}
         ),
     )
     session = CoverageEvidenceSession(coverage_record, sources)
@@ -321,13 +300,7 @@ def test_source_view_resolves_only_previously_delivered_point_references():
     sources = CoverageSourceClosure(
         coverage_record.target.identity,
         freeze_coverage_mapping(
-            {
-                "rtl/counter.sv": {
-                    "category": "rtl",
-                    "sha256": "sha256:" + "6" * 64,
-                    "text": source,
-                }
-            }
+            {"rtl/counter.sv": {"category": "rtl", "sha256": "sha256:" + "6" * 64, "text": source}}
         ),
     )
     session = CoverageEvidenceSession(coverage_record, sources)
@@ -366,11 +339,7 @@ def test_source_view_preserves_requested_order_and_duplicates():
 
     session.query({"view": "source", "point_ids": [second.id, first.id, second.id]})
 
-    assert session.analysis_scope()["queries"][-1]["point_ids"] == [
-        second.id,
-        first.id,
-        second.id,
-    ]
+    assert session.analysis_scope()["queries"][-1]["point_ids"] == [second.id, first.id, second.id]
 
 
 def test_source_view_unknown_id_depends_on_verified_source_access():
@@ -524,11 +493,7 @@ def _coverage_record_with_source_gaps(count=157):
         )
         for i in range(count)
     )
-    return replace(
-        coverage_record,
-        source_closure=closure,
-        findings=(*unrelated, *gaps),
-    ), paths
+    return replace(coverage_record, source_closure=closure, findings=(*unrelated, *gaps)), paths
 
 
 def test_zero_point_sources_are_fully_pageable_without_source_access_or_point_references():

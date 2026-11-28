@@ -91,9 +91,7 @@ def require_runnable_target_test_suite(
 ) -> TargetTestSuite:
     """Resolve *target* and reject an all-skipped, vacuous campaign."""
     suite = resolve_target_test_suite(
-        identity=identity,
-        test_names=test_names,
-        test_skips=test_skips,
+        identity=identity, test_names=test_names, test_skips=test_skips
     )
     if suite.all_skipped:
         raise NoRunnableTestsError(target, suite.skipped)

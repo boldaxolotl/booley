@@ -112,8 +112,7 @@ def _add_friction_subcommand(fb: argparse._SubParsersAction) -> None:
     the fix and what the reporter expected instead.
     """
     friction_p = fb.add_parser(
-        "friction",
-        help="Log something confusing rather than broken (no reproduction needed)",
+        "friction", help="Log something confusing rather than broken (no reproduction needed)"
     )
     friction_p.add_argument("--title", required=True, help="What was confusing, in one line")
     friction_p.add_argument(
@@ -149,12 +148,10 @@ def _add_say_subcommand(fb: argparse._SubParsersAction) -> None:
     message is optional metadata for whoever reads the batch.
     """
     say_p = fb.add_parser(
-        "say",
-        help="Tell Booley's maintainers what you think — praise, gripes, feature wishes",
+        "say", help="Tell Booley's maintainers what you think — praise, gripes, feature wishes"
     )
     say_p.add_argument(
-        "message",
-        help="What you want to say, in one line. That alone is a complete report.",
+        "message", help="What you want to say, in one line. That alone is a complete report."
     )
     say_p.add_argument(
         "--sentiment",
@@ -232,8 +229,7 @@ def _add_logging_subcommands(fb: argparse._SubParsersAction) -> None:
     )
 
     filed_p = fb.add_parser(
-        "filed",
-        help="Mark findings as already shared, so later exports exclude them",
+        "filed", help="Mark findings as already shared, so later exports exclude them"
     )
     filed_p.add_argument("finding_ids", metavar="F-N", nargs="+", help="Findings to stamp")
     filed_p.add_argument(
@@ -263,9 +259,7 @@ def _add_reporting_subcommands(fb: argparse._SubParsersAction) -> None:
     export_p = fb.add_parser("export", help="Explicitly write redacted Markdown for sharing")
     _add_finding_selection(export_p)
     export_p.add_argument(
-        "--output",
-        metavar="PATH",
-        help="Write here instead of the feedback storage directory",
+        "--output", metavar="PATH", help="Write here instead of the feedback storage directory"
     )
 
     redact_p = fb.add_parser("redact", help="Scrub project identifiers out of a file or stdin")
@@ -280,10 +274,7 @@ def _add_reporting_subcommands(fb: argparse._SubParsersAction) -> None:
 def _add_finding_selection(parser: argparse.ArgumentParser) -> None:
     """Add the finding selector used by explicit redacted exports."""
     parser.add_argument(
-        "finding_ids",
-        metavar="F-N",
-        nargs="*",
-        help="Only include these findings.",
+        "finding_ids", metavar="F-N", nargs="*", help="Only include these findings."
     )
     parser.add_argument(
         "--all",
@@ -562,11 +553,7 @@ def _cmd_export(
     env: render.Environment | None = None,
 ) -> int:
     prepared = _export_report(
-        project_root,
-        booley_dir,
-        args.finding_ids,
-        all_findings=args.all_findings,
-        env=env,
+        project_root, booley_dir, args.finding_ids, all_findings=args.all_findings, env=env
     )
     if prepared is None:
         return 1
@@ -610,10 +597,7 @@ _HANDLERS: dict[str, Callable[[argparse.Namespace, Path, Path], int]] = {
     "redact": _cmd_redact,
 }
 
-_ENVIRONMENT_HANDLERS = {
-    "report": _cmd_report,
-    "export": _cmd_export,
-}
+_ENVIRONMENT_HANDLERS = {"report": _cmd_report, "export": _cmd_export}
 
 
 def _report_boundary_error(exc: BoundaryError) -> int:

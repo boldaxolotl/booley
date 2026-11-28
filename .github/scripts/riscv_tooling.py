@@ -341,10 +341,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def _key_outputs(dockerfile: Path, key: str) -> str:
-    labels = {
-        **expected_labels(key),
-        RECIPE_LABEL: resolve_recipe_fingerprint((dockerfile,)),
-    }
+    labels = {**expected_labels(key), RECIPE_LABEL: resolve_recipe_fingerprint((dockerfile,))}
     label_lines = "".join(f"{name}={value}\n" for name, value in labels.items())
     return (
         f"key={key}\ntag={tag(key)}\nimage={final_image(key)}\n"

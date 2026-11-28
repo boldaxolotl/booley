@@ -9,13 +9,8 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim import coverage_reference
-from booley.flows.sim.coverage_record import (
-    CoverageRecordValidationError,
-    DurableTargetIdentity,
-)
-from booley.flows.sim.coverage_record_store import (
-    publish_coverage_record,
-)
+from booley.flows.sim.coverage_record import CoverageRecordValidationError, DurableTargetIdentity
+from booley.flows.sim.coverage_record_store import publish_coverage_record
 from booley.flows.sim.coverage_reference import (
     MAX_REFERENCE_BYTES,
     CoverageRecordReference,
@@ -173,8 +168,7 @@ def test_reference_codec_refuses_a_nested_v4_coverage_record_as_an_older_booley_
 
 
 def test_resolving_a_nested_v4_reference_outside_the_report_layout_cannot_name_a_directory(
-    published,
-    tmp_path: Path,
+    published, tmp_path: Path
 ) -> None:
     _, _, value = published
     stray = tmp_path / "stray" / "coverage.json"
@@ -297,9 +291,7 @@ def test_resolver_decodes_authenticated_reference_bytes_during_path_swap(
 def test_resolver_reads_the_nested_coverage_record_without_rehashing_it(published) -> None:
     target, nested, value = published
     raw = _rewrite_reference(
-        value,
-        ("coverage_record", "sha256"),
-        "sha256:" + hashlib.sha256(b"substitute").hexdigest(),
+        value, ("coverage_record", "sha256"), "sha256:" + hashlib.sha256(b"substitute").hexdigest()
     )
     path = target / "coverage.json"
     path.write_bytes(raw)

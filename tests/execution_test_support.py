@@ -34,21 +34,14 @@ def runtime_env(booley_dir: Path, execution_id: ExecutionId | None = None) -> di
     source_path = str(_SRC_ROOT)
     if python_path:
         source_path = f"{source_path}{os.pathsep}{python_path}"
-    env = {
-        **os.environ,
-        "BOOLEY_DIR": str(booley_dir),
-        "PYTHONPATH": source_path,
-    }
+    env = {**os.environ, "BOOLEY_DIR": str(booley_dir), "PYTHONPATH": source_path}
     if execution_id is not None:
         env[RUNTIME_EXECUTION_ENV] = execution_id
     return env
 
 
 def wait_for_value(
-    probe: Callable[[], ResultT | None],
-    *,
-    failure: str,
-    timeout_s: float = _WAIT_SECONDS,
+    probe: Callable[[], ResultT | None], *, failure: str, timeout_s: float = _WAIT_SECONDS
 ) -> ResultT:
     """Return the first non-None probe result within a bounded interval."""
     deadline = time.monotonic() + timeout_s
@@ -60,24 +53,13 @@ def wait_for_value(
     raise AssertionError(failure)
 
 
-def wait_for(
-    probe: Callable[[], bool],
-    *,
-    failure: str,
-    timeout_s: float = _WAIT_SECONDS,
-) -> None:
+def wait_for(probe: Callable[[], bool], *, failure: str, timeout_s: float = _WAIT_SECONDS) -> None:
     """Wait for a boolean probe within a bounded interval."""
-    wait_for_value(
-        lambda: True if probe() else None,
-        failure=failure,
-        timeout_s=timeout_s,
-    )
+    wait_for_value(lambda: True if probe() else None, failure=failure, timeout_s=timeout_s)
 
 
 def start_supervisor_with_detached_descendant(
-    booley_dir: Path,
-    execution_id: ExecutionId,
-    descendant_pid_file: Path,
+    booley_dir: Path, execution_id: ExecutionId, descendant_pid_file: Path
 ) -> subprocess.Popen[str]:
     """Start a marked supervisor whose SIGINT-resistant descendant calls setsid."""
     descendant_script = (

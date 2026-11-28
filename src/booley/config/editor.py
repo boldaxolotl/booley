@@ -46,10 +46,7 @@ class _EditorInstallCandidate:
 
 _EDITOR_SPECS = (
     _EditorSpec(
-        "code",
-        "Visual Studio Code.app",
-        "Electron",
-        Path("Programs/Microsoft VS Code/Code.exe"),
+        "code", "Visual Studio Code.app", "Electron", Path("Programs/Microsoft VS Code/Code.exe")
     ),
     _EditorSpec(
         "code-insiders",
@@ -116,9 +113,7 @@ def editor_for_command(command: str) -> ResolvedEditor:
     )
 
 
-def resolve_editor_command(
-    which: Callable[[str], str | None] | None = None,
-) -> str | None:
+def resolve_editor_command(which: Callable[[str], str | None] | None = None) -> str | None:
     """Return the first supported editor executable present on ``PATH``."""
     resolver = which or shutil.which
     for command in EDITOR_COMMANDS:
@@ -152,9 +147,7 @@ def resolve_editor_management_command(
     return None
 
 
-def resolve_editor(
-    which: Callable[[str], str | None] | None = None,
-) -> ResolvedEditor | None:
+def resolve_editor(which: Callable[[str], str | None] | None = None) -> ResolvedEditor | None:
     """Resolve immutable command templates for the installed editor."""
     command = resolve_editor_command(which)
     return editor_for_command(command) if command is not None else None

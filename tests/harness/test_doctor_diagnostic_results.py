@@ -17,10 +17,7 @@ from booley.config.host_config import SandboxHostPolicy
 from booley.core.host_shell import quote_arg
 from booley.harness import auto_doctor, doctor, host_diagnostics
 from booley.presentation import colors
-from booley.runtime import (
-    doctor_stamp,
-    platform_paths,
-)
+from booley.runtime import doctor_stamp, platform_paths
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import StaleTargetCatalogError
 from tests.conftest import symlink_or_skip
@@ -343,11 +340,7 @@ def test_project_observations_keep_the_existing_order(tmp_path, monkeypatch, val
 
 
 # Doctor's own evidence and scratch output stay writable; nothing else may change.
-_DOCTOR_WRITABLE_PREFIXES = (
-    ".git/",
-    ".booley/runtime/",
-    ".booley/tmp/",
-)
+_DOCTOR_WRITABLE_PREFIXES = (".git/", ".booley/runtime/", ".booley/tmp/")
 
 
 def _project_files(root: Path) -> dict[str, bytes]:
@@ -742,10 +735,7 @@ def test_core_audit_stops_when_targets_cannot_be_enumerated(tmp_path, monkeypatc
     """
     booley_dir = write_project(tmp_path)
     project = doctor.ProjectAudit(
-        project_root=tmp_path,
-        booley_dir=booley_dir,
-        booley_toml={},
-        first_target="x",
+        project_root=tmp_path, booley_dir=booley_dir, booley_toml={}, first_target="x"
     )
     if case == "no-core":
         (tmp_path / "unit.core").unlink()

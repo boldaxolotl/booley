@@ -769,11 +769,7 @@ _ALT_MARKER = "altMarkerTime"
 def _launch_viewer(cli: str, trace: str) -> int:
     """Launch the editor CLI on *trace*; return its exit code (nonzero on any failure)."""
     try:
-        result = subprocess.run(
-            [cli, trace],
-            timeout=_VIEWER_LAUNCH_TIMEOUT,
-            check=False,
-        )
+        result = subprocess.run([cli, trace], timeout=_VIEWER_LAUNCH_TIMEOUT, check=False)
         return result.returncode
     except (subprocess.TimeoutExpired, OSError):
         return 1
@@ -894,9 +890,7 @@ def _inner_message(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def _exit_with_inner_error(
-    result: subprocess.CompletedProcess[str],
-    cmd_args: list[str],
-    plumbing: str,
+    result: subprocess.CompletedProcess[str], cmd_args: list[str], plumbing: str
 ) -> NoReturn:
     """Exit surfacing the inner binary's message verbatim, never the plumbing.
 
@@ -957,11 +951,7 @@ def _capture_data(result: subprocess.CompletedProcess[str], cmd_args: list[str])
 # Trailing bit range on a bwave signal name: "[7:0]" (vector) or "[3]" (bit).
 _BIT_RANGE_RE = re.compile(r"\[(\d+)(?::(\d+))?\]$")
 
-_RADIX_FORMATS = {
-    "b": "binary",
-    "h": "hexadecimal",
-    "d": "decimal",
-}
+_RADIX_FORMATS = {"b": "binary", "h": "hexadecimal", "d": "decimal"}
 # VaporView exposes only eight palette indices. Booley reserves custom slots
 # 5/6/7 (zero-based 4/5/6 here) for deterministic semantic colors; the
 # generated devcontainer settings define their actual CSS values.
@@ -1825,12 +1815,7 @@ def _restore_view(view: _ViewSession, snapshot: dict, error: Exception) -> None:
     """
     session = {key: snapshot[key] for key in _RESTORE_KEYS if snapshot.get(key) is not None}
     target = _ViewTarget(
-        rows=_state_rows(snapshot),
-        markers={},
-        aliases={},
-        ours=frozenset(),
-        added=[],
-        groups=[],
+        rows=_state_rows(snapshot), markers={}, aliases={}, ours=frozenset(), added=[], groups=[]
     )
     try:
         view.apply(session)
@@ -2074,11 +2059,7 @@ def cmd_gui(args: argparse.Namespace) -> None:
 def _run(cmd: list[str]) -> int:
     """Run a command, streaming stdout/stderr."""
     try:
-        result = subprocess.run(
-            cmd,
-            timeout=120,
-            check=False,
-        )
+        result = subprocess.run(cmd, timeout=120, check=False)
         return result.returncode
     except subprocess.TimeoutExpired:
         print("ERROR: Command timed out (120s)")
@@ -2436,9 +2417,7 @@ Quick start:
         help="Add to the current view instead of replacing it (no clock row is re-added)",
     )
     p_gui.add_argument(
-        "--no-clock",
-        action="store_true",
-        help="Do not prepend the trace's clock to a new view",
+        "--no-clock", action="store_true", help="Do not prepend the trace's clock to a new view"
     )
     p_gui.add_argument(
         "--max-signals",

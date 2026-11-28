@@ -162,9 +162,7 @@ class TestBuildSpec:
         # workspaceMount first, then `mounts` in order, so a mask listed
         # BEFORE the project-dir mount would be buried by it.
         spec = build_spec(
-            dc.APP_CLAUDE,
-            mask_paths=[".booley/oracle", "lanes/b"],
-            mask_source="/empty",
+            dc.APP_CLAUDE, mask_paths=[".booley/oracle", "lanes/b"], mask_source="/empty"
         )
         mounts = spec["mounts"]
         project_idx = mounts.index(
@@ -473,11 +471,7 @@ class TestConfigSeed:
     def test_postcreate_seeds_before_registrar(self):
         # cp must precede the registrar so upsert_claude merges into the
         # host-derived config, not an empty one.
-        spec = build_spec(
-            dc.APP_CLAUDE,
-            config_source=self._SRC,
-            mcp_start_command=self._MCP,
-        )
+        spec = build_spec(dc.APP_CLAUDE, config_source=self._SRC, mcp_start_command=self._MCP)
         pc = spec["postCreateCommand"]
         assert pc.index("cp -n") < pc.index(self._MCP)
         assert f"{dc.AGENT_HOME}/.claude-config-seed.json" in pc

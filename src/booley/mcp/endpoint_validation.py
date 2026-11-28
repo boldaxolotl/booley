@@ -53,10 +53,7 @@ def validate_custom_endpoints(project_root: Path) -> list[SkippedEndpoint]:
     return skipped
 
 
-def _warn_retired_sandbox_attr(
-    py_file: Path,
-    tree: ast.Module,
-) -> None:
+def _warn_retired_sandbox_attr(py_file: Path, tree: ast.Module) -> None:
     """Warn when a custom MCP endpoint retains retired ``sandbox`` metadata."""
     sandbox_val = _extract_sandbox_attr(tree)
     if sandbox_val is None:

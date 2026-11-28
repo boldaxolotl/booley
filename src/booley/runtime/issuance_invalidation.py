@@ -102,12 +102,7 @@ def _decode(raw: object) -> str:
 def journal_store() -> ProjectStore:
     """The per-Project invalidation journals; Doctor scans it read-only."""
     root = config_dir() / "runtime" / "issuance-invalidations"
-    private = PrivateStore(
-        root,
-        config_dir().parent,
-        "issuance invalidation",
-        InvalidationError,
-    )
+    private = PrivateStore(root, config_dir().parent, "issuance invalidation", InvalidationError)
     return ProjectStore(private, _journal_repair)
 
 

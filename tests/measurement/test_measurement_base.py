@@ -75,9 +75,7 @@ def test_default_base_falls_back_to_local_main_without_origin_head(tmp_path: Pat
     assert (base.commit, base.choice) == (fork, BaseChoice.LOCAL_MAIN)
 
 
-def test_rules_base_prefers_local_main_only_when_it_holds_unpushed_commits(
-    tmp_path: Path,
-) -> None:
+def test_rules_base_prefers_local_main_only_when_it_holds_unpushed_commits(tmp_path: Path) -> None:
     def build(name: str, origin: str) -> tuple[Path, dict[str, str]]:
         """A repository with ``c1 <- c2`` on main and ``origin`` at c1, c2, a later c3, or absent."""
         repo = new_repository(tmp_path / name / "repo")

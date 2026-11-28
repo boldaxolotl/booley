@@ -824,8 +824,7 @@ class TerminalProgress:
         output_cells = max((_cells(output) for output in outputs if output), default=0)
         fixed = len(_LANE_INDENT) + 3 + stage_cells + (3 + output_cells if output_cells else 0)
         name_cells = min(
-            max((_cells(name) for name in names), default=0),
-            max(_MIN_NAME_CELLS, budget - fixed),
+            max((_cells(name) for name in names), default=0), max(_MIN_NAME_CELLS, budget - fixed)
         )
         rows: list[str] = []
         for lane, full_name, stage, output in zip(lanes, names, stages, outputs, strict=True):

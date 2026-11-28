@@ -127,15 +127,7 @@ def first_parent_history(checkout: Path, head: str) -> list[tuple[str, str]]:
         stop = resolve_base(checkout, head).commit or head
     except BaseError:
         stop = head
-    output = _text(
-        checkout,
-        "log",
-        "--first-parent",
-        "--format=%H %T",
-        head,
-        "--not",
-        f"{stop}^@",
-    )
+    output = _text(checkout, "log", "--first-parent", "--format=%H %T", head, "--not", f"{stop}^@")
     return [(commit, tree) for commit, tree in (line.split() for line in output.splitlines())]
 
 

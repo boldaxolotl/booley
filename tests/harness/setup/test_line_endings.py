@@ -629,9 +629,7 @@ def _wait_for_next_second() -> None:
 
 @pytest.mark.skipif(os.name == "nt", reason="needs a read-only directory")
 @pytest.mark.parametrize(
-    "crlf_names",
-    [("a.v", "locked/b.v"), ("locked/b.v",)],
-    ids=["one-rewritten", "none-rewritten"],
+    "crlf_names", [("a.v", "locked/b.v"), ("locked/b.v",)], ids=["one-rewritten", "none-rewritten"]
 )
 def test_failed_recheckout_keeps_crlf_files_stat_clean_without_a_text_rule(
     tmp_path: Path, crlf_names: tuple[str, ...]

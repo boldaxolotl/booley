@@ -72,8 +72,7 @@ def per_clock_from_json(raw: Any) -> dict[str, ClockTiming]:
         if not isinstance(value, dict):
             continue
         result[str(name)] = ClockTiming(
-            clock=str(name),
-            **{field: as_float(value.get(field)) for field in CLOCK_TIMING_FIELDS},
+            clock=str(name), **{field: as_float(value.get(field)) for field in CLOCK_TIMING_FIELDS}
         )
     return result
 

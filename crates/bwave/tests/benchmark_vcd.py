@@ -195,11 +195,7 @@ def _run_query(
     if time_range is not None:
         command.extend(("--time", time_range))
     command.extend(("-s", pattern))
-    metrics = _timed_command(
-        command,
-        time_bin,
-        scratch,
-    )
+    metrics = _timed_command(command, time_bin, scratch)
     return asdict(metrics)
 
 
@@ -327,10 +323,7 @@ def _query_groups(record: dict[str, object]) -> dict[str, dict[str, object]]:
 
 
 def _benchmark_corpus(
-    args: argparse.Namespace,
-    corpus: Corpus,
-    scratch: Path,
-    baseline: dict[str, object] | None,
+    args: argparse.Namespace, corpus: Corpus, scratch: Path, baseline: dict[str, object] | None
 ) -> tuple[dict[str, object], list[str]]:
     fst_path = scratch / f"{corpus.profile}.fst"
     for _ in range(args.warmups):
@@ -340,11 +333,7 @@ def _benchmark_corpus(
     summary = _summary(trials)
     record = {
         "profile": corpus.profile,
-        "input": {
-            "file": corpus.path.name,
-            "bytes": corpus.input_bytes,
-            "sha256": corpus.sha256,
-        },
+        "input": {"file": corpus.path.name, "bytes": corpus.input_bytes, "sha256": corpus.sha256},
         "trials": trials,
         "summary": summary,
         "queries": queries,
@@ -358,11 +347,7 @@ def _benchmark_corpus(
     )
     failures.extend(
         _comparison_violations(
-            corpus.profile,
-            record,
-            baseline,
-            args.max_output_ratio,
-            args.max_query_ratio,
+            corpus.profile, record, baseline, args.max_output_ratio, args.max_query_ratio
         )
     )
     return record, failures

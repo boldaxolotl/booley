@@ -171,10 +171,7 @@ def test_independent_owner_inputs_and_histories(project, linked):
     (selected / ".gitignore").write_text("booley.toml\ncores/\n")
     result = pt.inspect_project_trackability(root, selected)
     assert not result.errors
-    assert {p for g in result.ignored for p in g.paths} == {
-        "booley.toml",
-        "cores/a.core",
-    }
+    assert {p for g in result.ignored for p in g.paths} == {"booley.toml", "cores/a.core"}
     assert all(not g.history and g.owner == selected for g in result.ignored)
 
 

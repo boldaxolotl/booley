@@ -15,11 +15,7 @@ from booley.core.atomic_files import Durability, atomic_write_text
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 from booley.runtime.platform_paths import posix_relpath
 
-from .implementation_report import (
-    ENVELOPE_KEY,
-    SCHEMA_VERSION,
-    ImplementationReport,
-)
+from .implementation_report import ENVELOPE_KEY, SCHEMA_VERSION, ImplementationReport
 from .progress_lifecycle import (
     ProgressLifecycle,
     ProgressPublicationError,
@@ -71,11 +67,7 @@ class ImplementationProgressRun:
     def __enter__(self) -> ImplementationProgressRun:
         self._lifecycle.__enter__()
         self._publish(
-            self.current_results,
-            self.baseline_results,
-            "starting",
-            self.baseline_ref,
-            False,
+            self.current_results, self.baseline_results, "starting", self.baseline_ref, False
         )
         return self
 
@@ -98,13 +90,7 @@ class ImplementationProgressRun:
         return outcome
 
     def _publish_terminal(self, phase: str) -> None:
-        self._publish(
-            self.current_results,
-            self.baseline_results,
-            phase,
-            self.baseline_ref,
-            True,
-        )
+        self._publish(self.current_results, self.baseline_results, phase, self.baseline_ref, True)
 
 
 def target_report_slug(target: str) -> str:
@@ -168,9 +154,7 @@ def _validate_numbered_log(artifacts: dict[str, Any], publisher: ImplementationP
 
 
 def _validate_numbered_logs(
-    payload: dict[str, Any],
-    publisher: ImplementationPublisher,
-    invocation_path: Path | None,
+    payload: dict[str, Any], publisher: ImplementationPublisher, invocation_path: Path | None
 ) -> None:
     if invocation_path is None:
         return
@@ -194,9 +178,7 @@ class ImplementationPublisher:
     invocation_dir: Path | None
 
     def publish_report(
-        self,
-        report: ImplementationReport,
-        legacy_payload: Mapping[str, Any],
+        self, report: ImplementationReport, legacy_payload: Mapping[str, Any]
     ) -> PublishedReport:
         """Atomically publish immutable evidence, then its stable alias."""
         if self.report_dir is None:

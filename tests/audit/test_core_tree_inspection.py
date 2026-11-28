@@ -195,8 +195,7 @@ def test_vendored_core_schema_violation_is_a_note(tmp_path):
     configured flows are unaffected, and 'fix the .core' is unfollowable for a
     pristine upstream checkout (the YosysHQ picorv32.core ships a bare ``depend:``)."""
     _write_core(
-        tmp_path,
-        _BAD_DEPEND_CORE.replace("    flow_options: {booley: {doctor: [sim]}}\n", ""),
+        tmp_path, _BAD_DEPEND_CORE.replace("    flow_options: {booley: {doctor: [sim]}}\n", "")
     )
     report = _tree_report(tmp_path)
     assert not report.active_findings
@@ -248,8 +247,7 @@ def test_misplaced_booley_in_sole_target_core_is_an_owned_fail_with_hint(tmp_pat
 def test_booley_only_schema_row_does_not_hide_fusesoc_reason(tmp_path):
     """An unsupported Booley key does not say why FuseSoC ignores the file."""
     _write_core(
-        tmp_path,
-        _UNKNOWN_PROPERTY_CORE.replace("{doctor: [lint]}", "{doctor: [lint], bogus: 1}"),
+        tmp_path, _UNKNOWN_PROPERTY_CORE.replace("{doctor: [lint]}", "{doctor: [lint], bogus: 1}")
     )
     failures = _rows(_tree_report(tmp_path), Severity.FAIL)
     assert any("not a supported Booley Target key" in message for message in failures)

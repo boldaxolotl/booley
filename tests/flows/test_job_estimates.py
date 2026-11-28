@@ -114,10 +114,7 @@ def test_missing_key_borrows_from_target_then_project() -> None:
     assert (pre_sim.value, pre_sim.source) == (3750.0, estimates.Source.OWN)
     unmeasured = estimator.estimate([_sim("t1", "x", pre_sim_commands=True)])
     fallback = _phase(unmeasured, "sim_pre_run")
-    assert (fallback.memory_mb.value, fallback.memory_mb.source) == (
-        25000.0,
-        estimates.Source.OWN,
-    )
+    assert (fallback.memory_mb.value, fallback.memory_mb.source) == (25000.0, estimates.Source.OWN)
     assert fallback.key.phase == "sim_pre_run"
 
     lint = estimator.estimate([estimates.JobRequest("lint", "t1")])

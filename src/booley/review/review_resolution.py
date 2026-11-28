@@ -137,11 +137,7 @@ class _Checker:
         return inspection, _matches(table.exclude, inputs)
 
     def entry(
-        self,
-        header: str,
-        entry: PathReviews,
-        inputs: frozenset[str],
-        inspection: TargetInspection,
+        self, header: str, entry: PathReviews, inputs: frozenset[str], inspection: TargetInspection
     ) -> None:
         """Check one ``paths`` entry of *table*."""
         if "spec" not in entry.inherited:  # an inherited one was checked with its table

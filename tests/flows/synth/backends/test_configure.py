@@ -114,17 +114,13 @@ def test_non_finite_openroad_override_rejected(tmp_path, option, value, field):
 
 @pytest.mark.parametrize(
     ("extra", "expected"),
-    [
-        ([], (55.0, False, None)),
-        (["--ppa-profile", "compact"], (40.0, True, 0.65)),
-    ],
+    [([], (55.0, False, None)), (["--ppa-profile", "compact"], (40.0, True, 0.65))],
 )
 def test_explicit_profile_replaces_legacy_timing_recipe(tmp_path, extra, expected):
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
     (booley_dir / "booley.toml").write_text(
-        "[flows.synth.timing]\nutilization_pct = 55\nrepair_timing = false\n",
-        encoding="utf-8",
+        "[flows.synth.timing]\nutilization_pct = 55\nrepair_timing = false\n", encoding="utf-8"
     )
     timing = resolve_spec(_argv(tmp_path, *extra), project_root=tmp_path).timing
     assert (timing.utilization_pct, timing.repair_timing, timing.placement_density) == expected

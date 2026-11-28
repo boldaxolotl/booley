@@ -41,11 +41,7 @@ from booley.core.file_hash import file_sha256_or_none
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import resolve_main_checkout_root
 from booley.runtime.devcontainer import devcontainer_path
-from booley.runtime.filesystem_utils import (
-    is_transient_read_error,
-    read_file_bytes,
-    replace_file,
-)
+from booley.runtime.filesystem_utils import is_transient_read_error, read_file_bytes, replace_file
 from booley.runtime.timefmt import format_age, format_human_date, parse_timestamp, utc_now_rfc3339
 
 STAMP_FILENAME = "doctor_stamp.json"
@@ -165,8 +161,7 @@ def _fingerprint_differences(recorded: object, current: dict[str, str | None]) -
         or any(value is not None and not isinstance(value, str) for value in recorded.values())
     ):
         return format_differences(
-            {"recorded_fingerprint": "<malformed>"},
-            {"recorded_fingerprint": current},
+            {"recorded_fingerprint": "<malformed>"}, {"recorded_fingerprint": current}
         )
     return format_differences(recorded, current)
 
@@ -236,10 +231,5 @@ def check_stamp(
     now: datetime | None = None,
 ) -> str | None:
     """Plain advisory message, or None when doctor's blessing is current."""
-    advisory = check_stamp_advisory(
-        booley_dir,
-        project_root,
-        max_age_days=max_age_days,
-        now=now,
-    )
+    advisory = check_stamp_advisory(booley_dir, project_root, max_age_days=max_age_days, now=now)
     return advisory.message if advisory else None

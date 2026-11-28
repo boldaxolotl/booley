@@ -112,10 +112,7 @@ def _issue(workspace: Path, p: Prerequisites) -> None:
         vendor_port=p.vendor_port,
     )
     eda_grant_support.add_grant(
-        workspace,
-        "vivado",
-        installation="vivado_2025_2",
-        license_profile="approved_site",
+        workspace, "vivado", installation="vivado_2025_2", license_profile="approved_site"
     )
 
     def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
@@ -175,7 +172,7 @@ def _lmstat(container: str, p: Prerequisites) -> subprocess.CompletedProcess[str
             p.feature,
             "-t",
             "3",
-        ],
+        ]
     )
 
 
@@ -252,17 +249,13 @@ def test_paid_vivado_checkout_uses_production_relay_and_vendor_status_evidence(
     try:
         _run_paid_flow_with_vendor_evidence(container, p)
         relay_logs = run_bounded_child(
-            ["docker", "logs", relay.relay_container],
-            timeout=SUBPROCESS_TIMEOUT_S,
+            ["docker", "logs", relay.relay_container], timeout=SUBPROCESS_TIMEOUT_S
         )
         assert f"listener_port={p.lmgrd_port}" in relay_logs.stdout + relay_logs.stderr
         assert f"listener_port={p.vendor_port}" in relay_logs.stdout + relay_logs.stderr
         assert p.server_ipv4 not in relay_logs.stdout + relay_logs.stderr
 
-        run_bounded_child(
-            ["docker", "stop", relay.relay_container],
-            timeout=SUBPROCESS_TIMEOUT_S,
-        )
+        run_bounded_child(["docker", "stop", relay.relay_container], timeout=SUBPROCESS_TIMEOUT_S)
         failed = _flow(container, timeout_ms=4 * hang_guard_s() * 1000)
         assert failed.returncode != 0, "paid Flow passed with its fixed relay stopped"
     finally:

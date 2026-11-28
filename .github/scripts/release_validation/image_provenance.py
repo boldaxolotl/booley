@@ -10,11 +10,7 @@ from pathlib import Path
 
 def _docker_text(arguments: list[str], *, timeout: int = 300) -> str:
     result = subprocess.run(
-        ["docker", *arguments],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
+        ["docker", *arguments], capture_output=True, text=True, check=False, timeout=timeout
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "docker command failed"
@@ -71,8 +67,7 @@ def _runtime_wheel_source_fingerprint(image: str) -> str:
 
 def _sbom_summary(image: str) -> dict[str, object]:
     raw = _docker_text(
-        ["buildx", "imagetools", "inspect", image, "--format", "{{ json .SBOM }}"],
-        timeout=600,
+        ["buildx", "imagetools", "inspect", image, "--format", "{{ json .SBOM }}"], timeout=600
     )
     document = json.loads(raw)
     present = bool(document)

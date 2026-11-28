@@ -270,10 +270,7 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
     config = project / ".booley" / "booley.toml"
     config.parent.mkdir(parents=True)
     (project / "requirements.txt").write_text("cocotb==2.0.1\n", encoding="utf-8")
-    config.write_text(
-        '[sandbox]\npip_requirements = ["requirements.txt"]\n',
-        encoding="utf-8",
-    )
+    config.write_text('[sandbox]\npip_requirements = ["requirements.txt"]\n', encoding="utf-8")
     driver = tmp_path / "driver.py"
     driver.write_text(_INSTALLED_WHEEL_DRIVER, encoding="utf-8")
     completed = run_bounded_child(

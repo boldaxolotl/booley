@@ -14,9 +14,7 @@ from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport,
 from booley.harness import auto_doctor, doctor, upgrade_review
 from booley.harness import booley as cli
 from booley.harness.dashboard import model as dashboard
-from booley.mcp import (
-    server,
-)
+from booley.mcp import server
 from booley.runtime import health, health_presentation
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.timefmt import rfc3339_from_datetime

@@ -327,10 +327,7 @@ def test_sim_bad_case_accepts_the_unselected_test_identity(tmp_path, monkeypatch
 
 @pytest.mark.parametrize(
     ("selected", "test", "variant", "accepted"),
-    [
-        ("cocotb_test", "cocotb_test", None, True),
-        ("hello_world", "hello_world", "fast", False),
-    ],
+    [("cocotb_test", "cocotb_test", None, True), ("hello_world", "hello_world", "fast", False)],
     ids=["test", "variant-not-selected"],
 )
 def test_sim_bad_case_grades_the_selected_test_and_variant(

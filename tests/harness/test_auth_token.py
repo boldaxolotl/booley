@@ -306,12 +306,7 @@ class TestRotationRiskVenue:
         reporter = doctor._Reporter.create()
 
         doctor._check_oauth_token(
-            app,
-            reporter.pass_,
-            reporter.warn_,
-            reporter.skip_,
-            policy,
-            _note=reporter.note_,
+            app, reporter.pass_, reporter.warn_, reporter.skip_, policy, _note=reporter.note_
         )
 
         warns = [f for f in reporter.findings if f.check_id == "agent.rotation-risk"]
@@ -538,10 +533,7 @@ class TestClaudeMintLocation:
             Mock(side_effect=session_runtime.SessionError("Sandbox start refused: at cap")),
         )
         args = SimpleNamespace(
-            status=False,
-            clear=False,
-            app=auth_token.APP_CLAUDE,
-            token_stdin=False,
+            status=False, clear=False, app=auth_token.APP_CLAUDE, token_stdin=False
         )
 
         assert auth_cmd.run_auth(args, auth_project) == 2
@@ -551,10 +543,7 @@ class TestClaudeMintLocation:
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
     def test_run_auth_reports_unsafe_private_store(
-        self,
-        home: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
+        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
     ) -> None:
         project = home / "rtl"
         project.mkdir()
@@ -563,10 +552,7 @@ class TestClaudeMintLocation:
         booley_config = home / "config" / "booley"
         booley_config.chmod(0o755)
         args = SimpleNamespace(
-            status=False,
-            clear=False,
-            app=auth_token.APP_CLAUDE,
-            token_stdin=False,
+            status=False, clear=False, app=auth_token.APP_CLAUDE, token_stdin=False
         )
 
         assert auth_cmd.run_auth(args, project) == 2

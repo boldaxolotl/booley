@@ -253,9 +253,7 @@ def mcp_job_environment(
 
 
 def script_progress(
-    monkeypatch: pytest.MonkeyPatch,
-    between: Callable[[], None],
-    warnings: Sequence[int | None],
+    monkeypatch: pytest.MonkeyPatch, between: Callable[[], None], warnings: Sequence[int | None]
 ) -> None:
     """Children that report progress, call *between* with one Flow running, then finish."""
 
@@ -305,9 +303,7 @@ def test_a_poll_shows_flows_finished_of_total_and_the_running_flow(
 
 
 def test_the_final_result_carries_verdict_failing_rows_paths_and_exit_code(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     from booley.measurement.measuring_rules import UNMET_RULE
 

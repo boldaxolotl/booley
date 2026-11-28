@@ -70,11 +70,7 @@ def _ensure_bwave_fixture() -> None:
 
 
 def _make_entry(trace: str, **overrides) -> dict:
-    return {
-        "trace": trace,
-        "registered_at": datetime.now(UTC).isoformat(),
-        **overrides,
-    }
+    return {"trace": trace, "registered_at": datetime.now(UTC).isoformat(), **overrides}
 
 
 def _registered(tmp_path: Path, markers: dict | None = None, alias: str = "dut") -> Path:
@@ -409,8 +405,7 @@ def test_register_lists_five_stray_vcds_and_counts_the_rest(tmp_path):
 
 def test_register_missing_trace_includes_incident(tmp_path):
     (tmp_path / "trace_status.json").write_text(
-        '{"current_status": "failed", "failure_reason": "no artifact"}\n',
-        encoding="utf-8",
+        '{"current_status": "failed", "failure_reason": "no artifact"}\n', encoding="utf-8"
     )
     (tmp_path / "trace_incident.txt").write_text(
         "reason: trace requested but no queryable .fst store or .vcd was produced\n",
@@ -986,11 +981,7 @@ def test_async_marker_bound_on_a_clockless_trace_is_refused(tmp_path):
 
 @pytest.mark.parametrize(
     "grid",
-    [
-        ["--clock", "clk", "--reset", "rst"],
-        ["--clock=--clk", "--reset=--rst", "--with-reset"],
-        [],
-    ],
+    [["--clock", "clk", "--reset", "rst"], ["--clock=--clk", "--reset=--rst", "--with-reset"], []],
     ids=["spaced", "attached", "none"],
 )
 def test_async_marker_probe_keeps_cycle_grid_options(tmp_path, fake_native, grid):

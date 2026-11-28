@@ -358,10 +358,7 @@ def test_cli_sorted_diagnostics_and_nonzero_exit_without_importing(tmp_path: Pat
             "with contextlib.suppress(OSError):\n    assert False\n",
             encoding="utf-8",
         )
-    result = run_bounded_child(
-        [sys.executable, str(_SCRIPT), "--repo", str(repo)],
-        check=False,
-    )
+    result = run_bounded_child([sys.executable, str(_SCRIPT), "--repo", str(repo)], check=False)
     assert result.returncode == 1
     assert result.stdout.splitlines() == [
         "tests/a.py:4:5: suppressed-assertion (<module>)",

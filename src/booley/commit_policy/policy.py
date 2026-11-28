@@ -377,8 +377,7 @@ def stealth_policy(
         cap = None
     if raw_cap is not None and cap is None:
         logger.warning(
-            "[stealth] max_body_lines must be a non-negative integer, got %r — ignoring",
-            raw_cap,
+            "[stealth] max_body_lines must be a non-negative integer, got %r — ignoring", raw_cap
         )
     raw_authors = section.get("allowed_authors")
     if raw_authors is None:
@@ -387,8 +386,7 @@ def stealth_policy(
         authors = tuple(item.strip() for item in raw_authors if item.strip())
     else:
         logger.warning(
-            "[stealth] allowed_authors must be a list of strings, got %r — ignoring",
-            raw_authors,
+            "[stealth] allowed_authors must be a list of strings, got %r — ignoring", raw_authors
         )
         authors = ()
     return StealthPolicy(

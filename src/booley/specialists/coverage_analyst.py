@@ -51,11 +51,7 @@ from booley.runtime.exception_diagnostics import (
 )
 from booley.runtime.owned_scratch import owned_tempdir
 
-from .coverage_analysis import (
-    CoverageAnalysisReport,
-    CoverageAnalyzer,
-    CoverageModelResult,
-)
+from .coverage_analysis import CoverageAnalysisReport, CoverageAnalyzer, CoverageModelResult
 from .coverage_analysis_schema import coverage_analysis_model_schema
 from .specialist import Specialist
 
@@ -125,11 +121,7 @@ class CoverageAnalystSpecialist(Specialist):
         loaded = read_coverage_record(coverage_record)
         sources = coverage_sources(loaded.coverage_record, self.args.work_dir)
         report = self._analyze_bound(
-            loaded.coverage_record,
-            sources,
-            instruction,
-            coverage_record,
-            summary=loaded.summary,
+            loaded.coverage_record, sources, instruction, coverage_record, summary=loaded.summary
         )
         return report, loaded, coverage_record
 
@@ -148,10 +140,7 @@ class CoverageAnalystSpecialist(Specialist):
         self._evidence_sources = sources
         try:
             return CoverageAnalyzer(self._analyze_text).analyze_coverage_record(
-                coverage_record,
-                sources,
-                instruction,
-                summary=summary,
+                coverage_record, sources, instruction, summary=summary
             )
         finally:
             self._evidence_coverage_record_path = None
@@ -242,8 +231,7 @@ class CoverageAnalystSpecialist(Specialist):
         source_snapshot = directory / "verified-sources.json"
         source_snapshot.write_text(
             json.dumps(
-                {"target_identity": sources.target_identity, "files": sources.files},
-                default=dict,
+                {"target_identity": sources.target_identity, "files": sources.files}, default=dict
             ),
             encoding="utf-8",
         )
@@ -266,8 +254,7 @@ class CoverageAnalystSpecialist(Specialist):
                 ) from exc
         try:
             audit = require_dict(
-                json.loads(audit_path.read_text(encoding="utf-8")),
-                field="coverage evidence audit",
+                json.loads(audit_path.read_text(encoding="utf-8")), field="coverage evidence audit"
             )
         except FileNotFoundError:
             audit = {}
@@ -369,9 +356,7 @@ def coverage_analyst(coverage_record: Path, instruction: str = "") -> CoverageAn
 
 
 def analyze_coverage_record(
-    coverage_record: CoverageRecord,
-    sources: CoverageSourceClosure | None,
-    instruction: str,
+    coverage_record: CoverageRecord, sources: CoverageSourceClosure | None, instruction: str
 ) -> CoverageAnalysisReport:
     """Default composition of the three-argument analysis seam."""
     invocation_id = str(coverage_record.invocation["id"])

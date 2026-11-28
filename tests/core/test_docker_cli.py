@@ -20,11 +20,7 @@ from booley.core.boundary import require_bool_value, require_list, require_str_v
     ],
 )
 def test_inspect_raises_the_typed_error_for_untrusted_output(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    code: int,
-    output: str,
-    detail: str | None,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int, output: str, detail: str | None
 ) -> None:
     from booley.core import docker_cli
 

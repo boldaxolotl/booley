@@ -135,9 +135,7 @@ def load_job_budget_config(
 # ============================================================================
 
 
-def _core_source_dirs(
-    project_root: Path | None = None,
-) -> tuple[list[str], list[str], list[str]]:
+def _core_source_dirs(project_root: Path | None = None) -> tuple[list[str], list[str], list[str]]:
     """``(rtl_dirs, tb_dirs, tb_include_dirs)`` from the project's ``.core`` filesets.
 
     Single delegation point for every ``[sources.*]``-replacing accessor below:
@@ -194,10 +192,7 @@ def get_syn_output_dir(project_root: Path | None = None) -> Path:
     return root / "util" / "syn"
 
 
-def source_dir_prefixes(
-    names: list[str],
-    base_dir: Path | None,
-) -> tuple[str, ...]:
+def source_dir_prefixes(names: list[str], base_dir: Path | None) -> tuple[str, ...]:
     """Diff-classification prefixes for ``[sources.*].source_dirs`` entries.
 
     Each entry may name a *directory* or a *file* (ADR 0026, flat single-file
@@ -272,10 +267,7 @@ def get_tb_prefixes(project_root: Path | None = None) -> tuple[str, ...]:
 
 
 def check_paths(
-    project_root: Path,
-    key_dirs: dict[str, Path],
-    *,
-    extra_checks: dict | None = None,
+    project_root: Path, key_dirs: dict[str, Path], *, extra_checks: dict | None = None
 ) -> None:
     """Verify Project Root and key directories, print JSON report.
 

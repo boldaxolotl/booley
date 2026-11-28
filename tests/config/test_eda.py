@@ -73,10 +73,7 @@ def test_readers_preserve_different_malformed_document_behavior(document, caplog
 )
 @pytest.mark.parametrize(
     ("text", "match"),
-    [
-        ("[flows.elab]\n[eda.unknown]\n", "elab-only"),
-        ("[eda.unknown]\n", "unsupported EDA kind"),
-    ],
+    [("[flows.elab]\n[eda.unknown]\n", "elab-only"), ("[eda.unknown]\n", "unsupported EDA kind")],
     ids=["retired-key-first", "invalid-eda"],
 )
 def test_migration_diagnostic_precedes_invalid_eda(document, reader, text, match):

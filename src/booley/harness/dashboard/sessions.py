@@ -221,10 +221,7 @@ def _measurement_text(facts: SessionFacts, width: int) -> str:
 
 
 def build(
-    sessions: Sequence[SessionFacts],
-    standalone: Sequence[StandaloneJob],
-    now: float,
-    width: int,
+    sessions: Sequence[SessionFacts], standalone: Sequence[StandaloneJob], now: float, width: int
 ) -> Overview:
     """Group, order and fit every row for a list ``width`` cells wide."""
     grouped: dict[str, list[tuple[str, tuple[str, ...]]]] = {name: [] for name in GROUP_ORDER}

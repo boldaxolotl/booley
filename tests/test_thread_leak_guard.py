@@ -66,11 +66,7 @@ def _run_inner(
         *extra_args,
         "-n", str(workers),
     ]  # fmt: skip
-    return run_nested_pytest(
-        ["test_case.py", "-q", *arguments],
-        cwd=tmp_path,
-        env=environment,
-    )
+    return run_nested_pytest(["test_case.py", "-q", *arguments], cwd=tmp_path, env=environment)
 
 
 def _counts(output: str) -> dict[str, int]:

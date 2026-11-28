@@ -163,12 +163,7 @@ def test_marker_without_folder_is_removed_but_not_reported(
 
 @pytest.mark.parametrize(
     ("platform", "basetemp"),
-    [
-        ("win32", "tools"),
-        ("linux", None),
-        ("linux", "elsewhere"),
-        ("linux", "unprefixed"),
-    ],
+    [("win32", "tools"), ("linux", None), ("linux", "elsewhere"), ("linux", "unprefixed")],
 )
 def test_noop_off_posix_or_without_tools_root_basetemp(
     tools_root: Path,

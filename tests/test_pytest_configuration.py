@@ -346,10 +346,7 @@ def test_image_validation_wrapper_preserves_failure_and_cleans_containers(
 
     assert result.returncode == 7
     calls = docker_log.read_text(encoding="utf-8").splitlines()
-    assert calls == [
-        "ps -aq --filter name=^/booley-ci-123-1-fifo",
-        "rm -f container-id",
-    ]
+    assert calls == ["ps -aq --filter name=^/booley-ci-123-1-fifo", "rm -f container-id"]
 
 
 def _wait_for_child_pid(path: Path) -> int:
@@ -408,10 +405,7 @@ def test_image_validation_wrapper_cleans_promptly_on_cancellation(
     with pytest.raises(ProcessLookupError):
         os.kill(child_pid, 0)
     calls = docker_log.read_text(encoding="utf-8").splitlines()
-    assert calls[-2:] == [
-        "ps -aq --filter name=^/booley-ci-123-1-fifo",
-        "rm -f container-id",
-    ]
+    assert calls[-2:] == ["ps -aq --filter name=^/booley-ci-123-1-fifo", "rm -f container-id"]
 
 
 def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
@@ -428,12 +422,7 @@ def test_change_aware_jobs_feed_an_always_running_aggregate() -> None:
 
     aggregate = jobs["ci-required"]
     assert aggregate["if"] == "always() && needs.changes.result != 'skipped'"
-    assert set(aggregate["needs"]) == {
-        "changes",
-        "release-semantic",
-        "test-ratio",
-        *conditional,
-    }
+    assert set(aggregate["needs"]) == {"changes", "release-semantic", "test-ratio", *conditional}
     rendered_aggregate = "\n".join(str(step) for step in aggregate["steps"])
     assert ".github/scripts/ci_required.py" in rendered_aggregate
     assert "toJSON(needs)" in rendered_aggregate
@@ -699,9 +688,7 @@ def _scoped_git_value(key: str, cwd: Path) -> str:
     tell a command-scope value from the same value in a host global config.
     """
     result = run_bounded_child(
-        ["git", "config", "--show-scope", "--get", key],
-        cwd=cwd,
-        timeout=SUBPROCESS_TIMEOUT_S,
+        ["git", "config", "--show-scope", "--get", key], cwd=cwd, timeout=SUBPROCESS_TIMEOUT_S
     )
     return result.stdout.strip()
 

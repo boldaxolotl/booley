@@ -54,6 +54,5 @@ def corrupt_coverage_record_with_duplicate_negative_point(
     manifest["rollups"][0].update(rollup_values)
     manifest["source_rollups"][0]["rollups"][0].update(rollup_values)
     coverage_record_path.write_text(
-        json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n",
-        encoding="utf-8",
+        json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False) + "\n", encoding="utf-8"
     )

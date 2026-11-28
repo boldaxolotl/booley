@@ -10,9 +10,7 @@ from booley.config.eda import load_eda_config as load_eda_requests
 
 
 def validate_host_provisioning_platform(
-    configs: dict[str, EdaConfig],
-    *,
-    platform_name: str | None = None,
+    configs: dict[str, EdaConfig], *, platform_name: str | None = None
 ) -> None:
     """Reject host-provisioned EDA on unsupported Windows hosts."""
     current_platform = sys.platform if platform_name is None else platform_name

@@ -73,12 +73,7 @@ def test_reference_resolves_after_complete_base_copy(tmp_path, layout):
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [
-        ("bytes", 0),
-        ("sha256", "sha256:" + "0" * 64),
-        ("kind", "other"),
-        ("owner", "other"),
-    ],
+    [("bytes", 0), ("sha256", "sha256:" + "0" * 64), ("kind", "other"), ("owner", "other")],
 )
 def test_reference_rejects_wrong_profile_or_identity(tmp_path, field, value):
     base, reference = _reference(tmp_path)

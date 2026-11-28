@@ -35,10 +35,7 @@ from booley.targets.domain import TargetHandle
 
 from .capacity import SimulationRecordCapacity, SimulationRecordCapacityError
 from .child_protocol import recover_interrupted_attempts
-from .codec import (
-    SimulationRecordIntegrityError,
-    reads_simulation_record_documents,
-)
+from .codec import SimulationRecordIntegrityError, reads_simulation_record_documents
 from .facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
 from .flow_claim import FlowClaim, WorkItemRequest
 from .model import (
@@ -53,11 +50,7 @@ from .model import (
 from .planning import manifest_digest, verify_workload
 from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder
 from .resume import ValidatedResumeManifest
-from .run_directory import (
-    expand_run_directory,
-    literal_run_path,
-    require_literal_run_directory,
-)
+from .run_directory import expand_run_directory, literal_run_path, require_literal_run_directory
 from .scheduler import BoundedSimulationRecordScheduler, ScheduledAttempt, work_item_label
 from .store import SimulationRecordRecovery, SimulationRecordStore, collect_pre_sim_firings
 from .test_run_binding import observation_test_runs
@@ -77,9 +70,7 @@ class SimulationRecordPolicy:
 
 
 def simulation_options_from_policy(
-    policy: SimulationRecordPolicy,
-    *,
-    trace: bool,
+    policy: SimulationRecordPolicy, *, trace: bool
 ) -> SimulationOptions:
     """Translate one invocation policy into leaf Simulation options."""
     return SimulationOptions(
@@ -505,12 +496,7 @@ class SimulationRecord:
             )
         executor.prepare_attempt(
             self._work_execution_request(
-                store,
-                manifest,
-                attempt,
-                invocation,
-                request,
-                child_execution_id,
+                store, manifest, attempt, invocation, request, child_execution_id
             )
         )
 
@@ -617,13 +603,7 @@ class SimulationRecord:
         return settled
 
     def _work_execution_request(
-        self,
-        store,
-        manifest,
-        attempt,
-        invocation,
-        request,
-        child_execution_id,
+        self, store, manifest, attempt, invocation, request, child_execution_id
     ) -> WorkExecutionRequest:
         return WorkExecutionRequest(
             store,
@@ -642,10 +622,7 @@ class SimulationRecord:
         )
 
     def _publish_scheduled_result(
-        self,
-        store: SimulationRecordStore,
-        work_item_id: str,
-        result: SimulationResult,
+        self, store: SimulationRecordStore, work_item_id: str, result: SimulationResult
     ) -> None:
         with self._publication_gate:
             faults.fault_point("before:simulation_result")
@@ -672,8 +649,7 @@ def _invocation_number(directory: Path) -> int:
 
 
 def _committed_coverage_result(
-    store: SimulationRecordStore,
-    manifest: SimulationRecordManifest,
+    store: SimulationRecordStore, manifest: SimulationRecordManifest
 ) -> tuple[str, SimulationResult]:
     recovery = store.scan(manifest)
     completed = [item for item in recovery.items if item.result is not None]
@@ -793,9 +769,7 @@ def _outcome(
 
 
 def _recovery_status(
-    manifest_path: Path,
-    manifest_sha256: str,
-    recovery: SimulationRecordRecovery,
+    manifest_path: Path, manifest_sha256: str, recovery: SimulationRecordRecovery
 ) -> SimulationRecordRecoveryStatus:
     return SimulationRecordRecoveryStatus(
         manifest_path=manifest_path,

@@ -46,10 +46,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     )
     discover.add_argument("search_roots", nargs="+", type=Path, metavar="ROOT")
     discover.add_argument(
-        "--json",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="Emit machine-readable JSON",
+        "--json", action="store_true", default=argparse.SUPPRESS, help="Emit machine-readable JSON"
     )
     forget = actions.add_parser("forget", help="Forget one root with no live Project Grants")
     forget.add_argument("project", type=Path)
@@ -59,10 +56,7 @@ def add_subparser(subparsers: argparse._SubParsersAction) -> None:
         help="Also remove the Project's unused images and state volumes (agent login and history)",
     )
     forget.add_argument(
-        "--json",
-        action="store_true",
-        default=argparse.SUPPRESS,
-        help="Emit machine-readable JSON",
+        "--json", action="store_true", default=argparse.SUPPRESS, help="Emit machine-readable JSON"
     )
 
     prune = actions.add_parser("prune-keepers", help="Preview orphan issued image keepers")
@@ -255,9 +249,7 @@ def _render_pruned_stamps(
     return 2 if pruned.kept else 0
 
 
-def _json_document(
-    entries: tuple[inventory.ProjectInventoryEntry, ...],
-) -> dict[str, object]:
+def _json_document(entries: tuple[inventory.ProjectInventoryEntry, ...]) -> dict[str, object]:
     projects = []
     for entry in entries:
         projects.append(

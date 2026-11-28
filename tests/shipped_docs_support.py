@@ -9,11 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from booley.runtime.packaged_docs import (
-    SHIPPED_DOCS,
-    read_shipped_source,
-    render_packaged_doc,
-)
+from booley.runtime.packaged_docs import SHIPPED_DOCS, read_shipped_source, render_packaged_doc
 
 _USER_DOCS_PREFIX = "docs/user/"
 
