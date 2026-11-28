@@ -280,14 +280,16 @@ def owned_group_kwargs(*, is_windows: bool | None = None) -> NewGroupKwargs:
     return _platform(is_windows).owned_group_kwargs()
 
 
-def own_process_group(process: subprocess.Popen[Any]) -> ProcessGroup:
+def own_process_group(
+    process: subprocess.Popen[Any], *, is_windows: bool | None = None
+) -> ProcessGroup:
     """Take ownership of a child just spawned with :func:`owned_group_kwargs`.
 
     On Windows the child joins a Job Object and is resumed; without one, stopping
     it walks the tree from its PID. Raises ``OSError`` (child killed) when it
     cannot be resumed.
     """
-    if sys.platform != "win32":
+    if _platform(is_windows) is _PosixProcessGroups:
         return ProcessGroup(process.pid)
     job = _WindowsJobObject.own(process)
     group = ProcessGroup(process.pid, job)

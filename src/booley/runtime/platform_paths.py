@@ -261,7 +261,7 @@ def _spawn(
                 **popen_new_group_kwargs(),
             ),
         )
-        own_process_group(proc)
+        own_process_group(proc, is_windows=IS_WINDOWS)  # as the kwargs above chose
     except BaseException:
         if feed_write is not None:
             os.close(feed_write)
