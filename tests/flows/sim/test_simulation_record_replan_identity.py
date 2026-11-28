@@ -53,7 +53,7 @@ def _record_and_replan(tmp_path, monkeypatch, toml, request):
     # Private seam: publicly, only a resume refusal prints these options until #4371.
     options = flow._frozen_test_run_options(stored, target)
     parser = argparse.ArgumentParser()
-    SimArguments.add_args(parser)
+    SimArguments.add_args(parser, frozenset())
     replay = parser.parse_args(shlex.split(options))
     replanned = record(2, {"test": replay.test, "seed": replay.seed})[2]
     return stored, replanned, path, options

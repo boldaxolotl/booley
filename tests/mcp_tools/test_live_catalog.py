@@ -759,6 +759,30 @@ def test_booley_review_exists_only_while_reviewed_commits_is_on(project, feature
     asyncio.run(exercise())
 
 
+def test_sim_schema_follows_the_verbose_removal_flag(project, feature_flags):
+    config = project / "booley.toml"
+    config.write_bytes(b"[flows.sim]\nenabled = true\n")
+    sdk, _ = build_server()
+
+    async def exercise():
+        async def sim_fields(client):
+            return (await tools(client))["sim"].input_schema["properties"]
+
+        async with live_client(sdk) as client:
+            assert "verbose" in await sim_fields(client)
+
+            feature_flags.enable(project, "sim-verbose-removal")
+            assert "verbose" not in await sim_fields(client)
+            refused = await client.call_tool("sim", {"target": "sim", "verbose": True})
+            assert refused.is_error
+            assert "'verbose' was unexpected" in refused.content[0].text
+
+            config.write_bytes(b"[flows.sim]\nenabled = true\n")
+            assert "verbose" in await sim_fields(client)
+
+    asyncio.run(exercise())
+
+
 def test_server_start_refuses_an_invalid_features_table(project, feature_flags):
     from booley.config.feature_flags import FeatureConfigError
 
