@@ -307,10 +307,10 @@ def _sites() -> list[_Site]:
         _Site(
             "docker_image image label",
             docker_image,
-            ["docker", "image", "inspect", "-f"],
+            ["docker", "image", "inspect", "img"],
             15,
             lambda _root: docker_image._image_label("img", "label"),
-            "v1\n",
+            '"v1"',
             {"ok": "returned:'v1'"} | _same("returned:None"),
         ),
         _Site(
@@ -378,10 +378,10 @@ def _sites() -> list[_Site]:
         _Site(
             "doctor image created epoch",
             doctor,
-            ["docker", "image", "inspect", "--format"],
+            ["docker", "image", "inspect", "img"],
             10,
             lambda _root: doctor._image_created_epoch("docker", "img"),
-            "2024-01-01T00:00:00Z\n",
+            '"2024-01-01T00:00:00Z"',
             {"ok": "returned:1704067200.0"} | _same("returned:None"),
         ),
         _Site(
@@ -583,6 +583,8 @@ def _check_site(
 
     with monkeypatch.context() as patch:
         patch.setattr(site.module, "run_captured_bounded", bounded, raising=False)
+        # Some sites reach Docker through host_docker._run_docker, not their own module.
+        patch.setattr(host_docker, "run_captured_bounded", bounded)  # boundary: the Docker CLI
         patch.setattr(subprocess, "run", unbounded)
         patch.setattr(shutil, "which", lambda name: name)
         shown = _observe(lambda: site.drive(tmp_path))

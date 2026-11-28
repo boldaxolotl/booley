@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.project_config import project_name
-from booley.runtime import auth_token
+from booley.core import docker_cli
+from booley.runtime import auth_token, host_docker
 from booley.runtime.platform_paths import docker_mount_path as _docker_mount_path
 from booley.runtime.platform_paths import run_captured_bounded
 
@@ -86,8 +87,7 @@ class DockerSandboxConfig:
             return "docker not found on PATH"
 
         try:
-            result = run_captured_bounded(["docker", "image", "inspect", self.image], timeout=15)
-            if result.returncode != 0:
+            if not docker_cli.exists(host_docker.relay_docker, "image", self.image, timeout=15):
                 return (
                     f"Docker image '{self.image}' not found. "
                     f"Build it with: booley init (or docker build)"
@@ -256,7 +256,7 @@ class DockerRunner:
             "--init",
             "--rm",
             "--label",
-            f"booley.project={project_name(self.worktree)}",
+            f"{docker_cli.PROJECT_NAME_LABEL}={project_name(self.worktree)}",
             "--mount",
             mount_spec,
             "-w",

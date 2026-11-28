@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from importlib.util import find_spec
 from pathlib import Path
 
+from booley.core import docker_cli
 from booley.harness.setup.common import InitContext, current, err, hint, info, ok, warn
 from booley.runtime import host_docker as idk
 from booley.runtime.build_stamp import (
@@ -179,24 +180,9 @@ def _image_build_fingerprint(booley_root: Path) -> str | None:
 def _image_label(image: str, label: str) -> str | None:
     """Return *image*'s *label* value, or ``None`` if absent/unavailable."""
     try:
-        result = run_captured_bounded(
-            [
-                "docker",
-                "image",
-                "inspect",
-                "-f",
-                f'{{{{ index .Config.Labels "{label}" }}}}',
-                image,
-            ],
-            timeout=15,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError):
+        return docker_cli.inspect_label(idk.relay_docker, "image", image, label, timeout=15)
+    except (docker_cli.InspectError, subprocess.SubprocessError, FileNotFoundError):
         return None
-    if result.returncode != 0:
-        return None
-    val = result.stdout.strip()
-    # Go's template prints "<no value>" when the label key is missing.
-    return val if val and val != "<no value>" else None
 
 
 def _installed_image_version() -> str | None:
