@@ -337,7 +337,8 @@ def _assert_codex_policy(root: Path) -> dict[str, str]:
 
 def _assert_codex_hooks_pinned(root: Path) -> dict[str, str]:
     """No user layer turns off Codex's hooks, which run the managed deny hook (#5788)."""
-    off = "[features]\nhooks = false\n"
+    # Every layer also turns off the unpinned fast_mode: false there shows Codex applied it.
+    off = "[features]\nhooks = false\nfast_mode = false\n"
     project = root / "codex-hooks-repo"
     (project / ".codex").mkdir(parents=True)
     (project / ".codex" / "config.toml").write_text(off, encoding="utf-8")
@@ -345,10 +346,10 @@ def _assert_codex_hooks_pinned(root: Path) -> dict[str, str]:
     # Each case: the user config and the command line arguments.
     cases: dict[str, tuple[str, list[str]]] = {
         "user": (off, []),
-        "legacy_alias": ("[features]\ncodex_hooks = false\n", []),
+        "legacy_alias": ("[features]\ncodex_hooks = false\nfast_mode = false\n", []),
         "project": (f'[projects."{project}"]\ntrust_level = "trusted"\n', []),
-        "cli_config": ("", ["-c", "features.hooks=false"]),
-        "cli_disable": ("", ["--disable", "hooks"]),
+        "cli_config": ("", ["-c", "features.hooks=false", "-c", "features.fast_mode=false"]),
+        "cli_disable": ("", ["--disable", "hooks", "--disable", "fast_mode"]),
     }
     states: dict[str, str] = {}
     for case, (config, args) in cases.items():
@@ -357,9 +358,10 @@ def _assert_codex_hooks_pinned(root: Path) -> dict[str, str]:
         (codex_home / "config.toml").write_text(config, encoding="utf-8")
         env = {**os.environ, "HOME": str(codex_home.parent), "CODEX_HOME": str(codex_home)}
         listed = _run(["codex", *args, "features", "list"], cwd=project, env=env).stdout
-        (state,) = [line.split()[-1] for line in listed.splitlines() if line.startswith("hooks ")]
-        assert state == "true", f"Codex {case} turned hooks off: {listed}"
-        states[case] = state
+        rows = {line.split()[0]: line.split()[-1] for line in listed.splitlines() if line}
+        found = (rows["hooks"], rows["fast_mode"])
+        assert found == ("true", "false"), f"Codex {case} hooks and fast_mode: {listed}"
+        states[case] = rows["hooks"]
     return states
 
 
