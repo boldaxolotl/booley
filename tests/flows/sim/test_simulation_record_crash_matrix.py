@@ -44,6 +44,7 @@ from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.record_reports import write_compatibility_projection
 from booley.runtime.supervised_execution import current_supervised_execution
+from tests.flows.sim.fault_point_support import inject_faults
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _coverage_simulation_record_plan,
@@ -273,14 +274,15 @@ def test_serial_publication_boundary_resume_matrix(
 ) -> None:
     """Every durable prefix resumes on both build routes; only a committed Result suppresses rerun."""
     crash = _CrashOnce(crash_point)
-    case = _serial_case(tmp_path / "case", monkeypatch, route == "shared", crash)
+    case = _serial_case(tmp_path / "case", monkeypatch, route == "shared")
     manifest, store = case.manifest, case.store
 
-    with pytest.raises(_InjectedProcessDeath, match=crash_point):
-        case.record.run(case.request)
-    outcome = _resume_crashed_simulation_record(
-        case.record, case.request, store, case.plan, crash_point
-    )
+    with inject_faults(crash):
+        with pytest.raises(_InjectedProcessDeath, match=crash_point):
+            case.record.run(case.request)
+        outcome = _resume_crashed_simulation_record(
+            case.record, case.request, store, case.plan, crash_point
+        )
     _assert_crash_recovery(outcome, store, crash_point, case.launches, crash)
     # The route axis must really reach its build: private builds live under the attempt.
     private_builds = list(store.root.glob("work-items/*/attempts/*/private-build"))
@@ -316,11 +318,12 @@ def test_serial_publication_boundary_resume_matrix(
 def test_coverage_aggregate_boundary_resume_matrix(tmp_path: Path, crash_point: str) -> None:
     """The coverage aggregate's own durable boundaries resume to one terminal Result."""
     crash = _CrashOnce(crash_point)
-    record, request, resume, store, _target_directory = _coverage_case(tmp_path / "case", crash)
+    record, request, resume, store, _target_directory = _coverage_case(tmp_path / "case")
 
-    with pytest.raises(_InjectedProcessDeath, match=crash_point):
-        record.run(request)
-    outcome = record.run(resume)
+    with inject_faults(crash):
+        with pytest.raises(_InjectedProcessDeath, match=crash_point):
+            record.run(request)
+        outcome = record.run(resume)
 
     assert outcome.complete is True
     assert crash.tripped is True
@@ -337,7 +340,7 @@ _needs_fork = pytest.mark.skipif(not hasattr(os, "fork"), reason="the kill matri
 
 
 class _KillAtWrite:
-    """Publication checkpoint: arm on ``before:<boundary>``, then die inside the next write.
+    """Fault hook: arm on ``before:<boundary>``, then die inside the next write.
 
     ``mid-write`` kills inside the first byte-stream write after arming, having
     written half of it; ``after-link`` kills right after the next hard link
@@ -359,7 +362,7 @@ class _KillAtWrite:
 
     def __call__(self, name: str) -> None:
         self.seen.append(name)
-        # The resume in the test process shares this checkpoint and must not die.
+        # The resume in the test process shares this hook and must not die.
         if name == f"before:{self.boundary}" and os.getpid() != self.test_process:
             self._arm()
 
@@ -500,7 +503,7 @@ class _SerialCase:
     target_directory: Path
 
 
-def _serial_case(root: Path, monkeypatch: pytest.MonkeyPatch, shared: bool, checkpoint):
+def _serial_case(root: Path, monkeypatch: pytest.MonkeyPatch, shared: bool):
     manifest = _crash_manifest(shared=shared)
     plan = create_simulation_record_plan(manifest)
     root.mkdir()
@@ -514,7 +517,6 @@ def _serial_case(root: Path, monkeypatch: pytest.MonkeyPatch, shared: bool, chec
     executor = OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: _CrashExecution(group),  # type: ignore[arg-type,return-value]
-        publication_checkpoint=checkpoint,
     )
     invocation = root / "reports" / "000001"
     invocation.mkdir(parents=True)
@@ -527,7 +529,7 @@ def _serial_case(root: Path, monkeypatch: pytest.MonkeyPatch, shared: bool, chec
         admission=_admission(),
     )
     return _SerialCase(
-        SimulationRecord(executor, publication_checkpoint=checkpoint),
+        SimulationRecord(executor),
         request,
         SimulationRecordStore(invocation / "targets" / "sim" / "record"),
         manifest,
@@ -604,17 +606,18 @@ def _serial_kill_case(
     root.mkdir()
     side_file = root / "side.txt"
     kill = _KillAtWrite(boundary, phase, side_file)
-    killed = _serial_case(root / "killed", monkeypatch, route == "shared", kill)
-    _run_killed(lambda: killed.record.run(killed.request), root / "trace.txt")
-    _assert_killed_inside_the_write(
-        side_file, phase, killed.target_directory, staging=_staging_of(boundary)
-    )
+    killed = _serial_case(root / "killed", monkeypatch, route == "shared")
+    with inject_faults(kill):
+        _run_killed(lambda: killed.record.run(killed.request), root / "trace.txt")
+        _assert_killed_inside_the_write(
+            side_file, phase, killed.target_directory, staging=_staging_of(boundary)
+        )
 
-    crash_point = "before:manifest_commit" if not killed.store.manifest_path.exists() else "x"
-    outcome = _resume_crashed_simulation_record(
-        killed.record, killed.request, killed.store, killed.plan, crash_point
-    )
-    baseline = _serial_case(root / "baseline", monkeypatch, route == "shared", None)
+        crash_point = "before:manifest_commit" if not killed.store.manifest_path.exists() else "x"
+        outcome = _resume_crashed_simulation_record(
+            killed.record, killed.request, killed.store, killed.plan, crash_point
+        )
+    baseline = _serial_case(root / "baseline", monkeypatch, route == "shared")
     baseline_outcome = baseline.record.run(baseline.request)
 
     assert outcome.complete is True
@@ -656,16 +659,14 @@ def _fresh_native_execution(_plan, _options, _commands, _access) -> NativeExecut
     return native
 
 
-def _coverage_case(root: Path, checkpoint):
+def _coverage_case(root: Path):
     root.mkdir()
     plan, target = _coverage_simulation_record_plan(root, runtime_input=True)
     record = SimulationRecord(
         CoverageAggregateExecutor(
             plans={target.handle.identity: target},
             execution_factory=_fresh_native_execution,
-            publication_checkpoint=checkpoint,
-        ),
-        publication_checkpoint=checkpoint,
+        )
     )
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
@@ -690,14 +691,12 @@ def _coverage_kill_case(root: Path, boundary: str, phase: str) -> None:
     root.mkdir()
     side_file = root / "side.txt"
     kill = _KillAtWrite(boundary, phase, side_file)
-    record, request, resume, store, target_directory = _coverage_case(root / "killed", kill)
-    _run_killed(lambda: record.run(request), root / "trace.txt")
-    _assert_killed_inside_the_write(side_file, phase, target_directory)
-
-    outcome = record.run(resume)
-    base_record, base_request, _resume, base_store, _target = _coverage_case(
-        root / "baseline", None
-    )
+    record, request, resume, store, target_directory = _coverage_case(root / "killed")
+    with inject_faults(kill):
+        _run_killed(lambda: record.run(request), root / "trace.txt")
+        _assert_killed_inside_the_write(side_file, phase, target_directory)
+        outcome = record.run(resume)
+    base_record, base_request, _resume, base_store, _target = _coverage_case(root / "baseline")
     baseline = base_record.run(base_request)
 
     assert outcome.complete is True
@@ -727,10 +726,10 @@ def _pre_sim_kill_case(root: Path, monkeypatch: pytest.MonkeyPatch, access: str)
 
     side_file = root / "side.txt"
     kill = _KillAtWrite("pre_sim_evidence", "mid-write", side_file)
-    _run_killed(
-        lambda: _successful_pre_sim_record(root, monkeypatch, access, checkpoint=kill),
-        root / "trace.txt",
-    )
+    with inject_faults(kill):
+        _run_killed(
+            lambda: _successful_pre_sim_record(root, monkeypatch, access), root / "trace.txt"
+        )
     invocation = root / "reports/1"
     store = SimulationRecordStore(invocation / "targets/sim/record")
     _assert_killed_inside_the_write(side_file, "mid-write", invocation)
@@ -770,10 +769,8 @@ def test_pre_sim_evidence_killed_mid_write_resumes(
     )
 
 
-def _write_projection(path: Path, checkpoint) -> None:
-    write_compatibility_projection(
-        path, {"target": "sim"}, acceptance_committed=True, publication_checkpoint=checkpoint
-    )
+def _write_projection(path: Path) -> None:
+    write_compatibility_projection(path, {"target": "sim"}, acceptance_committed=True)
 
 
 @_needs_fork
@@ -783,10 +780,11 @@ def test_compatibility_projection_killed_mid_write_is_retryable(tmp_path: Path) 
     side_file = tmp_path / "side.txt"
     kill = _KillAtWrite("compatibility_projection", "mid-write", side_file)
 
-    _run_killed(lambda: _write_projection(path, kill), tmp_path / "trace.txt")
-    _assert_killed_inside_the_write(side_file, "mid-write", tmp_path, staging=(".tmp",))
-    assert not path.exists()
-    _write_projection(path, kill)
+    with inject_faults(kill):
+        _run_killed(lambda: _write_projection(path), tmp_path / "trace.txt")
+        _assert_killed_inside_the_write(side_file, "mid-write", tmp_path, staging=(".tmp",))
+        assert not path.exists()
+        _write_projection(path)
 
     assert json.loads(path.read_text(encoding="utf-8")) == {"complete": True, "target": "sim"}
 
@@ -797,9 +795,10 @@ def test_compatibility_projection_boundary_is_retryable(tmp_path: Path) -> None:
     crash_point = "after:compatibility_projection"
     crash = _CrashOnce(crash_point)
 
-    with pytest.raises(_InjectedProcessDeath, match=crash_point):
-        _write_projection(path, crash)
-    _write_projection(path, crash)
+    with inject_faults(crash):
+        with pytest.raises(_InjectedProcessDeath, match=crash_point):
+            _write_projection(path)
+        _write_projection(path)
 
     assert json.loads(path.read_text(encoding="utf-8")) == {
         "complete": True,
@@ -901,7 +900,7 @@ def _failed_build_plan(failure_path):
     return plan
 
 
-def _failed_build_case(tmp_path, monkeypatch, failure_path, crash):
+def _failed_build_case(tmp_path, monkeypatch, failure_path):
     plan = _failed_build_plan(failure_path)
     project = tmp_path / "project"
     project.mkdir()
@@ -934,7 +933,6 @@ def _failed_build_case(tmp_path, monkeypatch, failure_path, crash):
     executor = OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: execution,  # type: ignore[arg-type,return-value]
-        publication_checkpoint=crash,
     )
     invocation = tmp_path / "reports" / "000001"
     invocation.mkdir(parents=True)
@@ -970,28 +968,29 @@ def test_failed_build_result_publication_is_retryable_and_never_accepted(
     expected_state: str,
 ) -> None:
     crash = _CrashOnce(boundary)
-    executor, request, invocation = _failed_build_case(tmp_path, monkeypatch, failure_path, crash)
+    executor, request, invocation = _failed_build_case(tmp_path, monkeypatch, failure_path)
 
-    with pytest.raises(_InjectedProcessDeath):
-        SimulationRecord(executor, publication_checkpoint=crash).run(request)
+    with inject_faults(crash):
+        with pytest.raises(_InjectedProcessDeath):
+            SimulationRecord(executor).run(request)
 
-    store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
-    recovery = store.scan()
-    committed = boundary == "after:simulation_result"
-    assert bool(recovery.complete) is committed
-    attempts = sorted(store.root.glob("work-items/*/attempts/*"))
-    assert len(attempts) == 1
-    result_path = attempts[0] / "private-build" / "build-result.json"
-    result = json.loads(result_path.read_text()) if result_path.exists() else None
-    assert result is None or result["state"] == expected_state
-    if boundary.startswith("before:simulation"):
-        outcome = SimulationRecord(executor).run(request)
-        assert outcome.acceptance_ready is False
-        assert store.scan().items[0].attempt_count == 2
-    elif boundary.startswith("after:simulation"):
-        outcome = SimulationRecord(executor).run(request)
-        assert outcome.acceptance_ready is False
-        assert store.scan().items[0].attempt_count == 1
+        store = SimulationRecordStore(invocation / "targets" / "sim" / "record")
+        recovery = store.scan()
+        committed = boundary == "after:simulation_result"
+        assert bool(recovery.complete) is committed
+        attempts = sorted(store.root.glob("work-items/*/attempts/*"))
+        assert len(attempts) == 1
+        result_path = attempts[0] / "private-build" / "build-result.json"
+        result = json.loads(result_path.read_text()) if result_path.exists() else None
+        assert result is None or result["state"] == expected_state
+        if boundary.startswith("before:simulation"):
+            outcome = SimulationRecord(executor).run(request)
+            assert outcome.acceptance_ready is False
+            assert store.scan().items[0].attempt_count == 2
+        elif boundary.startswith("after:simulation"):
+            outcome = SimulationRecord(executor).run(request)
+            assert outcome.acceptance_ready is False
+            assert store.scan().items[0].attempt_count == 1
 
 
 def _new_request(tmp_path: Path) -> NewSimulationRecordRunRequest:
@@ -1016,15 +1015,14 @@ def test_manifest_notification_is_committed_before_fault_checkpoint(
         assert path.is_file()
         published.append(path)
 
-    simulation_record = SimulationRecord(
-        publication_checkpoint=_CrashOnce(boundary), manifest_published=notify
-    )
-    with pytest.raises(_InjectedProcessDeath):
-        simulation_record.publish_new(request)
-    assert len(published) == (0 if boundary.startswith("before") else 1)
-    if published:
-        simulation_record.publish_new(request)
-        assert published == [published[0], published[0]]
+    simulation_record = SimulationRecord(manifest_published=notify)
+    with inject_faults(_CrashOnce(boundary)):
+        with pytest.raises(_InjectedProcessDeath):
+            simulation_record.publish_new(request)
+        assert len(published) == (0 if boundary.startswith("before") else 1)
+        if published:
+            simulation_record.publish_new(request)
+            assert published == [published[0], published[0]]
 
 
 def test_closed_console_does_not_skip_postcommit_checkpoint(
@@ -1041,11 +1039,8 @@ def test_closed_console_does_not_skip_postcommit_checkpoint(
     request = _new_request(tmp_path)
     # Private seam: the publisher is the Flow's own closure around the console; the crash
     # checkpoint must still run after it, and no public run crashes at that point.
-    simulation_record = SimulationRecord(
-        publication_checkpoint=_CrashOnce("after:manifest_commit"),
-        manifest_published=flow._manifest_publisher(published),
-    )
-    with pytest.raises(_InjectedProcessDeath):
+    simulation_record = SimulationRecord(manifest_published=flow._manifest_publisher(published))
+    with inject_faults(_CrashOnce("after:manifest_commit")), pytest.raises(_InjectedProcessDeath):
         simulation_record.publish_new(request)
     assert len(published) == 1 and published[0].is_file()
 
@@ -1150,8 +1145,8 @@ def test_process_death_at_actual_hook_publication_recovers_immutable_evidence(
     from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
     crash = _CrashOnce(f"{side}:pre_sim_evidence")
-    with pytest.raises(_InjectedProcessDeath):
-        _successful_pre_sim_record(tmp_path, monkeypatch, access, checkpoint=crash)
+    with inject_faults(crash), pytest.raises(_InjectedProcessDeath):
+        _successful_pre_sim_record(tmp_path, monkeypatch, access)
     assert crash.tripped
     invocation = tmp_path / "reports/1"
     store = SimulationRecordStore(invocation / "targets/sim/record")
@@ -1182,15 +1177,16 @@ def test_result_commit_and_scan_trust_evidence_changed_after_publication(
                 path.chmod(0o600)
                 path.write_bytes(b"changed image")
 
-    case = _serial_case(tmp_path / "case", monkeypatch, True, change_published_evidence)
-    outcome = case.record.run(case.request)
+    case = _serial_case(tmp_path / "case", monkeypatch, True)
+    with inject_faults(change_published_evidence):
+        outcome = case.record.run(case.request)
 
     assert outcome.complete is True
     assert [item.state for item in case.store.scan().items] == ["complete"]
 
 
 class _CancelAfterInputs:
-    """Publication checkpoint: the forked worker is cancelled once its inputs are staged.
+    """Fault hook: the forked worker is cancelled once its inputs are staged.
 
     ``kill`` exits like a SIGKILL. ``sigint`` signals the worker's own process
     twice and waits: the first Ctrl-C makes the scheduler drain its lanes, the
@@ -1239,7 +1235,7 @@ def test_cancelled_attempt_leaves_no_runtime_input(
     """A run cancelled while its inputs are staged leaves none for the next attempt."""
     checkpoint = _CancelAfterInputs(how)
     if route == "serial":
-        case = _serial_case(tmp_path / "case", monkeypatch, True, checkpoint)
+        case = _serial_case(tmp_path / "case", monkeypatch, True)
         run = lambda: case.record.run(case.request)  # noqa: E731
         project = case.request.project_root
         destination, parent = project / "run/inputs/input.bin", project / "run/inputs"
@@ -1247,21 +1243,20 @@ def test_cancelled_attempt_leaves_no_runtime_input(
             case.record, case.request, case.store, case.plan, "x"
         )
     else:
-        record, request, resume_request, _store, _target = _coverage_case(
-            tmp_path / "case", checkpoint
-        )
+        record, request, resume_request, _store, _target = _coverage_case(tmp_path / "case")
         run = lambda: record.run(request)  # noqa: E731
         project = request.project_root
         destination, parent = project / "data/stimulus.bin", project / "data"
         resume = lambda: record.run(resume_request)  # noqa: E731
     checkpoint.destination = destination
 
-    _run_killed(lambda: _interrupted(run), tmp_path / "trace.txt")
-    assert destination.is_file()
-    if how == "kill-then-restart":
-        as_if_the_sandbox_restarted(resolve_checkout_booley_dir(project))
+    with inject_faults(checkpoint):
+        _run_killed(lambda: _interrupted(run), tmp_path / "trace.txt")
+        assert destination.is_file()
+        if how == "kill-then-restart":
+            as_if_the_sandbox_restarted(resolve_checkout_booley_dir(project))
+        assert resume().complete is True
 
-    assert resume().complete is True
     assert checkpoint.present_at_restage == [False]
     assert not destination.exists()
     assert not parent.exists()

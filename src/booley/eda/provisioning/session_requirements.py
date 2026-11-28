@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
@@ -10,6 +9,7 @@ from pathlib import Path
 
 from booley.config.eda import PROVISIONING_HOST, EdaConfig, EdaConfigError
 from booley.core import docker_cli
+from booley.core.file_hash import file_sha256
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.configuration import load_eda_config
 from booley.eda.provisioning.licensing.flexnet_docker import (
@@ -175,7 +175,11 @@ def _requirements(
 
 def validate_image_observations(root: Path) -> None:
     """Validate Runtime-extracted files against the built-in Vivado contract."""
-    if _file_sha256(root / "vivado-wrapper") != wrapper_sha256():
+    try:
+        observed = file_sha256(root / "vivado-wrapper")
+    except OSError as exc:
+        raise SessionRequirementsError(f"cannot inspect Sandbox Image file: {exc}") from exc
+    if observed != wrapper_sha256():
         raise SessionRequirementsError("Sandbox Image contains the wrong Vivado wrapper digest")
     for name in ("libudev.so.1", "libpixman-1.so.0"):
         try:
@@ -212,10 +216,3 @@ def _relay_image_id(runner: docker_cli.Runner) -> str:
         raise SessionRequirementsError(
             f"cannot resolve immutable FlexNet relay image: {exc}"
         ) from exc
-
-
-def _file_sha256(path: Path) -> str:
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError as exc:
-        raise SessionRequirementsError(f"cannot inspect Sandbox Image file: {exc}") from exc

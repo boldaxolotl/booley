@@ -9,13 +9,13 @@ Callers name the domain error type each refusal raises.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import stat
 from pathlib import Path
 
 from booley.core.boundary import BoundaryError, require_dict
+from booley.core.file_hash import file_sha256_and_size
 from booley.flows.sim.coverage_json import REFERENCE_JSON, SHA256_PREFIX, content_digest
 from booley.flows.sim.record_reports import is_report_link
 from booley.runtime.regular_file import open_regular_nofollow
@@ -45,13 +45,8 @@ def stream_digest(path: Path) -> tuple[int, str]:
 
     The caller decides beforehand what kind of file *path* may be.
     """
-    digest = hashlib.sha256()
-    size = 0
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(_CHUNK_BYTES), b""):
-            size += len(chunk)
-            digest.update(chunk)
-    return size, SHA256_PREFIX + digest.hexdigest()
+    digest, size = file_sha256_and_size(path)
+    return size, SHA256_PREFIX + digest
 
 
 def _identity(
