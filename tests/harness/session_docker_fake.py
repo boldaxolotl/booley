@@ -64,6 +64,22 @@ def headless_session_entry(name: str, root: Path, *, running: bool = True) -> di
     }
 
 
+def container_inspect_output(state: dict[str, Any], template: str | None) -> str:
+    """Render what `docker container inspect <name> [--format template]` prints for *state*."""
+    if template is None:
+        return json.dumps([state])
+    if template == "{{.State.Running}}":
+        return "true" if state["State"]["Running"] else "false"
+    if template == "{{json .Image}}":
+        return json.dumps(state.get("Image", ""))
+    if ".Config.Labels" not in template:
+        return json.dumps(state)
+    labels = state.get("Config", {}).get("Labels", {})
+    if template.startswith("{{json (index "):
+        return json.dumps(labels.get(template.split('"')[1]))
+    return json.dumps(labels)
+
+
 class SessionDockerFake:
     """Serve the `docker` argv `session down` and the hint builders issue."""
 
@@ -258,17 +274,8 @@ class SandboxDocker:
         if name is None:
             return subprocess.CompletedProcess(argv, 1, "", "No such container")
         state = self.containers[name]
-        if "{{.State.Running}}" in args and isinstance(state, dict):
-            return subprocess.CompletedProcess(
-                argv, 0, "true" if state["State"]["Running"] else "false", ""
-            )
-        if "{{json .Image}}" in args and isinstance(state, dict):
-            return subprocess.CompletedProcess(argv, 0, json.dumps(state.get("Image", "")), "")
-        out = (
-            state
-            if isinstance(state, str)
-            else json.dumps(state if "--format" in args else [state])
-        )
+        template = args[args.index("--format") + 1] if "--format" in args else None
+        out = state if isinstance(state, str) else container_inspect_output(state, template)
         return subprocess.CompletedProcess(argv, 0, out, "")
 
     def _run(self, argv: list[str], args: list[str]) -> subprocess.CompletedProcess[str]:
