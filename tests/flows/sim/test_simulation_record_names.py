@@ -202,8 +202,10 @@ def test_old_simulation_record_names_are_not_aliases(tmp_path: Path) -> None:
         decode_simulation_attempt: next(store.root.glob("work-items/*/attempts/*/attempt.json")),
     }
     for decode, path in documents.items():
-        # The old key is an unknown field: an integrity error, not an older Booley's record.
-        with pytest.raises(SimulationRecordIntegrityError, match="exact fields") as refused:
+        # The old key leaves a field missing: an integrity error, not an older Booley's record.
+        with pytest.raises(
+            SimulationRecordIntegrityError, match="lacks required fields"
+        ) as refused:
             decode(_with_old_key(_json(path)))
         assert "older Booley" not in str(refused.value)
 

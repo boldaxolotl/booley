@@ -25,7 +25,6 @@ from booley.flows.sim.record.serial_execution import (
     BUILD_EXECUTION_TEXT_TAIL_CHARS,
     bounded_build_execution_document,
 )
-from booley.flows.sim.record.store import _validate_build_execution_document
 from booley.flows.sim.request import SimRequest
 from tests.flows.sim.simulation_record_test_support import _build_execution
 from tests.flows.sim.test_verilator_build_reuse_record import _configure, flow_project
@@ -163,5 +162,3 @@ def test_worst_case_escaping_stays_under_the_record_ceiling() -> None:
     bounded = bounded_build_execution_document(_record_with("\x01" * (4 * RECORD_MAX_BYTES)))
     raw = canonical_json_bytes(bounded)
     assert len(raw) < RECORD_MAX_BYTES
-    # Private seam: readers validate it only while loading a published shared build.
-    _validate_build_execution_document(json.loads(raw))

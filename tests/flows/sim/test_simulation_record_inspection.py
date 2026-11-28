@@ -160,33 +160,33 @@ def test_pre_sim_inspection_reads_sidecars_without_reauthenticating_them(
     inspect()
 
 
+def test_pre_sim_reader_trusts_the_fields_booley_wrote(pre_sim_record):
+    invocation, outcome = pre_sim_record
+    firing = outcome.pre_sim_firings[0]
+    document = json.loads(firing.path.read_bytes())
+    document["status"] = "invented"
+    firing.path.chmod(0o600)
+    firing.path.write_bytes(canonical_json_bytes(document))
+    (firing.path.parents[3] / "result.json").unlink()
+
+    (collected,) = collect_pre_sim_firings(invocation / "targets/sim/record/manifest.json")
+
+    assert collected.document["status"] == "invented"
+
+
 @pytest.mark.parametrize(
-    "defect, value, message",
+    "defect, message",
     [
-        ("attempt_id", "wrong-owner", "evidence owner disagrees"),
-        ("ordinal", True, "ordinal"),
-        pytest.param("elapsed_s", float("nan"), "elapsed_s", marks=pytest.mark.timeout(120)),
-        ("returncode", True, "returncode"),
-        pytest.param("command_count", 3, "command count", marks=pytest.mark.timeout(150)),
-        ("test_names", ["other"], "selection disagrees"),
-        ("stdout_tail", "x" * 8193, "over-budget stdout_tail"),
-        ("status", "invented", "status"),
-        ("sidecar-link", None, "regular file|link"),
-        ("ordinal-path", None, "ordinal disagrees"),
-        ("directory-owner", None, "directory owner disagrees"),
+        ("sidecar-link", "regular file|link"),
+        ("ordinal-path", "ordinal disagrees"),
+        ("directory-owner", "directory owner disagrees"),
     ],
-    ids=lambda value: None if value is None else str(value)[:32],
 )
-def test_pre_sim_reader_rejects_bad_binding(tmp_path, pre_sim_record, defect, value, message):
+def test_pre_sim_reader_rejects_bad_binding(tmp_path, pre_sim_record, defect, message):
     invocation, outcome = pre_sim_record
     firing = outcome.pre_sim_firings[0]
     result_path = firing.path.parents[3] / "result.json"
-    if value is not None:
-        document = json.loads(firing.path.read_bytes())
-        document[defect] = value
-        firing.path.write_text(json.dumps(document))
-        result_path.unlink()
-    elif defect == "sidecar-link":
+    if defect == "sidecar-link":
         firing.path.unlink()
         firing.path.symlink_to(tmp_path / "outside.json")
     else:

@@ -473,7 +473,6 @@ def test_many_current_coverage_firings_keep_all_lines_and_bounded_preview(tmp_pa
     assert len(json.dumps(result.detail["pre_sim_runs"]).encode()) <= 16 * 1024
     assert result.detail["pre_sim_preview_truncated"] is True
     assert reads["manifest"] == 1
-    assert reads["decoder_manifest"] == 1
     assert reads["preview"] <= 32
     firings = collect_pre_sim_firings(store.manifest_path)
     assert len(firings) == 40
@@ -1689,10 +1688,8 @@ def test_coverage_hook_publication_integrity_failure_keeps_error_category(tmp_pa
 
 def _observe_pre_sim_projection(monkeypatch):
     from booley.flows.sim import record_presentation as flow_module
-    from booley.flows.sim.record import pre_sim_evidence
 
-    reads = {"manifest": 0, "preview": 0, "decoder_manifest": 0}
-    digest = pre_sim_evidence.manifest_digest
+    reads = {"manifest": 0, "preview": 0}
     # Spies on the bounded preview's readers: the Flow result does not show their read counts.
     artifact = flow_module._report_artifact_reference
     # Spies on the bounded preview's readers: the Flow result does not show their read counts.
@@ -1706,11 +1703,6 @@ def _observe_pre_sim_projection(monkeypatch):
         reads["preview"] += 1
         return preview(*args)
 
-    def manifest_digest(manifest):
-        reads["decoder_manifest"] += 1
-        return digest(manifest)
-
-    monkeypatch.setattr(pre_sim_evidence, "manifest_digest", manifest_digest)
     # Spies on the bounded preview's readers: the Flow result does not show their read counts.
     monkeypatch.setattr(flow_module, "_report_artifact_reference", reference)
     # Spies on the bounded preview's readers: the Flow result does not show their read counts.

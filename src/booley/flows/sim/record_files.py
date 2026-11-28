@@ -109,8 +109,7 @@ def read_json_object(
     limit: int,
     error: type[Exception],
     booley_dir: Path | None = None,
-    canonical: bool = False,
 ) -> dict[str, object]:
     """Read a bounded file with ``read_bounded`` and parse it as one JSON object."""
     raw = read_bounded(path, limit=limit, error=error, booley_dir=booley_dir)
-    return parse_json_object(raw, error=error, canonical=canonical)
+    return parse_json_object(raw, error=error)

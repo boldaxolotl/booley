@@ -53,10 +53,8 @@ from tests.flows.sim.simulation_record_boundary import (
     run_simulation_record_sim,
 )
 from tests.flows.sim.simulation_record_test_support import (
-    _BAD_DIGEST,
     _admission,
     _build_execution,
-    _Completed,
     _completed,
     _completed_result_documents,
     _create_build_root,
@@ -72,8 +70,8 @@ from tests.flows.sim.simulation_record_test_support import (
     _single_item_selection_manifest,
     _TestExecution,
     _two_item_manifest,
-    _write,
     _write_cocotb_core,
+    mutate_bundle_directory,
 )
 from tests.flows.sim.test_simulation_record_manifest_codec import _selection_test_runs, _sha
 
@@ -473,126 +471,40 @@ def _recording_executor(
     )
 
 
-def _identity(raw: bytes) -> tuple[int, str]:
-    return len(raw), "sha256:" + hashlib.sha256(raw).hexdigest()
-
-
-def _refresh_reference(reference: dict[str, Any], path: Path) -> None:
-    raw = path.read_bytes()
-    reference["bytes"], reference["sha256"] = _identity(raw)
-
-
-def _transplant(document: dict[str, Any], case: str, completed: _Completed) -> None:
-    """Give a Build Attempt or bundle document another owner or another tool version."""
-    if case == "owner":
-        document["owner"] = {
-            "work_item_id": completed.item_id,
-            "simulation_attempt_id": str(uuid.uuid4()),
-        }
-    else:
-        document["tool_provenance"]["eda_version"] = "transplanted"
-
-
-def _mutate_build_attempt(case: str, completed: _Completed) -> None:
-    path = completed.build_dir / "build-attempt.json"
-    document = _read(path)
-    if case == "record":
-        document["simulation_record_id"] = str(uuid.uuid4())
-    elif case in {"manifest", "workload"}:
-        # Not a production name: the document key is built as "<case>_sha256".
-        document[f"{case}_sha256"] = _BAD_DIGEST
-    elif case == "variant":
-        document["build_variant_id"] = "variant:" + "e" * 64
-    elif case == "invocation":
-        document["producer_invocation_id"] += 1
-    elif case == "ordinal":
-        document["build_attempt_ordinal"] += 1
-    elif case in {"owner", "tool_provenance"}:
-        _transplant(document, case, completed)
-    _write(path, document)
-    result_path = completed.build_dir / "build-result.json"
-    result = _read(result_path)
-    _refresh_reference(result["build_attempt"], path)
-    _write(result_path, result)
-
-
-def _mutate_build_result(case: str, completed: _Completed) -> None:
-    path = completed.build_dir / "build-result.json"
-    document = _read(path)
-    if case == "record":
-        document["simulation_record_id"] = str(uuid.uuid4())
-    elif case == "owner":
-        document["build_attempt"]["owner"] = str(uuid.uuid4())
-    elif case == "digest":
-        document["build_attempt"]["sha256"] = _BAD_DIGEST
-    else:
-        document["bundle"]["artifacts"] = []
-    _write(path, document)
-
-
-def _mutate_bundle(case: str, completed: _Completed) -> None:
-    bundle_path = completed.build_dir / "evidence/bundle.json"
-    bundle = _read(bundle_path)
-    if case == "record":
-        bundle["simulation_record_id"] = str(uuid.uuid4())
-    elif case == "attempt":
-        bundle["build_attempt_id"] = str(uuid.uuid4())
-    elif case in {"owner", "tool_provenance"}:
-        _transplant(bundle, case, completed)
-    else:
-        bundle["artifacts"] = []
-    _write(bundle_path, bundle)
-    result_path = completed.build_dir / "build-result.json"
-    result = _read(result_path)
-    raw = bundle_path.read_bytes()
-    result["bundle"]["manifest_bytes"], result["bundle"]["manifest_sha256"] = _identity(raw)
-    _write(result_path, result)
-
-
-_ATTEMPT_IDENTITY = "Build Attempt identity"
-_ATTEMPT_SCOPE = "Build Attempt scope"
-_RECOVERY_REJECTIONS = [
-    ("attempt", "record", _ATTEMPT_IDENTITY),
-    ("attempt", "manifest", _ATTEMPT_IDENTITY),
-    ("attempt", "workload", _ATTEMPT_IDENTITY),
-    ("attempt", "variant", "variant is not in manifest"),
-    ("attempt", "ordinal", _ATTEMPT_SCOPE),
-    ("attempt", "owner", _ATTEMPT_SCOPE),
-    ("attempt", "tool_provenance", _ATTEMPT_SCOPE),
-    ("result", "record", None),
-    ("result", "owner", None),
-    ("result", "digest", None),
-    ("result", "artifact_remove", None),
-    ("bundle", "record", "Bundle identity"),
-    ("bundle", "attempt", "Bundle binding"),
-    ("bundle", "owner", "Bundle binding"),
-    ("bundle", "tool_provenance", "Bundle binding"),
-    ("bundle", "artifact_remove", "Bundle binding"),
-]
-
-
-@pytest.mark.parametrize(("target", "case", "message"), _RECOVERY_REJECTIONS)
-def test_shared_recovery_rejects_transplanted_build_evidence(
-    tmp_path: Path, target: str, case: str, message: str | None
-) -> None:
-    """Each mutation of the Build Attempt, Build Result or bundle reaches its own store check."""
+def test_shared_recovery_refuses_two_settled_builds_of_one_invocation(tmp_path: Path) -> None:
     completed = _completed(tmp_path)
-    mutate = {
-        "attempt": _mutate_build_attempt,
-        "result": _mutate_build_result,
-        "bundle": _mutate_bundle,
-    }[target]
-    mutate(case, completed)
     variant = _read(completed.build_dir / "build-attempt.json")["build_variant_id"]
-    with pytest.raises(SimulationRecordIntegrityError, match=message):
+    shutil.copytree(completed.build_dir, completed.build_dir.with_name(f"0002-{uuid.uuid4()}"))
+
+    with pytest.raises(SimulationRecordIntegrityError, match="multiple settled shared builds"):
         completed.store.recover_shared_build(variant, 1)
+
+
+def test_reused_shared_bundle_changed_on_disk_is_refused_at_launch(tmp_path: Path) -> None:
+    manifest = _manifest_for(("alpha", "beta"))
+    project, build_root = _project_with_build(tmp_path)
+    store = SimulationRecordStore(tmp_path / "record")
+    store.publish_manifest(manifest)
+    items = manifest.document["work_items"]
+    counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
+    _executor(build_root, counters).execute(
+        _request(store, manifest, items[0], project, invocation=1)
+    )
+    (bundle,) = store.root.glob("build-variants/*/attempts/*")
+    mutate_bundle_directory(bundle, "changed_artifact")
+
+    with pytest.raises(SimulationRecordIntegrityError, match="bundle artifact changed"):
+        _executor(build_root, counters).execute(
+            _request(store, manifest, items[1], project, invocation=1)
+        )
+
+    assert counters == {"compile": 1, "durable_reuse": 0, "launch": 1}
 
 
 def test_shared_recovery_ignores_a_build_attempt_of_another_invocation(tmp_path: Path) -> None:
     completed = _completed(tmp_path)
-    _mutate_build_attempt("invocation", completed)
     variant = _read(completed.build_dir / "build-attempt.json")["build_variant_id"]
-    assert completed.store.recover_shared_build(variant, 1) is None
+    assert completed.store.recover_shared_build(variant, 2) is None
 
 
 def _compatibility_manifest():
@@ -929,8 +841,6 @@ def test_bundle_mutation_fails_closed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str, mutation: str
 ) -> None:
     """A changed bundle is refused during an attempt, and one changed before launch never launches."""
-    from tests.flows.sim.simulation_record_test_support import mutate_bundle_directory
-
     before_launch = mutation == "before_launch"
     options: dict[str, Any] = {} if before_launch else {"mutate_bundle": mutation}
 
