@@ -63,6 +63,7 @@ from booley.config.feature_flags import FeatureConfigError, enabled_features, re
 from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.booley_layout import JOB_LOGS_DIR_NAME, BooleyLayoutError
 from booley.core.boundary import BoundaryError, require_finite_number
+from booley.core.sandbox_layout import canonical_project_alias_path
 from booley.mcp import (
     call_context,
     catalog,
@@ -133,7 +134,6 @@ from booley.runtime.mcp_config import (
     http_port,
 )
 from booley.runtime.owned_scratch import sweep_stale_scratch
-from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.runtime.session_paths import logs_runtime_dir
 from booley.runtime.timefmt import format_human_datetime
 from booley.runtime.worktree_usage import record_worktree_use

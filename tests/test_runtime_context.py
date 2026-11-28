@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.core import sandbox_detection
 from booley.runtime import runtime_context
 
 # ---------------------------------------------------------------------------
@@ -225,7 +226,7 @@ def _use_mountinfo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, text: str | 
     if text is not None:
         mountinfo.write_bytes(text.encode())
     # private: /proc/self/mountinfo is the kernel's mount table; no public input moves the probe.
-    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
+    monkeypatch.setattr(sandbox_detection, "_MOUNTINFO", mountinfo)
 
 
 ISSUED = runtime_context.RuntimeLocation.ISSUED_SANDBOX

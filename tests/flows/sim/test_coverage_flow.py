@@ -1472,6 +1472,7 @@ def test_interactive_collection_then_exact_coverage_record_analysis(tmp_path, mo
     from tests.mcp_tools.test_coverage_analyst import Model
 
     _coverage_project(tmp_path, monkeypatch)
+    monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")  # the Sandbox spec hand-off
     result = _coverage(tmp_path)
     assert result.exit_code == 0
     coverage_record = next(tmp_path.rglob("targets/sim_0/coverage.json"))

@@ -25,6 +25,7 @@ from booley.config.gateway import (
     gateway_settings_from_env,
 )
 from booley.core.models import AgentArtifactPaths, AgentCallParams, AgentResult
+from booley.core.sandbox_detection import container_marker_file, inside_session_runtime
 from booley.runtime.filesystem_utils import make_directories
 
 from ._codex_live_usage import CodexLiveUsage
@@ -66,11 +67,6 @@ from .pid import capture_process_identity
 from .prompt_artifacts import adjacent_artifact_paths, write_prompt_artifacts
 
 logger = logging.getLogger(__name__)
-
-
-def _inside_container() -> bool:
-    """Detect if we're already running inside a Docker container."""
-    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
 
 
 def _codex_sandbox_mode(allowed_agent_capabilities: list[str] | None) -> str:
@@ -453,9 +449,9 @@ def _codex_build_cmd(
     if reasoning_effort:
         cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
 
-    # Inside a Docker container, Codex's bwrap sandbox fails (no user
-    # namespaces). The container IS the sandbox — always bypass.
-    if _inside_container() or sandbox == "danger-full-access":
+    # Codex's bwrap sandbox cannot run in a Sandbox or in any container whose
+    # runtime left a marker file (no user namespaces): always bypass there.
+    if inside_session_runtime() or container_marker_file() or sandbox == "danger-full-access":
         cmd.append("--dangerously-bypass-approvals-and-sandbox")
     elif session_id:
         cmd.extend(["-c", f'sandbox_mode="{sandbox}"'])
@@ -682,7 +678,7 @@ async def _codex_spawn(
 ) -> tuple[asyncio.subprocess.Process, Path]:
     """Spawn the codex subprocess with piped I/O.
 
-    Inside a container, a private HOME exposes the recursion-safe MCP tools
+    In a Sandbox, a private HOME exposes the recursion-safe MCP tools
     in ``params.nested_mcp_tools`` and carries the scoped MCP environment.
     An unlabeled caller uses "_anonymous" with an empty allowlist.
     """
@@ -692,7 +688,7 @@ async def _codex_spawn(
 
     if not defers_to_cli(auth_mode) and os.environ.get("CODEX_HOME"):
         env = {**os.environ, "CODEX_HOME": str(subscription_creds_path("codex").parent)}
-    if _inside_container() and not params.text_only:
+    if inside_session_runtime() and not params.text_only:
         env = dict(os.environ)
         env["HOME"] = _ensure_nested_codex_home(
             params.label or "_anonymous",

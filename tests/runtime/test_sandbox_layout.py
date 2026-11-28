@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from tests.conftest import require_symlinks, symlink_or_skip
 
-from booley.runtime import sandbox_layout
+from booley.core import sandbox_layout
 
 
 def configure_project_alias(

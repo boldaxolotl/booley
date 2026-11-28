@@ -35,7 +35,7 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "project" / ".booley"))
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
     (tmp_path / "tmp").mkdir()
-    place(monkeypatch, RuntimeLocation.HOST, container_host=True)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     # Private: a process-wide cache of nested Codex homes; an earlier test's home must not leak in.
     monkeypatch.setattr(_codex_backend, "_NESTED_HOMES", {})
     agent_config.set_agent_settings(None)

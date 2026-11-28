@@ -9,10 +9,11 @@ from pathlib import Path
 
 import pytest
 
+from booley.core import sandbox_detection
 from booley.harness import booley as cli
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
-from booley.runtime import auth_token, dashboard_tasks, runtime_context
+from booley.runtime import auth_token, dashboard_tasks
 from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache
 from booley.runtime.runtime_context import RuntimeLocation
 from tests.git_command_fake import GitCommandFake
@@ -80,7 +81,7 @@ def sandbox_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
     mountinfo = tmp_path / "mountinfo"
     mountinfo.write_text(PLAIN_MOUNTINFO, encoding="utf-8", newline="\n")
     # Private: the kernel's mountinfo path, which nothing public redirects.
-    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo, raising=False)
+    monkeypatch.setattr(sandbox_detection, "_MOUNTINFO", mountinfo)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
     for variable in (
