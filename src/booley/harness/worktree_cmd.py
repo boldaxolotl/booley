@@ -124,23 +124,21 @@ def _left_out_warning(paths: tuple[str, ...], source: Path) -> str:
     )
 
 
-def _run_post_setup(project_root: Path, worktree: Path, name: str) -> None:
-    """Run the Project's post-setup hook in *worktree*, logging its output."""
+def run_post_setup(booley_dir: Path, worktree: Path, name: str) -> None:
+    """Run the Project's post-setup hook in *worktree*, logging its output under *booley_dir*."""
     hook = find_post_setup_hook(worktree)
     if hook is None:
         return
-    log = own_booley_dir(project_root) / "worktrees" / ".logs" / f"{name}.log"
-    print(
-        f"Running post-setup hook {os.path.relpath(hook, worktree)} (log: {log})...",
-        file=sys.stderr,
-    )
+    log = booley_dir / "worktrees" / ".logs" / f"{name}.log"
+    shown = os.path.relpath(hook, worktree)
+    print(f"Running post-setup hook {shown} (log: {log})...", file=sys.stderr)
     try:
         sim_enabled = flow_enabled("sim", worktree)
     except FlowConfigError as exc:
         raise WorktreePostSetupError(f"cannot read the worktree's Flow settings: {exc}") from exc
     result = prepare_project(worktree, worktree, slug=name, sim_flow_enabled=sim_enabled, log=log)
     if not result.ok:
-        raise WorktreePostSetupError(f"{result.error}; log: {log}")
+        raise WorktreePostSetupError(f"{result.error}: {shown}; log: {log}")
 
 
 # Failures reported as one ERROR line; anything else is a defect and propagates.
@@ -177,7 +175,7 @@ def _prepare(path: Path) -> int:
     if made.left_out and source is not None:
         print(_left_out_warning(made.left_out, source), file=sys.stderr)
     try:
-        _run_post_setup(target.main, target.worktree, target.name)
+        run_post_setup(own_booley_dir(target.main), target.worktree, target.name)
     except BaseException as exc:
         _undo_prepare(target, made, source, exc)
         if not isinstance(exc, _PREPARE_FAILURES):

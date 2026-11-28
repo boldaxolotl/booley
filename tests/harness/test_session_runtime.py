@@ -1135,6 +1135,12 @@ def _configure_image(monkeypatch: pytest.MonkeyPatch, workspace: Path, image: st
     reset_cache()
 
 
+def _add_post_setup_hook(workspace: Path) -> None:
+    hooks = workspace / ".booley" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    (hooks / "post-setup.sh").write_bytes(b"#!/bin/sh\n")
+
+
 def _mutations(docker: SandboxDocker) -> list[list[str]]:
     """The recorded Docker calls that change a container or network."""
     return [
@@ -1197,6 +1203,7 @@ class TestUp:
             pytest.param(True, [], ["postStartCommand"], id="running"),
         ],
     )
+    @pytest.mark.parametrize("hooked", [False, True], ids=["no-hook", "hook"])
     def test_lifecycle_verbs_and_hooks(
         self,
         workspace: Path,
@@ -1206,17 +1213,23 @@ class TestUp:
         verbs: list[str],
         hooks: list[str],
         entry: str,
+        hooked: bool,
     ) -> None:
         name = sr.session_container_name(workspace)
         if state is not None:
             up_docker.containers[name] = _sandbox_state(workspace, running=state)
+        if hooked:
+            _add_post_setup_hook(workspace)
         spec = json.loads(dc.devcontainer_path(workspace).read_text(encoding="utf-8"))
 
         assert getattr(sr, entry)(workspace) == name
 
         assert [call[1] for call in up_docker.calls if call[1] in {"run", "start"}] == verbs
+        # Before the lifecycle commands, whose registrar launches the Automatic Doctor.
+        setup = ["python -m booley.harness.incontainer_post_setup"] if hooked else []
         assert [call for call in up_docker.calls if call[1] == "exec"] == [
-            ["docker", "exec", name, "bash", "-lc", spec[hook]] for hook in hooks
+            ["docker", "exec", name, "bash", "-lc", command]
+            for command in [*setup, *(spec[hook] for hook in hooks)]
         ]
         assert "superseded" not in caplog.text
 
@@ -1453,14 +1466,36 @@ class TestUp:
     def test_failing_hook_warns_but_leaves_container_up(
         self, workspace: Path, up_docker: SandboxDocker, caplog: pytest.LogCaptureFixture
     ) -> None:
+        _add_post_setup_hook(workspace)
         up_docker.exec_reply = lambda argv: subprocess.CompletedProcess(
             argv, 1, "", "registrar boom"
         )
 
         assert sr.up(workspace) == sr.session_container_name(workspace)
 
+        assert "post-setup hook in the main checkout failed (exit 1)" in caplog.text
         assert "postCreateCommand failed" in caplog.text
         assert sr.session_container_name(workspace) in up_docker.containers
+
+    @pytest.mark.parametrize("state", [None, False], ids=["absent", "stopped"])
+    def test_interrupted_main_checkout_hook_keeps_no_new_sandbox(
+        self, workspace: Path, up_docker: SandboxDocker, state: bool | None
+    ) -> None:
+        name = sr.session_container_name(workspace)
+        if state is not None:
+            up_docker.containers[name] = _sandbox_state(workspace, running=state)
+        _add_post_setup_hook(workspace)
+
+        def interrupt(_argv: list[str]) -> subprocess.CompletedProcess[str]:
+            raise KeyboardInterrupt
+
+        up_docker.exec_reply = interrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            sr.up(workspace)
+
+        # A new Sandbox without its lifecycle commands would be reused as it is.
+        assert (name in up_docker.containers) is (state is not None)
 
 
 def _docker_mounts(spec: dict, workspace: Path, booley_dir_target: str) -> list[dict]:

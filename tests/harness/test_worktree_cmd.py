@@ -13,7 +13,7 @@ import pytest
 
 from booley.core.host_shell import quote_arg
 from booley.harness import booley as tlr
-from booley.harness import worktree_cmd
+from booley.harness import incontainer_post_setup, worktree_cmd
 from booley.runtime import runtime_context
 from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
 from tests.subprocess_budget import run_bounded_child
@@ -369,6 +369,35 @@ def test_prepare_runs_the_hook_and_rolls_back_its_failure(
     assert not nested.exists()
     assert "booley-worktree/t3-hook" not in _git(root / ".booley", "branch", "--list").stdout
     assert worktree.as_posix() in _listed(root)
+
+
+@pytest.mark.parametrize("outcome", ["ok", "external", "fails"])
+def test_main_checkout_hook_runs_and_a_failure_only_warns(
+    outcome: str, project: Path, tmp_path: Path, monkeypatch, capsys
+) -> None:
+    data = project / ".booley"
+    if outcome == "external":
+        data = data.rename(tmp_path / "external")
+        monkeypatch.setenv("BOOLEY_DIR", str(data))
+    body = "import sys\nsys.exit(3)\n" if outcome == "fails" else _HOOK_MARKER
+    _write(data / "hooks/post-setup.py", body)
+
+    assert incontainer_post_setup.prepare_main_checkout(project) == 0
+
+    log = data / "worktrees" / ".logs" / "main-checkout.log"
+    if outcome == "fails":
+        (warning,) = [
+            line for line in capsys.readouterr().err.splitlines() if line.startswith("warning: ")
+        ]
+        for part in ("rc=3", "post-setup.py", "main-checkout.log", "the Sandbox starts anyway"):
+            assert part in warning
+        return
+    cwd, hook_dir = (project / "hook-marker.txt").read_text(encoding="utf-8").splitlines()
+    assert Path(cwd).resolve() == project.resolve()
+    assert Path(hook_dir).resolve() == data.resolve()
+    assert "hook says hi" in log.read_text(encoding="utf-8")
+    # A log written under the checkout would shadow an external Booley Directory.
+    assert (project / ".booley").exists() is (outcome == "ok")
 
 
 @pytest.mark.parametrize("layout", ["snapshot", "versioned"])

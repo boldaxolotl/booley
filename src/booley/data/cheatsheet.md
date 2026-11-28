@@ -211,7 +211,7 @@ the design sources they describe.
 | `tb_style_guide.md` | Project testbench style overrides | `reviewer` TB quality focus |
 | `docker/Dockerfile` | Project image build steps and dependencies | Flows/Specialists in the Sandbox |
 | `<requirements>.txt` | Python dependency pins selected by `booley.toml` | Flows/Specialists in the Sandbox |
-| `hooks/post-setup.*` | Per-worktree setup commands | Worktree setup |
+| `hooks/post-setup.*` | Per-checkout setup commands | Worktree setup, Sandbox start |
 
 #### Custom tool files
 
