@@ -191,12 +191,7 @@ def _publish_logs_and_cache(root, data, repo):
 
     runtime = runtime_dir(root)
     outputs = []
-    for directory in (
-        runtime / "build",
-        data / "logs",
-        data / "tickets/logs",
-        data / "job_logs",
-    ):
+    for directory in (runtime / "build", data / "logs", data / "tickets/logs", data / "job_logs"):
         directory.mkdir(parents=True, exist_ok=True)
         outputs.append(write_run_log(directory, "actual diagnostic publication\n"))
         assert outputs[-1].is_file()
@@ -331,10 +326,7 @@ def test_simulation_record_publications_and_run_lock_keep_project_clean(versione
         canonical_json_bytes,
         decode_simulation_record_manifest,
     )
-    from booley.flows.sim.record.run_directory import (
-        claimed_run_directory,
-        expand_run_directory,
-    )
+    from booley.flows.sim.record.run_directory import claimed_run_directory, expand_run_directory
     from booley.flows.sim.record.store import SimulationRecordStore
 
     root, data, repo = versioned_project

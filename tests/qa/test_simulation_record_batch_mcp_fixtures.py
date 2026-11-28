@@ -594,8 +594,7 @@ def test_coverage_phase5_validator_requires_resume_refusal(
     tmp_path: Path, mutation: Callable[[dict[str, object]], object], message: str
 ) -> None:
     module = _module(
-        ROOT / "qa/shared/coverage/simulation-record/validate_aggregate.py",
-        "coverage_phase5",
+        ROOT / "qa/shared/coverage/simulation-record/validate_aggregate.py", "coverage_phase5"
     )
     manifest, attempt, result, rejection = _coverage_refusal_files(tmp_path)
     module.validate(manifest, attempt, result, rejection)

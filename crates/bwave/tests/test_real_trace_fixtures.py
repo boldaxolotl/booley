@@ -33,12 +33,7 @@ def run_command(
     args: list[str], *, cwd: Path = BWAVE_SRC, timeout: int = 60
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        args,
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        check=False,
+        args, cwd=cwd, capture_output=True, text=True, timeout=timeout, check=False
     )
 
 
@@ -121,17 +116,7 @@ def test_real_trace_fixture_builds_and_queries(manifest: dict, tmp_path: Path) -
     assert "cycle" in first_read.stdout
 
     wave = bwave(
-        [
-            "wave",
-            str(bwave_path),
-            "-s",
-            "*hit*",
-            "-s",
-            "*miss*",
-            "-t",
-            "10:30",
-            "--with-reset",
-        ]
+        ["wave", str(bwave_path), "-s", "*hit*", "-s", "*miss*", "-t", "10:30", "--with-reset"]
     )
     assert "hit" in wave.stdout
     assert "miss" in wave.stdout

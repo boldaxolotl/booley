@@ -26,10 +26,7 @@ from booley.flows.sim.build import classify_build_outcome
 from booley.flows.sim.execution import SimulationOptions
 from booley.flows.sim.execution.contract import SimulationTestOutcome
 from booley.flows.sim.execution.engine import SimulationExecution
-from booley.flows.sim.record.codec import (
-    MAX_DETAIL_BYTES,
-    canonical_json_bytes,
-)
+from booley.flows.sim.record.codec import MAX_DETAIL_BYTES, canonical_json_bytes
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
     SimulationRecord,
@@ -97,9 +94,7 @@ def _long_output() -> str:
 
 def _timed_out_result(stdout: str | None = None) -> SubprocessResult:
     return SubprocessResult(
-        returncode=-9,
-        stdout=_long_output() if stdout is None else stdout,
-        timed_out=True,
+        returncode=-9, stdout=_long_output() if stdout is None else stdout, timed_out=True
     )
 
 

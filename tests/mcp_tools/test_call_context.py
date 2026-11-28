@@ -9,9 +9,7 @@ from types import MappingProxyType
 
 import pytest
 
-from booley.mcp import (
-    endpoint_process,
-)
+from booley.mcp import endpoint_process
 from booley.mcp.call_context import CallContext, resolve_call_context, resolve_work_dir
 from booley.runtime import job_records as jobrec
 from booley.runtime.session_paths import session_jobs_dir

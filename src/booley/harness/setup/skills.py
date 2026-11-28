@@ -71,11 +71,7 @@ def reconcile_host_skills(
 
 
 def reconcile_host_qa_skills(
-    source: Path,
-    *,
-    names: frozenset[str],
-    dry_run: bool,
-    allow_retarget: bool,
+    source: Path, *, names: frozenset[str], dry_run: bool, allow_retarget: bool
 ) -> tuple[HostSkillReconciliation, ...]:
     """Reconcile the independent repository-owned QA skill namespace."""
     return reconcile_host_skills(
@@ -104,9 +100,7 @@ def _deploy_skills(ctx: InitContext) -> None:
         return
 
     reconciliations = reconcile_host_skills(
-        source,
-        dry_run=ctx.check_only,
-        allow_retarget=ctx.force,
+        source, dry_run=ctx.check_only, allow_retarget=ctx.force
     )
     failures = sum(
         sum(event.failed for event in item.report.events)

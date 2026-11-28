@@ -87,11 +87,7 @@ from booley.mcp.application import (
     McpToolPayload,
     UnknownMcpToolError,
 )
-from booley.mcp.call_context import (
-    CallContext,
-    resolve_call_context,
-    resolve_work_dir,
-)
+from booley.mcp.call_context import CallContext, resolve_call_context, resolve_work_dir
 from booley.mcp.job_lifecycle import JobLifecycle, JobPoll, JobResult, OwnedPoll, _poll_status
 from booley.mcp.job_notice import UnreadNotice, target_label
 from booley.mcp.job_ownership import Caller
@@ -145,9 +141,7 @@ logger = logging.getLogger(__name__)
 
 # Route logging to stderr — stdout is the MCP JSON-RPC pipe.
 logging.basicConfig(
-    level=logging.INFO,
-    stream=sys.stderr,
-    format="[mcp] %(levelname)s %(message)s",
+    level=logging.INFO, stream=sys.stderr, format="[mcp] %(levelname)s %(message)s"
 )
 
 # ADR 0027 / ADR 0087: a Job that memory admission admits can wait in the queue
@@ -262,13 +256,9 @@ class _McpLifetime:
             return cls(None, None, heartbeat_path=_MCP_HEARTBEAT_PATH)
         return cls(
             _env_timeout_seconds(
-                "BOOLEY_MCP_IDLE_TIMEOUT_SECONDS",
-                _DEFAULT_MCP_IDLE_TIMEOUT_SECONDS,
+                "BOOLEY_MCP_IDLE_TIMEOUT_SECONDS", _DEFAULT_MCP_IDLE_TIMEOUT_SECONDS
             ),
-            _env_timeout_seconds(
-                "BOOLEY_MCP_MAX_AGE_SECONDS",
-                _DEFAULT_MCP_MAX_AGE_SECONDS,
-            ),
+            _env_timeout_seconds("BOOLEY_MCP_MAX_AGE_SECONDS", _DEFAULT_MCP_MAX_AGE_SECONDS),
             heartbeat_path=_MCP_HEARTBEAT_PATH,
         )
 
@@ -357,8 +347,7 @@ def _discover_booley_mcp_tools() -> tuple[list[dict[str, Any]], list[str]]:
 
 
 def _index_custom_mcp_tools(
-    project_mcp_tools_dir: Path | None,
-    allowed_names: set[str],
+    project_mcp_tools_dir: Path | None, allowed_names: set[str]
 ) -> dict[str, Path]:
     """Build path index for custom MCP tools that passed the allowlist filter."""
     custom_mcp_tool_paths: dict[str, Path] = {}
@@ -412,9 +401,7 @@ def _get_endpoint_config() -> tuple[dict[str, Any], dict[str, Any]]:
 
 
 def _resolve_transcript_dir(
-    mcp_tool_name: str,
-    call_counts: dict[str, int],
-    context: CallContext | None = None,
+    mcp_tool_name: str, call_counts: dict[str, int], context: CallContext | None = None
 ) -> Path:
     """Build a per-invocation transcript directory for an an agent capability.
 
@@ -585,15 +572,11 @@ def _dispatch_result(content: McpRawContent, *, is_error: bool) -> McpToolConten
 
 def _error_result(message: str) -> McpDispatchResult:
     """Return one caller-visible MCP error without raising a protocol error."""
-    return McpDispatchResult(
-        value=[TextContent(type="text", text=message)],
-        is_error=True,
-    )
+    return McpDispatchResult(value=[TextContent(type="text", text=message)], is_error=True)
 
 
 def _with_structured_report(
-    content: list[TextContent],
-    report: dict[str, Any] | None,
+    content: list[TextContent], report: dict[str, Any] | None
 ) -> McpRawContent:
     """Attach *report* as structuredContent when possible, else pass through.
 
@@ -628,10 +611,7 @@ def _available_report_endpoints(*, context: CallContext | None = None) -> list[s
 # ---------------------------------------------------------------------------
 
 
-def _log_discovery_errors(
-    mcp_tools: list[dict[str, Any]],
-    discovery_errors: list[str],
-) -> None:
+def _log_discovery_errors(mcp_tools: list[dict[str, Any]], discovery_errors: list[str]) -> None:
     """Log and print MCP tool discovery failures to stderr."""
     logger.error(
         "MCP TOOL DISCOVERY FAILURES (%d endpoints failed to load):\n  %s",
@@ -648,9 +628,7 @@ def _log_discovery_errors(
         print(f"[mcp]   - {err}", file=sys.stderr, flush=True)
 
 
-def _build_mcp_tool_index(
-    mcp_tools: list[dict[str, Any]],
-) -> dict[str, dict[str, Any]]:
+def _build_mcp_tool_index(mcp_tools: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     """Build name -> mcp_tool_def lookup for Booley + B-Wave MCP tools."""
     index: dict[str, dict[str, Any]] = {}
     for t in mcp_tools:
@@ -710,12 +688,7 @@ def _dispatch_status(
 ) -> list[TextContent]:
     """Handle the synthetic status MCP tool without spawning a subprocess."""
     checkout = request_context.checkout if request_context is not None else None
-    return [
-        TextContent(
-            type="text",
-            text=_format_status_card(mcp_tool_names, checkout),
-        ),
-    ]
+    return [TextContent(type="text", text=_format_status_card(mcp_tool_names, checkout))]
 
 
 def _prepend_changed_health_alert(content: McpToolContent) -> McpToolContent:
@@ -733,8 +706,7 @@ def _prepend_changed_health_alert(content: McpToolContent) -> McpToolContent:
     block = TextContent(type="text", text=f"HEALTH WARNING: {alert}")
     if isinstance(content, McpDispatchResult):
         return McpDispatchResult(
-            value=_prepend_health_block(content.value, block),
-            is_error=content.is_error,
+            value=_prepend_health_block(content.value, block), is_error=content.is_error
         )
     return _prepend_health_block(content, block)
 
@@ -781,9 +753,7 @@ def _dispatch_targets(arguments: dict[str, Any]) -> list[TextContent]:
     try:
         surface = target_surface.collect_surface(project_root)
         surface = target_surface.filter_surface(
-            surface,
-            for_flow=arguments.get("for_flow"),
-            glob=arguments.get("glob"),
+            surface, for_flow=arguments.get("for_flow"), glob=arguments.get("glob")
         )
     except (fusesoc_registry.FuseSocError, ValueError) as exc:
         return [TextContent(type="text", text=f"ERROR: {exc}")]
@@ -806,15 +776,7 @@ def _format_report_card(
         )
         return f"No completed run report found{which}.{hint}"
 
-    header_fields = (
-        "flow",
-        "mcp_tool",
-        "target",
-        "passed",
-        "exit_code",
-        "timestamp",
-        "elapsed_s",
-    )
+    header_fields = ("flow", "mcp_tool", "target", "passed", "exit_code", "timestamp", "elapsed_s")
     lines = [
         f"{field}: {report[field]}"
         for field in header_fields
@@ -849,9 +811,7 @@ def _dispatch_report(arguments: dict[str, Any]) -> McpToolContent:
 
 
 async def _dispatch_bwave(
-    name: str,
-    arguments: dict[str, Any],
-    request_context: McpRequestContext | None = None,
+    name: str, arguments: dict[str, Any], request_context: McpRequestContext | None = None
 ) -> list[TextContent] | None:
     """Handle B-Wave MCP tool calls. Returns None if *name* is not a B-Wave MCP tool.
 
@@ -859,12 +819,7 @@ async def _dispatch_bwave(
     from that checkout's session store; unrouted callers keep the server cwd.
     """
     bwave_subcmds = {
-        "bwave": lambda a: [
-            sys.executable,
-            "-m",
-            "booley.bwave.cli",
-            *a.get("extra_args", []),
-        ],
+        "bwave": lambda a: [sys.executable, "-m", "booley.bwave.cli", *a.get("extra_args", [])]
     }
     builder = bwave_subcmds.get(name)
     if builder is None:
@@ -874,19 +829,13 @@ async def _dispatch_bwave(
     cmd = builder(arguments)
     checkout = request_context.checkout if request_context is not None else None
     exit_code, stdout, stderr, _timed_out = await _run_subprocess(cmd, cwd=checkout)
-    return [
-        TextContent(
-            type="text",
-            text=_format_mcp_tool_result(exit_code, stdout, stderr),
-        )
-    ]
+    return [TextContent(type="text", text=_format_mcp_tool_result(exit_code, stdout, stderr))]
 
 
 def _job_inline_wait_seconds() -> float:
     """Inline wait before a submit hands back a run_id (0 → detach immediately)."""
     val = _env_timeout_seconds(
-        "BOOLEY_MCP_JOB_INLINE_WAIT_SECONDS",
-        _DEFAULT_JOB_INLINE_WAIT_SECONDS,
+        "BOOLEY_MCP_JOB_INLINE_WAIT_SECONDS", _DEFAULT_JOB_INLINE_WAIT_SECONDS
     )
     return val if val is not None else 0.0
 
@@ -894,8 +843,7 @@ def _job_inline_wait_seconds() -> float:
 def _job_poll_wait_seconds() -> float:
     """How long a single poll blocks waiting for the job (0 → return at once)."""
     val = _env_timeout_seconds(
-        "BOOLEY_MCP_JOB_POLL_WAIT_SECONDS",
-        catalog._DEFAULT_JOB_POLL_WAIT_SECONDS,
+        "BOOLEY_MCP_JOB_POLL_WAIT_SECONDS", catalog._DEFAULT_JOB_POLL_WAIT_SECONDS
     )
     return val if val is not None else 0.0
 
@@ -1111,9 +1059,7 @@ class _JobManager(JobLifecycle):
 
 
 async def _poll_from_disk(
-    run_id: str,
-    jobs: _JobManager,
-    wait_seconds: float = 0.0,
+    run_id: str, jobs: _JobManager, wait_seconds: float = 0.0
 ) -> McpToolContent:
     """Compose an adopted Job's SDK-independent poll outcome."""
     state = await jobs.poll_from_disk(
@@ -1215,12 +1161,7 @@ async def _dispatch_sleep(arguments: dict[str, Any]) -> list[TextContent]:
     except BoundaryError:
         parsed = -1.0  # any negative sentinel trips the "non-negative" check below
     if parsed < 0:
-        return [
-            TextContent(
-                type="text",
-                text="Provide 'seconds' as a non-negative number.",
-            )
-        ]
+        return [TextContent(type="text", text="Provide 'seconds' as a non-negative number.")]
     requested = min(parsed, 86400.0)
     started_wall = datetime.now(UTC)
     started = time.monotonic()
@@ -1272,10 +1213,7 @@ async def _cancel_adopted_process_group(pid: int, grace_seconds: float) -> None:
     await endpoint_process._cancel_adopted_process_group(pid, grace_seconds=grace_seconds)
 
 
-async def _dispatch_cancel_impl(
-    arguments: dict[str, Any],
-    jobs: _JobManager,
-) -> list[TextContent]:
+async def _dispatch_cancel_impl(arguments: dict[str, Any], jobs: _JobManager) -> list[TextContent]:
     """Handle the synthetic cancel MCP tool for queued and running jobs."""
     raw = arguments.get("run_id")
     run_id = raw.strip() if isinstance(raw, str) else ""
@@ -1408,10 +1346,7 @@ def _validate_work_dir(value: Any) -> str | None:
 
 
 def _endpoint_command(
-    name: str,
-    arguments: dict[str, Any],
-    definition: dict[str, Any],
-    call_counts: dict[str, int],
+    name: str, arguments: dict[str, Any], definition: dict[str, Any], call_counts: dict[str, int]
 ) -> list[str]:
     """Build the canonical subprocess command for one endpoint definition."""
     arguments = dict(arguments)
@@ -1535,9 +1470,7 @@ async def _dispatch_booley_mcp_tool(
 
 
 def _sim_mcp_tool_timeout_seconds(
-    arguments: dict[str, Any],
-    default: int,
-    context: CallContext,
+    arguments: dict[str, Any], default: int, context: CallContext
 ) -> int:
     """Whole-invocation Simulation watchdog with mode-aware stage budgets."""
     from booley.flows.invocation import requested_timeout_ms, resolve_timeout_ms
@@ -1567,12 +1500,7 @@ def _sim_mcp_tool_timeout_seconds(
             1
             if arguments.get("resume_from") is not None
             else resolve_simulation_record_work_units(
-                work_dir,
-                raw_target,
-                arguments.get("test"),
-                None,
-                mode,
-                seed=arguments.get("seed"),
+                work_dir, raw_target, arguments.get("test"), None, mode, seed=arguments.get("seed")
             )
         )
     except Exception:  # noqa: BLE001 — malformed project input is graded by the child
@@ -1625,18 +1553,13 @@ def _target_count(arguments: dict[str, Any]) -> int:
 
 
 def _implementation_budget_plan(
-    name: str,
-    arguments: dict[str, Any],
-    default: int,
-    context: CallContext,
+    name: str, arguments: dict[str, Any], default: int, context: CallContext
 ) -> BudgetPlan:
     """Plan the pre-spawn watchdog for synthesis or FPGA implementation."""
     from booley.flows.invocation import BudgetPlan, requested_timeout_ms, resolve_timeout_ms
 
     timeout_ms = resolve_timeout_ms(
-        name,
-        context.explicit_work_dir,
-        requested_timeout_ms(arguments),
+        name, context.explicit_work_dir, requested_timeout_ms(arguments)
     )
     has_baseline = bool(arguments.get("baseline"))
     work_units = _target_count(arguments) * (2 if has_baseline else 1)
@@ -1649,18 +1572,12 @@ def _implementation_budget_plan(
     )
 
 
-def _lint_budget_plan(
-    arguments: dict[str, Any],
-    default: int,
-    context: CallContext,
-) -> BudgetPlan:
+def _lint_budget_plan(arguments: dict[str, Any], default: int, context: CallContext) -> BudgetPlan:
     """Plan one active timeout budget for every selected lint Target."""
     from booley.flows.invocation import BudgetPlan, requested_timeout_ms, resolve_timeout_ms
 
     timeout_ms = resolve_timeout_ms(
-        "lint",
-        context.explicit_work_dir,
-        requested_timeout_ms(arguments),
+        "lint", context.explicit_work_dir, requested_timeout_ms(arguments)
     )
     work_units = _target_count(arguments)
     return BudgetPlan(
@@ -1683,9 +1600,7 @@ def _mutation_mcp_tool_timeout_seconds(
     from booley.flows.invocation import requested_timeout_ms, resolve_timeout_ms
 
     timeout_ms = resolve_timeout_ms(
-        "mutation",
-        context.explicit_work_dir,
-        requested_timeout_ms(arguments),
+        "mutation", context.explicit_work_dir, requested_timeout_ms(arguments)
     )
     return max(default, -(-timeout_ms // 1000))
 
@@ -1783,10 +1698,7 @@ _COMMAND_TOOLS: dict[
 
 
 async def _dispatch_command_or_cancel(
-    name: str,
-    arguments: dict[str, Any],
-    jobs: _JobManager,
-    caller: Caller | None,
+    name: str, arguments: dict[str, Any], jobs: _JobManager, caller: Caller | None
 ) -> McpToolContent | None:
     """Route a command Job tool and ``booley_cancel``; ``None`` when the tool is hidden."""
     exposure = _exposure()
@@ -1915,9 +1827,7 @@ def _build_mcp_application(
     mcp_tool_call_counts: dict[str, int] = collections.defaultdict(int)
 
     async def dispatch(
-        name: str,
-        arguments: dict[str, Any],
-        mcp_tool_def: Mapping[str, Any],
+        name: str, arguments: dict[str, Any], mcp_tool_def: Mapping[str, Any]
     ) -> McpToolContent | McpInputRequired:
         return await _dispatch_application_tool(
             name,
@@ -1994,8 +1904,7 @@ def _build_mcp_application(
 
 
 def _build_mcp_catalog(
-    lifetime: _McpLifetime,
-    server_identity: str | None = None,
+    lifetime: _McpLifetime, server_identity: str | None = None
 ) -> tuple[McpApplication, list[dict[str, Any]], list[str]]:
     """Discover and validate the catalog shared by live startup and probes."""
     from booley.core.checkout_role import SourceCheckoutProjectError
@@ -2072,9 +1981,7 @@ def _sdk_tool_result(
                 payload.response_key: ElicitRequest(
                     method="elicitation/create",
                     params=ElicitRequestFormParams(
-                        mode="form",
-                        message=payload.message,
-                        requested_schema=payload.form_schema,
+                        mode="form", message=payload.message, requested_schema=payload.form_schema
                     ),
                 )
             },
@@ -2109,10 +2016,7 @@ async def _call_application_tool(
         payload = application.finalize(payload, request)
         return _sdk_tool_result(payload)
     except UnknownMcpToolError as exc:
-        raise MCPError(
-            INVALID_PARAMS,
-            f"Unknown MCP tool: {exc.name}",
-        ) from None
+        raise MCPError(INVALID_PARAMS, f"Unknown MCP tool: {exc.name}") from None
     except MCPError:
         raise
     except Exception as exc:
@@ -2205,8 +2109,7 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
     """Adapt the Booley MCP application to the MCP SDK server callbacks."""
 
     async def handle_list_tools(
-        _ctx: ServerRequestContext,
-        _params: PaginatedRequestParams | None,
+        _ctx: ServerRequestContext, _params: PaginatedRequestParams | None
     ) -> ListToolsResult:
         lifetime.mark_activity()
         if application.live_catalog is not None:
@@ -2214,8 +2117,7 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
         return ListToolsResult(tools=[_sdk_tool(tool) for tool in application.list_tools()])
 
     async def handle_call_tool(
-        _ctx: ServerRequestContext,
-        params: CallToolRequestParams,
+        _ctx: ServerRequestContext, params: CallToolRequestParams
     ) -> CallToolResult | InputRequiredResult:
         lifetime.mark_mcp_endpoint_start()
         try:
@@ -2254,9 +2156,7 @@ def _build_sdk_server(application: McpApplication, lifetime: _McpLifetime) -> Se
 
 
 def _build_server(
-    lifetime: _McpLifetime | None = None,
-    *,
-    server_identity: str | None = None,
+    lifetime: _McpLifetime | None = None, *, server_identity: str | None = None
 ) -> tuple[Server, list[dict[str, Any]]]:
     """Build the MCP v2 adapter around the Booley MCP application."""
     _reconcile_orphaned_jobs()
@@ -2339,11 +2239,7 @@ def _maybe_configure_job_logs_dir() -> None:
         return
     logs_dir.mkdir(parents=True, exist_ok=True)
     os.environ["BOOLEY_LOGS_DIR"] = str(logs_dir)
-    logger.info(
-        "MCP server logs: BOOLEY_LOGS_DIR=%s (session %s)",
-        logs_dir,
-        logs_dir.name,
-    )
+    logger.info("MCP server logs: BOOLEY_LOGS_DIR=%s (session %s)", logs_dir, logs_dir.name)
 
 
 def _load_agent_settings_from_toml() -> None:
@@ -2379,16 +2275,11 @@ async def _main() -> None:
     handle_pruning.prune_at_start()
     async with stdio_server() as (read_stream, write_stream):
         run_task = asyncio.create_task(
-            server.run(
-                read_stream,
-                write_stream,
-                server.create_initialization_options(),
-            ),
+            server.run(read_stream, write_stream, server.create_initialization_options())
         )
         watchdog_task = asyncio.create_task(lifetime.wait_until_stale())
         done, pending = await asyncio.wait(
-            {run_task, watchdog_task},
-            return_when=asyncio.FIRST_COMPLETED,
+            {run_task, watchdog_task}, return_when=asyncio.FIRST_COMPLETED
         )
         if run_task in done:
             watchdog_task.cancel()

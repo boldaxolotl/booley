@@ -92,8 +92,5 @@ def run_nested_pytest(
     """
     dump = f"faulthandler_timeout={STALL_DUMP_S:g}"
     return run_bounded_child(
-        [sys.executable, "-m", "pytest", "-o", dump, *arguments],
-        timeout=timeout,
-        cwd=cwd,
-        env=env,
+        [sys.executable, "-m", "pytest", "-o", dump, *arguments], timeout=timeout, cwd=cwd, env=env
     )

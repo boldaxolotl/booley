@@ -28,7 +28,6 @@ _State = dict[str, Any]
 _Result = tuple[int, str, str]
 _which = shutil.which  # tests patch ``shutil.which``; the Windows launcher lookup must not
 _LABEL_FIELD = re.compile(r'\{\{\.Label "([^"]+)"\}\}')
-_LABEL_OF_IMAGE = re.compile(r'\{\{ ?index \.Config\.Labels "([^"]+)" ?\}\}')
 _JSON_LABEL_OF_IMAGE = re.compile(r'\{\{json \(index \.Config\.Labels "([^"]+)"\)\}\}')
 
 
@@ -104,9 +103,6 @@ def _image_answers(_key: str, value: Any, template: str | None) -> dict[str | No
         "{{len .RootFS.Layers}}": str(len(layers)),
         "{{json .RepoDigests}}": "[]",
     }
-    label = _LABEL_OF_IMAGE.fullmatch(template or "")
-    if label:
-        answers[template] = config["Labels"].get(label.group(1), "<no value>")
     label = _JSON_LABEL_OF_IMAGE.fullmatch(template or "")
     if label:  # a raw map renders a missing key as ``null``
         answers[template] = json.dumps(config["Labels"].get(label.group(1)))

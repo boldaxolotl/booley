@@ -801,9 +801,7 @@ def _inner_message(result: subprocess.CompletedProcess[str]) -> str:
 
 
 def _exit_with_inner_error(
-    result: subprocess.CompletedProcess[str],
-    cmd_args: list[str],
-    plumbing: str,
+    result: subprocess.CompletedProcess[str], cmd_args: list[str], plumbing: str
 ) -> NoReturn:
     """Exit surfacing the inner binary's message verbatim, never the plumbing.
 
@@ -864,11 +862,7 @@ def _capture_data(result: subprocess.CompletedProcess[str], cmd_args: list[str])
 # Trailing bit range on a bwave signal name: "[7:0]" (vector) or "[3]" (bit).
 _BIT_RANGE_RE = re.compile(r"\[(\d+)(?::(\d+))?\]$")
 
-_RADIX_FORMATS = {
-    "b": "binary",
-    "h": "hexadecimal",
-    "d": "decimal",
-}
+_RADIX_FORMATS = {"b": "binary", "h": "hexadecimal", "d": "decimal"}
 # The semantic colors a `@COLOR` suffix may name.
 _WAVEFORM_COLORS = frozenset({"red", "blue", "green"})
 
@@ -1310,11 +1304,7 @@ def cmd_gui(args: argparse.Namespace) -> None:
 def _run(cmd: list[str]) -> int:
     """Run a command, streaming stdout/stderr."""
     try:
-        result = subprocess.run(
-            cmd,
-            timeout=120,
-            check=False,
-        )
+        result = subprocess.run(cmd, timeout=120, check=False)
         return result.returncode
     except subprocess.TimeoutExpired:
         print("ERROR: Command timed out (120s)")
@@ -1670,9 +1660,7 @@ Quick start:
         help="Treat the selection as an addition to an existing one (no clock row is added)",
     )
     p_gui.add_argument(
-        "--no-clock",
-        action="store_true",
-        help="Do not add the trace's clock to the selection",
+        "--no-clock", action="store_true", help="Do not add the trace's clock to the selection"
     )
     p_gui.add_argument(
         "--max-signals",

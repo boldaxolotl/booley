@@ -29,21 +29,13 @@ def _reset_booley_dir(monkeypatch: pytest.MonkeyPatch) -> None:
     reset_cache()
 
 
-def _make_flow(
-    tmp_path: Path,
-    *,
-    config: str = "",
-    standalone: bool = True,
-) -> SimulateFlow:
+def _make_flow(tmp_path: Path, *, config: str = "", standalone: bool = True) -> SimulateFlow:
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir(exist_ok=True)
     if config:
         (booley_dir / "booley.toml").write_text(config, encoding="utf-8")
     env = os.environ.copy()
-    env.update(
-        BOOLEY_DIR=str(booley_dir),
-        BOOLEY_SLUG="standalone-test",
-    )
+    env.update(BOOLEY_DIR=str(booley_dir), BOOLEY_SLUG="standalone-test")
     flow = SimulateFlow()
     with patch.dict(os.environ, env):
         args = [
@@ -111,9 +103,7 @@ def _stub_sources(
 def _stub_which(monkeypatch: pytest.MonkeyPatch, present: bool) -> None:
     """Make ``shutil.which("verilator")`` report Verilator present or absent."""
     monkeypatch.setattr(
-        standalone_mod.shutil,
-        "which",
-        lambda name: f"/usr/bin/{name}" if present else None,
+        standalone_mod.shutil, "which", lambda name: f"/usr/bin/{name}" if present else None
     )
 
 
@@ -177,16 +167,11 @@ def _run_sweep(flow: SimulateFlow, targets: list[str], *, primary_ok: bool = Tru
 
 class TestStandaloneSweep:
     def test_success_probes_each_declaring_file_and_passes(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _write_sources(
             tmp_path,
-            {
-                "rtl/alu.sv": "module alu; endmodule\n",
-                "rtl/top.sv": "module top; endmodule\n",
-            },
+            {"rtl/alu.sv": "module alu; endmodule\n", "rtl/top.sv": "module top; endmodule\n"},
         )
         _stub_sources(monkeypatch, ["rtl/alu.sv", "rtl/top.sv"])
         flow = _make_flow(tmp_path)
@@ -255,9 +240,7 @@ class TestStandaloneSweep:
         assert "iverilog standalone sweep timed out after 1s" in "\n".join(outcome.lines)
 
     def test_prepare_reuses_frozen_standalone_recipe(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Private seam: the frozen recipe is read back only by a resumed run, which needs a prior record.
         flow = _make_flow(tmp_path)
@@ -280,25 +263,19 @@ class TestStandaloneSweep:
         assert recipe.frontend_label == "iverilog"
 
     def test_plan_reports_source_scope_resolution_failure(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Private seam: no public path fails the RTL scope resolution of a Target the endpoint already resolved.
         flow = _make_flow(tmp_path)
         monkeypatch.setattr(
-            flow,
-            "_standalone_rtl_scope",
-            MagicMock(side_effect=OSError("catalog unavailable")),
+            flow, "_standalone_rtl_scope", MagicMock(side_effect=OSError("catalog unavailable"))
         )
 
         with pytest.raises(ValueError, match="could not resolve RTL source scope"):
             flow._plan_standalone_check(["sim_dut"])
 
     def test_design_failure_names_module_and_records_fail(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _write_sources(tmp_path, {"rtl/top.sv": "module top; endmodule\n"})
         _stub_sources(monkeypatch, ["rtl/top.sv"])
@@ -308,8 +285,7 @@ class TestStandaloneSweep:
             flow,
             {
                 "top": SubprocessResult(
-                    returncode=2,
-                    stderr="rtl/top.sv:2: error: Unknown module type: missing_sub\n",
+                    returncode=2, stderr="rtl/top.sv:2: error: Unknown module type: missing_sub\n"
                 )
             },
         )
@@ -326,9 +302,7 @@ class TestStandaloneSweep:
         assert "$ iverilog" in log.read_text(encoding="utf-8")
 
     def test_shared_files_precede_declaring_file_and_tb_is_excluded(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _write_sources(
             tmp_path,
@@ -340,9 +314,7 @@ class TestStandaloneSweep:
             },
         )
         _stub_sources(
-            monkeypatch,
-            ["rtl/alu_pkg.sv", "rtl/bus_if.sv", "rtl/alu.sv"],
-            tb=["tb/tb_alu.sv"],
+            monkeypatch, ["rtl/alu_pkg.sv", "rtl/bus_if.sv", "rtl/alu.sv"], tb=["tb/tb_alu.sv"]
         )
         flow = _make_flow(tmp_path)
         commands = _stub_probes(monkeypatch, flow)
@@ -387,9 +359,7 @@ class TestStandaloneSweep:
         assert message in "\n".join(outcome.lines)
 
     def test_parse_gap_is_no_verdict(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _write_sources(tmp_path, {"rtl/alu.sv": "module alu; endmodule\n"})
         _stub_sources(monkeypatch, ["rtl/alu.sv"], eda_tool="xcelium")
@@ -409,9 +379,7 @@ class TestStandaloneSweep:
         assert "not a design defect" in "\n".join(outcome.lines)
 
     def test_real_failure_and_parse_gap_are_both_retained(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _write_sources(
             tmp_path,
@@ -427,10 +395,7 @@ class TestStandaloneSweep:
             monkeypatch,
             flow,
             {
-                "gapped": SubprocessResult(
-                    returncode=1,
-                    stderr="rtl/gapped.sv:1: syntax error\n",
-                ),
+                "gapped": SubprocessResult(returncode=1, stderr="rtl/gapped.sv:1: syntax error\n"),
                 "broken": SubprocessResult(
                     returncode=1,
                     stderr="rtl/broken.sv:1: error: Unknown module type: missing_sub\n",
@@ -488,9 +453,7 @@ class TestProbeFrontendSelection:
             ver_rtl.insert(0, "rtl/pkg_v.sv")
         _write_sources(tmp_path, files)
         _stub_sources(
-            monkeypatch,
-            [],
-            targets={"ice": (ice_rtl, "icarus"), "ver": (ver_rtl, "verilator")},
+            monkeypatch, [], targets={"ice": (ice_rtl, "icarus"), "ver": (ver_rtl, "verilator")}
         )
         _stub_which(monkeypatch, True)
         return _make_flow(tmp_path)
@@ -819,8 +782,7 @@ class TestProbeDialectFlags:
         "verilator_options",
         [
             pytest.param(
-                ["--default-language 1364-2005", "+1364-2005ext+v", "--timing"],
-                id="one_entry",
+                ["--default-language 1364-2005", "+1364-2005ext+v", "--timing"], id="one_entry"
             ),
             pytest.param(
                 ["--default-language", "1364-2005", "+1364-2005ext+v", "--timing"],
@@ -928,10 +890,7 @@ class TestProbeDialectFlags:
         flow = _dialect_project(
             tmp_path,
             monkeypatch,
-            {
-                "sv": (["rtl/kw.v"], "icarus", options),
-                "ver": (["rtl/kw.v"], "verilator"),
-            },
+            {"sv": (["rtl/kw.v"], "icarus", options), "ver": (["rtl/kw.v"], "verilator")},
         )
 
         unit, error = flow._planned_standalone_unit(["sv", "ver"])
@@ -957,10 +916,7 @@ class TestProbeDialectFlags:
         assert "# standalone probe: kw (rtl/kw.v) via verilator (default dialect)\n" in log
 
 
-@pytest.mark.parametrize(
-    ("kind", "expected_exit"),
-    [("pass", 0), ("design", 1), ("tool", 2)],
-)
+@pytest.mark.parametrize(("kind", "expected_exit"), [("pass", 0), ("design", 1), ("tool", 2)])
 def test_optional_standalone_exit_codes_for_single_simulator_project(
     tmp_path, monkeypatch, kind, expected_exit
 ) -> None:
@@ -994,8 +950,7 @@ def test_memory_only_module_sweep_final_headline(tmp_path, monkeypatch, met):
     flow = _make_flow(tmp_path)
     flow.args.target = ""
     process = SubprocessResult(
-        returncode=0 if met else 1,
-        stderr="" if met else "error: Unknown module type: missing_sub",
+        returncode=0 if met else 1, stderr="" if met else "error: Unknown module type: missing_sub"
     )
     _stub_probes(monkeypatch, flow, {"alu": process})
     outcome = _run_sweep(flow, ["sim_dut"])

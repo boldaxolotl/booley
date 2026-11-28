@@ -113,10 +113,7 @@ def _completed(
 ) -> subprocess.CompletedProcess[Any]:
     if kwargs.get("text") or kwargs.get("universal_newlines"):
         return subprocess.CompletedProcess(
-            command,
-            returncode,
-            stdout.decode(errors="replace"),
-            stderr.decode(errors="replace"),
+            command, returncode, stdout.decode(errors="replace"), stderr.decode(errors="replace")
         )
     return subprocess.CompletedProcess(command, returncode, stdout, stderr)
 

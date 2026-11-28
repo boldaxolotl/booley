@@ -109,10 +109,7 @@ def _status_case(
             "run-anchored-within", _QUEUED, jobrec.STATUS_RUNNING, now=_after(_RUN_STARTED, 30)
         ),
         _status_case(
-            "run-anchored-past",
-            _QUEUED,
-            jobrec.STATUS_FAILED,
-            now=_after(_RUN_STARTED, _PAST),
+            "run-anchored-past", _QUEUED, jobrec.STATUS_FAILED, now=_after(_RUN_STARTED, _PAST)
         ),
     ],
 )
@@ -264,13 +261,7 @@ def test_run_id_has_random_eight_hex_suffix() -> None:
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [
-        ("work_dir", 17),
-        ("client", []),
-        ("schema", False),
-        ("schema", 0),
-        ("schema", "2"),
-    ],
+    [("work_dir", 17), ("client", []), ("schema", False), ("schema", 0), ("schema", "2")],
 )
 def test_malformed_routing_envelope_is_job_error(tmp_path, field, value):
     raw = jobrec.JobRecord("bad-envelope", "lint", "20261007T120000Z", 60).to_dict()

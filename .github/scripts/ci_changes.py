@@ -125,9 +125,7 @@ LINUX_SCHEDULERS = ("loadscope", "worksteal")
 DEFAULT_LINUX_SCHEDULER = "loadscope"
 _LINUX_PYTHONS = ("3.11",)
 _STABLE_BASE_FILES = set(stable_base_inputs(Path(__file__).parents[2]))
-_STABLE_BASE_ORCHESTRATION_FILES = {
-    "src/booley/data/docker/stable-base-inputs.txt",
-}
+_STABLE_BASE_ORCHESTRATION_FILES = {"src/booley/data/docker/stable-base-inputs.txt"}
 # The Renovate configuration and its runner. The runner runs only from the
 # default branch on a schedule, builds no image and feeds no other job, so a
 # change here needs the narrow `renovate-config` lane, not the full CI. That lane
@@ -173,20 +171,12 @@ _RELEASE_SENSITIVE_PREFIXES = (
     "tests/mcp_tools/",
     "tests/smoke/",
 )
-_RELEASE_SENSITIVE_FILES = {
-    ".dockerignore",
-    "MANIFEST.in",
-    "VERSION",
-    "pyproject.toml",
-}
+_RELEASE_SENSITIVE_FILES = {".dockerignore", "MANIFEST.in", "VERSION", "pyproject.toml"}
 _STANDARD_IMAGE_PREFIXES = _RELEASE_SENSITIVE_PREFIXES
 _STANDARD_IMAGE_FILES = _RELEASE_SENSITIVE_FILES
 _NATIVE_BWAVE_PREFIXES = ("src/booley/bwave/", "tests/bwave/")
 _NATIVE_BWAVE_FILES = {"tests/flows/sim/test_execution_engine.py"}
-_SIDECAR_PREFIXES = (
-    "src/booley/docker/",
-    "src/booley/eda/provisioning/licensing/",
-)
+_SIDECAR_PREFIXES = ("src/booley/docker/", "src/booley/eda/provisioning/licensing/")
 _SIDECAR_FILES = {
     "src/booley/data/docker/Dockerfile.egress-proxy",
     "src/booley/data/docker/Dockerfile.flexnet-relay",
@@ -300,11 +290,7 @@ def _release_categories(path: str) -> set[str]:
     return set()
 
 
-def _path_categories(
-    path: str,
-    *,
-    contract_neutral: bool = False,
-) -> set[str]:
+def _path_categories(path: str, *, contract_neutral: bool = False) -> set[str]:
     if path in _RENOVATE_FILES:
         return {"renovate"}
     categories = _documentation_categories(path)
@@ -358,10 +344,7 @@ def classify(
     """
     categories: set[str] = set()
     for path in paths:
-        path_categories = _path_categories(
-            path,
-            contract_neutral=path in contract_neutral,
-        )
+        path_categories = _path_categories(path, contract_neutral=path in contract_neutral)
         if not path_categories:
             categories.add("full")
         categories.update(path_categories)

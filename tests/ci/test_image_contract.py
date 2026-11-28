@@ -130,8 +130,7 @@ def test_riscv_gcc_link_matches_the_tooling_pin() -> None:
 def test_contract_rejects_single_path_hard_link_group(tmp_path: Path) -> None:
     contract = tmp_path / "contract.toml"
     contract.write_text(
-        'schema = 1\n[common]\nhard_link_groups = [["/one"]]\n[standard]\n',
-        encoding="utf-8",
+        'schema = 1\n[common]\nhard_link_groups = [["/one"]]\n[standard]\n', encoding="utf-8"
     )
 
     with pytest.raises(ValueError, match="at least two paths"):
@@ -225,11 +224,7 @@ def test_container_probe_reports_missing_hard_link_without_losing_evidence(tmp_p
 
 
 def test_layer_contract_requires_exact_base_diff_id_prefix() -> None:
-    base = {
-        "reference": "base",
-        "image_id": "sha256:base",
-        "rootfs_diff_ids": ["one", "two"],
-    }
+    base = {"reference": "base", "image_id": "sha256:base", "rootfs_diff_ids": ["one", "two"]}
     child = {"rootfs_diff_ids": ["one", "two", "three"]}
     wrong = {"rootfs_diff_ids": ["one", "different", "three"]}
 
@@ -266,9 +261,7 @@ def test_validate_keeps_probe_and_layer_failures_in_evidence(
     )
     monkeypatch.setattr(image_contract, "_image_identity", identities.__getitem__)
     monkeypatch.setattr(
-        image_contract,
-        "_probe_image",
-        lambda *_args: {"errors": ["missing command"]},
+        image_contract, "_probe_image", lambda *_args: {"errors": ["missing command"]}
     )
     monkeypatch.setattr(
         image_contract,
@@ -302,11 +295,7 @@ def test_coreutils_contract_rejects_non_gnu_default(tmp_path: Path, command: str
     # An explicit environment excludes inherited BASH_ENV and other startup hooks.
     default_path = f"/usr/local/bin{os.pathsep}{os.defpath}"
     environment = {"PATH": default_path, "HOME": str(tmp_path), "LANG": "C", "LC_ALL": "C"}
-    identity = run_bounded_child(
-        ["stat", "--version"],
-        env=environment,
-        check=False,
-    )
+    identity = run_bounded_child(["stat", "--version"], env=environment, check=False)
     if "GNU coreutils" not in identity.stdout:
         pytest.skip("GNU coreutils host prerequisite unavailable; run in the Sandbox Image")
     marker = f"non-GNU replacement: {command}"
@@ -321,9 +310,7 @@ def test_coreutils_contract_rejects_non_gnu_default(tmp_path: Path, command: str
             replacement.chmod(0o755)
             environment["PATH"] = f"{tmp_path}{os.pathsep}{default_path}"
         result = run_bounded_child(
-            ["bash", "-euo", "pipefail", "-c", probe["command"]],
-            env=environment,
-            check=False,
+            ["bash", "-euo", "pipefail", "-c", probe["command"]], env=environment, check=False
         )
         if replace_command:
             assert result.returncode != 0, result.stdout
@@ -663,10 +650,7 @@ def test_package_inventory_probe_changes_contract_status(
         .replace("python -I", f"{sys.executable} -I")
     )
 
-    result = run_bounded_child(
-        ["bash", "-euo", "pipefail", "-c", command],
-        check=False,
-    )
+    result = run_bounded_child(["bash", "-euo", "pipefail", "-c", command], check=False)
 
     assert (result.returncode == 0) is passes, result.stderr
 

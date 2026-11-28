@@ -62,11 +62,7 @@ def test_container_mounts_only_fixture_inputs_and_bootstraps_distro_python(tmp_p
     smoke.main()
     pull, _ = calls[0]
     assert pull[0] == "bash"
-    assert pull[2:] == [
-        "docker",
-        "pull",
-        smoke.IMAGE,
-    ]
+    assert pull[2:] == ["docker", "pull", smoke.IMAGE]
     command, bounds = calls[-1]
     assert command[:3] == ["docker", "run", "--rm"]
     assert smoke.IMAGE == "ubuntu:26.04"

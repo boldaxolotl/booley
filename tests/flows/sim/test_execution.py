@@ -4,11 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from booley.flows.sim.execution import (
-    InvalidSimulationRequestError,
-    NamedTests,
-    SimulationOptions,
-)
+from booley.flows.sim.execution import InvalidSimulationRequestError, NamedTests, SimulationOptions
 
 
 @pytest.mark.parametrize("names", [(), ("reset", "reset"), ("",)])

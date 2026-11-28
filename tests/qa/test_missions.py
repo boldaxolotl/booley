@@ -17,14 +17,7 @@ MISSIONS = sorted(QA_ROOT.glob("missions/*/MISSION.md"))
 
 # Backticked mission-relative paths such as `fixtures/stealth.md` or
 # `../../shared/coverage/RUNBOOK.md`; commands and globs are skipped.
-ASSET_PREFIXES = (
-    "fixtures/",
-    "prompts/",
-    "spec/",
-    "evaluator/",
-    "probes/",
-    "../../shared/",
-)
+ASSET_PREFIXES = ("fixtures/", "prompts/", "spec/", "evaluator/", "probes/", "../../shared/")
 BACKTICKED = re.compile(r"`([^`\s]+)`")
 MARKDOWN_LINK = re.compile(r"\]\(([^)#\s]+)(?:#[^)]*)?\)")
 

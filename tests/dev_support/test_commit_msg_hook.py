@@ -348,8 +348,7 @@ def test_standalone_hook_leaves_source_checkout_message_unchanged(tmp_path: Path
     hooks = root / "stale-hooks"
     hooks.mkdir(parents=True)
     (root / "pyproject.toml").write_text(
-        "[tool.booley]\nsource_checkout = true\n",
-        encoding="utf-8",
+        "[tool.booley]\nsource_checkout = true\n", encoding="utf-8"
     )
     init = run_bounded_child(["git", "init", "-q", str(root)])
     assert init.returncode == 0, init.stderr
@@ -359,8 +358,7 @@ def test_standalone_hook_leaves_source_checkout_message_unchanged(tmp_path: Path
     package = support.parent
     shutil.copy2(package / "commit_policy" / "policy.py", hooks / "booley_commit_policy.py")
     shutil.copy2(
-        package / "commit_policy" / "validation.py",
-        hooks / "booley_commit_validation.py",
+        package / "commit_policy" / "validation.py", hooks / "booley_commit_validation.py"
     )
     shutil.copy2(package / "core" / "checkout_role.py", hooks / "checkout_role.py")
     shutil.copy2(package / "core" / "boundary.py", hooks / "boundary.py")
@@ -369,8 +367,7 @@ def test_standalone_hook_leaves_source_checkout_message_unchanged(tmp_path: Path
     message.write_text(original, encoding="utf-8")
 
     result = run_bounded_child(
-        [sys.executable, "-S", str(hooks / "commit_msg_hook.py"), str(message)],
-        cwd=root,
+        [sys.executable, "-S", str(hooks / "commit_msg_hook.py"), str(message)], cwd=root
     )
 
     assert result.returncode == 0, result.stderr

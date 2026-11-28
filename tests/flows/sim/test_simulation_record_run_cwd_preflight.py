@@ -11,9 +11,7 @@ import pytest
 
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import serial_execution
-from booley.flows.sim.record.codec import (
-    SimulationRecordIntegrityError,
-)
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
     SimulationRecord,

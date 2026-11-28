@@ -131,9 +131,7 @@ def test_inventory_scans_builtin_flows_tools_and_custom_directory(tmp_path):
     for package in BUILTIN_FLOW_PACKAGES:
         (src / "flows" / package).mkdir(parents=True)
         _write_endpoint_file(
-            src / "flows" / package,
-            "flow.py",
-            FLOW_SRC.replace("lint_check", package),
+            src / "flows" / package, "flow.py", FLOW_SRC.replace("lint_check", package)
         )
     (src / "flows" / "surprise").mkdir()
     _write_endpoint_file(src / "flows" / "surprise", "flow.py", FLOW_SRC)  # not in the manifest

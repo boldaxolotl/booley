@@ -33,29 +33,18 @@ from booley.flows.sim.record.coordinator import (
     SimulationRecordPolicy,
     WorkExecutionRequest,
 )
-from booley.flows.sim.record.coverage_execution import (
-    _CoverageAggregateError,
-)
-from booley.flows.sim.record.model import (
-    SimulationResult,
-    create_simulation_record_plan,
-)
+from booley.flows.sim.record.coverage_execution import _CoverageAggregateError
+from booley.flows.sim.record.model import SimulationResult, create_simulation_record_plan
 from booley.flows.sim.record.planning import finalize_manifest
 from booley.flows.sim.record.run_directory import (
     RunDirectory,
     claimed_run_directory,
     cleanup_interrupted_run_directory,
 )
-from booley.flows.sim.record.serial_execution import (
-    OrdinaryHdlSerialExecutor,
-)
+from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationRunResult
-from booley.runtime.execution_records import (
-    ExecutionId,
-    execution_paths,
-    read_json,
-)
+from booley.runtime.execution_records import ExecutionId, execution_paths, read_json
 from booley.runtime.supervised_execution import (
     SupervisedExecutionScope,
     supervised_execution_scope,
@@ -172,19 +161,14 @@ def _packaged_source_disclosure(raw: bytes) -> dict[str, object]:
                 "kind": "generated_input",
             }
         ],
-        "tool_provenance": {
-            "kind": "fusesoc",
-            "version": "2.4.6",
-            "contract_version": "1",
-        },
+        "tool_provenance": {"kind": "fusesoc", "version": "2.4.6", "contract_version": "1"},
         "cleanup": {"removed": True},
     }
 
 
 @pytest.mark.parametrize("mapped", [False, True])
 def test_changed_packaged_source_fails_disclosure_equality_before_compile(
-    tmp_path: Path,
-    mapped: bool,
+    tmp_path: Path, mapped: bool
 ) -> None:
     planned = _packaged_source_disclosure(b"planned wheel bytes")
     execution = _packaged_source_disclosure(b"different execution wheel bytes")
@@ -431,8 +415,7 @@ def test_store_follows_only_the_booley_dir_entry(tmp_path, linked):
 
 
 @pytest.mark.parametrize(
-    "defect",
-    ["manifest", "workload", "work_item", "attempt", "replace", "symlink", "resize"],
+    "defect", ["manifest", "workload", "work_item", "attempt", "replace", "symlink", "resize"]
 )
 def test_scan_fails_closed_on_a_defective_complete_result(tmp_path: Path, defect: str) -> None:
     """The scan binds a complete result to its manifest, item and final attempt, and to one file."""

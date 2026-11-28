@@ -260,6 +260,9 @@ known-first-party = ["booley"]
 quote-style = "double"
 indent-style = "space"
 docstring-code-format = true
+skip-magic-trailing-comma = true
+# Vendored Edalize tool node stays in upstream style (ADR 0033).
+exclude = ["src/booley/data/edalize/verible.py"]
 
 # ---------------------------------------------------------------------------
 # Pytest

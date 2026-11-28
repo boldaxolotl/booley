@@ -26,9 +26,7 @@ def test_omitted_test_preserves_absence() -> None:
 
 
 @pytest.mark.parametrize("explicit_empty", [(), []])
-def test_typed_request_rejects_explicit_empty_test_selection(
-    explicit_empty: Any,
-) -> None:
+def test_typed_request_rejects_explicit_empty_test_selection(explicit_empty: Any) -> None:
     with pytest.raises(ValueError, match="non-empty array"):
         SimRequest(target="sim", test=explicit_empty)
 
@@ -72,8 +70,7 @@ def test_resume_preserves_omitted_mode_and_requires_no_target(tmp_path) -> None:
 def test_resume_rejects_selection_conflicts(tmp_path, conflict, capsys) -> None:
     with pytest.raises(SystemExit):
         parse_request(
-            SimulateFlow(),
-            ["--resume-from", str(tmp_path / "manifest.json"), *conflict],
+            SimulateFlow(), ["--resume-from", str(tmp_path / "manifest.json"), *conflict]
         )
     assert conflict[0] in capsys.readouterr().err
 
@@ -94,9 +91,7 @@ def test_no_waivers_requires_coverage_and_is_recorded_on_request() -> None:
 
 
 @pytest.mark.parametrize(
-    "argv",
-    [["--skip", "a"], ["--result-verbosity", "full"]],
-    ids=["skip", "result-verbosity"],
+    "argv", [["--skip", "a"], ["--result-verbosity", "full"]], ids=["skip", "result-verbosity"]
 )
 def test_absent_cli_options_are_rejected(argv, capsys) -> None:
     with pytest.raises(SystemExit) as raised:

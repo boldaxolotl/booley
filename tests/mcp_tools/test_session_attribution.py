@@ -15,11 +15,7 @@ from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolRequestParams
 
 from booley.mcp import agent_thread, server, session_peer
-from booley.mcp.application import (
-    McpApplication,
-    McpDispatchResult,
-    McpInputRequired,
-)
+from booley.mcp.application import McpApplication, McpDispatchResult, McpInputRequired
 from booley.runtime import job_records
 from tests.time_budget import hang_guard_s
 

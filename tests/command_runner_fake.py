@@ -15,11 +15,7 @@ class CannedRunner:
     """Answer every command with one canned result (or exception) and record each argv."""
 
     def __init__(
-        self,
-        returncode: int = 0,
-        stderr: str = "",
-        *,
-        raises: Exception | None = None,
+        self, returncode: int = 0, stderr: str = "", *, raises: Exception | None = None
     ) -> None:
         self.returncode = returncode
         self.stderr = stderr

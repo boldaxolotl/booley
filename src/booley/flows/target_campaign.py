@@ -6,10 +6,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
-from booley.flows.target_test_suite import (
-    TargetTestSuite,
-    require_runnable_target_test_suite,
-)
+from booley.flows.target_test_suite import TargetTestSuite, require_runnable_target_test_suite
 
 _ResultT = TypeVar("_ResultT")
 
@@ -62,10 +59,7 @@ class TargetCampaign:
         return ",".join(self.scope)
 
     def execution_units(
-        self,
-        *,
-        batched: bool = False,
-        batches: Sequence[tuple[str, ...]] | None = None,
+        self, *, batched: bool = False, batches: Sequence[tuple[str, ...]] | None = None
     ) -> tuple[CampaignUnit, ...]:
         """Describe physical invocations for individual or batched runners.
 
@@ -103,8 +97,7 @@ class TargetCampaign:
 
 
 def all_campaign_results_match(
-    values: Sequence[_ResultT],
-    predicate: Callable[[_ResultT], bool],
+    values: Sequence[_ResultT], predicate: Callable[[_ResultT], bool]
 ) -> bool:
     """Return true only when a non-empty campaign satisfies *predicate*."""
     return bool(values) and all(predicate(value) for value in values)
@@ -125,10 +118,7 @@ def resolve_target_campaign(
 ) -> TargetCampaign:
     """Resolve the scope entries and the runnable tests of *target*."""
     suite = require_runnable_target_test_suite(
-        target,
-        identity=identity,
-        test_names=test_names,
-        test_skips=test_skips,
+        target, identity=identity, test_names=test_names, test_skips=test_skips
     )
     return TargetCampaign(target, _scope_paths(scope), suite)
 
@@ -142,9 +132,6 @@ def describe_target_campaign(
 ) -> TargetCampaign:
     """Describe test mechanics when a caller needs no scope."""
     suite = require_runnable_target_test_suite(
-        target,
-        identity=identity,
-        test_names=test_names,
-        test_skips=test_skips,
+        target, identity=identity, test_names=test_names, test_skips=test_skips
     )
     return TargetCampaign(target, (), suite)

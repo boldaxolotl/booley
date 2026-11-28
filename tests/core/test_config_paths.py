@@ -23,8 +23,7 @@ def test_linked_worktree_marker_resolves_to_main_root(tmp_path: Path, absolute: 
 
 
 @pytest.mark.parametrize(
-    "marker",
-    [b"not a gitdir marker\n", b"gitdir: /somewhere/without/dotgit\n", b"\xff\xfe"],
+    "marker", [b"not a gitdir marker\n", b"gitdir: /somewhere/without/dotgit\n", b"\xff\xfe"]
 )
 def test_unrecognised_marker_is_not_a_linked_worktree(tmp_path: Path, marker: bytes) -> None:
     (tmp_path / ".git").write_bytes(marker)

@@ -21,11 +21,7 @@ from booley.runtime.filesystem_utils import make_directories
 CACHE_SCHEMA = 3
 CACHE_FILE = ".booley-fpga-cache.json"
 _IMPLEMENTATION_REVISION = 4
-_REPORT_PATTERNS = (
-    "*_utilization_placed.rpt",
-    "*_timing_summary_routed.rpt",
-    "*_drc_routed.rpt",
-)
+_REPORT_PATTERNS = ("*_utilization_placed.rpt", "*_timing_summary_routed.rpt", "*_drc_routed.rpt")
 
 
 @dataclass(frozen=True)
@@ -83,8 +79,7 @@ def _folder_files(folder: Path, *, recursive: bool) -> list[Path]:
 
 
 def _reachable_file_evidence(
-    resolved: Any,
-    reachable_dirs: Sequence[Path],
+    resolved: Any, reachable_dirs: Sequence[Path]
 ) -> list[dict[str, Any]]:
     """Hash files Vivado can read through *reachable_dirs* beyond ``rtl_files``.
 
@@ -161,11 +156,7 @@ def input_fingerprint(
     if reachable_dirs:
         payload["reachable_files"] = _reachable_file_evidence(resolved, reachable_dirs)
     encoded = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        default=str,
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -180,10 +171,7 @@ def _fresh(path: Path, min_mtime: float | None) -> bool:
 
 
 def _artifact_paths(
-    work_root: Path,
-    *,
-    require_bitstream: bool,
-    min_mtime: float | None = None,
+    work_root: Path, *, require_bitstream: bool, min_mtime: float | None = None
 ) -> list[Path] | None:
     artifacts: list[Path] = []
     impl_dirs = sorted(path for path in work_root.glob("*.runs/impl_1") if path.is_dir())
@@ -224,11 +212,7 @@ def store(
     """Atomically record validated artifact digests after a successful route."""
     if not _valid_producer_evidence(producer_evidence):
         return False
-    paths = _artifact_paths(
-        work_root,
-        require_bitstream=require_bitstream,
-        min_mtime=min_mtime,
-    )
+    paths = _artifact_paths(work_root, require_bitstream=require_bitstream, min_mtime=min_mtime)
     if paths is None:
         return False
     artifacts: list[dict[str, Any]] = []
@@ -236,11 +220,7 @@ def store(
         for path in paths:
             digest, size = file_sha256_and_size(path)
             artifacts.append(
-                {
-                    "path": path.relative_to(work_root).as_posix(),
-                    "sha256": digest,
-                    "size": size,
-                }
+                {"path": path.relative_to(work_root).as_posix(), "sha256": digest, "size": size}
             )
     except (OSError, ValueError):
         return False
@@ -269,12 +249,7 @@ def store(
     return True
 
 
-def load(
-    work_root: Path,
-    fingerprint: str,
-    *,
-    require_bitstream: bool,
-) -> CacheHit | None:
+def load(work_root: Path, fingerprint: str, *, require_bitstream: bool) -> CacheHit | None:
     """Return a hit only when metadata and every artifact byte still match."""
     raw = _read_metadata(work_root)
     if not _metadata_matches(raw, fingerprint, require_bitstream):
@@ -302,9 +277,7 @@ def _read_metadata(work_root: Path) -> dict[str, Any] | None:
 
 
 def _metadata_matches(
-    raw: dict[str, Any] | None,
-    fingerprint: str,
-    require_bitstream: bool,
+    raw: dict[str, Any] | None, fingerprint: str, require_bitstream: bool
 ) -> bool:
     return bool(
         raw is not None
@@ -327,11 +300,7 @@ def _valid_producer_evidence(value: Any) -> bool:
     )
 
 
-def _artifacts_match(
-    work_root: Path,
-    records: list[Any],
-    expected_paths: list[Path],
-) -> bool:
+def _artifacts_match(work_root: Path, records: list[Any], expected_paths: list[Path]) -> bool:
     expected_rel = {path.relative_to(work_root).as_posix() for path in expected_paths}
     recorded_rel: set[str] = set()
     for item in records:

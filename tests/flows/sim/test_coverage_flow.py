@@ -11,16 +11,10 @@ import pytest
 from booley.flows.progress_lifecycle import abort_open_progress
 from booley.flows.sim.coverage_progress import CoverageProgress
 from booley.flows.sim.coverage_record_store import load_coverage_record
-from booley.flows.sim.coverage_reference import (
-    REFERENCE_SCHEMA,
-    resolve_coverage_record_reference,
-)
+from booley.flows.sim.coverage_reference import REFERENCE_SCHEMA, resolve_coverage_record_reference
 from booley.flows.sim.execution.contract import SimulationOptions
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.record import (
-    SimulationRecord,
-    collect_pre_sim_firings,
-)
+from booley.flows.sim.record import SimulationRecord, collect_pre_sim_firings
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.mcp.flow_adapter import flow_schema
@@ -74,11 +68,7 @@ def _pin_revision(monkeypatch: pytest.MonkeyPatch, revision: str) -> None:
 
 class _SplitMetricsExecution(NativeExecution):
     def payload(self, _hits):
-        records = (
-            ("line", 1, "block", 1),
-            ("expr", 2, "true", 1),
-            ("branch", 3, "true", 0),
-        )
+        records = (("line", 1, "block", 1), ("expr", 2, "true", 1), ("branch", 3, "true", 0))
         body = "".join(
             "C '\x01f\x02rtl/counter.sv"
             f"\x01l\x02{line}\x01n\x021\x01h\x02TOP.counter"
@@ -501,10 +491,7 @@ def test_many_current_coverage_firings_keep_all_lines_and_bounded_preview(tmp_pa
     ],
 )
 def test_coverage_recipe_schema_errors_are_atomic_preflight_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    coverage_recipe: str,
-    message: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, coverage_recipe: str, message: str
 ) -> None:
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     project(tmp_path)
@@ -754,10 +741,7 @@ def test_multi_target_collector_error_preserves_completed_and_later_targets(tmp_
         (tmp_path / "reports/sim/1/targets/sim_1").rglob("coverage-record/coverage.json")
     )
     invalid_manifest = json.loads(coverage_record_path.read_text())
-    assert invalid_manifest["scoring"] == {
-        "status": "invalid",
-        "reason": "collector_error",
-    }
+    assert invalid_manifest["scoring"] == {"status": "invalid", "reason": "collector_error"}
     assert invalid_manifest["rollups"] == []
     failed_block = _target_block(result.outcome.report_text, "sim_1")
     assert not any(line.startswith("  coverage: ") for line in failed_block)
@@ -811,8 +795,7 @@ def test_unmatched_coverage_failure_lists_completed_simulation_records(tmp_path,
     # `SimulateFlow` reaches the unmatched-failure card only for a failed request that matches no prepared plan; no Flow input does.
     monkeypatch.setattr(sim_flow, "_simulation_record_structured_details", lambda *_args: {})
     finished = SimpleNamespace(
-        manifest_path=tmp_path / "targets/sim_0/record/manifest.json",
-        coverage_reference=object(),
+        manifest_path=tmp_path / "targets/sim_0/record/manifest.json", coverage_reference=object()
     )
 
     # `SimulateFlow` reaches the unmatched-failure card only for a failed request that matches no prepared plan; no Flow input does.
@@ -906,11 +889,7 @@ def test_atomic_preflight_creates_no_report_or_build_path(tmp_path, monkeypatch)
 
 @pytest.mark.parametrize(
     ("selected", "expected_runs", "exit_code"),
-    [
-        (("wrap",), ["wrap"], 1),
-        (("reset", "wrap"), ["reset", "wrap"], 1),
-        (None, ["reset"], 0),
-    ],
+    [(("wrap",), ["wrap"], 1), (("reset", "wrap"), ["reset", "wrap"], 1), (None, ["reset"], 0)],
 )
 def test_explicit_coverage_selection_executes_configured_skips(
     tmp_path, monkeypatch, selected, expected_runs, exit_code
@@ -1138,12 +1117,7 @@ def _interrupt_coverage_publication(tmp_path, monkeypatch):
         if actual == "before:summary_replace":
             raise KeyboardInterrupt("simulated publication interruption")
 
-    request = SimRequest(
-        target="sim_0",
-        work_dir=tmp_path,
-        coverage=True,
-        report_dir=reports,
-    )
+    request = SimRequest(target="sim_0", work_dir=tmp_path, coverage=True, report_dir=reports)
     flow = SimulateFlow(coverage_execution=lambda *_args: NativeExecution())
     with inject_faults(checkpoint), pytest.raises(KeyboardInterrupt):
         flow.execute(request)
@@ -1173,8 +1147,7 @@ def test_requeued_resume_attempt_keeps_the_origin_lock_it_already_holds(tmp_path
 
     origin = tmp_path / "sim/1"
     validated = SimpleNamespace(
-        path=origin / "targets/sim_0/record/manifest.json",
-        booley_dir=None,
+        path=origin / "targets/sim_0/record/manifest.json", booley_dir=None
     )
     flow = SimulateFlow()
     origin.mkdir(parents=True)
@@ -1202,9 +1175,7 @@ def test_resume_refuses_every_coverage_record(tmp_path, monkeypatch, state, dry_
         reports = _interrupt_coverage_publication(tmp_path, monkeypatch)
     else:
         reports, _request = _interrupt_coverage_collection(
-            tmp_path,
-            monkeypatch,
-            boundary="after:manifest_commit" if state == "pending" else None,
+            tmp_path, monkeypatch, boundary="after:manifest_commit" if state == "pending" else None
         )
     simulation_record = reports / "sim/1/targets/sim_0/record"
     manifest = simulation_record / "manifest.json"

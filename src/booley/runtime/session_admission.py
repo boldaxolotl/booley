@@ -38,12 +38,7 @@ from booley.runtime.filesystem_utils import unlink_file
 from booley.runtime.host_docker import relay_docker
 from booley.runtime.platform_paths import host_path_from_docker_mount, same_host_path
 from booley.runtime.private_store import session_store_repair
-from booley.runtime.sandbox_apply import (
-    Attachment,
-    apply_steps,
-    image_is_managed,
-    shell_command,
-)
+from booley.runtime.sandbox_apply import Attachment, apply_steps, image_is_managed, shell_command
 from booley.runtime.timefmt import format_age, parse_timestamp, rfc3339_from_datetime
 
 _SCHEMA_VERSION = 2
@@ -114,10 +109,7 @@ def admit_start(
 
 
 def claim_vscode_start(
-    project_root: Path,
-    *,
-    run: docker_cli.Runner = relay_docker,
-    now: datetime | None = None,
+    project_root: Path, *, run: docker_cli.Runner = relay_docker, now: datetime | None = None
 ) -> bool:
     """Atomically reserve capacity for a later VS Code Docker start."""
     root = _canonical_root(project_root)
@@ -135,10 +127,7 @@ def claim_vscode_start(
         raise AdmissionError(_refusal(policy, live, claims, instant, diagnostics))
     baseline = {item.container_id: _started_token(item) for item in project_sandboxes}
     claim = PendingStartClaim(
-        _SCHEMA_VERSION,
-        root,
-        rfc3339_from_datetime(instant, microseconds=True),
-        baseline,
+        _SCHEMA_VERSION, root, rfc3339_from_datetime(instant, microseconds=True), baseline
     )
     claim_store().write(root, json.dumps(asdict(claim), sort_keys=True))
     return True

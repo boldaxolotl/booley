@@ -106,14 +106,7 @@ def _make_endpoint(
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir(exist_ok=True)
     report_dir = tmp_path / "reports"
-    argv = [
-        "--work-dir",
-        str(tmp_path),
-        "--report-dir",
-        str(report_dir),
-        "--target",
-        target,
-    ]
+    argv = ["--work-dir", str(tmp_path), "--report-dir", str(report_dir), "--target", target]
     if scope is not None:
         argv.extend(["--scope", scope])
     if count is not None:
@@ -139,8 +132,7 @@ def _make_endpoint(
         endpoint.parse_args(argv)
     if monkeypatch is not None:
         monkeypatch.setattr(
-            "booley.flows.mutation.flow.tb_top_for_target",
-            lambda *_args, **_kwargs: tb_top,
+            "booley.flows.mutation.flow.tb_top_for_target", lambda *_args, **_kwargs: tb_top
         )
     return endpoint
 
@@ -455,10 +447,7 @@ def _patch_resolve_target(
         edam_path = root / "fixture.eda.yml"
         edam_path.write_text(
             yaml.safe_dump(
-                {
-                    "cores": {"acme:test:fixture:1": {"core_file": str(core_file)}},
-                    "files": entries,
-                }
+                {"cores": {"acme:test:fixture:1": {"core_file": str(core_file)}}, "files": entries}
             )
         )
         resolved = types.SimpleNamespace(
@@ -500,10 +489,7 @@ def _patch_resolve_target(
             )()
         ),
     )
-    monkeypatch.setattr(
-        "booley.flows.mutation.flow.prepare_simulation_build",
-        _fake_prepare,
-    )
+    monkeypatch.setattr("booley.flows.mutation.flow.prepare_simulation_build", _fake_prepare)
     # No faked test spawns a real `verilator`: the baseline build's version is `verilator`.
     monkeypatch.setattr(
         "booley.flows.mutation.flow.verilator_version",
@@ -723,9 +709,7 @@ def test_baseline_build_runs_the_exact_command_of_the_shared_preparer(
     ),
 )
 def test_baseline_surfaces_shared_preparation_failures(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    message: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, message: str
 ) -> None:
     def failing_prepare(*args, **kwargs):
         raise SimulationBuildPreparationError(message)
@@ -1302,11 +1286,7 @@ def test_replaced_build_failures_leave_a_full_count_that_passes(
     _prepare_scope_files(tmp_path, [_SCOPE])
     ranked = _candidates(tmp_path)
     _, result, fake = _campaign(
-        tmp_path,
-        monkeypatch,
-        count=10,
-        run=_detects_every_mutant,
-        build=_failing_builds(2, 5, 8),
+        tmp_path, monkeypatch, count=10, run=_detects_every_mutant, build=_failing_builds(2, 5, 8)
     )
 
     # The 3 candidates that did not build are replaced: all 10 kept Mutants are scored
@@ -1877,11 +1857,7 @@ def test_auto_count_names_formula_and_cap_and_keeps_the_identity(
 ) -> None:
     """32 source lines give formula 6; a 450 s timeout caps the count at 3."""
     _, auto, _ = _campaign(
-        tmp_path,
-        monkeypatch,
-        count="auto",
-        min_detected=0,
-        extra_args=["--timeout-ms", "450000"],
+        tmp_path, monkeypatch, count="auto", min_detected=0, extra_args=["--timeout-ms", "450000"]
     )
     _, explicit, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0)
 

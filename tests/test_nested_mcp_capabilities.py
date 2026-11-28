@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-from booley.runtime.nested_mcp_capabilities import (
-    NESTED_MCP_CAPABILITIES,
-    nested_mcp_tools_for,
-)
+from booley.runtime.nested_mcp_capabilities import NESTED_MCP_CAPABILITIES, nested_mcp_tools_for
 
 
 class TestNestedMcpToolsFor:

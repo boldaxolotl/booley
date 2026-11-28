@@ -15,13 +15,8 @@ from typing import Any
 import pytest
 
 from booley.flows.base import SubprocessResult
-from booley.flows.sim.execution.contract import (
-    SimulationOptions,
-)
-from booley.flows.sim.execution.engine import (
-    PreparedOrdinaryGroup,
-    SimulationBuildSlotError,
-)
+from booley.flows.sim.execution.contract import SimulationOptions
+from booley.flows.sim.execution.engine import PreparedOrdinaryGroup, SimulationBuildSlotError
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import serial_execution
 from booley.flows.sim.record.codec import (
@@ -205,11 +200,7 @@ def test_recovered_failed_shared_build_blocks_each_pending_item_with_its_own_sel
     assert outcome.aggregate_grade == "fail"
     assert seed_counters == {"compile": 1, "launch": 0}
     assert resumed_counters == {"compile": 0, "launch": 0}
-    assert [result["observations"][0]["test"] for result in results] == [
-        "tail",
-        "quick",
-        "smoke",
-    ]
+    assert [result["observations"][0]["test"] for result in results] == ["tail", "quick", "smoke"]
     assert [result["observations"][0]["detail"]["reason"] for result in results] == [
         "compiler reason",
         "compiler tail",
@@ -220,10 +211,7 @@ def test_recovered_failed_shared_build_blocks_each_pending_item_with_its_own_sel
 
 @pytest.mark.parametrize(
     ("kind", "names", "expected"),
-    [
-        ("default", (), ["sim"]),
-        ("named", ("tail", "quick"), ["tail", "quick"]),
-    ],
+    [("default", (), ["sim"]), ("named", ("tail", "quick"), ["tail", "quick"])],
 )
 def test_shared_build_failure_preserves_each_selection_identity(
     tmp_path: Path,
@@ -582,10 +570,7 @@ def test_recovered_bundle_preserves_verdict_log_trace_timeout_and_launch_contrac
     ]
 
 
-@pytest.mark.parametrize(
-    "declared",
-    ["../image/in.hex", "C:in.hex", ""],
-)
+@pytest.mark.parametrize("declared", ["../image/in.hex", "C:in.hex", ""])
 def test_private_image_capture_refuses_an_unsafe_runtime_input_path(
     tmp_path: Path, declared: str
 ) -> None:
@@ -615,8 +600,7 @@ def test_authenticated_bundle_rejects_timed_out_compiler_process() -> None:
     group._build = None
 
     with pytest.raises(
-        SimulationBuildSlotError,
-        match="recovered bundle evidence is not successful",
+        SimulationBuildSlotError, match="recovered bundle evidence is not successful"
     ):
         group.bind_authenticated_bundle(evidence)
 
@@ -645,11 +629,7 @@ def test_shared_build_is_recovered_by_a_fresh_executor_and_scoped_per_invocation
         _request(store, manifest, items[0], project, invocation=2)
     )
 
-    assert counters == {
-        "compile": 2,
-        "durable_reuse": 1,
-        "launch": 3,
-    }
+    assert counters == {"compile": 2, "durable_reuse": 1, "launch": 3}
     assert first.document["build_result"]["sha256"] == second.document["build_result"]["sha256"]
     assert third.document["build_result"]["sha256"] != first.document["build_result"]["sha256"]
     assert len(tuple(store.root.glob("build-variants/*/attempts/*/build-result.json"))) == 2

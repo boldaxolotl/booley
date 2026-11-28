@@ -50,11 +50,7 @@ def stream_digest(path: Path) -> tuple[int, str]:
 
 
 def read_bounded(
-    path: Path,
-    *,
-    limit: int,
-    error: type[Exception],
-    booley_dir: Path | None = None,
+    path: Path, *, limit: int, error: type[Exception], booley_dir: Path | None = None
 ) -> bytes:
     """Read a regular file of at most *limit* bytes reached without links.
 
@@ -104,11 +100,7 @@ def parse_json_object(
 
 
 def read_json_object(
-    path: Path,
-    *,
-    limit: int,
-    error: type[Exception],
-    booley_dir: Path | None = None,
+    path: Path, *, limit: int, error: type[Exception], booley_dir: Path | None = None
 ) -> dict[str, object]:
     """Read a bounded file with ``read_bounded`` and parse it as one JSON object."""
     raw = read_bounded(path, limit=limit, error=error, booley_dir=booley_dir)

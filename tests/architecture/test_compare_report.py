@@ -36,9 +36,7 @@ def repository(tmp_path: Path) -> Path:
     return root
 
 
-def test_root_mode_identifies_content_and_renders_explicit_empty_sections(
-    tmp_path: Path,
-) -> None:
+def test_root_mode_identifies_content_and_renders_explicit_empty_sections(tmp_path: Path) -> None:
     package = _package(tmp_path / "tree", dependency="target")
 
     result = _run(
@@ -117,9 +115,7 @@ def test_root_mode_rejects_non_package_and_syntax_failure(tmp_path: Path) -> Non
     assert "invalid syntax" in syntax.stderr
 
 
-def test_ref_mode_resolves_tags_and_archives_only_exact_source_trees(
-    repository: Path,
-) -> None:
+def test_ref_mode_resolves_tags_and_archives_only_exact_source_trees(repository: Path) -> None:
     package = _package(repository / "src", dependency="before")
     subprocess.run(["git", "add", "."], cwd=repository, check=True)
     subprocess.run(["git", "commit", "-qm", "before"], cwd=repository, check=True)
@@ -136,14 +132,7 @@ def test_ref_mode_resolves_tags_and_archives_only_exact_source_trees(
     ).strip()
     subprocess.run(["git", "tag", "-am", "after", "after"], cwd=repository, check=True)
 
-    result = _run(
-        "--before-ref",
-        "before",
-        "--after-ref",
-        "after",
-        "--repo-root",
-        str(repository),
-    )
+    result = _run("--before-ref", "before", "--after-ref", "after", "--repo-root", str(repository))
 
     assert result.returncode == 0, result.stderr
     assert f"Before source: {before}" in result.stdout
@@ -159,20 +148,10 @@ def test_ref_mode_rejects_bad_ref_and_archive_without_package(repository: Path) 
     subprocess.run(["git", "commit", "-qm", "empty"], cwd=repository, check=True)
 
     bad_ref = _run(
-        "--before-ref",
-        "missing",
-        "--after-ref",
-        "HEAD",
-        "--repo-root",
-        str(repository),
+        "--before-ref", "missing", "--after-ref", "HEAD", "--repo-root", str(repository)
     )
     bad_archive = _run(
-        "--before-ref",
-        "HEAD",
-        "--after-ref",
-        "HEAD",
-        "--repo-root",
-        str(repository),
+        "--before-ref", "HEAD", "--after-ref", "HEAD", "--repo-root", str(repository)
     )
 
     assert bad_ref.returncode == 1

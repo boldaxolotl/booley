@@ -22,11 +22,7 @@ _COMMON_COMMANDS = {
 
 def _docker(argv: list[str], *, timeout: int = 300) -> subprocess.CompletedProcess[str]:
     result = subprocess.run(
-        ["docker", *argv],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=timeout,
+        ["docker", *argv], capture_output=True, text=True, check=False, timeout=timeout
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "docker command failed"

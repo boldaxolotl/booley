@@ -75,8 +75,7 @@ def test_explicit_ticket_identity_overrides_copied_global_config(tmp_path: Path)
 
 def test_identity_rejects_non_string_config_before_git_runs(tmp_path: Path) -> None:
     (tmp_path / "booley.toml").write_text(
-        '[agent.git]\nname = 42\nemail = "developer-identity.invalid"\n',
-        encoding="utf-8",
+        '[agent.git]\nname = 42\nemail = "developer-identity.invalid"\n', encoding="utf-8"
     )
 
     with pytest.raises(GitIdentityError, match=r"\[agent\.git\] name must be a string"):
@@ -109,8 +108,7 @@ def test_identity_defaults_are_resolved_per_field(
 
 def test_identity_ignores_pipeline_toml(tmp_path: Path) -> None:
     (tmp_path / "pipeline.toml").write_text(
-        "[agent.git]\nname = 'Legacy Alias'\nemail = 'legacy-identity.invalid'\n",
-        encoding="utf-8",
+        "[agent.git]\nname = 'Legacy Alias'\nemail = 'legacy-identity.invalid'\n", encoding="utf-8"
     )
 
     assert load_git_identity(tmp_path) == GitIdentity("Dev", "dev@localhost")
@@ -126,10 +124,7 @@ def test_identity_ignores_pipeline_toml(tmp_path: Path) -> None:
             '[[agent.git]]\nname = "Expected Developer"\nemail = "developer.invalid"\n',
             r"\[agent\.git\] must be a table",
         ),
-        (
-            '[agent.git]\nname = """Expected\nDeveloper"""\n',
-            "forbidden control character",
-        ),
+        ('[agent.git]\nname = """Expected\nDeveloper"""\n', "forbidden control character"),
     ],
 )
 def test_identity_rejects_invalid_configuration(tmp_path: Path, contents: str, match: str) -> None:
@@ -172,8 +167,7 @@ def test_failed_pair_write_restores_prior_worktree_identity(
 
     with pytest.raises(GitIdentityError, match="forced email failure"):
         apply_git_identity(
-            workspace,
-            GitIdentity("Expected Developer", "developer-identity.invalid"),
+            workspace, GitIdentity("Expected Developer", "developer-identity.invalid")
         )
 
     assert _git(workspace, "config", "--worktree", "user.name") == "Prior Developer"
@@ -188,8 +182,7 @@ def test_failed_publication_does_not_enable_worktree_config(tmp_path: Path) -> N
 
     with pytest.raises(GitIdentityError):
         apply_git_identity(
-            workspace,
-            GitIdentity("Expected Developer", "developer-identity.invalid"),
+            workspace, GitIdentity("Expected Developer", "developer-identity.invalid")
         )
 
     result = run_bounded_child(
@@ -200,7 +193,7 @@ def test_failed_publication_does_not_enable_worktree_config(tmp_path: Path) -> N
             str(workspace / ".git" / "config"),
             "--get",
             "extensions.worktreeConfig",
-        ],
+        ]
     )
     assert result.returncode == 1
 
@@ -440,15 +433,12 @@ def test_sandbox_identity_preserves_host_and_waiver_guard(tmp_path, monkeypatch)
     _git(workspace, "config", "user.email", "human@example.invalid")
     env = {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
     env.update(
-        BOOLEY_DIR=str(project),
-        PYTHONPATH=str(Path(identity_setup.__file__).resolve().parents[2]),
+        BOOLEY_DIR=str(project), PYTHONPATH=str(Path(identity_setup.__file__).resolve().parents[2])
     )
     spec = build_spec(app="codex", image="test", booley_dir_source=str(project))
     sandbox = {**env, **spec["containerEnv"]}
     applied = run_bounded_child(
-        [sys.executable, *git_identity_command().split()[1:]],
-        cwd=workspace,
-        env=sandbox,
+        [sys.executable, *git_identity_command().split()[1:]], cwd=workspace, env=sandbox
     )
     assert applied.returncode == 0, applied.stderr
     assert _git(workspace, "config", "user.name", env=env) == "Human"

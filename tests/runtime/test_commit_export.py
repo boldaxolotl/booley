@@ -128,14 +128,7 @@ def test_export_holds_exactly_the_commits_tracked_files(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("attributes", "expected"),
     [
-        (
-            "",
-            {
-                "crlf.txt": b"one\r\ntwo\r\n",
-                "data.bin": b"one\ntwo\n",
-                "lf.txt": b"one\ntwo\n",
-            },
-        ),
+        ("", {"crlf.txt": b"one\r\ntwo\r\n", "data.bin": b"one\ntwo\n", "lf.txt": b"one\ntwo\n"}),
         (
             "*.txt text eol=crlf\n",
             {

@@ -23,8 +23,7 @@ from tests.sharing_error_support import hold_opens
 from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.skipif(
-    sys.platform != "linux",
-    reason="Sandbox Attachment execution supervision requires Linux",
+    sys.platform != "linux", reason="Sandbox Attachment execution supervision requires Linux"
 )
 
 

@@ -194,10 +194,7 @@ def test_parallel_callers_share_one_home_per_cache_key(fake_codex, tmp_path, mon
         )
         return Path(report["home"]).parent
 
-    homes = run_together(
-        *[lambda: call("lint")] * 4,
-        *[lambda: call("sim")] * 4,
-    )
+    homes = run_together(*[lambda: call("lint")] * 4, *[lambda: call("sim")] * 4)
 
     lint, sim = set(homes[:4]), set(homes[4:])
     assert len(lint) == 1

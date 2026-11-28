@@ -74,8 +74,7 @@ def test_start_fifo_streams_into_the_session_store_path(tmp_path, cache_root):
     with (
         _cache_patch(cache_root),
         patch(
-            "booley.flows.sim.trace_session.start_streaming_conversion",
-            side_effect=_fake_start,
+            "booley.flows.sim.trace_session.start_streaming_conversion", side_effect=_fake_start
         ),
     ):
         session = TraceSession(work)
@@ -150,16 +149,12 @@ def test_successful_postprocess_consumes_raw_vcd_outside_work_dir(tmp_path, cach
 
         bwave_path.write_bytes(MINIMAL_FST_BYTES)
         return ConversionResult(
-            bwave_path,
-            inspection=inspect_store(bwave_path, probe_reader=False),
+            bwave_path, inspection=inspect_store(bwave_path, probe_reader=False)
         )
 
     with (
         _cache_patch(cache_root),
-        patch(
-            "booley.flows.sim.trace_session.convert_vcd",
-            side_effect=_build,
-        ),
+        patch("booley.flows.sim.trace_session.convert_vcd", side_effect=_build),
     ):
         session = TraceSession(work, trace_scope="tb")
         session.postprocess(raw_vcd)
@@ -183,17 +178,12 @@ def test_failed_postprocess_moves_raw_vcd_and_diagnostic_into_work_dir(tmp_path,
         from booley.bwave.waveform_store import ConversionResult
 
         return ConversionResult(
-            bwave_path,
-            failure_kind="conversion_failed",
-            detail="conversion failed",
+            bwave_path, failure_kind="conversion_failed", detail="conversion failed"
         )
 
     with (
         _cache_patch(cache_root),
-        patch(
-            "booley.flows.sim.trace_session.convert_vcd",
-            side_effect=_fail,
-        ),
+        patch("booley.flows.sim.trace_session.convert_vcd", side_effect=_fail),
     ):
         session = TraceSession(work, trace_scope="tb")
         session.postprocess(raw_vcd)

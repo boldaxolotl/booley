@@ -242,15 +242,11 @@ class DrcCheckFlow(BooleyFlow):
         # every other code means the checker itself could not run.
         if result.timed_out or result.returncode not in {0, 1}:
             return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text=(evidence or "DRC command could not run")[-2000:],
+                exit_code=EXIT_ERROR, report_text=(evidence or "DRC command could not run")[-2000:]
             )
 
         passed = result.returncode == 0
-        return McpToolResult(
-            exit_code=0 if passed else 1,
-            report_text=evidence[-2000:],
-        )
+        return McpToolResult(exit_code=0 if passed else 1, report_text=evidence[-2000:])
 
 
 if __name__ == "__main__":
@@ -289,13 +285,9 @@ class ProtocolReviewerSpecialist(Specialist):
             passed = False
         else:
             return McpToolResult(
-                exit_code=EXIT_ERROR,
-                report_text="Specialist returned no valid VERDICT line",
+                exit_code=EXIT_ERROR, report_text="Specialist returned no valid VERDICT line"
             )
-        return McpToolResult(
-            exit_code=0 if passed else 1,
-            report_text=output[-3000:],
-        )
+        return McpToolResult(exit_code=0 if passed else 1, report_text=output[-3000:])
 
 
 if __name__ == "__main__":

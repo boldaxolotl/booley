@@ -14,6 +14,7 @@ import pytest
 
 import booley
 from booley.config.host_config import SandboxHostPolicy
+from booley.core import docker_cli
 from booley.harness import bootstrap
 from booley.harness import host_sidecars as sidecars
 from booley.harness.host_sidecars import plan_image_builds
@@ -42,7 +43,7 @@ _ERROR = sidecars.SidecarState.ERROR
 
 # What the Docker CLI reports about the selected daemon; no state models it.
 _DAEMON = {
-    "context inspect": (0, "unix:///var/run/docker.sock"),
+    "context inspect": (0, '"unix:///var/run/docker.sock"'),
     "version": (0, "linux\tDocker Engine - Community"),
     "info --format {{.ID}}": (0, "daemon-a"),
 }
@@ -105,7 +106,7 @@ def _add_sidecar(
 ) -> None:
     _add_current_image(docker, image)
     labels = {
-        sidecars.ROLE_LABEL: role,
+        docker_cli.ROLE_LABEL: role,
         sidecars.LABEL_POLICY_FINGERPRINT: sidecars.policy_fingerprint(policy),
     }
     networks = (_NETWORK,) if role == "egress-proxy" else ()
@@ -132,7 +133,7 @@ def _add_session(
         docker,
         name,
         labels={
-            sidecars.ROLE_LABEL: sidecars.SESSION_ROLE,
+            docker_cli.ROLE_LABEL: sidecars.SESSION_ROLE,
             "devcontainer.local_folder": "/projects/a",
         },
         running=running,
@@ -196,7 +197,7 @@ def _damage(docker: FakeDocker, kind: str) -> None:
         stale = labels | {sidecars.LABEL_POLICY_FINGERPRINT: "old"}
         _edit(docker.containers, _REAPER, Labels=stale)
     elif kind == "moved-socket":
-        docker.answer("context", "inspect", stdout="unix:///run/user/1000/docker.sock\n")
+        docker.answer("context", "inspect", stdout=json.dumps("unix:///run/user/1000/docker.sock"))
     elif kind == "stale-network":
         _add_network(docker, internal=False)
     elif kind == "missing-network":
@@ -225,9 +226,7 @@ def _recipes(package: Path) -> None:
 def test_policy_fingerprint_is_canonical_and_policy_sensitive() -> None:
     first = SandboxHostPolicy(600, 2, ("example.com",))
     same = SandboxHostPolicy(
-        idle_timeout_seconds=600,
-        max_sessions=2,
-        egress_allowlist=("example.com",),
+        idle_timeout_seconds=600, max_sessions=2, egress_allowlist=("example.com",)
     )
     changed = SandboxHostPolicy(600, 3, ("example.com",))
     assert sidecars.policy_fingerprint(first) == sidecars.policy_fingerprint(same)
@@ -259,7 +258,7 @@ def test_ensure_converges_a_missing_installation_then_stays_current(docker: Fake
     ]
     proxy = next(call for call in docker.calls if _step(call) == f"run {_PROXY}")
     assert 'PROXY_ALLOWLIST=["example.com"]' in proxy
-    assert f"{sidecars.ROLE_LABEL}=egress-proxy" in proxy
+    assert f"{docker_cli.ROLE_LABEL}=egress-proxy" in proxy
     reaper = next(call for call in docker.calls if _step(call) == f"run {_REAPER}")
     assert "BOOLEY_IDLE_TIMEOUT_SECONDS=600" in reaper
     assert not any("BOOLEY_MAX_SESSIONS=" in arg for arg in reaper)
@@ -317,7 +316,7 @@ def test_check_reports_drift_without_mutating(
             docker, sidecars.legacy.REAPER_IMAGE, sidecars.LABEL_BOOLEY_VERSION, "0.0.0"
         )
     elif case == "unstamped-container":
-        _edit(docker.containers, _REAPER, Labels={sidecars.ROLE_LABEL: "reaper"})
+        _edit(docker.containers, _REAPER, Labels={docker_cli.ROLE_LABEL: "reaper"})
     else:
         _damage(docker, case)
 
@@ -408,7 +407,7 @@ def test_foreign_resources_are_never_mutated(
     elif case == "reaper-image-kind":
         _relabel_image(docker, sidecars.legacy.REAPER_IMAGE, sidecars.LABEL_SIDECAR_KIND, "other")
     elif case == "proxy-container-role":
-        labels = docker.containers[_PROXY]["Labels"] | {sidecars.ROLE_LABEL: "someone-else"}
+        labels = docker.containers[_PROXY]["Labels"] | {docker_cli.ROLE_LABEL: "someone-else"}
         _edit(docker.containers, _PROXY, Labels=labels)
     else:
         _damage(docker, "stale-network")
@@ -498,7 +497,7 @@ def test_active_sessions_block_stale_replacement(
 def test_reaper_mounts_the_socket_of_the_selected_docker_endpoint(
     docker: FakeDocker, endpoint: str, version: str, source: str
 ) -> None:
-    docker.answer("context", "inspect", stdout=f"{endpoint}\n")
+    docker.answer("context", "inspect", stdout=json.dumps(endpoint))
     docker.answer("version", stdout=f"{version}\n")
 
     result = sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE)
@@ -521,7 +520,7 @@ def test_reaper_mounts_the_socket_of_the_selected_docker_endpoint(
 def test_remote_docker_endpoint_refuses_the_reaper(
     docker: FakeDocker, endpoint: str, version: str
 ) -> None:
-    docker.answer("context", "inspect", stdout=f"{endpoint}\n")
+    docker.answer("context", "inspect", stdout=json.dumps(endpoint))
     docker.answer("version", stdout=f"{version}\n")
 
     result = sidecars.reconcile_sidecars(_POLICY, Intent.ENSURE)
@@ -702,10 +701,7 @@ _FAILURES = {
         stopped_session=True,
     ),
     "session-without-project": _Failure(
-        "reaper",
-        "cannot identify owning Project",
-        damage="stale-reaper",
-        unowned_session=True,
+        "reaper", "cannot identify owning Project", damage="stale-reaper", unowned_session=True
     ),
     "proxy-remove-fails": _Failure(
         "network",
@@ -717,6 +713,11 @@ _FAILURES = {
         "reaper",
         "cannot read the active Docker endpoint",
         answers=(_answer("context", "inspect", stderr="no context"),),
+    ),
+    "endpoint-malformed": _Failure(
+        "reaper",
+        "cannot read the active Docker endpoint: invalid inspection of context",
+        answers=(_answer("context", "inspect", code=0, stdout="unix:///s\n"),),
     ),
     "reaper-reaches-other-daemon": _Failure(
         "reaper",
@@ -747,7 +748,7 @@ def test_docker_failures_are_reported_on_their_row(docker: FakeDocker, failure: 
     if failure.unlabelled_builds:
         docker.after_build = {"<output>": {"Labels": {}}}
     if failure.unowned_session:
-        _add_container(docker, "booley-session-x", labels={sidecars.ROLE_LABEL: "interactive"})
+        _add_container(docker, "booley-session-x", labels={docker_cli.ROLE_LABEL: "interactive"})
     if failure.stopped_session:
         _add_session(docker, "booley-session-x", running=False)
     for words, reply in failure.answers:
@@ -926,7 +927,7 @@ def test_check_only_stale_container_with_active_session_is_error(
     docker = _inspection_docker(monkeypatch, tmp_path_factory)
     _add_current_image(docker, sidecars.legacy.PROXY_IMAGE)
     _add_current_image(docker, sidecars.legacy.REAPER_IMAGE)
-    _add_container(docker, _PROXY, image="old-sha", labels={sidecars.ROLE_LABEL: "egress-proxy"})
+    _add_container(docker, _PROXY, image="old-sha", labels={docker_cli.ROLE_LABEL: "egress-proxy"})
     _add_session(docker, "session-a")
     status, output = _run_inspection(capsys)
     assert "✗  proxy:" in output, "blocked container must be ERROR"

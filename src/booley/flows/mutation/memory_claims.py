@@ -84,11 +84,7 @@ class CampaignClaims:
             store.release(token)
 
     def run_retrying_oom(
-        self,
-        run: Callable[[bool], _Run],
-        oom_kill: Callable[[_Run], OomKill | None],
-        *,
-        name: str,
+        self, run: Callable[[bool], _Run], oom_kill: Callable[[_Run], OomKill | None], *, name: str
     ) -> tuple[_Run, str]:
         """Run *run*, once more alone after a kill at the Sandbox's limit; the run and its kill.
 

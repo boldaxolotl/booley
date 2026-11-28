@@ -75,9 +75,7 @@ def test_pin_image_preserves_reconciled_immutable_id(monkeypatch: pytest.MonkeyP
     assert spec["image"] == image_id
 
 
-def test_pin_image_rejects_reconciled_id_that_changed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_pin_image_rejects_reconciled_id_that_changed(monkeypatch: pytest.MonkeyPatch) -> None:
     expected = "sha256:" + "a" * 64
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:other")
 
@@ -117,17 +115,14 @@ def _stub_preview_dependencies(
 
 
 def test_preview_exposes_only_detached_inputs_and_does_not_persist(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
     installation = authority.Installation("vivado", "vivado", "/host/tool", "2025.2", "x86_64", 1)
     profile = authority.LicenseProfile("floating", "flexnet", "192.0.2.1", "0", 2100, 2101)
     captured = _stub_preview_dependencies(
-        project,
-        monkeypatch,
-        eda_requirements._requirements(project, installation, profile),
+        project, monkeypatch, eda_requirements._requirements(project, installation, profile)
     )
 
     def build(inputs: runtime_spec.SessionSpecInputs) -> dict:
@@ -189,8 +184,7 @@ def _set_host_egress(mode: str) -> None:
 
 
 def test_preview_inputs_carry_host_egress_policy(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -204,8 +198,7 @@ def test_preview_inputs_carry_host_egress_policy(
 
 
 def test_licensed_preview_does_not_create_authority_lock(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = _concurrent_licensed_project(tmp_path, monkeypatch)
     lock = authority.state_dir() / "authority.lock"
@@ -220,8 +213,7 @@ def test_licensed_preview_does_not_create_authority_lock(
 
 
 def test_issue_prepared_revalidates_authority_and_persists_exact_preview(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -266,8 +258,7 @@ def test_issue_prepared_revalidates_authority_and_persists_exact_preview(
 
 
 def test_issue_prepared_rejects_authority_drift_before_persisting(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -292,9 +283,7 @@ def test_issue_prepared_rejects_authority_drift_before_persisting(
     monkeypatch.setattr(runtime_spec, "_session_spec_inputs", lambda *_args: changed)
     monkeypatch.setattr(runtime_spec, "_issuance", lambda *_args, **_kwargs: prospective)
     monkeypatch.setattr(
-        runtime_spec.eda_requirements,
-        "prepare_runtime_dependencies",
-        prepare_dependencies,
+        runtime_spec.eda_requirements, "prepare_runtime_dependencies", prepare_dependencies
     )
     monkeypatch.setattr(runtime_spec, "_persist_prepared", persist)
 
@@ -318,8 +307,7 @@ def _preview_for_rollback(
 
 
 def test_prepared_issue_restores_previous_spec_when_issuance_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -374,8 +362,7 @@ def test_prepared_issue_restores_previous_spec_when_issuance_fails(
 
 
 def test_prepared_issue_restores_spec_when_writer_partially_fails(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -400,8 +387,7 @@ def test_prepared_issue_restores_spec_when_writer_partially_fails(
 
 
 def test_failed_first_issue_removes_new_keeper_tag(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -413,14 +399,9 @@ def test_failed_first_issue_removes_new_keeper_tag(
         removed.append(image)
 
     monkeypatch.setattr("booley.runtime.host_docker.image_id", lambda _image: None)
+    monkeypatch.setattr("booley.runtime.host_docker.remove_image_tag", remove_keeper)
     monkeypatch.setattr(
-        "booley.runtime.host_docker.remove_image_tag",
-        remove_keeper,
-    )
-    monkeypatch.setattr(
-        dc,
-        "write_devcontainer",
-        lambda *_args: (_ for _ in ()).throw(OSError("disk full")),
+        dc, "write_devcontainer", lambda *_args: (_ for _ in ()).throw(OSError("disk full"))
     )
 
     with pytest.raises(OSError, match="disk full"):
@@ -430,8 +411,7 @@ def test_failed_first_issue_removes_new_keeper_tag(
 
 
 def test_issue_fails_before_writing_when_keeper_state_cannot_be_inspected(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -449,27 +429,19 @@ def test_issue_fails_before_writing_when_keeper_state_cannot_be_inspected(
     writer.assert_not_called()
 
 
-def _concurrent_licensed_project(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> Path:
+def _concurrent_licensed_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     reset_cache()
     project = tmp_path / "project"
     booley_dir = project / ".booley"
     booley_dir.mkdir(parents=True)
     (booley_dir / "booley.toml").write_text(
-        '[flows.fpga]\nenabled = true\n[eda.vivado]\nprovisioning = "image"\n',
-        encoding="utf-8",
+        '[flows.fpga]\nenabled = true\n[eda.vivado]\nprovisioning = "image"\n', encoding="utf-8"
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     profile = eda_grant_support.register_license("site")
     eda_grant_support.add_grant(project, "vivado", license_profile=profile.name)
     monkeypatch.setattr(eda_requirements, "ensure_relay_image", lambda **_kwargs: False)
-    monkeypatch.setattr(
-        eda_requirements,
-        "_relay_image_id",
-        lambda _runner: "sha256:" + "d" * 64,
-    )
+    monkeypatch.setattr(eda_requirements, "_relay_image_id", lambda _runner: "sha256:" + "d" * 64)
     monkeypatch.setattr(runtime_spec, "pin_image", lambda *_args, **_kwargs: "sha256:image")
     monkeypatch.setattr(runtime_spec, "_pin_initialize_command", lambda *_args: None)
     monkeypatch.setattr(runtime_spec, "_pin_project_data_mount", lambda *_args: None)
@@ -488,8 +460,7 @@ def _concurrent_licensed_project(
 
 
 def test_builder_issuance_serializes_with_concurrent_grant_revoke(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     project = _concurrent_licensed_project(tmp_path, monkeypatch)
 
@@ -557,11 +528,7 @@ def test_resolve_image_id_reports_docker_failure_naming_the_image(monkeypatch) -
 
 
 @pytest.fixture
-def issued_preview(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
-):
+def issued_preview(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path):
     del trusted_validator
     project = tmp_path / "project"
     project.mkdir()
@@ -851,10 +818,7 @@ def _issue_with_retired_mcp_variable(project: Path) -> None:
         ),
         # The legacy-location stamp is not read, so it is absent: refresh reissues it.
         pytest.param(
-            _move_stamp_to_legacy_location,
-            "booley session refresh",
-            None,
-            id="legacy-location",
+            _move_stamp_to_legacy_location, "booley session refresh", None, id="legacy-location"
         ),
         pytest.param(
             lambda project: _write_project_toml("[flows.lint]\na = true\n[flows.lint]\n")(
@@ -937,11 +901,7 @@ _INIT_REMEDY = "on the host run `booley init`, then use Dev Containers: Rebuild 
             _CONFIG_REMEDY,
             id="unknown-eda-key",
         ),
-        pytest.param(
-            _write_project_toml("[flows.elab]\n"),
-            _CONFIG_REMEDY,
-            id="retired-flow-key",
-        ),
+        pytest.param(_write_project_toml("[flows.elab]\n"), _CONFIG_REMEDY, id="retired-flow-key"),
         pytest.param(
             _write_project_toml('[agent]\nauth = "bogus"\n'), _CONFIG_REMEDY, id="invalid-agent"
         ),
@@ -1015,10 +975,7 @@ def test_real_grant_add_writes_no_journal_and_removes_stamp(issued, monkeypatch)
     )
 
     grant = eda_grants.GrantCoordinator().add(
-        project,
-        "vivado",
-        installation=None,
-        license_profile=profile.name,
+        project, "vivado", installation=None, license_profile=profile.name
     )
 
     assert authority.load_state().grants == (grant,)
@@ -1190,9 +1147,7 @@ def test_recovery_snapshot_rejects_different_project_identity(issued, monkeypatc
 def test_recovery_snapshot_rejects_different_keeper(issued, monkeypatch) -> None:
     project, _spec, _path, stamp = issued
     monkeypatch.setattr(
-        runtime_spec,
-        "_load_stamp",
-        lambda _path: replace(stamp, keeper_image="foreign:session"),
+        runtime_spec, "_load_stamp", lambda _path: replace(stamp, keeper_image="foreign:session")
     )
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="keeper differs from this Project"):
@@ -1200,9 +1155,7 @@ def test_recovery_snapshot_rejects_different_keeper(issued, monkeypatch) -> None
 
 
 def test_no_eda_issuance_and_validation_never_open_authority_store(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path
 ) -> None:
     del trusted_validator
     reset_cache()
@@ -1244,11 +1197,7 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
             session_admission, "running_project_sandboxes", lambda *_args, **_kwargs: ()
         )
         monkeypatch.setattr(session_runtime.idk, "container_exists", lambda _name: False)
-        monkeypatch.setattr(
-            session_runtime,
-            "_strict_all_sandbox_states",
-            lambda _project_id: [],
-        )
+        monkeypatch.setattr(session_runtime, "_strict_all_sandbox_states", lambda _project_id: [])
         monkeypatch.setattr(session_runtime, "_create_session_container", lambda *_args: None)
         monkeypatch.setattr(session_runtime, "_run_hook", lambda *_args: None)
 
@@ -1258,9 +1207,7 @@ def test_no_eda_issuance_and_validation_never_open_authority_store(
 
 
 def test_runtime_spec_rejects_non_mapping_container_environment(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path
 ) -> None:
     del trusted_validator
     project = tmp_path / "project"
@@ -1272,8 +1219,7 @@ def test_runtime_spec_rejects_non_mapping_container_environment(
     prepared = runtime_spec.preview(
         project,
         lambda _inputs: build_spec(
-            dc.APP_NONE,
-            protected_devcontainer_source=str(project / ".devcontainer"),
+            dc.APP_NONE, protected_devcontainer_source=str(project / ".devcontainer")
         ),
     )
     stale = damaged(prepared, lambda spec: spec.update(containerEnv=[]))
@@ -1285,17 +1231,14 @@ def test_runtime_spec_rejects_non_mapping_container_environment(
 
 
 def test_host_eda_issuance_still_requires_authority(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path
 ) -> None:
     del trusted_validator
     project = tmp_path / "project"
     booley_dir = project / ".booley"
     booley_dir.mkdir(parents=True)
     (booley_dir / "booley.toml").write_text(
-        '[eda.vivado]\nprovisioning = "host"\n',
-        encoding="utf-8",
+        '[eda.vivado]\nprovisioning = "host"\n', encoding="utf-8"
     )
     monkeypatch.setattr(
         eda_requirements,
@@ -1334,8 +1277,7 @@ def test_host_eda_issuance_still_requires_authority(
 
 
 def test_requested_license_requires_issued_profile_identity(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     profile = SimpleNamespace(name="site")
     monkeypatch.setattr(eda_requirements, "_optional_license", lambda _project: profile)
@@ -1346,9 +1288,7 @@ def test_requested_license_requires_issued_profile_identity(
 
 
 def test_active_image_vivado_cannot_omit_license_marker_to_bypass_authority(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path
 ) -> None:
     del trusted_validator
     project = tmp_path / "project"
@@ -1386,10 +1326,7 @@ def test_active_image_vivado_cannot_omit_license_marker_to_bypass_authority(
 
 
 def _run_operation(
-    operation: str,
-    project: Path,
-    prepared: runtime_spec.PreparedSessionSpec,
-    path: Path,
+    operation: str, project: Path, prepared: runtime_spec.PreparedSessionSpec, path: Path
 ) -> runtime_spec.Issuance:
     """Run the issue-time or validate-time path over one issued, prepared spec."""
     if operation == "issue":
@@ -1449,10 +1386,7 @@ def test_missing_project_data_bind_names_source_and_target(issued_preview, opera
 
 @pytest.mark.parametrize("operation", ["issue", "validate"])
 def test_missing_vivado_bind_names_source_and_target(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
-    operation: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path, operation: str
 ) -> None:
     del trusted_validator
     project = tmp_path / "project"
@@ -1462,12 +1396,7 @@ def test_missing_vivado_bind_names_source_and_target(
     vivado_root.mkdir()
     vivado_source = docker_mount_path(vivado_root)
     installation = authority.Installation(
-        "site-vivado",
-        "vivado",
-        vivado_source,
-        "2025.2",
-        "linux-x86_64",
-        POLICY_REVISION,
+        "site-vivado", "vivado", vivado_source, "2025.2", "linux-x86_64", POLICY_REVISION
     )
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(runtime_spec, "flow_enabled", lambda *_args: True)
@@ -1749,10 +1678,7 @@ def test_run_args_validate_with_and_without_swap_limit():
         ),
         (lambda spec: spec.__setitem__("dockerComposeFile", "compose.yml"), "escape surface"),
         (lambda spec: spec.__setitem__("remoteUser", "root"), "workspace/user"),
-        (
-            lambda spec: spec.__setitem__("updateRemoteUserUID", True),
-            "immutable user policy",
-        ),
+        (lambda spec: spec.__setitem__("updateRemoteUserUID", True), "immutable user policy"),
         (
             lambda spec: spec.__setitem__("initializeCommand", "sh project-script"),
             "validation command",
@@ -1781,15 +1707,13 @@ def test_run_args_validate_with_and_without_swap_limit():
         ),
         (
             lambda spec: spec.__setitem__(
-                "postStartCommand",
-                f"{dc.git_identity_command()}; {dc.mcp_post_start_command()}",
+                "postStartCommand", f"{dc.git_identity_command()}; {dc.mcp_post_start_command()}"
             ),
             "postStartCommand",
         ),
         (
             lambda spec: spec.__setitem__(
-                "postStartCommand",
-                f"{dc.mcp_post_start_command()} && {dc.git_identity_command()}",
+                "postStartCommand", f"{dc.mcp_post_start_command()} && {dc.git_identity_command()}"
             ),
             "postStartCommand",
         ),
@@ -1813,11 +1737,7 @@ def test_run_args_validate_with_and_without_swap_limit():
     ],
 )
 def test_dangerous_full_spec_drift_is_rejected_before_issuance(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
-    mutate,
-    match: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path, mutate, match: str
 ) -> None:
     del trusted_validator
     project = tmp_path / "project"
@@ -1833,9 +1753,7 @@ def test_dangerous_full_spec_drift_is_rejected_before_issuance(
 
 
 def test_readonly_false_does_not_satisfy_protected_mount(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path
 ) -> None:
     del trusted_validator
     project = tmp_path / "project"
@@ -1911,9 +1829,7 @@ provisioning = "host"
 
 
 def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path
 ) -> None:
     del trusted_validator
     project = tmp_path / "project"
@@ -1967,9 +1883,7 @@ def test_licensed_seal_gives_vscode_and_headless_the_same_networks_and_labels(
 
 
 def test_unproxied_licensed_seal_joins_routed_and_private_networks(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path
 ) -> None:
     del trusted_validator
     project = _egress_project(tmp_path, monkeypatch)
@@ -2009,9 +1923,7 @@ def test_unproxied_licensed_seal_joins_routed_and_private_networks(
 
 
 def test_issue_rejects_mutable_image_reference(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path
 ) -> None:
     del trusted_validator
     project = tmp_path / "project"
@@ -2083,9 +1995,7 @@ def test_project_data_mount_rejects_nested_workspace_source(
 
 
 def test_seal_rejects_project_controlled_mount_source(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path
 ) -> None:
     del trusted_validator
     project = tmp_path / "project"
@@ -2172,9 +2082,7 @@ def test_finder_restores_windows_console_launcher_suffix(
     monkeypatch.setattr(runtime_spec, "_IS_WINDOWS", True)
     monkeypatch.setattr(runtime_spec.sys, "argv", [str(invoked)])
     monkeypatch.setattr(
-        runtime_spec,
-        "_validator_prefix_anchors",
-        lambda: {scripts.resolve(): prefix.resolve()},
+        runtime_spec, "_validator_prefix_anchors", lambda: {scripts.resolve(): prefix.resolve()}
     )
 
     assert not invoked.exists()
@@ -2196,9 +2104,7 @@ def test_finder_preserves_existing_windows_extensionless_launcher(
     monkeypatch.setattr(runtime_spec, "_IS_WINDOWS", True)
     monkeypatch.setattr(runtime_spec.sys, "argv", [str(invoked)])
     monkeypatch.setattr(
-        runtime_spec,
-        "_validator_prefix_anchors",
-        lambda: {scripts.resolve(): prefix.resolve()},
+        runtime_spec, "_validator_prefix_anchors", lambda: {scripts.resolve(): prefix.resolve()}
     )
 
     assert runtime_spec._resolve_trusted_validator(invoked, project) == invoked
@@ -2240,10 +2146,7 @@ def test_finder_uses_trusted_interpreter_scripts_directory_off_path(
     monkeypatch.setattr(runtime_spec.sys, "argv", ["python"])
     monkeypatch.setenv("PATH", "")
     monkeypatch.setattr(
-        runtime_spec,
-        "_validator_script_directories",
-        lambda: (scripts,),
-        raising=False,
+        runtime_spec, "_validator_script_directories", lambda: (scripts,), raising=False
     )
     monkeypatch.setattr(
         runtime_spec,
@@ -2269,10 +2172,7 @@ def test_finder_preserves_path_precedence_over_interpreter_fallback(
     monkeypatch.setattr(runtime_spec.sys, "argv", ["python"])
     monkeypatch.setenv("PATH", str(selected.parent))
     monkeypatch.setattr(
-        runtime_spec,
-        "_validator_script_directories",
-        lambda: (fallback.parent,),
-        raising=False,
+        runtime_spec, "_validator_script_directories", lambda: (fallback.parent,), raising=False
     )
     monkeypatch.setattr(
         runtime_spec,
@@ -2311,11 +2211,7 @@ def test_validator_script_directories_ignore_unavailable_user_scheme(
         raise KeyError("user")
 
     monkeypatch.setattr(runtime_spec.sysconfig, "get_path", lambda *_args, **_kwargs: scripts)
-    monkeypatch.setattr(
-        runtime_spec.sysconfig,
-        "get_preferred_scheme",
-        unavailable_user_scheme,
-    )
+    monkeypatch.setattr(runtime_spec.sysconfig, "get_preferred_scheme", unavailable_user_scheme)
 
     assert runtime_spec._validator_script_directories() == (scripts.resolve(),)
 
@@ -2425,9 +2321,7 @@ def test_issue_rejects_readonly_project_data_workspace_bind(issued_preview) -> N
 
 
 def test_validator_bytes_are_bound_into_issuance(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -2442,9 +2336,7 @@ def test_validator_bytes_are_bound_into_issuance(
 
 
 def test_relay_image_bytes_are_bound_into_licensed_issuance(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path
 ) -> None:
     del trusted_validator
     project = tmp_path / "project"
@@ -2454,12 +2346,7 @@ def test_relay_image_bytes_are_bound_into_licensed_issuance(
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:image")
     monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:image")
     profile = authority.LicenseProfile(
-        "site",
-        "flexnet",
-        "10.20.30.40",
-        "license-server-01",
-        2100,
-        2101,
+        "site", "flexnet", "10.20.30.40", "license-server-01", 2100, 2101
     )
 
     _license_profile_stubs(monkeypatch, profile)
@@ -2648,9 +2535,7 @@ def test_symlinked_booley_dir_entry_keeps_mount_safety_refusals(
 
 
 def test_seal_requires_canonical_hash_scoped_state_volume(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    trusted_validator: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, trusted_validator: Path
 ) -> None:
     del trusted_validator
     project = tmp_path / "project"
@@ -2663,8 +2548,7 @@ def test_seal_requires_canonical_hash_scoped_state_volume(
         runtime_spec.preview(project, plain_builder(project, dc.APP_CLAUDE))
 
     scoped = runtime_spec.preview(
-        project,
-        plain_builder(project, dc.APP_CLAUDE, project_id=dc.canonical_project_id(project)),
+        project, plain_builder(project, dc.APP_CLAUDE, project_id=dc.canonical_project_id(project))
     )
     expected = dc.state_volume_mount(dc.APP_CLAUDE, dc.canonical_project_id(project))
     assert expected in scoped.spec["mounts"]
@@ -2728,8 +2612,7 @@ def test_extracted_image_contract_rejects_fake_library(tmp_path: Path) -> None:
 def test_extracted_image_contract_rejects_wrong_wrapper(tmp_path: Path) -> None:
     (tmp_path / "vivado-wrapper").write_bytes(b"wrong")
     with pytest.raises(
-        eda_requirements.SessionRequirementsError,
-        match="wrong Vivado wrapper digest",
+        eda_requirements.SessionRequirementsError, match="wrong Vivado wrapper digest"
     ):
         eda_requirements.validate_image_observations(tmp_path)
 
@@ -2737,8 +2620,7 @@ def test_extracted_image_contract_rejects_wrong_wrapper(tmp_path: Path) -> None:
 def test_extracted_image_contract_rejects_unreadable_library(tmp_path: Path) -> None:
     (tmp_path / "vivado-wrapper").write_bytes(wrapper_path().read_bytes())
     with pytest.raises(
-        eda_requirements.SessionRequirementsError,
-        match="cannot inspect Sandbox Image library",
+        eda_requirements.SessionRequirementsError, match="cannot inspect Sandbox Image library"
     ):
         eda_requirements.validate_image_observations(tmp_path)
 
@@ -2749,8 +2631,7 @@ def test_extracted_image_contract_requires_en_us_locale(tmp_path: Path) -> None:
     (tmp_path / "libpixman-1.so.0").write_bytes(b"\x7fELFfixture")
     (tmp_path / "locale-archive").write_bytes(b"archive:C.UTF-8")
     with pytest.raises(
-        eda_requirements.SessionRequirementsError,
-        match="lacks the required en_US",
+        eda_requirements.SessionRequirementsError, match="lacks the required en_US"
     ):
         eda_requirements.validate_image_observations(tmp_path)
 
@@ -2769,12 +2650,7 @@ def test_compiler_cache_identity_is_fixed_and_old_specs_need_refresh(issued, sec
 
 
 @pytest.mark.parametrize(
-    "target",
-    [
-        "/booley/hidden",
-        "//booley/hidden",
-        "/booley/../booley/hidden",
-    ],
+    "target", ["/booley/hidden", "//booley/hidden", "/booley/../booley/hidden"]
 )
 def test_canonical_alias_seal_keeps_shadow_and_rejects_alias_subtree_drift(
     issued, monkeypatch, target
@@ -3163,9 +3039,7 @@ def test_real_git_issued_environment_preserves_host_identity(issued, monkeypatch
         "BOOLEY_MCP_DEVELOPER_AGENT": "1",
     }
     applied = run_bounded_child(
-        [sys.executable, *dc.git_identity_command().split()[1:]],
-        cwd=project,
-        env=sandbox,
+        [sys.executable, *dc.git_identity_command().split()[1:]], cwd=project, env=sandbox
     )
     assert applied.returncode == 0, applied.stderr
     for env, expected in (
@@ -4065,9 +3939,7 @@ def _damage_empty_record(spec: dict, project: Path, home: Path) -> None:
     """An empty record must not let an app outside ``clis`` forward its own key."""
     spec["name"] = "Booley Interactive (codex)"
     spec["remoteEnv"].update(
-        BOOLEY_AGENT_APP="codex",
-        BOOLEY_AGENT_CLIS="",
-        OPENAI_API_KEY="${localEnv:OPENAI_API_KEY}",
+        BOOLEY_AGENT_APP="codex", BOOLEY_AGENT_CLIS="", OPENAI_API_KEY="${localEnv:OPENAI_API_KEY}"
     )
 
 

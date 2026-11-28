@@ -9,10 +9,7 @@ import pytest
 
 from booley.flows.sim.record import codec
 from booley.flows.sim.record.codec import SimulationRecordIntegrityError
-from tests.flows.sim.test_simulation_record_codec_golden import (
-    _BUILD_READY,
-    _simulation_result,
-)
+from tests.flows.sim.test_simulation_record_codec_golden import _BUILD_READY, _simulation_result
 from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
 from tests.flows.sim.test_simulation_record_model import _attempt
 
@@ -112,11 +109,7 @@ def _tamper_manifest(document: dict[str, object]) -> None:
             _tamper_build_attempt,
         ),
         (codec.decode_bundle_build_result, lambda: json.loads(_BUILD_READY), _tamper_build_result),
-        (
-            codec.decode_simulator_bundle,
-            lambda: _fixture_document("bundle.json"),
-            _tamper_bundle,
-        ),
+        (codec.decode_simulator_bundle, lambda: _fixture_document("bundle.json"), _tamper_bundle),
         (
             codec.decode_simulation_result,
             lambda: json.loads(_simulation_result("completed")),

@@ -100,9 +100,7 @@ def _wait_for_stopped(identities: set[ProcessIdentity]) -> None:
 
 
 def _recover_while_observing_terminal_order(
-    execution_id: ExecutionId,
-    paths: ExecutionPaths,
-    descendant: ProcessIdentity,
+    execution_id: ExecutionId, paths: ExecutionPaths, descendant: ProcessIdentity
 ) -> tuple[bool, bool]:
     executor = ThreadPoolExecutor(max_workers=1)
     recovery = executor.submit(recover_execution, execution_id)
@@ -126,9 +124,7 @@ def _recover_while_observing_terminal_order(
 
 
 def _cleanup_identities(
-    execution_id: ExecutionId,
-    paths: ExecutionPaths,
-    known_identities: tuple[ProcessIdentity, ...],
+    execution_id: ExecutionId, paths: ExecutionPaths, known_identities: tuple[ProcessIdentity, ...]
 ) -> None:
     identities = set(known_identities)
     record = read_json(paths.record)
@@ -146,9 +142,7 @@ def _cleanup_identities(
 
 
 def _cleanup_execution(
-    execution_id: ExecutionId,
-    paths: ExecutionPaths,
-    known_identities: tuple[ProcessIdentity, ...],
+    execution_id: ExecutionId, paths: ExecutionPaths, known_identities: tuple[ProcessIdentity, ...]
 ) -> None:
     reset_cache()
     try:
@@ -357,10 +351,7 @@ def test_unreadable_kernel_thread_cannot_match_execution(tmp_path: Path) -> None
     proc = tmp_path / "2"
     proc.mkdir()
     (proc / "environ").mkdir()
-    (proc / "stat").write_text(
-        "2 (kworker/0:0) S 0 0 0 0 0 2097152\n",
-        encoding="utf-8",
-    )
+    (proc / "stat").write_text("2 (kworker/0:0) S 0 0 0 0 0 2097152\n", encoding="utf-8")
 
     assert _matches_execution(proc, b"BOOLEY_RUNTIME_EXECUTION_ID=") is False
 
@@ -369,17 +360,12 @@ def test_unreadable_proc_entry_does_not_block_marker_scan(tmp_path: Path) -> Non
     proc = tmp_path / "321"
     proc.mkdir()
     (proc / "environ").mkdir()
-    (proc / "stat").write_text(
-        "321 (host-agent) S 1 1 1 0 0 0\n",
-        encoding="utf-8",
-    )
+    (proc / "stat").write_text("321 (host-agent) S 1 1 1 0 0 0\n", encoding="utf-8")
 
     assert _matches_execution(proc, b"BOOLEY_RUNTIME_EXECUTION_ID=") is False
 
 
-def test_unreadable_proc_entry_with_malformed_stat_does_not_match(
-    tmp_path: Path,
-) -> None:
+def test_unreadable_proc_entry_with_malformed_stat_does_not_match(tmp_path: Path) -> None:
     proc = tmp_path / "654"
     proc.mkdir()
     (proc / "environ").mkdir()

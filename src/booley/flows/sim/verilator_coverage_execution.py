@@ -271,9 +271,7 @@ class VerilatorCoverageExecution:
         overlay: CoverageOverlay | None = None
         try:
             overlay = write_coverage_overlay(
-                self._handle,
-                instrumentation=request.instrumentation,
-                trace=request.variant.trace,
+                self._handle, instrumentation=request.instrumentation, trace=request.variant.trace
             )
             prepared = prepare_simulation_build(
                 self._handle,
@@ -288,10 +286,7 @@ class VerilatorCoverageExecution:
                 ),
             )
             if prepared.resolved.cocotb_module and request.variant.trace:
-                trace_overlay.validate_cocotb_trace_mode(
-                    self._handle.selector,
-                    overlay.trace_mode,
-                )
+                trace_overlay.validate_cocotb_trace_mode(self._handle.selector, overlay.trace_mode)
             self._trace_mode = overlay.trace_mode.value
         except (SimulationBuildPreparationError, FuseSocError) as exc:
             return str(exc)
@@ -311,9 +306,7 @@ class VerilatorCoverageExecution:
         return max(1, timeout_ms // 1000)
 
     def _execute_build(
-        self,
-        prepared: PreparedSimulationBuild,
-        identity: VerilatorCollectorIdentity,
+        self, prepared: PreparedSimulationBuild, identity: VerilatorCollectorIdentity
     ) -> SimulationBuildResult:
         token = new_attempt_token()
         script = simulation_build_script(prepared, token)
@@ -385,9 +378,7 @@ class VerilatorCoverageExecution:
         self._pre_sim_evidence_sink = sink
 
     def _run_prepared(
-        self,
-        request: SimulationRunRequest,
-        prepared: PreparedSimulationBuild,
+        self, request: SimulationRunRequest, prepared: PreparedSimulationBuild
     ) -> SimulationRunResult:
         _prepare_artifact_directories(request)
         evidence_root = self._evidence_root or prepared.build_root
@@ -595,11 +586,7 @@ class VerilatorCoverageExecution:
             )
         except ValueError as exc:
             raise SimulationBuildSlotError("coverage image escapes its authorized root") from exc
-        self._prepared = replace(
-            prepared,
-            work_root=bundle_root,
-            build_root=bundle_root,
-        )
+        self._prepared = replace(prepared, work_root=bundle_root, build_root=bundle_root)
         self._artifact_paths = rebound_paths
         self._attempt_run_cwd = run_cwd
         self._evidence_root = evidence_root
@@ -770,13 +757,7 @@ def _coverage_harness(inspection: TargetInspection) -> CoverageHarness:
 
 def _is_hdl(item: TargetInput) -> bool:
     return (
-        item.file_type
-        in {
-            "verilogSource",
-            "systemVerilogSource",
-            "vhdlSource",
-            "vhdlSource-2008",
-        }
+        item.file_type in {"verilogSource", "systemVerilogSource", "vhdlSource", "vhdlSource-2008"}
         and not item.is_include
     )
 
@@ -804,9 +785,7 @@ def _mirror_export_paths(
 
 def _coverage_source(item: TargetInput) -> CoverageSource:
     return CoverageSource(
-        native_path=item.path,
-        path=item.path,
-        kind="testbench" if "tb" in item.tags else "rtl",
+        native_path=item.path, path=item.path, kind="testbench" if "tb" in item.tags else "rtl"
     )
 
 
@@ -923,17 +902,10 @@ def _simulation_run_result(attempt: AdapterAttemptOutcome, test_name: str) -> Si
     )
 
 
-def _adapter_verdict(
-    result: AdapterResult,
-    test_name: str,
-) -> SimulationVerdict:
+def _adapter_verdict(result: AdapterResult, test_name: str) -> SimulationVerdict:
     test = next((item for item in result.test_results if item.name == test_name), None)
     assert test is not None, "authenticated coverage result must include the selected test"
     return cast(SimulationVerdict, test.verdict)
 
 
-__all__ = [
-    "VerilatorCoverageExecution",
-    "collect_target_coverage",
-    "prepare_coverage_collection",
-]
+__all__ = ["VerilatorCoverageExecution", "collect_target_coverage", "prepare_coverage_collection"]

@@ -15,13 +15,10 @@ from booley.config.host_config import (
     host_config_path,
     load_host_policy,
 )
+from booley.core import docker_cli
 from booley.harness import host_sidecars, nangate_pdk
-from booley.harness.image_lifecycle import (
-    host_capacity_requests,
-)
-from booley.harness.image_lifecycle import (
-    reconcile as reconcile_images,
-)
+from booley.harness.image_lifecycle import host_capacity_requests
+from booley.harness.image_lifecycle import reconcile as reconcile_images
 from booley.harness.setup.docker_image import wheel_build_environment_error
 from booley.harness.setup.skills import (
     HostSkillReconciliation,
@@ -29,18 +26,9 @@ from booley.harness.setup.skills import (
     reconcile_host_skills,
 )
 from booley.runtime.docker_capacity import DockerBuildPlan, ensure_docker_build_capacity
-from booley.runtime.host_install import (
-    host_install_error,
-    inspect_host_installation,
-)
-from booley.runtime.image_lifecycle import (
-    ImageLifecycleError,
-    Intent,
-    LifecycleResult,
-)
-from booley.runtime.image_lifecycle import (
-    Status as ImageStatus,
-)
+from booley.runtime.host_install import host_install_error, inspect_host_installation
+from booley.runtime.image_lifecycle import ImageLifecycleError, Intent, LifecycleResult
+from booley.runtime.image_lifecycle import Status as ImageStatus
 from booley.runtime.paths import skills_dir
 from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.qa_skill_selection import (
@@ -239,11 +227,7 @@ def _inspect_bootstrap_images(
 
 
 def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent mutations.
-    intent: Intent,
-    *,
-    verbose: bool = False,
-    include_images: bool = True,
-    qa_opt_out: bool = False,
+    intent: Intent, *, verbose: bool = False, include_images: bool = True, qa_opt_out: bool = False
 ) -> BootstrapResult:
     """Inspect or converge Host Bootstrap resources in their fixed order."""
     findings: list[BootstrapFinding] = []
@@ -252,8 +236,7 @@ def reconcile_bootstrap(  # noqa: PLR0911 - fixed-order failures stop dependent 
         policy = _load_bootstrap_policy(findings)
     except HostConfigError as exc:
         return BootstrapResult(
-            intent,
-            (BootstrapFinding("host-config", BootstrapState.ERROR, str(exc)),),
+            intent, (BootstrapFinding("host-config", BootstrapState.ERROR, str(exc)),)
         )
     findings.append(
         BootstrapFinding("host-config", BootstrapState.CURRENT, "host policy is valid")
@@ -307,11 +290,7 @@ def _wheel_build_findings(intent: Intent) -> tuple[BootstrapFinding, ...]:
 
 
 def _reconcile_bootstrap_images(
-    intent: Intent,
-    findings: list[BootstrapFinding],
-    policy: SandboxHostPolicy,
-    *,
-    verbose: bool,
+    intent: Intent, findings: list[BootstrapFinding], policy: SandboxHostPolicy, *, verbose: bool
 ) -> BootstrapResult:
     """Reconcile image-bearing Host Bootstrap resources after prerequisites."""
     plan = None
@@ -332,20 +311,11 @@ def _reconcile_bootstrap_images(
                     current_request=plan.current,
                     remaining_plan=plan,
                 )
-        except (
-            ImageLifecycleError,
-            host_sidecars.SidecarError,
-            OSError,
-            ValueError,
-        ) as exc:
+        except (ImageLifecycleError, host_sidecars.SidecarError, OSError, ValueError) as exc:
             findings.append(BootstrapFinding("image-capacity", BootstrapState.ERROR, str(exc)))
             return BootstrapResult(intent, tuple(findings), policy)
 
-    base_result, base_finding = _reconcile_base_image(
-        intent,
-        verbose=verbose,
-        capacity_plan=plan,
-    )
+    base_result, base_finding = _reconcile_base_image(intent, verbose=verbose, capacity_plan=plan)
     findings.append(base_finding)
     if base_finding.state is BootstrapState.ERROR:
         return BootstrapResult(intent, tuple(findings), policy)
@@ -390,11 +360,7 @@ def _git_finding() -> BootstrapFinding:
             detail = f"Git {minimum} or newer is required but git is not on PATH"
         else:
             detail = finding.detail.replace("git", "Git", 1)
-        return BootstrapFinding(
-            "git",
-            BootstrapState.ERROR,
-            detail,
-        )
+        return BootstrapFinding("git", BootstrapState.ERROR, detail)
     return _git_version_finding(finding.detail)
 
 
@@ -461,7 +427,7 @@ def _docker_daemon_error() -> str | None:
         return f"cannot contact Docker daemon: {exc}"
     if result.returncode == 0:
         return None
-    lines = (result.stderr or result.stdout).strip().splitlines()
+    lines = docker_cli.failure_detail(result, "").splitlines()
     detail = f": {lines[0][:200]}" if lines else ""
     return f"Docker daemon is not running or accessible{detail}"
 
@@ -494,11 +460,7 @@ def _vscode_extension_ids(command: str) -> tuple[frozenset[str] | None, str | No
     """List local editor extensions, returning a user-facing failure when unavailable."""
     try:
         result = subprocess.run(
-            [command, "--list-extensions"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
+            [command, "--list-extensions"], capture_output=True, text=True, timeout=30, check=False
         )
     except subprocess.TimeoutExpired:
         return None, "VS Code did not list extensions within 30 seconds"
@@ -586,18 +548,13 @@ def _reconcile_skills(intent: Intent) -> BootstrapFinding:
             "skills", BootstrapState.ERROR, f"packaged skills missing: {source}"
         )
     reconciliations = reconcile_host_skills(
-        source,
-        dry_run=intent is Intent.CHECK,
-        allow_retarget=True,
+        source, dry_run=intent is Intent.CHECK, allow_retarget=True
     )
     return _skill_reconciliation_finding(intent, reconciliations, qa=False)
 
 
 def _skill_reconciliation_finding(
-    intent: Intent,
-    reconciliations: tuple[HostSkillReconciliation, ...],
-    *,
-    qa: bool,
+    intent: Intent, reconciliations: tuple[HostSkillReconciliation, ...], *, qa: bool
 ) -> BootstrapFinding:
     resource = "qa-skills" if qa else "skills"
     label = "QA skill" if qa else "skill"
@@ -627,9 +584,7 @@ def _skill_reconciliation_finding(
     targets = ", ".join(str(item.target) for item in reconciliations)
     action = f"applied {changed} {label} link change(s) across" if changed else "checked"
     return BootstrapFinding(
-        resource,
-        state,
-        f"{action} {len(reconciliations)} skill target(s): {targets}",
+        resource, state, f"{action} {len(reconciliations)} skill target(s): {targets}"
     )
 
 
@@ -723,17 +678,10 @@ def _nangate_license_notice() -> str:
 
 
 def _reconcile_base_image(
-    intent: Intent,
-    *,
-    verbose: bool,
-    capacity_plan: DockerBuildPlan | None = None,
+    intent: Intent, *, verbose: bool, capacity_plan: DockerBuildPlan | None = None
 ) -> tuple[LifecycleResult | None, BootstrapFinding]:
     try:
-        result = reconcile_images(
-            intent,
-            verbose=verbose,
-            capacity_plan=capacity_plan,
-        )
+        result = reconcile_images(intent, verbose=verbose, capacity_plan=capacity_plan)
     except ImageLifecycleError as exc:
         return None, BootstrapFinding("base-image", BootstrapState.ERROR, str(exc))
     state = {

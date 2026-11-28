@@ -15,11 +15,7 @@ from booley.flows.sim.record.test_run_report import (
     test_run_grade,
     test_run_row,
 )
-from booley.flows.test_runs import (
-    build_test_run,
-    discovered_test_run,
-    test_run_document,
-)
+from booley.flows.test_runs import build_test_run, discovered_test_run, test_run_document
 
 _TARGET = {"selector": "sim"}
 

@@ -102,12 +102,7 @@ _CASES: dict[str, tuple[str, str, frozenset[str], dict[str, list[str]]]] = {
         {_WORKFLOW: [r"^ +ACTIONLINT_SHA256: (.*)$"]},
     ),
     "veriloghdl": ("mshr-h/veriloghdl", "1.29.0", _OPEN_VSX, {_BASE: _vsix("VERILOGHDL")}),
-    "live-preview": (
-        "ms-vscode/live-server",
-        "0.4.20",
-        _OPEN_VSX,
-        {_BASE: _vsix("LIVE_PREVIEW")},
-    ),
+    "live-preview": ("ms-vscode/live-server", "0.4.20", _OPEN_VSX, {_BASE: _vsix("LIVE_PREVIEW")}),
     "node": ("node", "24.21.0", _NODE, {_BASE: _arg("NODE_SHA256", "NPM_VERSION")}),
     "chrome-headless-shell": (
         "chrome-headless-shell",
@@ -429,11 +424,7 @@ _NO_FILE = '{"upgrades": [{"depName": "a", "newValue": "1"}]}'
 @pytest.mark.parametrize(
     "contents",
     ['{"upgrades": [', '{"upgrades": []}', _NO_FILE],
-    ids=[
-        "malformed",
-        "empty-upgrades",
-        "no-package-file",
-    ],
+    ids=["malformed", "empty-upgrades", "no-package-file"],
 )
 def test_bad_data_file_is_a_usage_error(contents: str, tmp_path: Path) -> None:
     root = _checkout(tmp_path, list(_CASES))

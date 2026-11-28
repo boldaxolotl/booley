@@ -27,10 +27,7 @@ class SupervisedProcessSet:
     """Track every command in one whole work item and cancel it as a unit."""
 
     def __init__(
-        self,
-        execution_id: ExecutionId | None,
-        project_data: Path,
-        cancelled: Callable[[], bool],
+        self, execution_id: ExecutionId | None, project_data: Path, cancelled: Callable[[], bool]
     ) -> None:
         self._execution_id = execution_id
         self._project_data = project_data
@@ -143,9 +140,7 @@ _SCOPE: ContextVar[SupervisedExecutionScope | None] = ContextVar(
 
 
 @contextmanager
-def supervised_execution_scope(
-    scope: SupervisedExecutionScope,
-) -> Iterator[None]:
+def supervised_execution_scope(scope: SupervisedExecutionScope) -> Iterator[None]:
     token: Token = _SCOPE.set(scope)
     stop = threading.Event()
     watcher = threading.Thread(

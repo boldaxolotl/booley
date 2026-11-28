@@ -87,10 +87,7 @@ def load_timings(path: Path | None) -> TimingModel:
 
 
 def assign_shards(
-    nodeids: Sequence[str],
-    shard_count: int,
-    timings: TimingModel,
-    skipped: Collection[str] = (),
+    nodeids: Sequence[str], shard_count: int, timings: TimingModel, skipped: Collection[str] = ()
 ) -> tuple[tuple[str, ...], ...]:
     """Assign every unique node ID once using deterministic LPT balancing.
 

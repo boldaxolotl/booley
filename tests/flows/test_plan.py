@@ -118,8 +118,7 @@ def test_paths_and_argv_are_normalized_to_checkout(tmp_path: Path) -> None:
         ".booley_work/sim",
     )
     assert normalize_plan_argv(
-        ("sh", "-c", f"tool --root {tmp_path} --file {nested}"),
-        tmp_path,
+        ("sh", "-c", f"tool --root {tmp_path} --file {nested}"), tmp_path
     ) == ("sh", "-c", "tool --root . --file .booley_work/sim")
     outside = tmp_path.parent / "outside.sv"
     assert normalize_plan_path(outside, tmp_path) == outside.as_posix()
@@ -150,10 +149,7 @@ def test_inputs_are_partitioned_and_normalized_once(tmp_path: Path) -> None:
         SimpleNamespace(path=str(tmp_path / "constraints/top.sdc"), file_type="SDC"),
     )
 
-    assert normalize_plan_inputs(inputs, tmp_path) == (
-        ("rtl/top.sv",),
-        ("constraints/top.sdc",),
-    )
+    assert normalize_plan_inputs(inputs, tmp_path) == (("rtl/top.sv",), ("constraints/top.sdc",))
 
 
 @pytest.mark.parametrize("value", [nan, inf, -inf])

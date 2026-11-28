@@ -40,15 +40,9 @@ from booley.flows.sim.adapter_transport import (
     work_transport_identity,
 )
 from booley.flows.sim.backends.declared_streams import clear_stale_pipes
-from booley.flows.sim.backends.shared import (
-    CurrentRunTraces,
-    RunTermination,
-)
+from booley.flows.sim.backends.shared import CurrentRunTraces, RunTermination
 from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
-from booley.flows.sim.backends.trace_finalization import (
-    finalize_trace,
-    native_pending_publisher,
-)
+from booley.flows.sim.backends.trace_finalization import finalize_trace, native_pending_publisher
 from booley.flows.sim.config import DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
 from booley.flows.sim.result import format_infra_error
 from booley.flows.sim.trace_recipe import TraceMode
@@ -133,9 +127,7 @@ def _render_trace_args(trace_args: list[str] | None, trace_file: Path | None) ->
 
 
 def _build_run_cmd(
-    exe: Path,
-    lib_dir: Path,
-    plusargs: list[str] | None,
+    exe: Path, lib_dir: Path, plusargs: list[str] | None
 ) -> tuple[list[str], dict[str, str]]:
     """Assemble the binary invocation and environment (mirrors the legacy cmd).
 
@@ -157,9 +149,7 @@ def _build_run_cmd(
 
 
 def _setup_bwave(
-    trace: TraceSession,
-    cmd: list[str],
-    trace_args: list[str] | None = None,
+    trace: TraceSession, cmd: list[str], trace_args: list[str] | None = None
 ) -> StreamingConversion | None:
     """Start the FIFO streamer and append the project's trace arguments."""
     conversion = trace.start_fifo()
@@ -168,10 +158,7 @@ def _setup_bwave(
 
 
 def _setup_trace(
-    trace: TraceSession,
-    cmd: list[str],
-    trace_args: list[str] | None,
-    trace_mode: TraceMode,
+    trace: TraceSession, cmd: list[str], trace_args: list[str] | None, trace_mode: TraceMode
 ) -> StreamingConversion | None:
     """Configure the selected trace adapter and append its run arguments."""
     if trace_mode is TraceMode.NATIVE_FST:
@@ -221,10 +208,7 @@ class _TraceRuntime:
 
 
 def _resolve_run_paths(
-    bin_dir: Path,
-    run_cwd: Path | None,
-    work_dir: Path | None,
-    booley_dir: Path | None = None,
+    bin_dir: Path, run_cwd: Path | None, work_dir: Path | None, booley_dir: Path | None = None
 ) -> _RunPaths:
     """Resolve runner paths before the simulator changes its cwd."""
     resolved_bin = Path(bin_dir).resolve()
@@ -444,14 +428,7 @@ def _execute_verilated_and_publish(
         cmd, paths, env, timeout, trace, max_rundir_bytes, runtime_inputs
     )
     output, trace_result = _finalize_verilated_run(
-        lines,
-        proc,
-        paths,
-        trace,
-        pass_sentinels,
-        fail_sentinels,
-        termination,
-        transport,
+        lines, proc, paths, trace, pass_sentinels, fail_sentinels, termination, transport
     )
     return _publish_adapter_result(
         transport,

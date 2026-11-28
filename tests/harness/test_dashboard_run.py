@@ -201,12 +201,7 @@ def test_child_main_rejects_selector_and_help(tmp_path, monkeypatch, capsys):
         ("fpga", (), "", ("memory", False, 7_200_000)),
         ("synth", ("--timeout-ms", "5000"), "", ("memory", False, 5000)),
         ("synth", (), "[flows.synth]\ntimeout_ms = 60000\n", ("memory", False, 60_000)),
-        (
-            "synth",
-            ("--dry-run",),
-            "[flows.synth]\ntimeout_ms = 60000\n",
-            ("memory", True, 60_000),
-        ),
+        ("synth", ("--dry-run",), "[flows.synth]\ntimeout_ms = 60000\n", ("memory", True, 60_000)),
         ("sim", (), "[flows.sim]\ntimeout_ms = 60000\n", ("memory", False, None)),
     ],
     ids=[

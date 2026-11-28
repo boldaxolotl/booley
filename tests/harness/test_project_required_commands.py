@@ -258,8 +258,7 @@ def cli_project(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("command", "inside"),
-    [("cheat", False), ("cheat", True), ("doctor", False), ("doctor", True)],
+    ("command", "inside"), [("cheat", False), ("cheat", True), ("doctor", False), ("doctor", True)]
 )
 def test_canonical_replacements_dispatch(command, inside, cli_project, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["booley", command])

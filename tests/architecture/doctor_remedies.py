@@ -277,9 +277,7 @@ def _severity_member(node: ast.expr, suffix: str) -> str | None:
     return node.attr.lower() if str(owner_name).endswith(suffix) else None
 
 
-def _unwrap_warning(
-    message: ast.expr | None,
-) -> tuple[ast.expr | str | None, ast.expr | None]:
+def _unwrap_warning(message: ast.expr | None) -> tuple[ast.expr | str | None, ast.expr | None]:
     """Split ``warning(check_id, text)`` into its parts; any other message passes through."""
     if isinstance(message, ast.Call) and _is_name(message.func, "warning"):
         return _argument(message, 0, "check_id"), _argument(message, 1, "message")

@@ -1006,9 +1006,7 @@ def test_unregister_cannot_replace_recovery_terminal_record(
     assert reaper.oserror is None
 
 
-def test_lock_waiters_let_the_holder_run(
-    build_machine: Callable[[], LaneStepMachine],
-) -> None:
+def test_lock_waiters_let_the_holder_run(build_machine: Callable[[], LaneStepMachine]) -> None:
     machine = build_machine()
     lane = machine.start_lane()
     assert lane.worker is not None

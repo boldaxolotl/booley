@@ -59,9 +59,7 @@ def _fake_runtime_transport(monkeypatch):
         "1.0", "abc123", None, "wheel-source"
     )
     monkeypatch.setattr(
-        inspection.image_identity,
-        "current_host_build_identity",
-        lambda: host_identity,
+        inspection.image_identity, "current_host_build_identity", lambda: host_identity
     )
 
     def run(argv, **kwargs):

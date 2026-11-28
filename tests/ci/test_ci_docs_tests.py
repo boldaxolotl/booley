@@ -159,7 +159,7 @@ _READ_DOC = 'from pathlib import Path\nROOT = Path(__file__).parents[1]\nTEXT = 
                     "from pathlib import Path\n"
                     'QA_ROOT = Path(__file__).parents[2] / "qa"\n'
                     'AREAS = QA_ROOT / "AREAS.md"\n'
-                ),
+                )
             },
             "tests/qa/test_missions.py",
             id="path-join",

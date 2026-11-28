@@ -164,9 +164,7 @@ def _fragment_lines(path: Path) -> list[str]:
     return lines
 
 
-def read_fragments(
-    directory: Path = REPOSITORY_ROOT / DEFAULT_FRAGMENTS_NAME,
-) -> list[Fragment]:
+def read_fragments(directory: Path = REPOSITORY_ROOT / DEFAULT_FRAGMENTS_NAME) -> list[Fragment]:
     """Read every fragment, held ones too; one error lists every malformed file."""
     fragments: list[Fragment] = []
     problems: list[str] = []
@@ -286,10 +284,7 @@ def cut(
 
 
 def _validate_contract(
-    root: Path,
-    *,
-    target: str | None = None,
-    notes_file: Path | None = None,
+    root: Path, *, target: str | None = None, notes_file: Path | None = None
 ) -> None:
     """Validate the Unreleased heading, ordering, VERSION bound, target, and notes.
 
@@ -381,10 +376,7 @@ def main() -> int:
     try:
         if args.command == "validate":
             validate(
-                args.root,
-                target=args.target,
-                notes_file=args.notes_file,
-                fragments=args.fragments,
+                args.root, target=args.target, notes_file=args.notes_file, fragments=args.fragments
             )
         elif args.command == "cut":
             return _run_cut(args)

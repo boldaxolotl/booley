@@ -402,9 +402,7 @@ def push_origin(booley_repository: Path, commit: str) -> None:
     git(booley_repository, "remote", "set-head", "origin", "main")
 
 
-def test_versioned_booley_directory_without_default_branch_reports_no_base(
-    tmp_path: Path,
-) -> None:
+def test_versioned_booley_directory_without_default_branch_reports_no_base(tmp_path: Path) -> None:
     checkout, booley = versioned_case(tmp_path, "standalone")
     git(booley, "branch", "-m", "feature", "trunk")  # neither origin/HEAD nor main remains
     git(booley, "branch", "-D", "main")

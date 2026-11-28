@@ -75,9 +75,7 @@ async def test_each_http_post_uses_its_own_peer_in_one_sdk_session(
     async with (
         sdk.session_manager.run(),
         httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
-            base_url="http://localhost",
-            headers=headers,
+            transport=httpx.ASGITransport(app=app), base_url="http://localhost", headers=headers
         ) as client,
     ):
         response = await client.post(

@@ -623,10 +623,7 @@ def test_local_build_guards_the_runtime_base(
         pairs = [candidate[i : i + 2] for i in range(len(candidate) - 1)]
         assert ["--build-context", f"booley-runtime-base=docker-image://{BASE}"] in pairs
         assert ["--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={base_id}"] in pairs
-        assert [
-            "--label",
-            f"{init_docker_image.LABEL_PARENT_ARTIFACT}={base_id}",
-        ] in pairs
+        assert ["--label", f"{init_docker_image.LABEL_PARENT_ARTIFACT}={base_id}"] in pairs
         assert [
             "--label",
             f"{init_docker_image.LABEL_PARENT_ARTIFACT_KIND}={init_docker_image.PARENT_ARTIFACT_LOCAL_IMAGE_ID}",
@@ -798,10 +795,7 @@ def test_build_sh_probe_uses_dash_p_isolation() -> None:
     """The candidate-Python probe must use `-P`, matching the wheel invocation."""
     text = _BUILD_SH.read_text(encoding="utf-8")
     # The probe line runs each candidate against `import build` inside the loop.
-    probe = next(
-        (l for l in text.splitlines() if "import build" in l and '"$cand"' in l),
-        None,
-    )
+    probe = next((l for l in text.splitlines() if "import build" in l and '"$cand"' in l), None)
     assert probe is not None, "guard probe line not found in build.sh"
     assert re.search(r'"\$cand"\s+-P\s+-c', probe), (
         f"probe must isolate with -P so the repo-root build/ dir cannot shadow "
@@ -884,26 +878,20 @@ esac
     )
     fake_python.chmod(0o755)
     fake_docker = fake_bin / "docker"
-    fake_docker.write_text(
-        f"#!/bin/bash\ntouch {build_marker}\nexit 0\n",
-        encoding="utf-8",
-    )
+    fake_docker.write_text(f"#!/bin/bash\ntouch {build_marker}\nexit 0\n", encoding="utf-8")
     fake_docker.chmod(0o755)
     return fake_bin
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell-script execution")
 def test_riscv_script_refuses_five_image_plan_before_first_docker_build(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     docker_dir = _seed_riscv_script_tree(tmp_path)
     build_marker = tmp_path / "docker-build-ran"
     plan_marker = tmp_path / "plan-count"
     fake_bin = _fake_riscv_build_tools(
-        tmp_path,
-        build_marker=build_marker,
-        plan_marker=plan_marker,
+        tmp_path, build_marker=build_marker, plan_marker=plan_marker
     )
     fake_python = fake_bin / "python"
     monkeypatch.setenv("PYTHON", str(fake_python))
@@ -911,10 +899,7 @@ def test_riscv_script_refuses_five_image_plan_before_first_docker_build(
     monkeypatch.setenv("PATH", f"{fake_bin}:/usr/bin:/bin")
 
     result = subprocess.run(
-        [str(docker_dir / "build-riscv.sh")],
-        capture_output=True,
-        text=True,
-        check=False,
+        [str(docker_dir / "build-riscv.sh")], capture_output=True, text=True, check=False
     )
 
     assert result.returncode == 9
@@ -930,11 +915,7 @@ def test_riscv_script_refuses_five_image_plan_before_first_docker_build(
 # stale the moment a step is added, skipped, or retired. Steps are named by
 # their record key instead.
 
-_INIT_MODULES = (
-    "init_cmd.py",
-    "setup/docker_image.py",
-    "setup/git_hooks.py",
-)
+_INIT_MODULES = ("init_cmd.py", "setup/docker_image.py", "setup/git_hooks.py")
 
 
 def test_init_sources_carry_no_hardcoded_step_numbers() -> None:

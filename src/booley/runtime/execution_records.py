@@ -96,8 +96,7 @@ def execution_paths(
 
 
 def update_execution_record(
-    paths: ExecutionPaths,
-    change: Callable[[dict[str, Any] | None], dict[str, Any] | None],
+    paths: ExecutionPaths, change: Callable[[dict[str, Any] | None], dict[str, Any] | None]
 ) -> None:
     """Read, change and replace one execution record under its cross-process lock.
 
@@ -151,9 +150,7 @@ def read_json(path: Path) -> dict[str, Any] | None:
 
 
 def read_slot_entry(
-    path: Path,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
+    path: Path, *, sleep: Callable[[float], None] = time.sleep
 ) -> dict[str, Any] | None:
     """Read one Memory Reservation entry, keeping "missing" apart from "unreadable".
 
@@ -315,11 +312,7 @@ def read_attachment_heartbeat(paths: ExecutionPaths) -> int | None:
 
 
 def request_cancellation(
-    paths: ExecutionPaths,
-    *,
-    force: bool = False,
-    signum: int = 2,
-    reason: str = "cancelled",
+    paths: ExecutionPaths, *, force: bool = False, signum: int = 2, reason: str = "cancelled"
 ) -> None:
     """Durably and idempotently request cancellation of one execution."""
     if force:
@@ -336,12 +329,7 @@ def request_cancellation(
         return
     atomic_write_json(
         paths.cancel,
-        {
-            "force": force,
-            "reason": reason,
-            "signum": signum,
-            "requested_at": utc_now_rfc3339(),
-        },
+        {"force": force, "reason": reason, "signum": signum, "requested_at": utc_now_rfc3339()},
     )
 
 

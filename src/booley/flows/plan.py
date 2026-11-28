@@ -49,10 +49,7 @@ def _json_value(value: object) -> object:
 def plan_value_fingerprint(value: object) -> str:
     """Hash a semantic value without exposing it in the rendered plan."""
     encoded = json.dumps(
-        _json_value(value),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
+        _json_value(value), sort_keys=True, separators=(",", ":"), ensure_ascii=True
     ).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -108,8 +105,7 @@ def normalize_plan_argv(argv: tuple[str, ...], work_dir: Path) -> tuple[str, ...
 
 
 def normalize_plan_inputs(
-    inputs: Iterable[PlanInput],
-    work_dir: Path,
+    inputs: Iterable[PlanInput], work_dir: Path
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return normalized ``(sources, constraints)`` for Target inputs."""
     sources: list[str] = []
@@ -227,10 +223,7 @@ class FlowPlan:
             "work_units": [unit.semantic_projection() for unit in self.work_units],
         }
         encoded = json.dumps(
-            projection,
-            sort_keys=True,
-            separators=(",", ":"),
-            ensure_ascii=True,
+            projection, sort_keys=True, separators=(",", ":"), ensure_ascii=True
         ).encode()
         return hashlib.sha256(encoded).hexdigest()
 
@@ -256,9 +249,7 @@ def stable_unit_id(
 ) -> str:
     """Build a readable collision-resistant ID from semantic unit identity."""
     identity = json.dumps(
-        [flow, role, revision, selector, list(scope)],
-        separators=(",", ":"),
-        ensure_ascii=True,
+        [flow, role, revision, selector, list(scope)], separators=(",", ":"), ensure_ascii=True
     )
     digest = hashlib.sha256(identity.encode()).hexdigest()[:12]
     stem = re.sub(r"[^a-zA-Z0-9_.-]+", "-", f"{flow}-{role}-{selector}").strip("-")

@@ -63,17 +63,16 @@ _BWAVE_MCP_TOOLS: list[dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Arguments after `bwave`, as documented by CLI help.",
-                },
+                }
             },
             "required": ["extra_args"],
         },
-    },
+    }
 ]
 
 
 def _find_mcp_tool_class_in_module(
-    mod: object,
-    source_label: str,
+    mod: object, source_label: str
 ) -> tuple[type, object, dict] | None:
     """Extract the first endpoint class, instance and schema, logging extraction failures."""
     from booley.flows.base import BooleyFlow, BuiltinFlow
@@ -103,10 +102,7 @@ def _find_mcp_tool_class_in_module(
 
 
 def _mcp_tool_def_from_endpoint(
-    endpoint: Any,
-    schema: dict,
-    module_name: str,
-    **extra: Any,
+    endpoint: Any, schema: dict, module_name: str, **extra: Any
 ) -> dict[str, Any]:
     """Build an MCP tool definition dict from an endpoint instance and extracted schema.
 
@@ -149,9 +145,7 @@ def _import_module_safe(fqn: str) -> tuple[object | None, str | None]:
 
 
 def _import_and_extract(
-    module_name: str,
-    *,
-    import_prefix: str = "booley.mcp",
+    module_name: str, *, import_prefix: str = "booley.mcp"
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Return an endpoint definition or its import/extraction error."""
     from booley.mcp.flow_adapter import flow_negative_flags
@@ -275,7 +269,7 @@ def _cancel_mcp_tool_def() -> dict[str, Any]:
                 "run_id": {
                     "type": "string",
                     "description": "The run_id of the queued or running job to cancel.",
-                },
+                }
             },
             "required": ["run_id"],
             "additionalProperties": False,
@@ -353,10 +347,7 @@ def _coverage_evidence_tool_def() -> dict[str, Any]:
                 "metric": {"type": "string"},
                 "source": {"type": "string"},
                 "covered": {"type": "boolean"},
-                "disposition": {
-                    "type": "string",
-                    "enum": ["eligible", "waived", "unscored"],
-                },
+                "disposition": {"type": "string", "enum": ["eligible", "waived", "unscored"]},
                 "point_refs": {
                     "type": "array",
                     "items": {"type": "string", "pattern": COVERAGE_POINT_REFERENCE_PATTERN},
@@ -391,7 +382,7 @@ def _sleep_mcp_tool_def() -> dict[str, Any]:
                     "minimum": 0,
                     "maximum": 86400,
                     "description": ("How long to hold the call open server-side."),
-                },
+                }
             },
             "required": ["seconds"],
             "additionalProperties": False,
@@ -446,10 +437,7 @@ class Exposure:
         )
 
 
-def tool_visible(
-    name: str,
-    exposure: Exposure,
-) -> bool:
+def tool_visible(name: str, exposure: Exposure) -> bool:
     from booley.targets.flow_names import canonical
 
     name = canonical(name)

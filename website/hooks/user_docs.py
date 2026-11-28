@@ -54,8 +54,7 @@ if len(_DOC_BY_FILE) != len(docs_links.SITE_DOCS):
 _LINK = re.compile(r"(\]\(\s*<?)([^)\s>]+)")
 _FENCE = re.compile(r"^ *(```+|~~~+)")
 _GITHUB_BLOB_URL = re.compile(
-    r"^https://github\.com/boldaxolotl/booley/blob/main/(?P<path>[^#?]+)",
-    re.IGNORECASE,
+    r"^https://github\.com/boldaxolotl/booley/blob/main/(?P<path>[^#?]+)", re.IGNORECASE
 )
 
 

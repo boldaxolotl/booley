@@ -34,11 +34,7 @@ from pathlib import Path
 
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.audit.resource_policy import HostMemory, parse_meminfo
-from booley.config.sandbox import (
-    SANDBOX_IMAGE,
-    project_image_name,
-    project_sandbox_image,
-)
+from booley.config.sandbox import SANDBOX_IMAGE, project_image_name, project_sandbox_image
 from booley.core import docker_cli, sandbox_layout
 from booley.runtime.platform_paths import run_captured_bounded
 
@@ -98,8 +94,7 @@ _KEEP_DIRECTIVE = "# booley:keep"
 _CONTENT_HASH_PREFIX = "# booley:content-hash="
 
 _FROM_RE = re.compile(
-    r"^\s*FROM(?:\s+--platform=\S+)?\s+(?P<image>[^\s]+)",
-    re.IGNORECASE | re.MULTILINE,
+    r"^\s*FROM(?:\s+--platform=\S+)?\s+(?P<image>[^\s]+)", re.IGNORECASE | re.MULTILINE
 )
 _PARENT_DIRECTIVE_RE = re.compile(r"^\s*#\s*booley:parent=(?P<image>\S+)\s*$", re.MULTILINE)
 
@@ -165,8 +160,7 @@ def dockerfile_parent_image(dockerfile: Path) -> str | None:
 
 
 def resolve_requirements(
-    project_root: Path,
-    pip_requirements: list[str] | None,
+    project_root: Path, pip_requirements: list[str] | None
 ) -> tuple[list[Path], list[str]]:
     """Resolve the requirements files listed in ``[sandbox].pip_requirements``.
 
@@ -284,8 +278,7 @@ _REQ_SPEC_RE = re.compile(r"^[A-Za-z0-9._-]+(?:\[[^\]]*\])?\s*(?P<spec>.*)$")
 
 
 def curated_overrides(
-    requirements: list[str],
-    base_versions: dict[str, str],
+    requirements: list[str], base_versions: dict[str, str]
 ) -> list[tuple[str, str, str]]:
     """``(requirement, dist name, base version)`` for pins that re-version the base.
 
@@ -316,8 +309,7 @@ def curated_overrides(
 
 
 def consolidated_requirements(
-    project_root: Path,
-    req_files: list[Path],
+    project_root: Path, req_files: list[Path]
 ) -> tuple[str, list[str], list[str], list[str]]:
     """Merge *req_files* into one requirements body, deduped, with provenance.
 
@@ -406,9 +398,7 @@ def is_managed_generated_file(path: Path) -> bool:
 
 
 def managed_project_image_files(
-    requirements_body: str,
-    *,
-    parent_image: str = BASE_IMAGE,
+    requirements_body: str, *, parent_image: str = BASE_IMAGE
 ) -> tuple[str, str]:
     """Return the exact managed Dockerfile and requirements-file contents."""
     return (

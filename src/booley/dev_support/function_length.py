@@ -137,11 +137,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 def _git(root: Path, *args: str) -> bytes:
     result = subprocess.run(
-        ("git", *args),
-        cwd=root,
-        capture_output=True,
-        timeout=_GIT_TIMEOUT_S,
-        check=False,
+        ("git", *args), cwd=root, capture_output=True, timeout=_GIT_TIMEOUT_S, check=False
     )
     if result.returncode != 0:
         detail = result.stderr.decode(errors="replace").strip()

@@ -136,10 +136,7 @@ def _normalization(result: CoverageCollectionResult) -> Mapping[str, FrozenJson]
 
 
 def run_coverage_target(
-    plan: CoverageTargetPlan,
-    execution: SimulationExecutionPort,
-    *,
-    embedded_root: Path,
+    plan: CoverageTargetPlan, execution: SimulationExecutionPort, *, embedded_root: Path
 ) -> CoverageTargetOutcome:
     """Collect, evaluate and publish one Target's Coverage Record under the attempt-owned root.
 
@@ -155,9 +152,7 @@ def run_coverage_target(
 
 
 def _execute_coverage_transaction(
-    plan: CoverageTargetPlan,
-    execution: SimulationExecutionPort,
-    root: Path,
+    plan: CoverageTargetPlan, execution: SimulationExecutionPort, root: Path
 ) -> CoverageTargetOutcome:
     result = None
     coverage_record = None
@@ -296,11 +291,7 @@ def _transaction_error(
     if coverage_record_published and coverage_record is not None:
         detail["coverage_metrics"] = coverage_metrics(coverage_record)
     return CoverageTargetOutcome(
-        plan.handle.selector,
-        2,
-        root / "coverage.json",
-        freeze_coverage_mapping(detail),
-        True,
+        plan.handle.selector, 2, root / "coverage.json", freeze_coverage_mapping(detail), True
     )
 
 

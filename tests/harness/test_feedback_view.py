@@ -60,10 +60,7 @@ def _mixed_log(project) -> None:
         Finding(title="genuinely useful on a real SoC", kind="impression"),
         Finding(title="doctor was clean", kind="win"),
         Finding(
-            title="x" * 60,
-            severity="note",
-            bucket="booley",
-            filed="https://example.invalid/3",
+            title="x" * 60, severity="note", bucket="booley", filed="https://example.invalid/3"
         ),
     )
 

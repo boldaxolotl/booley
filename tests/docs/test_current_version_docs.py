@@ -153,12 +153,7 @@ def test_visible_cli_help_describes_current_version() -> None:
         "bwave query help",
     } <= rendered.keys()
     assert (
-        not {
-            "booley session",
-            "booley feedback",
-            "booley cleanup",
-            "booley upgrade",
-        }
+        not {"booley session", "booley feedback", "booley cleanup", "booley upgrade"}
         & rendered.keys()
     )
     # Skill-only groups are omitted; still exercise the nested public help tree.

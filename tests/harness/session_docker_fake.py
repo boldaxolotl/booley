@@ -22,9 +22,7 @@ import pytest
 from booley.core.project_identity import project_label_id
 from booley.harness import booley as cli
 from booley.harness import incontainer_register, sandbox_stop_warning
-from booley.runtime import (
-    booley_dir as booley_dir_module,
-)
+from booley.runtime import booley_dir as booley_dir_module
 from booley.runtime import (
     booley_dir_migration,
     host_docker,

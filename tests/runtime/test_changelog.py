@@ -86,9 +86,7 @@ def test_release_range_is_oldest_first_and_reports_history_boundary() -> None:
 
 def test_changelog_retains_pre_review_release_history() -> None:
     release_range = changelog.releases_between(
-        _PUBLIC_CHANGELOG.read_text(encoding="utf-8"),
-        "0.2.6",
-        "0.2.10",
+        _PUBLIC_CHANGELOG.read_text(encoding="utf-8"), "0.2.6", "0.2.10"
     )
 
     assert [str(entry.version) for entry in release_range.entries] == [

@@ -72,10 +72,7 @@ _RELAY_ENV_NAMES = frozenset(
 def _label_differences(expected: set[str], actual: set[str]) -> str:
     expected_values = dict(item.split("=", 1) for item in expected)
     actual_values = dict(item.split("=", 1) for item in actual if "=" in item)
-    expected_safe: dict[str, object] = {
-        **expected_values,
-        "unexpected_label_keys": [],
-    }
+    expected_safe: dict[str, object] = {**expected_values, "unexpected_label_keys": []}
     actual_safe: dict[str, object] = {
         **{key: actual_values[key] for key in expected_values if key in actual_values},
         "unexpected_label_keys": sorted(set(actual_values) - set(expected_values)),
@@ -386,12 +383,7 @@ def provision_relay(
         created.append(("network", resources.outbound_network))
         _checked(
             runner,
-            relay_run_argv(
-                resources,
-                profile,
-                image=image_id,
-                issuance_labels=issuance_labels,
-            ),
+            relay_run_argv(resources, profile, image=image_id, issuance_labels=issuance_labels),
             "create license relay",
         )
         created.append(("container", resources.relay_container))
@@ -441,10 +433,7 @@ def recreate_relay(
 
 
 def connect_session(
-    resources: RelayResources,
-    session_container: str,
-    *,
-    runner: docker_cli.Runner,
+    resources: RelayResources, session_container: str, *, runner: docker_cli.Runner
 ) -> None:
     """Attach the Session only to the private license network."""
     _checked(
@@ -455,15 +444,9 @@ def connect_session(
 
 
 def _validate_relay_labels_and_health(
-    run: docker_cli.Runner,
-    resources: RelayResources,
-    issuance_labels: tuple[str, ...],
+    run: docker_cli.Runner, resources: RelayResources, issuance_labels: tuple[str, ...]
 ) -> None:
-    expected = {
-        ROLE_LABEL,
-        f"{SESSION_LABEL}={resources.session_id}",
-        *issuance_labels,
-    }
+    expected = {ROLE_LABEL, f"{SESSION_LABEL}={resources.session_id}", *issuance_labels}
     actual = _label_set(run, "container", resources.relay_container)
     if actual != expected:
         raise RelayDockerError(
@@ -478,9 +461,7 @@ def _validate_relay_labels_and_health(
 
 
 def _validate_relay_membership(
-    run: docker_cli.Runner,
-    resources: RelayResources,
-    session_container: str | None,
+    run: docker_cli.Runner, resources: RelayResources, session_container: str | None
 ) -> None:
     expected_networks = {resources.private_network, resources.outbound_network}
     relay_networks = _attached_networks(run, resources.relay_container)
@@ -543,13 +524,7 @@ def validate_relay(
         resources.session_id,
         issuance_labels,
     )
-    _validate_network_endpoints(
-        runner,
-        resources,
-        profile,
-        session_container,
-        issuance_labels,
-    )
+    _validate_network_endpoints(runner, resources, profile, session_container, issuance_labels)
     _validate_network(
         runner,
         resources.outbound_network,
@@ -638,8 +613,7 @@ def _relay_log_tail(run: docker_cli.Runner, container: str) -> str:
     """Return a bounded relay-log excerpt for a startup failure, or nothing."""
     try:
         result = run(
-            ["container", "logs", "--tail", str(HEALTH_LOG_TAIL_LINES), container],
-            DOCKER_TIMEOUT,
+            ["container", "logs", "--tail", str(HEALTH_LOG_TAIL_LINES), container], DOCKER_TIMEOUT
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -653,11 +627,7 @@ def _relay_log_tail(run: docker_cli.Runner, container: str) -> str:
 
 
 def _validate_container_contract(
-    run: docker_cli.Runner,
-    name: str,
-    *,
-    image_id: str,
-    expected_env: set[str],
+    run: docker_cli.Runner, name: str, *, image_id: str, expected_env: set[str]
 ) -> None:
     state = _inspect_object(run, "container", name)
     config = state.get("Config")
@@ -686,8 +656,7 @@ def _validate_host_policy(spec: RelayContainerSpec, host: dict) -> None:
         raise RelayDockerError(
             "license relay restart policy has drifted: "
             + format_differences(
-                {"restart_policy": expected_restart},
-                {"restart_policy": host.get("RestartPolicy")},
+                {"restart_policy": expected_restart}, {"restart_policy": host.get("RestartPolicy")}
             )
         )
     expected_logging = {"Type": spec.log_driver, "Config": dict(spec.log_options)}
@@ -695,8 +664,7 @@ def _validate_host_policy(spec: RelayContainerSpec, host: dict) -> None:
         raise RelayDockerError(
             "license relay logging policy has drifted: "
             + format_differences(
-                {"logging_policy": expected_logging},
-                {"logging_policy": host.get("LogConfig")},
+                {"logging_policy": expected_logging}, {"logging_policy": host.get("LogConfig")}
             )
         )
 
@@ -841,8 +809,7 @@ def _validate_network(
         raise RelayDockerError(
             f"license network {name} gateway policy has drifted: "
             + format_differences(
-                {"network_options": expected_options},
-                {"network_options": options},
+                {"network_options": expected_options}, {"network_options": options}
             )
         )
 
@@ -878,10 +845,9 @@ def _validate_network_endpoints(
     attached = networks.get("Networks", {}) if isinstance(networks, dict) else {}
     private_state = attached.get(resources.private_network) if isinstance(attached, dict) else None
     aliases = private_state.get("Aliases") if isinstance(private_state, dict) else None
-    if not isinstance(aliases, list) or not {
-        RELAY_ALIAS,
-        profile.server_hostid,
-    }.issubset(set(aliases)):
+    if not isinstance(aliases, list) or not {RELAY_ALIAS, profile.server_hostid}.issubset(
+        set(aliases)
+    ):
         raise RelayDockerError("license relay private aliases have drifted")
 
 

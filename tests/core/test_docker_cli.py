@@ -20,11 +20,7 @@ from booley.core.boundary import require_bool_value, require_list, require_str_v
     ],
 )
 def test_inspect_raises_the_typed_error_for_untrusted_output(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    code: int,
-    output: str,
-    detail: str | None,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int, output: str, detail: str | None
 ) -> None:
     from booley.core import docker_cli
 
@@ -44,6 +40,12 @@ def _value(require: Callable[..., object]) -> Callable[[Any, Any], object]:
     )
 
 
+def _context(cli: Any, run: Any) -> object:
+    return cli.inspect_value(
+        run, "context", None, timeout=30, template="{{json .X}}", require=require_str_value
+    )
+
+
 def _label(cli: Any, run: Any) -> object:
     return cli.inspect_label(run, "image", "img", "k", timeout=30)
 
@@ -57,6 +59,7 @@ def _registry(template: str | None) -> Callable[[Any, Any], object]:
 
 
 _VALUE_ARGS = ["image", "inspect", "img", "--format", "{{json .X}}"]
+_CONTEXT_ARGS = ["context", "inspect", "--format", "{{json .X}}"]
 _LABEL_ARGS = ["image", "inspect", "img", "--format", '{{json (index .Config.Labels "k")}}']
 _EXISTS_ARGS = ["image", "inspect", "img"]
 _REGISTRY_ARGS = ["buildx", "imagetools", "inspect", "img"]
@@ -69,6 +72,7 @@ _RAW_ARGS = [*_REGISTRY_ARGS, "--raw"]
     [
         pytest.param(0, "true", _value(require_bool_value), _VALUE_ARGS, True, id="bool"),
         pytest.param(0, '["a"]', _value(require_list), _VALUE_ARGS, ["a"], id="list"),
+        pytest.param(0, '"unix:///s"', _context, _CONTEXT_ARGS, "unix:///s", id="context"),
         pytest.param(0, "7", _value(require_str_value), _VALUE_ARGS, "malformed", id="type"),
         pytest.param(0, "null", _label, _LABEL_ARGS, None, id="label-null"),
         pytest.param(0, '""', _label, _LABEL_ARGS, None, id="label-empty"),

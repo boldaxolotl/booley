@@ -208,10 +208,7 @@ def test_rerun_replaces_recorded_auto_and_visitor(
 
 
 def test_preserved_tracked_config_reports_the_pending_table(
-    tmp_path: Path,
-    home: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     login(home, "claude")
     api_key(monkeypatch, "codex")

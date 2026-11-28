@@ -44,13 +44,7 @@ def builtin_types() -> list[type[BuiltinFlow]]:
 
 
 FLOWS = builtin_types()
-PAIRS = (
-    "flatten",
-    "generic-abc-before-mapping",
-    "repair-setup",
-    "repair-hold",
-    "gate-cloning",
-)
+PAIRS = ("flatten", "generic-abc-before-mapping", "repair-setup", "repair-hold", "gate-cloning")
 # These are the entire human compatibility exception, not a blanket SUPPRESS exemption.
 HIDDEN = {"--work-dir", "--timeout-ms", "--elab-only", "--build-only", "--standalone"}
 
@@ -244,9 +238,7 @@ def test_module_help_outside_project(tmp_path: Path) -> None:
     }
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
     result = run_bounded_child(
-        [sys.executable, "-m", "booley.flows.synth", "--help"],
-        cwd=tmp_path,
-        env=env,
+        [sys.executable, "-m", "booley.flows.synth", "--help"], cwd=tmp_path, env=env
     )
     assert result.returncode == 0, result.stderr
     assert "Common:" in result.stdout and "Expert: OpenROAD:" in result.stdout

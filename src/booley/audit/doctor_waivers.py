@@ -25,12 +25,7 @@ class DoctorWarning(str):
     dedupe: str | None
 
     def __new__(
-        cls,
-        check_id: str,
-        message: str,
-        *,
-        subject: str | None = None,
-        dedupe: str | None = None,
+        cls, check_id: str, message: str, *, subject: str | None = None, dedupe: str | None = None
     ) -> DoctorWarning:
         _validate_check_id(check_id)
         if subject is not None and not subject.strip():
@@ -43,11 +38,7 @@ class DoctorWarning(str):
 
 
 def warning(
-    check_id: str,
-    message: str,
-    *,
-    subject: str | None = None,
-    dedupe: str | None = None,
+    check_id: str, message: str, *, subject: str | None = None, dedupe: str | None = None
 ) -> DoctorWarning:
     """Construct a warning that can be matched without parsing its prose."""
 

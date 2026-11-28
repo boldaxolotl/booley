@@ -15,10 +15,7 @@ import tracemalloc
 from pathlib import Path
 
 from booley.flows.sim.coverage_evidence import CoverageEvidenceSession
-from booley.flows.sim.coverage_record_store import (
-    load_coverage_record,
-    publish_coverage_record,
-)
+from booley.flows.sim.coverage_record_store import load_coverage_record, publish_coverage_record
 from tests.flows.sim.coverage_scale_fixture import scale_coverage_record
 
 WORKER_TIMEOUT_SECONDS = 300
