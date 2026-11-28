@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core import docker_cli
+from booley.core.boundary import as_positive_int
 from booley.core.differences import format_differences
 from booley.core.project_identity import project_label_id
 from booley.core.resources import package_data_dir
@@ -949,7 +950,7 @@ def _is_missing(detail: str) -> bool:
 
 
 def _valid_port(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535
+    return 1 <= as_positive_int(value, 0) <= 65535
 
 
 def _append_labels(argv: list[str], labels: tuple[str, ...], final: str) -> list[str]:
