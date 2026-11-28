@@ -2558,7 +2558,7 @@ def _container_matches_swap(tmp_path, monkeypatch, memory_swap, swap_limit="{}")
     monkeypatch.setattr(sr, "_mounts_match_spec", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         sr,
-        "_run",
+        "_run",  # boundary: runs the Docker CLI
         lambda argv, **_kwargs: completed(
             stdout=swap_limit if argv[1] == "info" else container_inspect_output(state, argv[-1])
         ),
@@ -2951,7 +2951,7 @@ def test_project_sandbox_resolution_refuses_drift_before_attachment(
                 result.stdout = json.dumps(state)
             return result
 
-        monkeypatch.setattr(sr, "_run", replaced)
+        monkeypatch.setattr(sr, "_run", replaced)  # boundary: runs the Docker CLI
     attached = Mock()
     monkeypatch.setattr("booley.runtime.runtime_attachment.run_command", attached)
     with pytest.raises(sr.SessionError, match="current host issuance"):
