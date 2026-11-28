@@ -73,13 +73,15 @@ T3 Code lists the Project under its `[project].name` from
 the Sandbox starts, so a name you give the Project in T3 Code lasts only until
 then.
 
-`session enter` works like a terminal inside the container, so every
-in-Sandbox command works through it. Ending a `session enter` command, with
-`Ctrl-C` or by closing the shell, stops everything it started, background
-processes included, except a Flow or Specialist started from the Dashboard:
-that Standalone Job keeps running until it finishes or the Sandbox stops. `up`
-and `enter` reuse a running Sandbox. `session down` also stops any `booley flow`
-or `booley specialist` run typed in a Sandbox shell.
+A T3 Code thread's terminal is a [container terminal](USAGE.md#read-this-first):
+it runs inside the Sandbox, so type in-Sandbox commands there. From a host
+terminal, `session enter` gets you in too, for example without a browser or in a
+script. Ending a `session enter` command, with `Ctrl-C` or by closing the shell,
+stops everything it started, background processes included, except a Flow or
+Specialist started from the Dashboard: that Standalone Job keeps running until
+it finishes or the Sandbox stops. `up` and `enter` reuse a running Sandbox.
+`session down` also stops any `booley flow` or `booley specialist` run typed in
+a container terminal.
 
 `session refresh` rebuilds only what changed and is safe to rerun after a
 failure. It doesn't touch tracked files; when it reports pending file changes,
@@ -196,10 +198,11 @@ Testbenches that need cocotb 1.x (for example for `TestFactory` or
   runs Python 3.14, which has no `distutils`, and cocotb-1.x-era
   packages such as `cocotb-test` 0.2.0 still import it.
 - **Check the exact import the testbench uses.** `import cocotb_test` can
-  succeed while `import cocotb_test.simulator` fails:
+  succeed while `import cocotb_test.simulator` fails. Check it in a container
+  terminal:
 
     ```bash
-    booley session enter -- python -c "import cocotb_test.simulator, cocotb; print(cocotb.__version__)"
+    python -c "import cocotb_test.simulator, cocotb; print(cocotb.__version__)"
     ```
 
 The base image checks its own cocotb at build time, not yours, so the first
@@ -380,8 +383,8 @@ host login, the `booley auth` token, or the API key from your shell. Its
 session history is kept across rebuilds.
 
 Booley's tools and skills work in every listed CLI, so a plain `claude` or
-`codex` in a Sandbox terminal has them. Specialists use the `default` CLI unless
-their model needs another listed one.
+`codex` in a container terminal has them. Specialists use the `default` CLI
+unless their model needs another listed one.
 
 After changing `clis`, `auth`, or `default`,
 [apply the change](#after-changing-sandbox-settings). Until you do, a changed
@@ -403,7 +406,7 @@ taken the relay's port.
   removes it.
 - **T3 Code's worktrees** are in `.booley/t3-worktrees/` of the Project's main
   checkout on the host. They stay plain Git worktrees if the volume is lost,
-  usable from a Sandbox terminal.
+  usable from a container terminal.
 - **T3 Code's logs** in that volume are capped: each time T3 Code starts, Booley
   deletes the oldest until at most 200 MB remain.
 
