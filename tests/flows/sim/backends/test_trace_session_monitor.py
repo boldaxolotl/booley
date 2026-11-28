@@ -25,8 +25,7 @@ from tests.time_budget import hang_guard_s, scaled
 
 from booley.bwave.waveform_store import ConversionAttempt, ConversionResult, inspect_store
 from booley.flows.sim.trace_session import TraceSession
-from booley.runtime import platform_paths
-from booley.runtime.platform_paths import popen_new_group_kwargs
+from booley.runtime import platform_paths, process_group
 
 #: Bound on one stall kill, from monitor start to every process dead: ``stop_monitor``'s
 #: docstring puts the kill path at about 30 s on Windows (about 10 s on POSIX). Kept below
@@ -50,8 +49,7 @@ def _spawn_sleeper() -> subprocess.Popen:
     enough to outlast any wait here, so the only way it exits is if the monitor
     kills it.
 
-    Spawned in its *own* process group (via popen_new_group_kwargs, matching
-    how real sim/bwave procs are launched) so that the monitor's
+    Spawned in its *own* process group (as real sim/bwave procs are) so that the monitor's
     kill_process_tree → killpg targets only this child. Without it, the
     sleeper shares pytest's group and the SIGTERM takes the test runner down
     with it.
@@ -60,7 +58,7 @@ def _spawn_sleeper() -> subprocess.Popen:
         [sys.executable, "-c", f"import time; time.sleep({_SLEEPER_LIFETIME_S})"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        **popen_new_group_kwargs(),
+        **process_group.new_group_kwargs(),
     )
 
 

@@ -57,8 +57,8 @@ from tests.time_budget import SCALE_VARIABLE, hang_guard_s, scaled
         (False, lambda: native_binary(Path("/bin"), "bwave").as_posix(), "/bin/bwave"),
         (True, lambda: native_binary(Path("/bin"), "bwave").as_posix(), "/bin/bwave.exe"),
         (False, popen_new_group_kwargs, {"start_new_session": True}),
-        # 0x200 is the Win32 CREATE_NEW_PROCESS_GROUP flag.
-        (True, popen_new_group_kwargs, {"creationflags": 0x200}),
+        # Win32 CREATE_NEW_PROCESS_GROUP (0x200) and CREATE_SUSPENDED (0x4).
+        (True, popen_new_group_kwargs, {"creationflags": 0x200 | 0x4}),
         (
             False,
             lambda: host_path_from_docker_mount("/home/dev/project").as_posix(),
