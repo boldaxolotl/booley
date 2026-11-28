@@ -338,7 +338,7 @@ def test_snapshot_lists_only_the_named_worktrees_jobs(
         _job(world, f"run-{target}", work_dir, target=target)
     thread = "codex-thread-9c0d1e2f"
     _job(world, "run-main", world.main, target="t_main", client="codex", thread=thread)
-    # Older records without `work_dir`: an MCP server's (listed under main) and a measure child's.
+    # Without `work_dir`: an older MCP record (listed under main) and a measure child's (in none).
     _job(world, "run-nowhere", None, target="t_nowhere", ended="2026-10-08T09:00:00Z")
     _job(world, "run-child", None, target="t_child", session=None)
     worktree = {"wt": world.wt, "main": world.main}.get(name, tmp_path / name)

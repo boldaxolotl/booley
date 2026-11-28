@@ -286,6 +286,8 @@ class TestDispatchWithoutCwd:
 
         assert "RUNNING: 'reviewer'" in first
         assert "attached to it" in second
+        (record,) = jobrec.list_records(session_jobs_dir())
+        assert record.work_dir is None
 
 
 class TestManagerReadsPinnedRoot:

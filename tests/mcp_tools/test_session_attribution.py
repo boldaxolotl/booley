@@ -183,6 +183,7 @@ async def test_job_records_the_agent_client_and_thread(
     (rec,) = job_records.list_records(session_jobs_dir())
     assert (rec.client, rec.thread) == expected
     assert rec.owner == (owner or "mcp-test")
+    assert rec.work_dir is not None and Path(rec.work_dir).resolve() == tmp_path.resolve()
 
 
 @_NEEDS_PROC
@@ -249,10 +250,12 @@ async def _start_job(tmp_path, monkeypatch, client_name, thread_meta):
     )
     ctx = context()
     ctx.session.client_params.client_info.name = client_name
-    ctx.request = object()  # A transport request, whose peer the test names above.
+    # A transport request with no peer to route by; the thread's peer is the one named above.
+    ctx.request = SimpleNamespace(headers={}, scope={})
     meta = None if thread_meta is None else {"threadId": thread_meta}
-    # With ``work_dir`` the call needs no checkout lookup at the SDK boundary.
-    arguments = {"work_dir": str(tmp_path)}
+    # Codex names no workspace here, so only its call passes ``work_dir``; the others omit it
+    # and run in the server cwd.
+    arguments = {"work_dir": str(tmp_path)} if client_name.startswith("codex") else {}
     await server._call_application_tool(
         app, CallToolRequestParams(name="sim", arguments=arguments, _meta=meta), ctx
     )
