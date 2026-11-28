@@ -1974,7 +1974,7 @@ def _staleness_run(
 ) -> doctor.DoctorRunResult:
     """Run Doctor on a Project whose Sandbox Images carry the given build times.
 
-    *created* maps ``base``, ``derived`` or an image name to its ``{{.Created}}`` answer;
+    *created* maps ``base``, ``derived`` or an image name to its ``{{json .Created}}`` answer;
     ``None`` makes that image absent.
     """
     booley_dir = write_project(tmp_path, sandbox_image=image)
@@ -1986,9 +1986,9 @@ def _staleness_run(
         name = names.get(role, role)
         _answer_command(
             monkeypatch,
-            lambda cmd, name=name: "{{.Created}}" in cmd and cmd[-1] == name,
+            lambda cmd, name=name: "{{json .Created}}" in cmd and name in cmd,
             returncode=0 if stamp else 1,
-            stdout=f"{stamp}\n" if stamp else "",
+            stdout=f'"{stamp}"\n' if stamp else "",
         )
     if dockerfile_mtime is not None:
         _write_project_dockerfile(tmp_path, dockerfile_mtime)
@@ -2897,10 +2897,9 @@ def _prepare_row(monkeypatch, row):
         monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
         monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
         monkeypatch.setattr(dashboard_extension, "installed_error", lambda: None)
-    elif row == "host-no-marker":
-        _answer_command(
-            monkeypatch, lambda cmd: "{{json .Config.Env}}" in cmd, stdout='["PATH=/usr/bin"]\n'
-        )
+    elif row in {"host-no-marker", "host-unreadable-env"}:
+        env = '["PATH=/usr/bin"]\n' if row == "host-no-marker" else "null\n"
+        _answer_command(monkeypatch, lambda cmd: "{{json .Config.Env}}" in cmd, stdout=env)
     elif row == "host-image-absent":
         _answer_command(monkeypatch, lambda cmd: "{{json .Config.Env}}" in cmd, returncode=1)
     elif row == "host-no-runtime":
@@ -2940,6 +2939,7 @@ def test_runtime_marker_fix_for_a_hand_written_sandbox(tmp_path, monkeypatch):
         "inside-no-project",
         "host-marker",
         "host-no-marker",
+        "host-unreadable-env",
         "host-image-absent",
         "host-no-runtime",
     ],
@@ -2984,7 +2984,7 @@ def test_runtime_location(row, tmp_path, monkeypatch):
     elif row == "host-marker":
         assert any("bakes BOOLEY_CONTAINER=1" in m for m in passes)
         assert warns == []
-    elif row == "host-no-marker":
+    elif row in {"host-no-marker", "host-unreadable-env"}:
         (warning,) = warns
         assert "recreate the Sandbox: in VS Code, " in warning
         assert not any("runtime marker" in m for m in finding_messages(result, Severity.FAIL))

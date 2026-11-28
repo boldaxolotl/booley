@@ -870,6 +870,13 @@ _PROBE_ROWS = [
         info=subprocess.TimeoutExpired("docker", 10),
     ),
     _row("daemon-oserror", "docker", _ERROR, ("cannot contact",), info=OSError("denied")),
+    _row(
+        "daemon-silent",
+        "docker",
+        _ERROR,
+        "Docker daemon is not running or accessible",
+        info=(1, "", ""),
+    ),
     _row("vscode-path-command", "vscode", _CURRENT, "codium available", command="/usr/bin/codium"),
     _row(
         "vscode-gui-app",
@@ -1567,7 +1574,7 @@ def _inspection_environment(monkeypatch, tmp_path, *, recorded=True, skills_curr
         {
             "": (2, "fake docker: a check-only inspection runs only inspect calls"),
             "version": (0, "linux\tDocker Engine"),
-            "context inspect": (0, "unix:///var/run/docker.sock"),
+            "context inspect": (0, '"unix:///var/run/docker.sock"'),
             "inspect": (1, "Error: No such object"),
         },
     )

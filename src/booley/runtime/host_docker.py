@@ -84,7 +84,7 @@ def relay_docker(args: list[str], timeout: int) -> subprocess.CompletedProcess[s
     return _run_docker(args, timeout=timeout)
 
 
-def _runner(executable: str) -> docker_cli.Runner:
+def runner(executable: str) -> docker_cli.Runner:
     """:func:`relay_docker` for a chosen Docker *executable*."""
     return lambda args, timeout: _run_docker(args, timeout=timeout, executable=executable)
 
@@ -96,7 +96,7 @@ def _runner(executable: str) -> docker_cli.Runner:
 
 def _exists(kind: str, name: str, *, timeout: int = 15, executable: str = "docker") -> bool:
     try:
-        return docker_cli.exists(_runner(executable), kind, name, timeout=timeout)
+        return docker_cli.exists(runner(executable), kind, name, timeout=timeout)
     except (subprocess.SubprocessError, FileNotFoundError):
         return False
 
@@ -155,7 +155,7 @@ def _inspect_image(
     failed = f"cannot inspect Docker image {reference!r}"
     try:
         return docker_cli.inspect_value(
-            _runner(executable),
+            runner(executable),
             "image",
             reference,
             timeout=timeout,

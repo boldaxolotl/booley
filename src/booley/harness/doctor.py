@@ -61,6 +61,7 @@ from booley.config.gateway import (
 )
 from booley.config.jobs import SeatCapError, parse_seat_caps, seat_cap_fix
 from booley.config.project_config import lookup_target_section, normalize_tests_toml
+from booley.core import docker_cli
 from booley.core.booley_layout import DOCTOR_TMP_DIR
 from booley.core.boundary import (
     BoundaryError,
@@ -69,6 +70,7 @@ from booley.core.boundary import (
     require_int,
     require_list,
     require_str,
+    require_str_value,
 )
 from booley.core.host_shell import quote_arg
 from booley.flows import execution, runtime_reality, target_test_plan_inspection
@@ -1490,6 +1492,18 @@ def _docker_image_exists_by_name(image: str) -> bool:
     return idk.image_exists(image, executable=docker_exe, timeout=10)
 
 
+def _image_env(docker_exe: str, image: str) -> list[Any]:
+    """Return the env entries baked into *image*; Docker CLI failures pass through."""
+    return docker_cli.inspect_value(
+        idk.runner(docker_exe),
+        "image",
+        image,
+        timeout=10,
+        template="{{json .Config.Env}}",
+        require=require_list,
+    )
+
+
 def _image_env_value(docker_exe: str, image: str, key: str) -> str | None:
     """Return the baked value of env var *key* in *image*, or None if unset.
 
@@ -1498,18 +1512,8 @@ def _image_env_value(docker_exe: str, image: str, key: str) -> str | None:
     missing image, malformed output.
     """
     try:
-        result = run_captured_bounded(
-            [docker_exe, "image", "inspect", image, "--format", "{{json .Config.Env}}"], timeout=10
-        )
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return None
-    if result.returncode != 0:
-        return None
-    try:
-        env_list = json.loads(result.stdout.strip() or "[]")
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(env_list, list):
+        env_list = _image_env(docker_exe, image)
+    except (docker_cli.InspectError, subprocess.SubprocessError, FileNotFoundError):
         return None
     prefix = f"{key}="
     for entry in env_list:
@@ -1953,21 +1957,18 @@ def _check_image_bakes_runtime_marker(
         _skip("sandbox image runtime marker check skipped - container runtime unavailable")
         return
     try:
-        result = run_captured_bounded(
-            [docker_exe, "image", "inspect", sandbox_image, "--format", "{{json .Config.Env}}"],
-            timeout=10,
-        )
+        env_list = _image_env(docker_exe, sandbox_image)
     except (subprocess.SubprocessError, FileNotFoundError):
         _skip("sandbox image runtime marker check skipped - image inspect failed")
         return
-    if result.returncode != 0:
-        _skip(f"sandbox image runtime marker check skipped - image {sandbox_image} not present")
-        return
-    try:
-        env_list = json.loads(result.stdout.strip() or "[]")
-    except json.JSONDecodeError:
-        env_list = []
-    if isinstance(env_list, list) and "BOOLEY_CONTAINER=1" in env_list:
+    except docker_cli.InspectError as exc:
+        if exc.result is not None:
+            _skip(
+                f"sandbox image runtime marker check skipped - image {sandbox_image} not present"
+            )
+            return
+        env_list = []  # an unreadable environment bakes no marker
+    if "BOOLEY_CONTAINER=1" in env_list:
         _pass(f"{sandbox_image} bakes BOOLEY_CONTAINER=1 (runtime marker)")
     else:
         _warn(f"{sandbox_image} does not bake BOOLEY_CONTAINER=1 — {_RUNTIME_MARKER_FIX}")
@@ -2291,14 +2292,17 @@ def _image_created_epoch(docker_exe: str, image: str) -> float | None:
     staleness verdict.
     """
     try:
-        result = run_captured_bounded(
-            [docker_exe, "image", "inspect", "--format", "{{.Created}}", image], timeout=10
+        created = docker_cli.inspect_value(
+            idk.runner(docker_exe),
+            "image",
+            image,
+            timeout=10,
+            template="{{json .Created}}",
+            require=require_str_value,
         )
-    except (subprocess.SubprocessError, FileNotFoundError):
+    except (docker_cli.InspectError, subprocess.SubprocessError, FileNotFoundError):
         return None
-    if result.returncode != 0:
-        return None
-    return _parse_docker_created(result.stdout)
+    return _parse_docker_created(created)
 
 
 def _image_stale_remedy(project: ProjectAudit | None) -> str:

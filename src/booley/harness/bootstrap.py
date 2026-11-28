@@ -15,6 +15,7 @@ from booley.config.host_config import (
     host_config_path,
     load_host_policy,
 )
+from booley.core import docker_cli
 from booley.harness import host_sidecars, nangate_pdk
 from booley.harness.image_lifecycle import host_capacity_requests
 from booley.harness.image_lifecycle import reconcile as reconcile_images
@@ -423,7 +424,7 @@ def _docker_daemon_error() -> str | None:
         return f"cannot contact Docker daemon: {exc}"
     if result.returncode == 0:
         return None
-    lines = (result.stderr or result.stdout).strip().splitlines()
+    lines = docker_cli.failure_detail(result, "").splitlines()
     detail = f": {lines[0][:200]}" if lines else ""
     return f"Docker daemon is not running or accessible{detail}"
 
