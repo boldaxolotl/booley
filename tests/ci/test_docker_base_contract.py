@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.fake_docker_executable import install_fake_docker
 from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import docker_base_contract
@@ -159,7 +160,7 @@ def test_image_resolution_selects_repository_digest_and_verifies_contract(monkey
                 f'["ghcr.io/acme/base@sha256:{digest}", "mirror/base@sha256:{"b" * 64}"]\n',
                 "",
             )
-        return subprocess.CompletedProcess(command, 0, "contract-value\n", "")
+        return subprocess.CompletedProcess(command, 0, '"contract-value"\n', "")
 
     monkeypatch.setattr(docker_base_contract.subprocess, "run", fake_run)
 
@@ -474,7 +475,7 @@ def test_image_resolution_shadow_rejects_remote_pull_disagreement(monkeypatch) -
         if "{{ json .RepoDigests }}" in command:
             payload = f'["ghcr.io/acme/base@{pulled_digest}"]\n'
             return subprocess.CompletedProcess(command, 0, payload, "")
-        return subprocess.CompletedProcess(command, 0, "contract-value\n", "")
+        return subprocess.CompletedProcess(command, 0, '"contract-value"\n', "")
 
     monkeypatch.setattr(docker_base_contract.subprocess, "run", fake_run)
 
@@ -496,7 +497,7 @@ def test_image_resolution_shadow_returns_matching_immutable_digest(monkeypatch) 
         if "{{ json .RepoDigests }}" in command:
             payload = f'["ghcr.io/acme/base@{index_digest}"]\n'
             return subprocess.CompletedProcess(command, 0, payload, "")
-        return subprocess.CompletedProcess(command, 0, "contract-value\n", "")
+        return subprocess.CompletedProcess(command, 0, '"contract-value"\n', "")
 
     monkeypatch.setattr(docker_base_contract.subprocess, "run", fake_run)
 
@@ -556,6 +557,16 @@ def test_cli_selects_requested_image_resolver(
     assert docker_base_contract.main() == 0
     assert calls == [(resolver_name, "ghcr.io/acme/base:main", "contract")]
     assert capsys.readouterr().out.strip() == expected_image
+
+
+def test_remote_registry_failure_keeps_the_docker_error(tmp_path: Path, monkeypatch) -> None:
+    detail = "ERROR: ghcr.io/acme/base:main: not found"
+    install_fake_docker(tmp_path, monkeypatch, {"imagetools inspect": (1, detail)})
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        docker_base_contract.resolve_labeled_image_remote("ghcr.io/acme/base:main", {"k": "v"})
+
+    assert (caught.value.returncode, caught.value.stderr.strip()) == (1, detail)
 
 
 def test_image_resolution_rejects_malformed_digest_inventory(monkeypatch) -> None:

@@ -17,7 +17,7 @@ Runner = Callable[[list[str], int], subprocess.CompletedProcess[str]]
 
 
 class InspectError(Exception):
-    """``docker <kind> inspect`` failed, or printed no valid document."""
+    """A Docker inspection command failed, or printed no valid document."""
 
     def __init__(
         self, message: str, result: subprocess.CompletedProcess[str] | None = None
@@ -50,13 +50,33 @@ def inspect_value(
 
     Whatever *run* raises, such as a timeout, passes through.
     """
-    result = run([kind, "inspect", name, "--format", template], timeout)
+    args = [kind, "inspect", name, "--format", template]
+    return _decoded(run, args, f"{kind} {name}", timeout, require)
+
+
+def inspect_registry_image(
+    run: Runner, reference: str, *, timeout: int, template: str | None = None
+) -> dict[str, Any]:
+    """Return the JSON object ``docker buildx imagetools inspect`` prints for *reference*.
+
+    *template* renders one field (``--format``); ``None`` reads the raw manifest
+    (``--raw``). Reads the registry only, never pulls. Whatever *run* raises passes through.
+    """
+    shape = ["--raw"] if template is None else ["--format", template]
+    args = ["buildx", "imagetools", "inspect", reference, *shape]
+    return _decoded(run, args, f"registry image {reference}", timeout, require_dict)
+
+
+def _decoded(
+    run: Runner, args: list[str], subject: str, timeout: int, require: Validator[_T]
+) -> _T:
+    result = run(args, timeout)
     if result.returncode:
-        raise InspectError(f"cannot inspect {kind} {name}: {failure_detail(result)}", result)
+        raise InspectError(f"cannot inspect {subject}: {failure_detail(result)}", result)
     try:
-        return require(json.loads(result.stdout), field=f"{kind} {name}")
+        return require(json.loads(result.stdout), field=subject)
     except ValueError as exc:
-        raise InspectError(f"invalid inspection of {kind} {name}") from exc
+        raise InspectError(f"invalid inspection of {subject}") from exc
 
 
 def inspect(
