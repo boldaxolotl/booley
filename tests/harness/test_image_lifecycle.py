@@ -2157,9 +2157,9 @@ _NO_FILE = "[Errno 2] No such file or directory: 'docker'"
         ),
         (lifecycle.Intent.CHECK, ("image", "inspect"), _DAEMON, "Docker daemon"),
         (lifecycle.Intent.CHECK, ("image", "inspect"), _lost(), "cannot inspect Docker image"),
-        (lifecycle.Intent.ENSURE, ("image", "inspect", "--format"), _DAEMON, "Docker daemon"),
+        (lifecycle.Intent.ENSURE, ("image", "inspect", ".Id}}"), _DAEMON, "Docker daemon"),
         (lifecycle.Intent.ENSURE, ("tag",), _fails("tag rejected"), "tag rejected"),
-        (lifecycle.Intent.ENSURE, ("tag",), _lost("inspect --format"), "retain image"),
+        (lifecycle.Intent.ENSURE, ("tag",), _lost("inspect .Id}}"), "retain image"),
     ],
 )
 def test_host_reconcile_distinguishes_absent_images_from_docker_failures(

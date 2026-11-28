@@ -206,7 +206,7 @@ def _sites() -> list[_Site]:
             ["docker", "image", "inspect"],
             30,
             lambda _root: project_image.inspect_layout_image("img"),
-            '[{"Id": "x"}]',
+            '{"Id": "x"}',
             {"ok": "returned:{'Id': 'x'}"} | _same("RuntimeError"),
         ),
         # Private drive: layout verification inspects and probes the image around this run, so the public route cannot show this call alone.
