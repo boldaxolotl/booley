@@ -20,7 +20,9 @@ from typing import IO, Any, AnyStr, Literal, cast, overload
 
 from booley.runtime.process_group import (
     capture_process_group,
-    new_group_kwargs,
+    own_process_group,
+    owned_group_kwargs,
+    release_process_group,
     terminate_process_group,
 )
 
@@ -163,13 +165,14 @@ def native_binary(base_path: Path, name: str) -> Path:
 
 
 def popen_new_group_kwargs() -> dict:
-    """Extra Popen/subprocess.run kwargs to put the child in its own group.
+    """Extra Popen kwargs that put a child the caller owns in its own group.
 
-    On Windows: CREATE_NEW_PROCESS_GROUP so we can target the whole tree via
-    taskkill /T. On POSIX: start_new_session=True so killpg() reaches all
-    descendants (xsim, xelab, yosys-abc, sv2v, .bat-spawned children, ...).
+    On POSIX: start_new_session=True so killpg() reaches all descendants (xsim,
+    xelab, yosys-abc, sv2v, .bat-spawned children, ...). On Windows the child
+    also starts suspended: pass it to ``process_group.own_process_group`` as the
+    next statement.
     """
-    return dict(new_group_kwargs(is_windows=IS_WINDOWS))
+    return dict(owned_group_kwargs(is_windows=IS_WINDOWS))
 
 
 def kill_process_tree(proc: subprocess.Popen) -> None:
@@ -258,6 +261,7 @@ def _spawn(
                 **popen_new_group_kwargs(),
             ),
         )
+        own_process_group(proc)
     except BaseException:
         if feed_write is not None:
             os.close(feed_write)
@@ -394,8 +398,10 @@ def _run_bounded(
     proc, feeder = _spawn(argv, cwd=cwd, env=env, input=input, stdin=stdin, stdout=stdout)
     # On POSIX poll() can return None while another thread reaps the child.
     # Windows polls its process handle and can tell whether the child exited.
-    killer = _DeadlineKiller(proc, timeout) if sys.platform == "win32" else None
+    killer = None
     try:
+        if sys.platform == "win32":
+            killer = _DeadlineKiller(proc, timeout)
         try:
             if killer is not None:
                 killer.start()
@@ -417,6 +423,7 @@ def _run_bounded(
         if feeder is not None:
             # Abandoned when an escaped descendant still holds the pipe unread.
             feeder.join(_KILL_DRAIN_TIMEOUT_S)
+        release_process_group(proc)
     return subprocess.CompletedProcess(argv, proc.returncode, out, err)
 
 

@@ -20,8 +20,9 @@ from booley.core.boundary import require_dict
 from booley.mcp import catalog
 from booley.mcp.flow_adapter import flow_negative_flags
 from booley.runtime.process_group import (
-    capture_process_group,
-    new_group_kwargs,
+    own_process_group,
+    owned_group_kwargs,
+    release_process_group,
     terminate_process_group,
 )
 
@@ -63,16 +64,19 @@ def run_schema_worker(
             str(result),
         ]
         process = subprocess.Popen(
-            command, stdout=output, stderr=output, env=environment, **new_group_kwargs()
+            command, stdout=output, stderr=output, env=environment, **owned_group_kwargs()
         )
-        group = capture_process_group(process)
+        group = own_process_group(process)
         try:
             _wait_for_worker(process, cancel)
         except RuntimeError as exc:
             raise RuntimeError(f"{exc}\n{_diagnostic_tail(output)}") from exc
         finally:
             # Also terminate descendants that outlive a successfully exited importer.
-            terminate_process_group(process, group, grace_seconds=0.2)
+            try:
+                terminate_process_group(process, group, grace_seconds=0.2)
+            finally:
+                release_process_group(process)
         return _read_result(result)
 
 

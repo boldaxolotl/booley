@@ -15,7 +15,11 @@ from pathlib import Path
 from booley.runtime import platform_paths
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.platform_paths import bash_bin
-from booley.runtime.process_group import new_group_kwargs
+from booley.runtime.process_group import (
+    own_process_group,
+    owned_group_kwargs,
+    release_process_group,
+)
 from booley.runtime.project_repositories import paired_project_repository
 
 logger = logging.getLogger(__name__)
@@ -123,8 +127,9 @@ def _run_logged(
             stdin=subprocess.DEVNULL,
             stdout=sink,
             stderr=subprocess.STDOUT,
-            **new_group_kwargs(),
+            **owned_group_kwargs(),
         )
+        own_process_group(process)
         try:
             while process.poll() is None:
                 if time.monotonic() >= deadline:
@@ -136,6 +141,8 @@ def _run_logged(
         except BaseException:
             platform_paths.kill_process_tree(process)
             raise
+        finally:
+            release_process_group(process)  # a background child keeps running
     _echo_new_log_bytes(log, offset, decoder)
     return process.returncode
 
