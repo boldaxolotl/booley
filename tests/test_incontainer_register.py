@@ -378,11 +378,12 @@ def test_t3_code_keeps_its_state_under_the_projects_base_dir(
     ("case", "linked", "report"),
     [
         ("match", True, ""),
+        ("updated", True, ""),
         ("mismatch", False, "expects headless Chrome 9.9.9.9, the Sandbox Image ships 1.2.3.4"),
         ("downloaded", False, ""),
         ("unrecorded", False, "T3 Code's preview browser not linked: "),
     ],
-    ids=["match", "mismatch", "downloaded", "unrecorded"],
+    ids=["match", "updated", "mismatch", "downloaded", "unrecorded"],
 )
 def test_t3_code_starts_with_the_images_preview_browser(
     tmp_path, monkeypatch, capsys, case, linked, report
@@ -396,6 +397,9 @@ def test_t3_code_starts_with_the_images_preview_browser(
         record.write_bytes(b"9.9.9.9\n")
     elif case == "unrecorded":
         record.unlink()
+    elif case == "updated":  # an older image's link, kept on the volume
+        entry.parent.mkdir(parents=True)
+        (entry.parent / "1.0.0.0").symlink_to(tmp_path / "sandbox-image/chrome")
     elif case == "downloaded":  # T3 Code's own earlier download
         entry.mkdir(parents=True)
 
