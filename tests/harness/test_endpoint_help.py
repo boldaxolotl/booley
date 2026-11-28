@@ -254,7 +254,7 @@ def test_help_looking_data_is_parsed_once_in_sandbox(
 
     Hinted = hinted_endpoint(Custom, calls, nested=False)
 
-    def invoke(endpoint, argv, args):
+    def invoke(endpoint, argv, args, **_kwargs):
         endpoint.parse_args(argv)
         return 0
 
