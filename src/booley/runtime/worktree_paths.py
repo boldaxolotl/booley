@@ -5,17 +5,15 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-import sys
 from pathlib import Path, PurePosixPath
 
 from booley.core import sandbox_layout
 from booley.core.booley_dir import (
     BOOLEY_DIR_NAME,
     own_booley_dir_relative,
-    resolve_booley_dir,
     resolve_checkout_booley_dir,
+    resolve_common_booley_dir,
 )
-from booley.core.booley_layout import BooleyLayoutError
 from booley.runtime import platform_paths
 
 
@@ -24,9 +22,12 @@ class BooleyDirMismatchError(ValueError):
 
 
 def worktree_state_dir(project_root: Path, *, booley_dir: Path | None = None) -> Path:
-    """Use a checkout-local spelling only when it names the selected state."""
+    """Return the Booley Directory for worktrees and baselines: *booley_dir*, else the Main one.
+
+    A checkout-local spelling is used only when it names that same directory.
+    """
     root = project_root.resolve()
-    selected = booley_dir.resolve() if booley_dir is not None else resolve_booley_dir(root)
+    selected = booley_dir.resolve() if booley_dir is not None else resolve_common_booley_dir(root)
     local = resolve_checkout_booley_dir(root)
     try:
         local.relative_to(root)
@@ -118,30 +119,3 @@ def worktree_booley_dir(project_root: Path) -> PurePosixPath:
     if ambient:
         _require_ambient_booley_dir(own, ambient)
     return relative
-
-
-def main(argv: list[str] | None = None) -> int:
-    """Print the checkout's Booley Directory relative to its root, for the worktree script.
-
-    ``<root> --ambient`` applies :func:`worktree_booley_dir` (the checkout being
-    branched from); ``<root>`` alone reads only that checkout's own configuration
-    (the new worktree, whose ambient selection is irrelevant).
-    """
-    arguments = list(sys.argv[1:] if argv is None else argv)
-    ambient = "--ambient" in arguments
-    roots = [a for a in arguments if a != "--ambient"]
-    if len(roots) != 1:
-        print("usage: worktree_paths <root> [--ambient]", file=sys.stderr)
-        return 2
-    root = Path(roots[0])
-    try:
-        relative = worktree_booley_dir(root) if ambient else own_booley_dir_relative(root)
-    except (ValueError, BooleyLayoutError, OSError) as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    print(relative)
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -23,22 +23,16 @@ from booley.core.host_shell import quote_arg
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.fusesoc import core_projection, selftest_overlay, target_inspection
-from booley.harness import (
-    activity_hooks,
-    developer_probe,
-    doctor,
-    doctor_deep,
-    host_diagnostics,
-    web_isolation,
-)
+from booley.harness import developer_probe, doctor, doctor_deep, host_diagnostics, web_isolation
 from booley.harness.setup import readiness
 from booley.presentation import colors
 from booley.runtime import (
     auth_token,
-    dashboard_extension,
     doctor_stamp,
+    incontainer_setup,
     issuance_invalidation,
     project_gitignore,
+    sandbox_apply,
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
@@ -56,7 +50,12 @@ from tests.docker_cli_guard import route_docker_helper_through_subprocess_run
 from tests.docker_host_support import fake_docker_host
 from tests.git_command_fake import REAL_RUN
 from tests.harness import test_session_runtime as resolution_fixtures
-from tests.harness.doctor_environment_support import answer_image_check, patch_doctor_environment
+from tests.harness.doctor_environment_support import (
+    BROWSER_RECORDS,
+    answer_image_check,
+    patch_doctor_environment,
+    t3_pin,
+)
 from tests.harness.doctor_run_support import (
     finding_messages,
     git_init,
@@ -532,7 +531,7 @@ def _full_run_rows_from(
     rc = doctor.run_doctor(argparse.Namespace(verbose=verbose, deep=False), tmp_path)
     lines = colors.strip_ansi(capsys.readouterr().out).splitlines()
     first = lines.index(start_row)
-    return rc, lines[first : lines.index("Project checks") + 1]
+    return rc, lines[first : lines.index("T3 Code checks") + 1]
 
 
 def test_doctor_mcp_probe_rows_and_exit_are_pinned(tmp_path, monkeypatch, capsys):
@@ -543,13 +542,13 @@ def test_doctor_mcp_probe_rows_and_exit_are_pinned(tmp_path, monkeypatch, capsys
     )
     assert (rc, rows) == (
         0,
-        [_MCP_PASS_ROW, _MCP_ADVISORY_ROW, _MCP_TOOL_LIST_ROW, "", "Project checks"],
+        [_MCP_PASS_ROW, _MCP_ADVISORY_ROW, _MCP_TOOL_LIST_ROW, "", "T3 Code checks"],
     )
     # Not verbose: the tool list is hidden.
     rc, rows = _full_run_rows_from(
         tmp_path / "q", monkeypatch, capsys, _MCP_PASS_ROW, verbose=False
     )
-    assert (rc, rows) == (0, [_MCP_PASS_ROW, _MCP_ADVISORY_ROW, "", "Project checks"])
+    assert (rc, rows) == (0, [_MCP_PASS_ROW, _MCP_ADVISORY_ROW, "", "T3 Code checks"])
     # A failed probe: FAIL row, fix hint and the excerpt (always shown) in that order, exit 1.
     failed_row = "  ✗  MCP server probe failed with exit 3"
     rc, rows = _full_run_rows_from(
@@ -564,7 +563,7 @@ def test_doctor_mcp_probe_rows_and_exit_are_pinned(tmp_path, monkeypatch, capsys
             "      ImportError: cannot import name x",
             "      final line",
             "",
-            "Project checks",
+            "T3 Code checks",
         ],
     )
 
@@ -2275,8 +2274,9 @@ def _register_worktree(worktree: Path, administration: Path, *, absolute: bool =
     reverse = (
         worktree / ".git" if absolute else Path(os.path.relpath(worktree / ".git", administration))
     )
-    (worktree / ".git").write_text(f"gitdir: {pointer}\n", encoding="utf-8")
-    (administration / "gitdir").write_text(f"{reverse}\n", encoding="utf-8")
+    # Git writes forward slashes on every platform and finds a worktree by the "/.git" suffix.
+    (worktree / ".git").write_bytes(f"gitdir: {pointer.as_posix()}\n".encode())
+    (administration / "gitdir").write_bytes(f"{reverse.as_posix()}\n".encode())
 
 
 class TestWorktreePortability:
@@ -2570,7 +2570,9 @@ class TestWorktreePortability:
             )
         elif hazard == "metadata":
             _register_worktree(
-                project.booley_dir / "worktrees" / "ticket", tmp_path / "admin", absolute=True
+                tmp_path / "t3" / "ticket",
+                tmp_path / ".git" / "worktrees" / "ticket",
+                absolute=True,
             )
         git_versions((2, 53, 0))
         findings = self._inspect(project, None, True)
@@ -2584,13 +2586,20 @@ class TestWorktreePortability:
         else:
             assert any("host Git capability is unknown" in item.message for item in findings)
 
+    def test_unlistable_registry_warns_with_git_error(self, tmp_path):
+        report = readiness.Findings()
+        readiness._inspect_live_worktrees(self._project(tmp_path), report)
+        assert any("cannot list worktrees" in item.message for item in report.report().findings)
+
     @pytest.mark.parametrize(
         "row",
         ["absolute", "relative", "unreadable", "worktree-config", "config-unreadable", "paired"],
     )
     def test_live_worktree_metadata(self, tmp_path, monkeypatch, row):
+        git_init(tmp_path)
         project = self._project(tmp_path)
-        outer = project.booley_dir / "worktrees" / "ticket"
+        # Git's registry decides what is a worktree, wherever T3 Code put it.
+        outer = tmp_path / "t3" / "ticket"
         (project.booley_dir / "worktrees" / "not-a-worktree").mkdir(parents=True)
         administration = tmp_path / ".git" / "worktrees" / "ticket"
         _register_worktree(outer, administration, absolute=row == "absolute")
@@ -2895,8 +2904,6 @@ def _prepare_row(monkeypatch, row):
     if row == "inside-marker":
         # The Sandbox owns these probes; answer them healthy.
         monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
-        monkeypatch.setattr(activity_hooks, "hooks_error", lambda: None)
-        monkeypatch.setattr(dashboard_extension, "installed_error", lambda: None)
     elif row in {"host-no-marker", "host-unreadable-env"}:
         env = '["PATH=/usr/bin"]\n' if row == "host-no-marker" else "null\n"
         _answer_command(monkeypatch, lambda cmd: "{{json .Config.Env}}" in cmd, stdout=env)
@@ -3018,9 +3025,12 @@ def test_host_agent_session(app, tmp_path, monkeypatch):
             app,
             "Project Setup",
             "booley_status",
-            "booley session up && booley session enter",
+            "booley session up",
+            "pairing link",
+            "T3 Code thread",
         ):
             assert fragment in finding.message
+        assert "Reopen in Container" not in finding.message
 
 
 _CUSTOM_FLOW = (
@@ -5963,3 +5973,171 @@ def test_nonstealth_doctor_reports_selectively_ignored_config(tmp_path, monkeypa
     (fix,) = _fixes(result, ".booley/booley.toml (1 path(s))")
     assert "edit the reported" in fix
     assert excludes.read_text() == "# local policy\n.booley/booley.toml\n"
+
+
+@pytest.mark.parametrize(
+    ("inside", "records", "message"),
+    [
+        (
+            False,
+            (0, "1.2.3.4\n1.2.3.4\n"),
+            "browser is the Sandbox Image's headless Chrome 1.2.3.4",
+        ),
+        (True, (0, "9.9.9.9\n1.2.3.4\n"), "Chrome 9.9.9.9, the Sandbox Image ships 1.2.3.4"),
+        (True, (1, "1.2.3.4\n"), "browser check failed: exited 1: cat: no such file"),
+        (False, (0, "1.2.3.4\n"), "browser check failed: printed 1 lines, not two versions"),
+    ],
+    ids=["host-match", "inside-mismatch", "inside-unrecorded", "host-short"],
+)
+def test_doctor_checks_the_preview_browser_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inside: bool,
+    records: tuple[int, str],
+    message: str,
+) -> None:
+    runtime_setup(tmp_path, monkeypatch, inside=inside)
+    if inside:
+        _prepare_row(monkeypatch, "inside-marker")
+    asked: list[list[str]] = []
+
+    def cat_records(cmd: list[str]) -> bool:
+        if cmd[-3:] != BROWSER_RECORDS:
+            return False
+        asked.append(cmd)
+        return True
+
+    _answer_command(
+        monkeypatch,
+        cat_records,
+        returncode=records[0],
+        stdout=records[1],
+        stderr="cat: no such file\n",
+    )
+
+    result = run_doctor(tmp_path)
+
+    (finding,) = [f for f in result.findings if f.message.startswith("T3 Code's preview")]
+    assert message in finding.message
+    passed = message.startswith("browser is")
+    assert str(finding.severity) == ("pass" if passed else "fail")
+    assert passed or finding.fix.startswith("recreate the Sandbox: ")
+    (argv,) = asked
+    assert argv == BROWSER_RECORDS if inside else argv[1:3] == ["run", "--rm"]
+
+
+@pytest.mark.parametrize(
+    ("inside", "reply", "returncode"),
+    [
+        pytest.param(False, "t3 v{pin}\n", 0, id="host-pinned"),
+        pytest.param(True, "t3 v0.0.1\n", 0, id="inside-other"),
+        pytest.param(False, "", 127, id="host-missing"),
+    ],
+)
+def test_doctor_checks_the_pinned_t3_code_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inside: bool, reply: str, returncode: int
+) -> None:
+    runtime_setup(tmp_path, monkeypatch, inside=inside)
+    if inside:
+        _prepare_row(monkeypatch, "inside-marker")
+        # The probe of the Sandbox's own T3 Code port.
+        monkeypatch.setattr(incontainer_setup, "t3_state", lambda: "running")
+    pin = t3_pin()
+    asked: list[list[str]] = []
+
+    def version_command(cmd: list[str]) -> bool:
+        if cmd[-2:] != ["t3", "--version"]:
+            return False
+        asked.append(cmd)
+        return True
+
+    _answer_command(
+        monkeypatch,
+        version_command,
+        returncode=returncode,
+        stdout=reply.format(pin=pin),
+        stderr="pulled\nt3: not found\n",
+    )
+
+    result = run_doctor(tmp_path)
+
+    ((severity, message, fix),) = [
+        (str(f.severity), f.message, f.fix)
+        for f in result.findings
+        if f.message.startswith("T3 Code") and "installed" in f.message
+    ]
+    (argv,) = asked
+    if inside:
+        assert argv == ["t3", "--version"]
+        assert (severity, message) == (
+            "fail",
+            f"T3 Code {pin} is not installed: t3 --version reported t3 v0.0.1",
+        )
+        assert fix == f"recreate the Sandbox: {sandbox_apply.in_sandbox_steps()}"
+        assert "T3 Code answers on 127.0.0.1:3773 in the Sandbox" in finding_messages(result)
+        assert "T3 Code relay check skipped - it runs from the host" in finding_messages(result)
+        return
+    assert argv[1:3] == ["run", "--rm"]
+    assert argv[4:] == ["t3", "--version"]
+    assert "T3 Code relay check not applicable - the Sandbox is not running" in finding_messages(
+        result
+    )
+    if returncode:
+        assert (severity, message) == (
+            "fail",
+            f"T3 Code {pin} installed check failed: t3 --version exited 127: t3: not found",
+        )
+        assert fix.startswith("rerun `booley doctor`; if it fails again, recreate the Sandbox: ")
+        assert result.exit_code == 1
+    else:
+        assert (severity, message) == (
+            "pass",
+            f"T3 Code {pin} installed (the version the manifest pins)",
+        )
+
+
+def test_a_missing_t3_binary_fails_the_install_check(tmp_path: Path) -> None:
+    from booley.runtime import t3_inspection
+
+    command = [str(tmp_path / "t3"), "--version"]
+    (finding,) = t3_inspection.inspect_install(command, lambda: "steps").findings
+
+    assert "installed check failed: t3 --version could not run: " in finding.message
+    assert finding.fix == "rerun `booley doctor`; if it fails again, recreate the Sandbox: steps"
+
+
+@pytest.mark.parametrize(
+    ("row", "skipped"),
+    [
+        ("invalid-config", "checks skipped - project config invalid"),
+        ("host-no-runtime", "checks skipped - no Docker/Podman runtime found on this host"),
+        ("image-missing", "version check skipped - Sandbox Image missing"),
+    ],
+)
+def test_doctor_skips_the_t3_code_checks_it_cannot_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, row: str, skipped: str
+) -> None:
+    runtime_setup(tmp_path, monkeypatch, inside=False, valid=row != "invalid-config")
+    _prepare_row(monkeypatch, row)
+    if row == "image-missing":
+        monkeypatch.setattr(doctor.idk, "image_exists", lambda *_a, **_kw: False)
+
+    assert f"T3 Code {skipped}" in finding_messages(run_doctor(tmp_path), Severity.SKIP)
+
+
+def test_doctor_reports_a_t3_version_command_that_times_out(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_setup(tmp_path, monkeypatch, inside=False)
+
+    def time_out(cmd: list[str]) -> bool:
+        if cmd[-2:] == ["t3", "--version"]:
+            raise subprocess.TimeoutExpired(cmd, 30)
+        return False
+
+    _answer_command(monkeypatch, time_out)
+
+    failures = finding_messages(run_doctor(tmp_path), Severity.FAIL)
+
+    (message,) = [m for m in failures if m.startswith("T3 Code")]
+    assert "installed check failed: t3 --version could not run: " in message

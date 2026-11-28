@@ -247,7 +247,7 @@ class TestDispatchWithoutCwd:
     def test_specialist_without_work_dir_starts_and_attaches_with_cwd_gone(
         self, job_env: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # On main a work_dir-less Specialist call never read the cwd: the
+        # A deleted cwd must not stop a work_dir-less Specialist call: the
         # transcript dir, timeout, and attach scan come from the environment.
         release = asyncio.Event()
         mcp_runner_fake.install(monkeypatch, (0, "DONE", "", False), pid=4242, gate=release)
@@ -279,6 +279,8 @@ class TestDispatchWithoutCwd:
 
         assert "RUNNING: 'reviewer'" in first
         assert "attached to it" in second
+        (record,) = jobrec.list_records(session_jobs_dir())
+        assert record.work_dir is None
 
 
 class TestManagerReadsPinnedRoot:

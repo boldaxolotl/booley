@@ -1,6 +1,6 @@
-"""The Run wizard's form, generated from a Flow's human parser (#3580).
+"""The Run form, generated from a Flow's human parser (#3580).
 
-No Textual here. :func:`describe` reads the parser's help groups and turns each
+:func:`describe` reads the parser's help groups and turns each
 option into a form field or routes it to the one extra-arguments field;
 :func:`command_argv` turns the human's values back into the argument words the
 Flow's own parser validates.
@@ -17,11 +17,14 @@ from __future__ import annotations
 import argparse
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 from booley.flows.cli_help import option_groups
 from booley.flows.cli_selection import EndpointProjectAction
-from booley.harness.dashboard.launch import split_arguments
+from booley.harness.dashboard.launch import ArgumentsError, split_arguments
+
+if TYPE_CHECKING:
+    from booley.harness.dashboard.specialist_form import SpecialistForm
 
 FieldKind = Literal[
     "toggle", "three-way", "list", "text", "target", "tests", "more", "coverage_record"
@@ -40,16 +43,13 @@ GROUP_PLACEMENT: Final[dict[str, Literal["field", "extra"]]] = {
     "Expert: OpenROAD": "extra",
 }
 
-# The two options the wizard fills from the worktree's Targets: dest -> field kind.
+# The two options the form fills from the worktree's Targets: dest -> field kind.
 _PICKERS: Final[dict[str, FieldKind]] = {"target": "target", "test": "tests"}
 _PICKER_HINTS: Final[dict[FieldKind, str]] = {
     "target": "One Target; put more in the extra arguments.",
-    "tests": "Enter toggles a Test Run; more forms (seeds) go in the extra arguments.",
+    "tests": "More forms (seeds) go in the extra arguments.",
 }
-AUTOMATIC = "automatic"  # what the Target field shows while no Target is chosen
-DEFAULT_SUITE = "default suite"  # what the test field shows while no Test Run is chosen
 TEXT_NOTE: Final = "Typed as one value: no quoting needed."
-DEFAULT = "default"  # what a list or three-way field shows while nothing is chosen
 
 
 class FormError(ValueError):
@@ -71,31 +71,9 @@ class Field:
     hint: str
     spellings: tuple[str, ...]  # every option string of every action: all count as placed
     off_flag: str = ""
-    choices: tuple[str, ...] = ()  # a list's value spellings; a three-way's are "on" and "off"
+    choices: tuple[str, ...] = ()  # a list's value spellings
     # The Flow insists on this option: the Target field then has no automatic.
     required: bool = False
-
-    def values(self) -> tuple[str, ...]:
-        """The values a choice list offers after the default, as stored."""
-        return ("on", "off") if self.kind == "three-way" else self.choices
-
-    def shown(self, value: str | tuple[str, ...]) -> str:
-        """How the row spells *value* (``""`` is unset; the test field holds a tuple of Test Runs)."""
-        if isinstance(value, tuple):
-            return ", ".join(value) or DEFAULT_SUITE
-        if self.kind == "toggle":
-            return "on" if value else "off"
-        if self.kind == "more":
-            return "▾" if value else "▸ max turns, timeout"
-        return value or self._unset()
-
-    def _unset(self) -> str:
-        """What the row shows while nothing is chosen: a required field shows nothing."""
-        if self.kind == "tests":
-            return DEFAULT_SUITE
-        if self.kind == "text" or self.required:
-            return ""
-        return AUTOMATIC if self.kind == "target" else DEFAULT
 
 
 @dataclass(frozen=True)
@@ -284,3 +262,20 @@ def command_argv(
             words.extend(text_words(field.flag, value))
     extra = split_arguments(extra_text)
     return (*words, *(extra[1:] if extra[:1] == ("--",) else extra))
+
+
+def form_argv(
+    form: RunForm | SpecialistForm, values: Mapping[str, str | tuple[str, ...]], extra_text: str
+) -> tuple[str, ...]:
+    """The command's words for the *values* a Flow or Specialist form holds.
+
+    ``ArgumentsError`` is the form's own error: a Specialist form's refusal (a missing
+    required value) or a Flow's extra text with unbalanced quotes.
+    """
+    if isinstance(form, RunForm):
+        return command_argv(form, values, extra_text)
+    texts = {dest: value for dest, value in values.items() if isinstance(value, str)}
+    problem = form.refusal(texts)
+    if problem:
+        raise ArgumentsError(problem)
+    return form.argv(texts)

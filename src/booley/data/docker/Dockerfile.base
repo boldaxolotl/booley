@@ -261,47 +261,9 @@ RUN echo ">>> Installing Verible ${VERIBLE_VERSION}..." \
     && rm -rf /tmp/verible.tar.gz /tmp/verible-${VERIBLE_VERSION} \
     && verible-verilog-lint --version
 
-# VaporView (pinned official VSIX). The Waveform Viewer extension (ADR 0078)
-# installs by file path from the generated devcontainer spec: an egress-locked
-# local Sandbox cannot reach any extension gallery, and VS Code cannot relay a
-# versioned gallery ID to the client. A VSIX install is also recorded as pinned,
-# so auto-update never replaces it. VAPORVIEW_VERSION must equal
-# booley.runtime.vaporview.VERIFIED_VERSION (tests enforce the lockstep).
-# VaporView is GPL-3.0: the unmodified VSIX ships with its license and a pointer
-# to its corresponding source.
-# renovate: datasource=custom.openvsx depName=lramseyer/vaporview
-ARG VAPORVIEW_VERSION=1.6.0
-# pin-companion: VAPORVIEW_VERSION
-ARG VAPORVIEW_SHA256=c1d2972d131613711e26f941ba694c4592ccbe18771b35cf24a4f23ffefa1b3a
-# pin-companion: VAPORVIEW_VERSION
-ARG VAPORVIEW_SOURCE_TAG=1.6.0-rel
-# pin-companion: VAPORVIEW_VERSION
-ARG VAPORVIEW_SOURCE_COMMIT=d401914c3021596fccf343603aa5a8208c21d28c
-RUN echo ">>> Bundling VaporView ${VAPORVIEW_VERSION} VSIX..." \
-    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://open-vsx.org/api/lramseyer/vaporview/${VAPORVIEW_VERSION}/file/lramseyer.vaporview-${VAPORVIEW_VERSION}.vsix" \
-    -o /tmp/vaporview.vsix \
-    && echo "${VAPORVIEW_SHA256}  /tmp/vaporview.vsix" | sha256sum -c - \
-    && install -d -m 0755 /usr/local/libexec/booley /usr/local/share/booley/licenses/vaporview \
-    && install -m 0644 /tmp/vaporview.vsix "/usr/local/libexec/booley/vaporview-${VAPORVIEW_VERSION}.vsix" \
-    && unzip -p /tmp/vaporview.vsix extension/LICENSE.txt \
-        > /usr/local/share/booley/licenses/vaporview/LICENSE.txt \
-    && grep -q "GNU GENERAL PUBLIC LICENSE" /usr/local/share/booley/licenses/vaporview/LICENSE.txt \
-    && printf '%s\n' \
-        "VaporView ${VAPORVIEW_VERSION} (lramseyer.vaporview), GPL-3.0, see LICENSE.txt." \
-        "Redistributed unmodified as /usr/local/libexec/booley/vaporview-${VAPORVIEW_VERSION}.vsix" \
-        "(Open VSX build, sha256 ${VAPORVIEW_SHA256})." \
-        "Corresponding source: https://github.com/Lramseyer/vaporview" \
-        "  tag ${VAPORVIEW_SOURCE_TAG}, commit ${VAPORVIEW_SOURCE_COMMIT}" \
-        "Booley's attach hook applies a small compatibility edit to the installed copy;" \
-        "see booley/runtime/incontainer_vaporview.py in the Booley distribution." \
-        > /usr/local/share/booley/licenses/vaporview/SOURCE.txt \
-    && chmod 0644 /usr/local/share/booley/licenses/vaporview/LICENSE.txt \
-        /usr/local/share/booley/licenses/vaporview/SOURCE.txt \
-    && rm -f /tmp/vaporview.vsix
-
-# Verilog-HDL and Live Preview (pinned MIT VSIXs). Like VaporView above, they
-# install by file path from the generated devcontainer spec, so an egress-locked
-# local Sandbox needs no extension gallery and VS Code pins the install. Each
+# Verilog-HDL and Live Preview (pinned MIT VSIXs). They install by file path
+# from the generated devcontainer spec, so an egress-locked local Sandbox needs
+# no extension gallery and VS Code pins the install. Each
 # VERILOGHDL_VERSION / LIVE_PREVIEW_VERSION must equal the version in the
 # matching booley.runtime.devcontainer VSIX path (tests enforce the lockstep).
 # Both are MIT: the build fails unless the shipped LICENSE.txt says so, and the
@@ -370,6 +332,34 @@ RUN echo ">>> Bundling Live Preview ${LIVE_PREVIEW_VERSION} VSIX..." \
         /usr/local/share/booley/licenses/live-server/SOURCE.txt \
     && rm -f /tmp/live-server.vsix
 
+# Headless Chrome for T3 Code's preview panel: every Sandbox
+# Image carries it. Chrome for Testing's headless shell at the version T3
+# Code pins (apps/server/src/preview/PreviewBrowser.ts). Sandbox start links
+# it into T3 Code's tools directory when the VERSION record written here
+# matches T3 Code's, so T3 Code attempts no download, which the egress rules
+# block (#5906). --version loads every shared library, so a missing one fails
+# the build.
+# The T3 Code release in agent-clis-package.json pins this version; hold
+# 157.0.8103.78 and move the hold in .github/renovate.json with each bump.
+# renovate: datasource=custom.chrome-for-testing depName=chrome-headless-shell versioning=regex:^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)\.(?<build>\d+)$
+ARG CHROME_HEADLESS_SHELL_VERSION=157.0.8103.78
+# pin-companion: CHROME_HEADLESS_SHELL_VERSION
+ARG CHROME_HEADLESS_SHELL_SHA256=f90329720fb61e5a76da9b6b509b6ad12a484c9c5df0359403e935177c6d153a
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 libatspi2.0-0t64 \
+        libnspr4 libnss3 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 \
+    && rm -rf /var/lib/apt/lists/*
+RUN echo ">>> Installing chrome-headless-shell ${CHROME_HEADLESS_SHELL_VERSION}..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors "https://storage.googleapis.com/chrome-for-testing-public/${CHROME_HEADLESS_SHELL_VERSION}/linux64/chrome-headless-shell-linux64.zip" \
+    -o /tmp/chrome-headless-shell.zip \
+    && echo "${CHROME_HEADLESS_SHELL_SHA256}  /tmp/chrome-headless-shell.zip" | sha256sum -c - \
+    && unzip -q /tmp/chrome-headless-shell.zip -d /tmp/chrome-headless-shell \
+    && mv /tmp/chrome-headless-shell/chrome-headless-shell-linux64 /opt/chrome-headless-shell \
+    && ln -s /opt/chrome-headless-shell/chrome-headless-shell /usr/local/bin/chrome-headless-shell \
+    && rm -rf /tmp/chrome-headless-shell.zip /tmp/chrome-headless-shell \
+    && test "$(chrome-headless-shell --version)" = "Google Chrome for Testing ${CHROME_HEADLESS_SHELL_VERSION}" \
+    && printf '%s\n' "${CHROME_HEADLESS_SHELL_VERSION}" > /opt/chrome-headless-shell/VERSION
+
 # Node.js 24 LTS + agent CLIs. Download exact publisher artifacts and verify
 # them before execution; neither a mutable setup script nor semver ranges are
 # allowed in the release image.
@@ -409,17 +399,46 @@ RUN agent_cli_pin() { python3 -I -c 'import json, sys; print(json.load(open(sys.
     && test "$(claude --version | awk '{print $1}')" = "$(agent_cli_pin @anthropic-ai/claude-code)" \
     && test "$(codex --version | awk '{print $2}')" = "$(agent_cli_pin @openai/codex)"
 
+# T3 Code ships as a release tarball: its npm package downloads the real binary
+# on first run, which the Sandbox egress rules block. The manifest holds the
+# version and sha256. The launcher gives every way of starting T3 Code, and so
+# its child processes, NODE_USE_ENV_PROXY=1 (Node's fetch ignores HTTPS_PROXY
+# without it); an image-level ENV would reach every other Node program too.
+# T3 Code names no preview browser version in its CLI, so the build reads it
+# from the executable; a release that holds none or several fails here.
+RUN t3code_pin() { python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["t3code"][sys.argv[2]])' /opt/agent-clis/package.json "$1"; } \
+    && T3CODE_VERSION="$(t3code_pin version)" \
+    && T3CODE_SHA256="$(t3code_pin sha256)" \
+    && echo ">>> Installing T3 Code ${T3CODE_VERSION}..." \
+    && curl --proto '=https' --tlsv1.2 -fsSL --retry 8 --retry-delay 30 --retry-all-errors \
+        "https://github.com/pingdotgg/t3code/releases/download/v${T3CODE_VERSION}/t3-${T3CODE_VERSION}-linux-x64.tar.gz" \
+        -o /tmp/t3code.tar.gz \
+    && echo "${T3CODE_SHA256}  /tmp/t3code.tar.gz" | sha256sum -c - \
+    && install -d -m 0755 /opt/t3code \
+    && tar -xzf /tmp/t3code.tar.gz -C /opt/t3code --strip-components=1 --no-same-owner \
+    && rm -f /tmp/t3code.tar.gz \
+    && printf '%s\n' '#!/bin/sh' 'export NODE_USE_ENV_PROXY=1' 'exec /opt/t3code/t3 "$@"' \
+        > /usr/local/bin/t3 \
+    && chmod 0755 /usr/local/bin/t3 \
+    && test "$(t3 --version)" = "t3 v${T3CODE_VERSION}" \
+    && LC_ALL=C grep -aoE 'VERSION = "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"' /opt/t3code/t3 \
+        | cut -d'"' -f2 | sort -u > /opt/t3code/preview-browser-version \
+    && test "$(wc -l < /opt/t3code/preview-browser-version)" -eq 1
+
 # The container's network namespace is not the whole agent boundary: both
 # clients can expose provider-hosted web MCP tools whose requests never originate
 # in Docker. Enforce the offline contract in each client's system policy so
 # user/project config and full-access modes cannot turn those MCP tools back on.
 COPY src/booley/data/docker/codex-requirements.toml /etc/codex/requirements.toml
 COPY src/booley/data/docker/claude-managed-settings.json /etc/claude-code/managed-settings.json
-# Both policy files also run this hook on client lifecycle events so the
-# Dashboard can show session activity (ADR 0068). It is a standalone
-# standard-library script, not a `booley` import: the client waits for it on
-# every prompt and tool call.
-COPY src/booley/data/docker/session_activity_hook.py /usr/local/libexec/booley/session_activity_hook.py
+COPY src/booley/data/docker/t3code-policy.json /etc/t3code/policy.json
+# T3 Code refuses to start (exit 77) on a policy it cannot use: fail the build instead.
+RUN chmod 0755 /etc/t3code \
+    && chmod 0644 /etc/t3code/policy.json \
+    && t3 policy check /etc/t3code/policy.json
+# Codex's requirements run this hook to block the T3 Code tools the list names.
+COPY src/booley/data/docker/t3code_tool_deny_hook.py /usr/local/libexec/booley/t3code_tool_deny_hook.py
+COPY src/booley/data/docker/t3code-denied-tools.txt /usr/local/libexec/booley/t3code-denied-tools.txt
 
 # Non-root user for agent execution.
 # Pin agent to uid/gid 1000 so it matches the typical first host user on native
@@ -527,6 +546,13 @@ ENV PYTHONUSERBASE="/home/agent/.local"
 # for containers from images built before this was added.
 ENV BOOLEY_CONTAINER=1
 
+# Chrome's own sandbox needs user namespaces, which the Sandbox's
+# hardened flags (--cap-drop ALL, no-new-privileges, Docker's seccomp
+# profile) do not allow: it exits with "No usable sandbox!". T3 Code reads
+# this and runs its headless browser with --no-sandbox; the Sandbox
+# itself is the boundary.
+ENV T3CODE_SERVER_BROWSER_SANDBOX=0
+
 # Claude Code kills an MCP tool call at 60s by default (measured on 2.1.205;
 # ADR 0027 amendment 2026-07-09). 2h matches the Codex tool_timeout_sec the
 # registrar writes. NOTE: the effective ceiling is still ~300s — the client's
@@ -561,9 +587,9 @@ COPY src/booley/data/docker/vivado-wrapper /usr/local/bin/vivado
 RUN chmod 755 /usr/local/bin/vivado
 USER agent
 
-# Pre-create writable dirs for agent CLIs (bind-mounting individual files into a
-# non-existent directory would create it as root and prevent agent writes).
-RUN mkdir -p /home/agent/.codex /home/agent/.claude
+# Pre-create writable dirs for agent CLIs and T3 Code (mounting into a non-existent
+# directory would create it as root and prevent agent writes).
+RUN mkdir -p /home/agent/.codex /home/agent/.claude /home/agent/.t3
 
 # Resolved package inventory (#829): the final runtime base's installed dpkg
 # packages plus exact Python and pip versions. This layer must stay after every

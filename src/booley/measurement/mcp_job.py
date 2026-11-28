@@ -69,13 +69,19 @@ class McpCommandJob:
     """The ``measure`` or ``review`` Job record an MCP server submitted this process for."""
 
     def __init__(
-        self, run_id: str, job_dir: Path, endpoint: str, session_key: str | None = None
+        self,
+        run_id: str,
+        job_dir: Path,
+        endpoint: str,
+        client: str | None = None,
+        thread: str | None = None,
     ) -> None:
         self.run_id = run_id
         self._dir = job_dir
         self.endpoint = endpoint
-        # The session that called the tool; a measurement's Flow Jobs are its too.
-        self.session_key = session_key
+        # The agent that called the tool; a measurement's Flow Jobs record it too.
+        self.client = client
+        self.thread = thread
 
     @classmethod
     def find(cls, endpoint: str) -> McpCommandJob | None:
@@ -87,7 +93,7 @@ class McpCommandJob:
         with contextlib.suppress(OSError):
             record = job_records.read_record(run_id, root)
             if record is not None and record.endpoint == endpoint:
-                return cls(run_id, root / run_id, endpoint, record.session_key)
+                return cls(run_id, root / run_id, endpoint, record.client, record.thread)
         return None
 
     def _write(self, name: str, content: dict[str, Any]) -> None:

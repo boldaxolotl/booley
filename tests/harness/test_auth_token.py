@@ -626,6 +626,9 @@ class TestClaudeMintLocation:
         output = capsys.readouterr().out
         assert " ".join(output.split()).count(UNKNOWN_SANDBOX_STEPS) == 1
         assert f"{app} Projects with auth={policy} use this stored credential." in output
+        assert (
+            "booley session up" in " ".join(output.split()) and "Reopen in Container" not in output
+        )
         assert [line.strip() for line in output.splitlines() if "revoke" in line] == [
             "In those Projects it does not refresh, so a host-side login can no longer "
             "revoke a running agent."
@@ -920,7 +923,6 @@ class TestAuthStorePreflight:
 # fake covers that boundary yet, so the private ones below stand in for it.
 def _auth_sandbox_ports(monkeypatch):
     from booley.harness.setup import interactive
-    from booley.runtime import dashboard_tasks
 
     monkeypatch.setattr(interactive, "_unlicensed_relay_pending", lambda _: False)
     monkeypatch.setattr(
@@ -931,7 +933,6 @@ def _auth_sandbox_ports(monkeypatch):
     monkeypatch.setattr(session_runtime, "reconcile_stopped_headless_runtime", lambda *a: False)
     monkeypatch.setattr(interactive, "git_excludes_pending", lambda *a: False)
     monkeypatch.setattr(interactive, "add_git_excludes", lambda *a: False)
-    monkeypatch.setattr(dashboard_tasks, "inspect", lambda *a: dashboard_tasks.TaskPlan())
 
 
 def _auth_reseed_boundaries(project, monkeypatch, issue_error=None):

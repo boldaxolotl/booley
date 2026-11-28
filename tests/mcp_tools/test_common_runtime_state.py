@@ -115,13 +115,10 @@ def test_reviewer_writes_evidence_to_main_and_no_review_state(worktree, monkeypa
     assert not (main / "reviewer-state").exists()
 
 
-def test_session_registry_and_prune_use_main(worktree, monkeypatch):
+def test_handle_prune_uses_main(worktree, monkeypatch):
     from booley.mcp import handle_pruning
-    from booley.mcp.session_observer import SessionObserver
 
     main, _worktree = worktree
-    assert SessionObserver()._registry().booley_dir == main
-
     pruned: list[Path] = []
 
     def spy(directory: Path, *, now: float) -> None:
@@ -140,7 +137,7 @@ def test_unbound_job_handle_registers_in_main(worktree, monkeypatch):
     monkeypatch.setattr(
         job_lifecycle, "register_job", lambda project, *_args, **_kw: registered.append(project)
     )
-    context = SimpleNamespace(work_dir=None, explicit_work_dir=None, session_key="pid:k")
+    context = SimpleNamespace(work_dir=None, explicit_work_dir=None)
     record = job_records.JobRecord("run-1", "sim", rfc3339_from_epoch(1_800_000_000.0), 60)
     job_lifecycle.JobLifecycle._stamp_context(record, context)
     assert registered == [main]
@@ -154,28 +151,11 @@ def test_job_slot_store_is_in_main(worktree, monkeypatch):
     assert job_slots.slots_dir() == root
     verifier = job_slots._default_inherited_execution_verifier
     # Only the Main Booley Directory's root is canonical; verification itself is stubbed.
-    monkeypatch.setattr(job_slots, "verify_inherited_execution_id", lambda *_a, **_kw: "verified")
-    assert verifier("anything", root, 1) == "verified"
-    assert verifier("anything", worktree[1] / ".booley/runtime/jobs/slots", 1) is None
-
-
-def test_dashboard_and_chat_handles_use_main(worktree, monkeypatch):
-    from booley.harness import chat_cmd
-    from booley.harness.dashboard import command
-
-    main, tree = worktree
-    blockers: list[Path] = []
-    monkeypatch.setattr(command, "attach_blocker", lambda _root, d: blockers.append(d) or "")
-    monkeypatch.setattr(command, "_dashboard_is_open", lambda: False)
-    command.attach_policy(tree)
-    assert blockers == [main]
-
-    reserved: list[Path] = []
     monkeypatch.setattr(
-        chat_cmd, "reserve_session_handle", lambda d, _key, **_kw: reserved.append(d) or "handle"
+        job_slots, "verify_inherited_execution_id", lambda *_a, booley_dir, **_kw: booley_dir
     )
-    chat_cmd._claude_command(tree, [], strict=False)
-    assert reserved == [main]
+    assert verifier("anything", root, 1) == main
+    assert verifier("anything", worktree[1] / ".booley/runtime/jobs/slots", 1) is None
 
 
 def test_doctor_reads_session_state_from_main(worktree, monkeypatch):

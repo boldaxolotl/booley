@@ -20,6 +20,11 @@ booley.harness.incontainer_register``, does two things on every container start:
 4. **Pins the agent's no-prompt permission mode** because the hardened
    container is the security boundary. These settings live only in the
    per-project container home, never in the host's agent configuration.
+5. **Starts T3 Code and registers the Project with it** (``ensure_t3_server``)
+   when an Agent CLI is allowed, on the same terms as the MCP server, and the
+   web Dashboard that T3 Code's preview panel shows (``ensure_dashboard_server``).
+   T3 Code runs on the Project's own spelling of its base directory (``t3_base_dir``);
+   before it starts, the image's headless Chrome is linked where T3 Code looks for it.
 
 Idempotent: a live server is left alone; an up-to-date registration is not
 rewritten. Stale stdio-form registrations from older Booley versions are
@@ -35,8 +40,11 @@ below target the common formats and are intentionally easy to adjust.
 from __future__ import annotations
 
 import contextlib
+import http.client
+import io
 import json
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -46,9 +54,23 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from typing import IO, cast
 
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
+from booley.config.project_config import configured_project_name
+from booley.core.boundary import require_dict, require_int, require_str
+from booley.core.sandbox_layout import (
+    CHROME_VERSION_RECORD,
+    DASHBOARD_PORT,
+    HEADLESS_CHROME_DIR,
+    T3_BASE_DIR,
+    T3_BASE_DIR_ENV,
+    T3_BROWSER_VERSION_RECORD,
+    T3_POLICY_TARGET,
+)
 from booley.runtime import auth_token
+from booley.runtime.booley_dir import resolve_booley_dir, runtime_dir
 from booley.runtime.mcp_config import (
     DEVELOPER_AGENT_ENV,
     GATEWAY_PROVIDER_ID,
@@ -57,6 +79,7 @@ from booley.runtime.mcp_config import (
     gateway_provider_toml,
     http_port,
 )
+from booley.runtime.pid import is_pid_alive
 from booley.runtime.runtime_context import in_hand_written_sandbox
 
 MCP_SERVER_NAME = "booley"
@@ -67,6 +90,23 @@ _SERVER_CMD = [sys.executable, "-m", "booley.mcp.server", "--transport", "http"]
 _SERVER_LOG_PATH = "/tmp/booley_mcp_http.log"
 _SERVER_START_TIMEOUT_SECONDS = 20.0
 _SERVER_LOG_TAIL_LINES = 8
+
+# T3 Code's own default port; the Sandbox's loopback is its own, so nothing collides.
+T3_PORT = 3773
+_T3_START_TIMEOUT_SECONDS = 30.0
+PAIRING_TTL = "5m"
+NO_UI_ENV = "BOOLEY_NO_UI"  # "1" in a hook's environment: start no T3 Code or Dashboard
+_T3_SERVER_NOT_READY = 78  # `t3 project add` before the server published its runtime record
+_T3_IDENTITY_TIMEOUT_SECONDS = 1.0  # the whole descriptor exchange
+_T3_DESCRIPTOR_LIMIT = 1 << 20  # reply bytes
+T3_LOG_CAP_BYTES = 200_000_000  # decimal MB, so the cap also holds read as MiB
+_T3_LOG_NAME = re.compile(r"\.(?:log|ndjson)(?:\.\d+)?$")  # T3 Code's logs and rotations
+_T3_BROWSER_PLATFORM = "linux64"  # the image ships only linux-x64 T3 Code and Chrome
+T3_PORT_TAKEN = "port-taken"
+T3_PORT_TAKEN_MESSAGE = (
+    f"127.0.0.1:{T3_PORT} in the Sandbox is held by another process; "
+    "stop it, then run `booley session up`"
+)
 
 
 def http_url() -> str:
@@ -176,30 +216,392 @@ def ensure_http_server(
         child_env.pop(variable, None)
     try:
         with Path(log_path).open("ab") as log:
-            proc = subprocess.Popen(
+            return _start_detached(
                 _SERVER_CMD,
-                env=child_env,
-                stdin=subprocess.DEVNULL,
+                label="booley mcp http server",
+                port=port,
+                log_path=log_path,
                 stdout=log,
                 stderr=log,
-                start_new_session=True,
+                env=child_env,
+                timeout_seconds=timeout_seconds,
             )
     except OSError as exc:
         print(f"booley mcp http server spawn failed: {exc}", file=sys.stderr)
         return "failed"
+
+
+def ensure_dashboard_server(project_root: Path) -> str:
+    """Start the web Dashboard on loopback unless its port already answers.
+
+    Returns ``"running"`` (the port answers: nothing is started), ``"started"`` or
+    ``"failed"``. Never raises, so MCP registration still runs.
+    """
+    if _port_is_serving(DASHBOARD_PORT):
+        return "running"
+    try:
+        log_path = runtime_dir(project_root) / "dashboard.log"
+        with log_path.open("ab") as log:
+            return _start_detached(
+                [sys.executable, "-m", "booley.harness.booley", "dashboard"],
+                label="Booley Dashboard",
+                port=DASHBOARD_PORT,
+                log_path=str(log_path),
+                stdout=log,
+                stderr=log,
+                cwd=project_root,
+                timeout_seconds=_SERVER_START_TIMEOUT_SECONDS,
+            )
+    except Exception as exc:  # noqa: BLE001 - Booley Directory resolution raises several error types
+        print(f"Booley Dashboard not started: {exc}", file=sys.stderr)
+        return "failed"
+
+
+def dashboard_state() -> str:
+    """``"running"`` when the web Dashboard's loopback port answers, else ``"off"``."""
+    return "running" if _port_is_serving(DASHBOARD_PORT) else "off"
+
+
+def _start_detached(
+    cmd: Sequence[str],
+    *,
+    label: str,
+    port: int,
+    log_path: str,
+    stdout: int | IO[bytes],
+    stderr: int | IO[bytes],
+    timeout_seconds: float,
+    env: dict[str, str] | None = None,
+    cwd: Path | None = None,
+) -> str:
+    """Spawn *cmd* detached and wait until *port* serves: ``"started"`` or ``"failed"``.
+
+    The child gets its own session and no stdin, so it outlives this process.
+    A spawn failure raises ``OSError`` to the caller, which owns the log file.
+    """
+    proc = subprocess.Popen(
+        cmd,
+        env=env,
+        cwd=cwd,
+        stdin=subprocess.DEVNULL,
+        stdout=stdout,
+        stderr=stderr,
+        start_new_session=True,
+    )
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
         if _port_is_serving(port):
             return "started"
         if proc.poll() is not None:  # died during startup; see the log
-            print(
-                f"booley mcp http server exited with {proc.returncode} (see {log_path})",
-                file=sys.stderr,
-            )
+            print(f"{label} exited with {proc.returncode} (see {log_path})", file=sys.stderr)
             return "failed"
         time.sleep(0.2)
-    print(f"booley mcp http server not serving after {timeout_seconds:.0f}s", file=sys.stderr)
+    print(f"{label} not serving after {timeout_seconds:.0f}s", file=sys.stderr)
     return "failed"
+
+
+def t3_base_dir() -> str:
+    """The ``--base-dir`` T3 Code takes in this Sandbox.
+
+    An issued spec names the Project's own spelling; a hand-written one keeps the default.
+    """
+    return os.environ.get(T3_BASE_DIR_ENV, T3_BASE_DIR)
+
+
+def _link_t3_base_dir(base: str) -> None:
+    """Make *base* a link to the T3 state volume's mount, unless it is the mount itself.
+
+    Raises ``OSError`` when *base* holds anything else, so T3 Code keeps no state there.
+    """
+    if base == T3_BASE_DIR:
+        return
+    try:
+        Path(base).symlink_to(T3_BASE_DIR)
+    except FileExistsError:
+        if Path(base).readlink() != Path(T3_BASE_DIR):
+            raise
+
+
+def t3_state() -> str:
+    """``"running"``, ``"port-taken"`` or ``"off"``: what holds T3 Code's loopback port.
+
+    ``"running"`` means the Project's own T3 Code: its runtime record and the listener's
+    environment descriptor agree. T3 Code's files are only read.
+    """
+    if not _port_is_serving(T3_PORT):
+        return "off"
+    return "running" if _t3_identity_proven(Path(t3_base_dir())) else T3_PORT_TAKEN
+
+
+def _t3_identity_proven(base: Path) -> bool:
+    userdata = base / "userdata"
+    try:
+        record = require_dict(json.loads((userdata / "server-runtime.json").read_bytes()))
+        pid = require_int(record.get("pid"))
+        environment_id = (userdata / "environment-id").read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return False
+    if record.get("port") != T3_PORT or not is_pid_alive(pid):
+        return False
+    return _t3_environment_id() == environment_id
+
+
+def _t3_environment_id() -> str | None:
+    """The environment ID the listener on T3 Code's port describes, or ``None``."""
+    try:
+        reply = _t3_descriptor_reply()
+        received = SimpleNamespace(makefile=lambda _mode: io.BytesIO(reply))
+        response = http.client.HTTPResponse(cast("socket.socket", received))
+        response.begin()
+        if response.status != 200:
+            return None
+        return require_str(require_dict(json.loads(response.read())), "environmentId")
+    except (OSError, http.client.HTTPException, ValueError, RecursionError):
+        return None
+
+
+def _t3_descriptor_reply() -> bytes:
+    """The raw reply to T3 Code's descriptor request, within one deadline for all of it.
+
+    A raw loopback socket never consults the Sandbox's ``HTTP_PROXY``.
+    """
+    deadline = time.monotonic() + _T3_IDENTITY_TIMEOUT_SECONDS
+    request = (
+        "GET /.well-known/t3/environment HTTP/1.1\r\n"
+        f"Host: 127.0.0.1:{T3_PORT}\r\nConnection: close\r\n\r\n"
+    )
+    reply = bytearray()
+    address = ("127.0.0.1", T3_PORT)
+    with socket.create_connection(address, timeout=_T3_IDENTITY_TIMEOUT_SECONDS) as sock:
+        sock.sendall(request.encode("ascii"))
+        while (left := deadline - time.monotonic()) > 0:
+            sock.settimeout(left)
+            chunk = sock.recv(65536)
+            if not chunk:
+                return bytes(reply)
+            reply += chunk
+            if len(reply) > _T3_DESCRIPTOR_LIMIT:
+                raise ValueError("T3 Code descriptor reply is too large")
+    raise TimeoutError("T3 Code descriptor reply took too long")
+
+
+def create_t3_pairing(base_url: str) -> subprocess.CompletedProcess[str]:
+    """Run ``t3 auth pairing create``; a failure to run it is a failed result.
+
+    The result's stdout holds the pairing token, so the caller prints it only to the user.
+    """
+    base = t3_base_dir()
+    cmd = ["t3", "auth", "pairing", "create", "--base-dir", base]
+    cmd += ["--ttl", PAIRING_TTL, "--base-url", base_url, "--json"]
+    try:
+        _link_t3_base_dir(base)  # else `t3` makes a directory there when no start linked it
+        return subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=_T3_START_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+
+def ensure_t3_server(project_root: Path) -> str:
+    """Start T3 Code on loopback unless its port is held, then register the Project with it.
+
+    Returns ``"running"`` (already up: nothing is started or registered),
+    ``"port-taken"`` (another process holds the port: nothing is started),
+    ``"started"``, ``"unregistered"`` (serving, but the Project is not
+    registered), ``"policy-rejected"`` (``t3 policy check`` did not accept the
+    policy, so nothing is started), or ``"failed"``. Never raises, so MCP
+    registration still runs. Just before T3 Code starts, its logs are pruned and the
+    image's headless Chrome is linked where it looks for its preview browser.
+    """
+    state = t3_state()
+    if state == "running":
+        return state
+    if state == T3_PORT_TAKEN:
+        print(f"T3 Code not started: {T3_PORT_TAKEN_MESSAGE}", file=sys.stderr)
+        return state
+    if not _t3_policy_accepted():
+        return "policy-rejected"
+    base = t3_base_dir()
+    try:
+        _link_t3_base_dir(base)
+    except OSError as exc:
+        print(f"T3 Code not started: cannot link {base} to {T3_BASE_DIR}: {exc}", file=sys.stderr)
+        return "failed"
+    prune_t3_logs(Path(base))
+    link_t3_preview_browser(Path(base))
+    return _serve_t3(project_root, base)
+
+
+def prune_t3_logs(base: Path) -> None:
+    """Delete T3 Code's oldest logs until they total at most ``T3_LOG_CAP_BYTES``.
+
+    Call it before ``t3 serve`` starts, while nothing writes them. Only regular
+    files under ``userdata/logs`` with a log name count; T3 Code keeps its
+    database, WAL files and pairing state under other names. An ``OSError`` is
+    reported, not raised.
+    """
+    logs: list[tuple[int, Path, int]] = []
+    try:
+        for folder, _, names in os.walk(base / "userdata" / "logs"):
+            for name in filter(_T3_LOG_NAME.search, names):
+                path = Path(folder, name)
+                info = path.lstat()
+                if stat.S_ISREG(info.st_mode):
+                    logs.append((info.st_mtime_ns, path, info.st_size))
+        total = sum(size for _, _, size in logs)
+        for _, path, size in sorted(logs):
+            if total <= T3_LOG_CAP_BYTES:
+                break
+            path.unlink()
+            total -= size
+    except OSError as exc:
+        print(f"T3 Code logs not pruned: {exc}", file=sys.stderr)
+
+
+def preview_browser_mismatch(expected: str, shipped: str) -> str:
+    """What Sandbox start and Doctor say when the image's browser is not T3 Code's version."""
+    return (
+        "T3 Code's preview panel has no browser: T3 Code expects headless Chrome "
+        f"{expected}, the Sandbox Image ships {shipped}"
+    )
+
+
+def link_t3_preview_browser(base: Path) -> None:
+    """Link the image's headless Chrome where T3 Code looks for its preview browser.
+
+    T3 Code downloads one when it finds none there, which the egress rules block.
+    Versions that differ are reported and nothing is linked. An entry already there is
+    kept: an earlier start's link, or T3 Code's own download. An ``OSError`` is
+    reported, not raised.
+    """
+    try:
+        expected = Path(T3_BROWSER_VERSION_RECORD).read_text(encoding="utf-8").strip()
+        shipped = Path(CHROME_VERSION_RECORD).read_text(encoding="utf-8").strip()
+        if expected != shipped:
+            print(preview_browser_mismatch(expected, shipped), file=sys.stderr)
+            return
+        link = base / "tools" / "chrome-headless-shell" / _T3_BROWSER_PLATFORM / expected
+        if not os.path.lexists(link):
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(HEADLESS_CHROME_DIR, target_is_directory=True)
+    except OSError as exc:
+        print(f"T3 Code's preview browser not linked: {exc}", file=sys.stderr)
+
+
+def _serve_t3(project_root: Path, base: str) -> str:
+    """Start ``t3 serve`` detached and register the Project; never raises."""
+    try:
+        runtime = runtime_dir(project_root)
+        title = configured_project_name(resolve_booley_dir(project_root))
+        # stdout carries T3 Code's startup pairing token, so it goes to no log.
+        with (runtime / "t3-serve.log").open("ab") as log:
+            started = _start_detached(
+                [
+                    "t3",
+                    "serve",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(T3_PORT),
+                    "--base-dir",
+                    base,
+                    str(project_root),
+                ],
+                label="T3 Code server",
+                port=T3_PORT,
+                log_path=str(runtime / "t3-serve.log"),
+                stdout=subprocess.DEVNULL,
+                stderr=log,
+                cwd=project_root,
+                timeout_seconds=_T3_START_TIMEOUT_SECONDS,
+            )
+    except Exception as exc:  # noqa: BLE001 - Booley Directory resolution raises several error types
+        print(f"T3 Code not started: {exc}", file=sys.stderr)
+        return "failed"
+    if started != "started":
+        return started
+    return "started" if _register_t3_project(project_root, title) else "unregistered"
+
+
+def _t3_policy_accepted() -> bool:
+    """Run ``t3 policy check`` on the mounted policy; report why it did not pass."""
+    failure = f"T3 Code not started: `t3 policy check` of {T3_POLICY_TARGET}"
+    try:
+        result = subprocess.run(
+            ["t3", "policy", "check", T3_POLICY_TARGET],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=_T3_START_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"{failure} could not run: {type(exc).__name__}", file=sys.stderr)
+        return False
+    if result.returncode == 0:
+        return True
+    detail = f"{result.stdout}{result.stderr}".strip()
+    print(f"{failure} failed (exit {result.returncode}): {detail}", file=sys.stderr)
+    return False
+
+
+def _register_t3_project(project_root: Path, title: str | None) -> bool:
+    """Run ``t3 project add``; already registered counts. Never echoes T3's output.
+
+    *title* (``[project].name``) names the Project; an existing registration is
+    renamed to it, and a failed rename still counts as registered.
+    """
+    titled = ["--title", title] if title else []
+    cmd = ["t3", "project", "add", "--base-dir", t3_base_dir(), *titled, str(project_root)]
+    deadline = time.monotonic() + _T3_START_TIMEOUT_SECONDS
+    while True:
+        result = _run_t3_project(cmd, "registration")
+        if result is None:
+            return False
+        if result.returncode == 0:
+            return True
+        if "ProjectAlreadyExistsError" in result.stdout:
+            if title:
+                _rename_t3_project(project_root, title)
+            return True
+        if result.returncode != _T3_SERVER_NOT_READY or time.monotonic() >= deadline:
+            print(
+                f"T3 Code project registration failed (exit {result.returncode})", file=sys.stderr
+            )
+            return False
+        time.sleep(0.2)
+
+
+def _rename_t3_project(project_root: Path, title: str) -> None:
+    """Run ``t3 project rename``, which also exits 0 when the title already matches."""
+    cmd = ["t3", "project", "rename", "--base-dir", t3_base_dir(), str(project_root), title]
+    result = _run_t3_project(cmd, "rename")
+    if result is not None and result.returncode != 0:
+        print(f"T3 Code project rename failed (exit {result.returncode})", file=sys.stderr)
+
+
+def _run_t3_project(cmd: list[str], action: str) -> subprocess.CompletedProcess[str] | None:
+    """Run a ``t3 project`` command; report one that could not run and return ``None``."""
+    try:
+        return subprocess.run(
+            cmd,
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=_T3_START_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"T3 Code project {action} failed: {type(exc).__name__}", file=sys.stderr)
+        return None
 
 
 # ---------------------------------------------------------------------------

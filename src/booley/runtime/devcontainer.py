@@ -32,9 +32,14 @@ from booley.config.agent import (
 from booley.config.gateway import VISITOR_AUTH
 from booley.core import docker_cli
 from booley.core.project_identity import project_name_id
-from booley.core.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
-from booley.runtime import auth_token
-from booley.runtime import vaporview as _vaporview
+from booley.core.sandbox_layout import (
+    BOOLEY_DIR_TARGET,
+    T3_BASE_DIR,
+    T3_BASE_DIR_ENV,
+    WORK_DIR,
+    t3_project_base_dir,
+)
+from booley.runtime import auth_token, bundled_extensions
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
 from booley.runtime.guarded_write import replace_regular_file
 from booley.runtime.incontainer_git_identity import (
@@ -45,7 +50,6 @@ from booley.runtime.incontainer_git_identity import (
 )
 from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
-from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
 
 # --- Supported agent apps (mirrors the init wizard's app selection) ---
 APP_CLAUDE = "claude"
@@ -98,20 +102,12 @@ BOOLEY_DIR_BASENAME = ".booley"
 # absolute host path instead of relying on env-var indirection here.
 DEFAULT_BOOLEY_DIR_SOURCE = "${localWorkspaceFolder}/.booley"
 
-# Waveform Viewer (ADR 0078): VaporView is installed for every app so
-# `bwave gui` works in the attached window, driven through the Booley
-# extension's Viewer Bridge. VaporView has no named red color; `bwave gui`
-# maps its stable red/blue/green interface to the extension's custom palette.
-_VAPORVIEW_PRESENTATION_SETTINGS = PRESENTATION_COLOR_SETTINGS
-
-# VS Code setting through which the spec tells the dashboard extension its attach protocol.
-_DASHBOARD_PROTOCOL_SETTING = "booley.dashboard.attachProtocol"
 # Verilog/SystemVerilog syntax highlighting: without an HDL grammar the
 # attached window renders every .v/.sv file as plain text. mshr-h's extension
 # ships the TextMate grammar (plus ctags-based navigation) and keeps linting
 # OFF by default, so it adds highlighting without competing with Booley's own
 # lint flow. Installed for every app — reading RTL isn't tied to which agent
-# is attached. Like VaporView it is the pinned VSIX bundled in the Sandbox
+# is attached. It is the pinned VSIX bundled in the Sandbox
 # Image and installed by path: an egress-locked Sandbox cannot reach a gallery,
 # and VS Code pins a VSIX install so auto-update leaves it there.
 # ``Dockerfile.base`` carries the same version (tests enforce the lockstep).
@@ -128,11 +124,13 @@ HDL_VSIX = f"/usr/local/libexec/booley/veriloghdl-{_HDL_VERSION}.vsix"
 _LIVE_PREVIEW_VERSION = "0.4.20"
 LIVE_PREVIEW_VSIX = f"/usr/local/libexec/booley/live-server-{_LIVE_PREVIEW_VERSION}.vsix"
 
-# The bundled extensions besides VaporView, as Doctor checks them in the
-# attached window: built from the same pins the spec installs.
+# The bundled extensions, as Doctor checks them in the attached window: built
+# from the same pins the spec installs.
 BUNDLED_EXTENSIONS = (
-    _vaporview.BundledExtension("Verilog-HDL", "mshr-h.veriloghdl", _HDL_VERSION, HDL_VSIX),
-    _vaporview.BundledExtension(
+    bundled_extensions.BundledExtension(
+        "Verilog-HDL", "mshr-h.veriloghdl", _HDL_VERSION, HDL_VSIX
+    ),
+    bundled_extensions.BundledExtension(
         "Live Preview",
         "ms-vscode.live-server",
         _LIVE_PREVIEW_VERSION,
@@ -265,22 +263,6 @@ def mcp_post_start_command() -> str:
     return "python -m booley.harness.incontainer_register"
 
 
-def vaporview_patch_command() -> str:
-    """Shell command for ``postAttachCommand``: apply Booley's residual VaporView patch.
-
-    Runs on *attach* (not create/start) because it edits the installed
-    VaporView extension, which VS Code installs container-side only once a
-    window attaches — by postCreate/postStart it isn't on disk yet. The
-    patcher skips VaporView's remote desktop-theme lookup and makes the custom
-    palette slots behind `bwave gui` colors honor the spec's Machine settings.
-    If installation outlasts the short attach wait, it leaves a singleton
-    watcher until the configured extension arrives, including patching VS
-    Code's staging copy before publication. Idempotent and never fails the
-    hook. See :mod:`booley.runtime.incontainer_vaporview` for the rationale.
-    """
-    return "python -m booley.runtime.incontainer_vaporview"
-
-
 def live_preview_port_command() -> str:
     """Shell command that assigns Live Preview fresh remote ports on attach."""
     return "python -m booley.runtime.incontainer_live_preview"
@@ -288,7 +270,7 @@ def live_preview_port_command() -> str:
 
 def post_attach_command() -> str:
     """Run container UI compatibility setup before attached extensions activate."""
-    return f"{live_preview_port_command()} && {vaporview_patch_command()}"
+    return live_preview_port_command()
 
 
 def _auth_target_for_app(app: str) -> str | None:
@@ -341,14 +323,24 @@ def _state_volume_name(app: str, project_id: str, policy: str, *, legacy: bool =
     return f"booley-{app}-state-{project_id}{suffix}"
 
 
+def t3_state_volume_name(project_id: str) -> str:
+    """Name of T3 Code's state volume, without a policy suffix: it holds no CLI credential."""
+    return f"booley-t3-state-{project_id}"
+
+
+def t3_state_volume_mount(project_id: str) -> str:
+    """The mount of T3 Code's state volume at its base directory."""
+    return _volume_mount(t3_state_volume_name(project_id), T3_BASE_DIR)
+
+
 def state_volume_names(project_id: str) -> frozenset[str]:
-    """Every state-volume name one Project can own across agent apps and auth policies."""
+    """Every state-volume name one Project can own: T3 Code's and each app's, per auth policy."""
     return frozenset(
         f"{base}{suffix}"
         for app in _APP_STATE_DIR
         if (base := state_volume_name(app, project_id)) is not None
         for suffix in ("", "-subscription", "-api_key", "-gateway")
-    )
+    ) | {t3_state_volume_name(project_id)}
 
 
 def state_volume_mount(
@@ -425,8 +417,8 @@ def spec_cli_policies(spec: dict) -> dict[str, str]:
 def spec_volume_targets(spec: dict) -> frozenset[str]:
     """Container targets of the named-volume mounts in *spec*.
 
-    Only the per-app home-state volumes are ``type=volume`` mounts, so this is the
-    set of agent state dirs the spec persists across rebuilds.
+    The named volumes are the CLI state volumes and T3 Code's, so this is the set of
+    state dirs the spec persists across rebuilds.
     """
     mounts = spec.get("mounts")
     parsed = (_parse_mount(mount) for mount in (mounts if isinstance(mounts, list) else []))
@@ -440,9 +432,9 @@ def sandbox_visible_expectation(spec: dict) -> dict:
 
     Inside the Sandbox the host project config, credentials, skills and caches are
     invisible, so the spec ``booley init`` would write cannot be rebuilt in full. The
-    parts this function fixes do not depend on them: the agent app, the Agent CLI set
-    and the dashboard flag are read from *spec* itself, and no credential or seed
-    sources are supplied. Compare only :func:`sandbox_visible` projections of the result.
+    parts this function fixes do not depend on them: the agent app and the Agent CLI set
+    are read from *spec* itself, and no credential or seed sources are supplied. Compare
+    only :func:`sandbox_visible` projections of the result.
     Raises ``ValueError`` when the spec's Agent CLI record is malformed.
     """
     policies = spec_cli_policies(spec)
@@ -453,16 +445,11 @@ def sandbox_visible_expectation(spec: dict) -> dict:
     app = spec_agent_app(spec) or APP_NONE
     if not plans:
         plans = [auth_token.CredentialPlan(app, DEFAULT_AUTH, None, frozenset(), ())]
-    customizations = spec.get("customizations")
-    vscode = customizations.get("vscode") if isinstance(customizations, dict) else None
-    settings = vscode.get("settings") if isinstance(vscode, dict) else None
-    dashboard = isinstance(settings, dict) and settings.get(_DASHBOARD_PROTOCOL_SETTING) == 1
     return build_devcontainer_spec(
         app,
         cli_seeds=[CliSeeds(plan) for plan in plans],
         booley_dir_source="",
         mcp_start_command=mcp_post_start_command(),
-        dashboard=dashboard,
     )
 
 
@@ -637,10 +624,18 @@ def _planned_seeds(app: str, cli_seeds: Sequence[CliSeeds]) -> list[_Seed]:
     ]
 
 
+def _runs_t3_code(seeds: Sequence[_Seed]) -> bool:
+    """Whether an Agent CLI is allowed, so the spec carries T3 Code's volume and directory."""
+    return any(seed.app in _APP_STATE_DIR for seed in seeds)
+
+
 def _cli_seed_mounts(
     seeds: Sequence[_Seed], project_id: str, legacy_clis: frozenset[str]
 ) -> list[str]:
-    """Per CLI, in order: token seed, login seed, Claude config seed, state volume."""
+    """Per CLI, in order: token seed, login seed, Claude config seed, state volume.
+
+    Then T3 Code's state volume when an Agent CLI is allowed.
+    """
     mounts: list[str] = []
     for seed in seeds:
         # Rotation-free credential stored by `booley auth` (see
@@ -672,6 +667,8 @@ def _cli_seed_mounts(
         state_mount = state_volume_mount(seed.app, project_id, seed.policy, legacy=legacy)
         if state_mount:
             mounts.append(state_mount)
+    if _runs_t3_code(seeds):
+        mounts.append(t3_state_volume_mount(project_id))
     return mounts
 
 
@@ -864,6 +861,18 @@ def _git_environment(project_source: str | None, fixed: dict[str, str] | None) -
     return environment
 
 
+def _build_container_env(
+    base: dict[str, str], egress: str, seeds: Sequence[_Seed], project_id: str
+) -> dict[str, str]:
+    """The ``containerEnv`` block, which bare ``docker exec`` calls see too."""
+    environment = {**base, COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT}
+    if egress == "unproxied":
+        environment["BOOLEY_EGRESS"] = "unproxied"
+    if _runs_t3_code(seeds):
+        environment[T3_BASE_DIR_ENV] = t3_project_base_dir(project_id)
+    return environment
+
+
 def _policy_remote_environment(remote: dict[str, str], app: str, seeds: Sequence[_Seed]) -> None:
     """Record the default CLI's policy, the allowed CLI set, and the forwarded keys."""
     remote["BOOLEY_PRIMARY_AUTH"] = wire_auth(
@@ -898,7 +907,6 @@ def build_devcontainer_spec(
     mask_paths: Sequence[str] = (),
     mask_source: str = "",
     local_timezone: str = "",
-    dashboard: bool = False,
     egress: str = "proxy",
     legacy_clis: frozenset[str] = frozenset(),
 ) -> dict:
@@ -1011,13 +1019,9 @@ def build_devcontainer_spec(
         # an image that the host did not inspect or stamp.
         "updateRemoteUserUID": False,
     }
-    spec["containerEnv"] = {
-        **(fixed_container_env or {}),
-        **identity_env,
-        COMPILER_CACHE_ROOT_ENV: ISSUED_COMPILER_CACHE_ROOT,
-    }
-    if egress == "unproxied":
-        spec["containerEnv"]["BOOLEY_EGRESS"] = "unproxied"
+    spec["containerEnv"] = _build_container_env(
+        {**(fixed_container_env or {}), **identity_env}, egress, seeds, project_id
+    )
 
     config_command, creds_commands = _seed_commands(seeds)
     post_create = _build_post_create_command(config_command, creds_commands, mcp_start_command)
@@ -1031,38 +1035,22 @@ def build_devcontainer_spec(
     if post_start:
         spec["postStartCommand"] = post_start
 
-    # The Waveform Viewer (ADR 0078, VaporView) rides along for every app —
-    # including "none": viewing a trace isn't tied to which app is attached —
-    # so the customizations block is unconditional now.
+    # The bundled extensions ride along for every app, including "none", so the
+    # customizations block is unconditional.
     vscode: dict = {
         "extensions": [
             # Builds bundled in the image, installed by path: the egress-locked
             # Sandbox cannot reach a gallery, and VS Code pins a VSIX install
             # so auto-update leaves it there.
-            _vaporview.BUNDLED_VSIX,
             HDL_VSIX,
             LIVE_PREVIEW_VSIX,
         ],
-        "settings": {
-            **_VAPORVIEW_PRESENTATION_SETTINGS,
-            **_LIVE_PREVIEW_SETTINGS,
-            **_PYTHON_TERMINAL_SETTINGS,
-        },
+        "settings": {**_LIVE_PREVIEW_SETTINGS, **_PYTHON_TERMINAL_SETTINGS},
     }
-    from booley.runtime.dashboard_extension import VSIX_PATH
-
-    # The image-local Booley Sandbox Integration extension hosts the `bwave gui` Viewer Bridge, so
-    # every Sandbox installs it; the attach protocol alone decides whether it
-    # also opens the Dashboard terminal.
-    vscode["extensions"].append(VSIX_PATH)
-    vscode["settings"][_DASHBOARD_PROTOCOL_SETTING] = 1 if dashboard else 0
     spec["customizations"] = {"vscode": vscode}
 
-    # The residual VaporView patch (theme lookup, palette scope) edits the
-    # installed extension, so it runs at attach, the first lifecycle point
-    # where that extension exists on disk. Unconditional: viewing traces is not
-    # tied to which agent app is attached, and the hook only fires when a UI
-    # client attaches, so headless Sandboxes skip it for free.
+    # The attach hook only fires when a UI client attaches, so headless
+    # Sandboxes skip it for free.
     spec["postAttachCommand"] = post_attach_command()
 
     return spec

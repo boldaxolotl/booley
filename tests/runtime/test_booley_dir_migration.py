@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import uuid
 from pathlib import Path
 
 import pytest
@@ -21,7 +20,6 @@ from booley.harness.init_cmd import run_init
 from booley.harness.setup.directory_migration import inspect_migration
 from booley.runtime import booley_dir_migration as migration
 from booley.runtime.session_issuance import stamp_path
-from booley.runtime.worktree_identity import resolve_worktree_identity
 
 OLD = ".booley_project"
 NEW = ".booley"
@@ -110,7 +108,6 @@ def test_moves_detached_worktree_and_nested_copy_or_pair(tmp_path, paired, relat
     old, outer = _linked_layout(tmp_path, paired, relative)
     (outer / "untracked.v").write_text("precious RTL\n")
     git(tmp_path, "worktree", "lock", "--reason", "preserve", str(outer))
-    identity = resolve_worktree_identity(outer, create=True)
     leftover = _leftover_record(old)
     frozen = leftover.read_bytes()
     plan = inspect_migration(tmp_path)
@@ -120,7 +117,6 @@ def test_moves_detached_worktree_and_nested_copy_or_pair(tmp_path, paired, relat
     assert not old.exists()
     assert (moved / NEW / "booley.toml").is_file()
     assert (moved / "untracked.v").read_text() == "precious RTL\n"
-    assert resolve_worktree_identity(moved) == identity
     assert "prunable" not in git(tmp_path, "worktree", "list", "--porcelain")
     assert "locked preserve" in git(tmp_path, "worktree", "list", "--porcelain")
     assert (tmp_path / NEW / "goals" / leftover.parent.name / "record.json").read_bytes() == frozen
@@ -267,15 +263,7 @@ def test_migration_repairs_external_pair_without_moving_its_checkout(tmp_path):
     _repository(old)
     git(old, "worktree", "add", "--detach", str(external))
     git(external, "config", "core.hooksPath", str(old / ".managed/hooks"))
-    common = old / ".git/booley"
-    common.mkdir()
-    (common / "repository-id").write_text(str(uuid.uuid4()) + "\n")
-    admin = Path(git(external, "rev-parse", "--absolute-git-dir")) / "booley"
-    admin.mkdir()
-    (admin / "worktree-id").write_text(str(uuid.uuid4()) + "\n")
-    identity = resolve_worktree_identity(external)
     migration.apply_migration(inspect_migration(root))
-    assert resolve_worktree_identity(external) == identity
     assert Path(git(external, "rev-parse", "--show-toplevel")) == external
     assert Path(git(external, "config", "core.hooksPath")) == root / NEW / ".managed/hooks"
     assert "prunable" not in git(root / NEW, "worktree", "list", "--porcelain")
@@ -352,7 +340,7 @@ def test_known_managed_file_conflict_refuses_before_rename(tmp_path, variant):
 
 @pytest.mark.parametrize("promote", [True, False], ids=["holder", "waiter"])
 @pytest.mark.parametrize("retired", ["heavy", "light"])
-def test_live_job_without_session_registry_refuses_unchanged(tmp_path, retired, promote):
+def test_live_job_refuses_unchanged(tmp_path, retired, promote):
     import os
 
     from booley.runtime.job_slots import CLASS_MEMORY, MemoryClaim, SlotStore
@@ -490,12 +478,10 @@ def test_primary_git_pointer_file_migrates_and_repairs_registered_worktree(tmp_p
     common = Path(git(root, "rev-parse", "--path-format=absolute", "--git-common-dir"))
     (common / "info/exclude").write_text(f"/{OLD}\n")
     git(root, "config", "core.hooksPath", str(old / ".managed/hooks"))
-    identity = resolve_worktree_identity(worktree, create=True)
     marker = (root / ".git").read_bytes()
     migration.apply_migration(inspect_migration(root))
     moved = root / NEW / "worktrees/one"
     assert (root / ".git").read_bytes() == marker
-    assert resolve_worktree_identity(moved) == identity
     assert Path(git(root, "config", "core.hooksPath")) == root / NEW / ".managed/hooks"
     assert (common / "info/exclude").read_text() == f"/{NEW}\n"
     assert "prunable" not in git(root, "worktree", "list", "--porcelain")

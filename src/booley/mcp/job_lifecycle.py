@@ -124,8 +124,6 @@ class JobLifecycle:
         # run_id -> (exit_code, stdout, stderr, timed_out) once finished.
         self._results: dict[str, tuple[int, str, str, bool]] = {}
         self._counter = 0
-        # Whole seconds, like record stamps: a Job ended in this second counts as new.
-        self._started_at = float(int(time.time()))
         # Live records of the Jobs this server submitted (the supervising task mutates
         # them, so they are current even when persistence is off) and the run_ids whose
         # result the owner has read.
@@ -168,13 +166,14 @@ class JobLifecycle:
 
     @staticmethod
     def _stamp_context(rec: jobrec.JobRecord, context: CallContext) -> None:
-        rec.work_dir = str(context.explicit_work_dir) if context.explicit_work_dir else None
-        rec.session_key = context.session_key
+        # A deleted server cwd leaves nothing to record and must not stop the call.
+        with contextlib.suppress(FileNotFoundError):
+            rec.work_dir = str(context.work_dir)
         from booley.runtime.booley_dir import resolve_common_booley_dir
 
         try:
             project = resolve_common_booley_dir()
-            register_job(project, rec.run_id, rec.endpoint, rec.session_key, work_dir=rec.work_dir)
+            register_job(project, rec.run_id, rec.endpoint)
         except (OSError, ValueError, RuntimeError) as exc:
             logger.warning("Job handle Project unavailable for %s: %s", rec.run_id, exc)
 
@@ -257,17 +256,20 @@ class JobLifecycle:
         timeout: int,
         *,
         context: CallContext,
-        owner: str | None = None,
+        caller: Caller | None = None,
     ) -> str:
         """Spawn *cmd* as a detached background job and return its run_id.
 
         Always spawns: admission (queue or run) is the child's own slot-store
         claim, not this server's decision. The record lives under the call
-        context's jobs root and names *owner*, the agent that started it.
+        context's jobs root and names *caller*, the agent that started it.
         """
         run_id = self._next_run_id(name)
         rec = self._new_record(run_id, name, cmd, timeout)
-        rec.owner = owner
+        if caller is not None:
+            rec.owner = caller.owner
+            if caller.agent is not None:
+                rec.client, rec.thread = caller.agent.client, caller.agent.thread
         self._submitted[run_id] = rec
         self._stamp_context(rec, context)
         self._job_roots[run_id] = context.jobs_root
@@ -516,7 +518,7 @@ class JobLifecycle:
         *,
         context: CallContext,
         wait_seconds: float,
-        owner: str | None = None,
+        caller: Caller | None = None,
         attach: bool = True,
     ) -> JobSubmission:
         """Join identical live work or submit once, then wait within the inline budget.
@@ -527,7 +529,7 @@ class JobLifecycle:
         run_id = (
             attached
             if attached is not None
-            else self.submit(name, cmd, timeout, context=context, owner=owner)
+            else self.submit(name, cmd, timeout, context=context, caller=caller)
         )
         return JobSubmission(await self.poll(run_id, wait_seconds), attached is not None)
 
@@ -583,21 +585,8 @@ class JobLifecycle:
         return owned
 
     def _is_unread(self, rec: jobrec.JobRecord) -> bool:
-        """Finished and not yet read by its owner.
-
-        Releases never stamped ``read_at``, and the Sandbox keeps every Job
-        record in the Project tree, so a record without an owner only counts when
-        this server could still be the one to deliver it: still unrecorded as
-        finished, or ended since the server started.
-        """
-        if rec.read_at is not None or rec.run_id in self._read:
-            return False
-        if rec.owner is not None:
-            return True
-        ended = jobrec.parse_stamp(rec.ended_at)
-        return rec.status == jobrec.STATUS_RUNNING or (
-            ended is not None and ended >= self._started_at
-        )
+        """Not yet read by its owner."""
+        return rec.read_at is None and rec.run_id not in self._read
 
     def _unread_of(
         self, owned: list[tuple[jobrec.JobRecord, bool]]

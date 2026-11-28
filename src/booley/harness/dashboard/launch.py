@@ -1,6 +1,6 @@
-"""The process boundary of the Dashboard's Run wizard: list, form, check, quote and submit a Flow or Specialist.
+"""The process boundary of the Dashboard's Run form: list, form, check, quote and start a Flow or Specialist.
 
-No Textual here. The wizard calls a :class:`Launcher`; the argument check runs
+The form calls a :class:`Launcher`; the argument check runs
 the shell's own parse of a built-in Flow or Specialist in a child process (``main`` below), so
 nothing it prints or sets reaches the Dashboard, and relative paths resolve in
 the chosen worktree.
@@ -44,7 +44,7 @@ class ArgumentsError(ValueError):
 
 @dataclass(frozen=True)
 class FlowChoice:
-    """One built-in Flow the wizard offers, with the first sentence of its description."""
+    """One built-in Flow the Run form offers, with the first sentence of its description."""
 
     name: str
     blurb: str
@@ -276,7 +276,7 @@ def check(worktree: Path, kind: str, name: str, argv: tuple[str, ...]) -> CheckR
 
 
 class Launcher:
-    """What the Run wizard needs from the outside world; one per Dashboard."""
+    """What the Run form needs from the outside world; one per Dashboard server."""
 
     def __init__(self, booley_dir: Path) -> None:
         self._booley_dir = booley_dir
@@ -312,22 +312,49 @@ class Launcher:
         return check(worktree, kind, name, argv)
 
     def uncommitted(self, worktree: Path) -> int:
-        """Uncommitted changes in *worktree*, counted as ``booley worktree list`` counts them.
+        """Uncommitted changes in *worktree*.
 
-        Raises ``WorktreeListError`` when Git fails and ``BooleyLayoutError`` for a retired layout.
+        Raises ``WorktreeGitError`` when Git fails and ``BooleyLayoutError`` for a retired layout.
         """
         from booley.core.booley_dir import own_booley_dir_repo_path
-        from booley.harness.worktree_list import count_uncommitted
+        from booley.harness.dashboard.git_worktrees import count_uncommitted
 
         return count_uncommitted(worktree, own_booley_dir_repo_path(worktree).as_posix())
 
-    def submit(self, worktree: Path, kind: str, name: str, argv: tuple[str, ...]) -> str:
-        """Start the Standalone Job; return its Jobs window row key. ``OSError`` if it cannot be recorded."""
-        from booley.harness.standalone_job import standalone_jobs_dir
+    def start(self, worktree: Path, kind: str, name: str, argv: tuple[str, ...]) -> str:
+        """Start the Standalone Job; return its run ID. ``OSError`` if it cannot be recorded."""
         from booley.harness.standalone_worker import StandaloneRequest, submit
 
-        run_id = submit(self._booley_dir, StandaloneRequest(worktree, kind, name, argv))
-        return json.dumps([str(standalone_jobs_dir(self._booley_dir)), run_id])
+        return submit(self._booley_dir, StandaloneRequest(worktree, kind, name, argv))
+
+
+@dataclass(frozen=True)
+class ReviewCheck:
+    """The argument check and the reads the review shows: the shell's rejection or the run's facts.
+
+    ``uncommitted`` is a string when the changes cannot be counted.
+    """
+
+    error: str = ""
+    facts: RunFacts | None = None
+    uncommitted: int | str = 0
+
+
+def review_check(
+    launcher: Launcher, worktree: Path, kind: str, name: str, argv: tuple[str, ...]
+) -> ReviewCheck:
+    """The argument check, then (when it passes) the uncommitted count the review shows."""
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.harness.dashboard.git_worktrees import WorktreeGitError
+
+    result = launcher.check(worktree, kind, name, argv)
+    if result.facts is None:
+        return ReviewCheck(result.error or NO_FACTS)
+    try:
+        uncommitted: int | str = launcher.uncommitted(worktree)
+    except (WorktreeGitError, BooleyLayoutError) as exc:
+        uncommitted = str(exc)
+    return ReviewCheck("", result.facts, uncommitted)
 
 
 def _load_endpoint(base: type[_Endpoint], name: str) -> _Endpoint:
@@ -480,7 +507,7 @@ def _agent_facts(name: str, asked_ms: int, timeout_ms: int) -> dict[str, Any]:
 def _check_specialist(name: str, typed: list[str]) -> int:
     """Parse *typed* as ``booley specialist <name>`` would and print how the Job is admitted.
 
-    The wizard writes these words from a form that never offers a Project selector, help
+    The Run form writes these words and never offers a Project selector, help
     or ``--dry-run``, so the parse is the whole argument check; the Agent CLI's auth check
     and the timeout the run will use follow it (see :class:`SpecialistFacts`).
     """

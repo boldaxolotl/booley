@@ -1,7 +1,8 @@
 # Position Booley as an agentic development environment
 
 Status: accepted (amended 2026-11-12: the positioning names RTL design and
-verification instead of FPGA and ASIC development, see Amendments)
+verification instead of FPGA and ASIC development; amended 2026-11-27: T3 Code
+replaces VS Code as the user interface; see Amendments)
 
 Amended by [ADR 0092](0092-measure-commits-against-target-metrics.md): once
 Goal Mode is removed, read "Goal status" and "Review Package" below as the
@@ -33,8 +34,7 @@ they are.
 
 The glossary lists "IDE" and "agentic RTL IDE" as terms to avoid for the
 product itself. VS Code remains the shell; it is described as the window
-that holds agent sessions, the Booley Dashboard, and the editor, not as the
-product.
+that holds agent sessions and the editor, not as the product.
 
 Product direction follows the framing: UI work goes into supervising agents
 (sessions, Goal and evidence status, review), not editor features. The
@@ -56,8 +56,6 @@ break the package, CLI, repository, and published links for no gain.
   ARCHITECTURE, and AGENTS.md use the ADE framing.
 - Warp and Orca are named only in WHY.md, to explain the category.
 - The CHANGELOG keeps its historical "IDE" wording.
-- Internal names such as the site's `ide-figure.html` are left alone: that
-  illustration shows a VS Code window.
 
 ## Amendments (2026-11-12)
 
@@ -85,3 +83,12 @@ stand.
   Flow tables and SUPPORTED-EDA-TOOLS.
 - The blog post published before this amendment and the CHANGELOG keep their
   wording.
+
+## Amendments (2026-11-27)
+
+T3 Code replaces VS Code as Booley's user interface (UI)
+([ADR 0093](0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md)): the
+browser app that holds Developer Agent sessions as threads, their terminals,
+and the Booley Dashboard. This replaces the Decision's sentence on VS Code.
+T3 Code is described as Booley's UI, not as the product. The ADE positioning,
+the tagline, and everything else in this ADR stand.

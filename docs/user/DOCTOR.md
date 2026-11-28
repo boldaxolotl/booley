@@ -13,13 +13,16 @@ reports a failing test is healthy machinery; the Flows judge the design.
 Doctor checks what it can see from where it runs, so it gives a different view
 from each side:
 
-- **Host terminal:** the Booley install, Docker, the Sandbox Image, and the
-  Project configuration. Doctor starts the Sandbox for its Flow dry-runs. It
-  never completes pending Sandbox recovery: it warns and skips the checks that
-  need the Sandbox until `booley session up` completes it.
-- **Sandbox terminal** (a VS Code terminal in the devcontainer, or
-  `booley session enter`): the same configuration plus the tools, MCP server,
-  and agent setup inside the Sandbox.
+- **Host terminal:** the Booley install, Docker, the Sandbox Image, T3 Code,
+  the relay that connects your browser to it, the
+  [Dashboard](USAGE.md#the-dashboard) that the Sandbox serves with T3 Code,
+  and the Project configuration. Doctor starts the Sandbox for its Flow
+  dry-runs. It never completes pending Sandbox recovery: it warns and skips
+  the checks that need the Sandbox until `booley session up` completes it.
+- **[Container terminal](USAGE.md#read-this-first)** (a T3 Code thread's
+  terminal, or `booley session enter` on the host): the same configuration plus
+  the tools, MCP server, T3 Code, the Dashboard, and agent setup inside the
+  Sandbox.
 
 Run plain `booley doctor` for everyday checks. It checks configuration and
 prepares each Flow without running a simulation, lint, or synthesis.
@@ -92,8 +95,8 @@ last result is older than 7 days (1 day if it found problems) or older than a
 change to the Project's configuration or the Booley version.
 
 It never blocks work. New problems show up in the output of
-`booley session up`, at the top of the next Flow result the agent receives,
-and on the Dashboard. The full output of the last run is in
+`booley session up` and at the top of the next Flow result the agent
+receives. The full output of the last run is in
 `.booley/runtime/doctor/last.log`.
 
 ## Deep checks

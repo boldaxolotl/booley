@@ -196,12 +196,11 @@ class TestCheatCommand:
         assert "\nMetric-Driven Development\n" not in out
         assert "\nSandbox & Docker\n" not in out
 
-    def test_commands_include_configured_agent_chat(self, capsys):
+    def test_commands_list_sandbox_and_either_location_commands(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--commands"]), Path.cwd()) == 0
         out = " ".join(capsys.readouterr().out.split())
         assert "Sandbox-only commands" in out
-        assert "booley either Host: help; Sandbox: open the configured Developer Agent CLI" in out
-        assert "booley chat Explicit spelling of the Sandbox default booley command" in out
+        assert "booley either Show top-level help; on the host, add a getting-started hint" in out
 
     def test_commands_are_grouped_by_execution_location(self, capsys):
         assert tlr._cmd_cheat(self._parse(["cheat", "--commands"]), Path.cwd()) == 0

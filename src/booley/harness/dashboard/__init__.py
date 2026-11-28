@@ -1,1 +1,1 @@
-"""The Sandbox-scoped Booley Dashboard."""
+"""The web Booley Dashboard: one page per worktree."""

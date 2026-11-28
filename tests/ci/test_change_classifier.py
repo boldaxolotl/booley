@@ -405,6 +405,9 @@ def test_project_metadata_edit_selects_stable_base_only_for_runtime_changes(
         ("src/booley/data/docker/base-python-requirements.txt", True),
         # The contract gates every image lane but not the base.
         (".github/contracts/session-runtime.toml", False),
+        # #4781: a T3 Code pin or policy change must run the binary probe.
+        ("src/booley/data/docker/agent-clis-package.json", True),
+        ("src/booley/data/docker/t3code-policy.json", True),
     ],
 )
 def test_package_inventory_inputs_select_their_image_gates(path: str, stable_base: bool) -> None:
@@ -777,6 +780,8 @@ def test_riscv_image_input_requests_extended_image_smoke(path: str) -> None:
         ("src/booley/mcp/project_flow_loader.py", False),
         ("src/booley/runtime/agent_execution.py", False),
         ("tests/runtime/test_agent_execution.py", False),
+        # #4781: the T3 Code binary probe runs in bwave-smoke.
+        (".github/scripts/verify_t3code_runtime.py", False),
         # The OpenROAD probe belongs to the standard image only.
         (".github/scripts/verify_openroad_runtime.sh", False),
     ],

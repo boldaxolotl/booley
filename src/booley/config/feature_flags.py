@@ -34,6 +34,7 @@ class FeatureFlag:
 
 #: Every registered flag; deleting an entry enables its feature.
 FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
+    FeatureFlag("web-run-panel", "booley dashboard: the Run panel", 3874),
     FeatureFlag(
         "reviewed-commits", "booley review: Declared Reviews of a commit and its Review Runs", 3064
     ),

@@ -119,8 +119,9 @@ class _JobHooks:
     progress: Callable[[int, int, tuple[str, ...]], None]
     # Gets the exit status and the summary of a finished measurement; an MCP Job only.
     publish: Callable[[int, str], None] | None = None
-    # The session whose MCP Job this is; its Flow Jobs are filed under it. An MCP Job only.
-    session_key: str | None = None
+    # The agent whose MCP Job this is; its Flow Jobs record it too. An MCP Job only.
+    client: str | None = None
+    thread: str | None = None
 
 
 class MeasureRefusedError(Exception):
@@ -180,7 +181,11 @@ def run_measure(project_root: Path, request: MeasureRequest) -> int:
     mcp_job = McpCommandJob.find(MEASURE_ENDPOINT)
     if mcp_job is not None:
         hooks = _JobHooks(
-            mcp_job.run_id, mcp_job.record_progress, mcp_job.publish_result, mcp_job.session_key
+            mcp_job.run_id,
+            mcp_job.record_progress,
+            mcp_job.publish_result,
+            mcp_job.client,
+            mcp_job.thread,
         )
         return _guarded(project_root, request, hooks)
     job = StandaloneJob.prepare(
@@ -326,7 +331,8 @@ def _preflight(
             # Beside the Job's own log, so no child record names a path the scratch deletes.
             report_dir=standalone_log_root(main) / hooks.run_id / "children",
             timeout_s=None,
-            session_key=hooks.session_key,
+            client=hooks.client,
+            thread=hooks.thread,
         )
     except (ValueError, FuseSocError) as exc:  # includes CheckoutFlowError, unpinnable inputs
         raise MeasureRefusedError(str(exc)) from exc

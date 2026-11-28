@@ -92,7 +92,7 @@ def submit(booley_dir: Path, request: StandaloneRequest) -> str:
     )
     jobs_root = standalone_jobs_dir(booley_dir)
     job_records.write_record_strict(record, jobs_root)
-    register_job(booley_dir, run_id, stem, None, work_dir=record.work_dir)
+    register_job(booley_dir, run_id, stem)
     try:
         detached_job.spawn(
             detached_job.worker_command("standalone", str(booley_dir), run_id),

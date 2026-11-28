@@ -40,8 +40,9 @@ for the whole suite:
 
 The agent replies with the verdict and the paths to the report and logs.
 
-To run a Flow yourself, use a container terminal (VS Code's terminal after
-**Reopen in Container**, or `booley session enter`):
+To run a Flow yourself, type these in a
+[container terminal](USAGE.md#read-this-first): a T3 Code thread's terminal, or
+`booley session enter` on the host.
 
 ```bash
 booley flow                                   # list the Flows
@@ -60,11 +61,10 @@ it keeps running as a background Job and the call returns a `run_id`. With
 several Jobs running, call `booley_poll` with no `run_id`: it returns the
 result of whichever Job you started finishes first and says which others are
 still running, or that there is nothing to wait for. Pass a `run_id` to wait for
-one specific Job. Jobs started by another agent session or by a nested
-Specialist are not included. Every Booley MCP tool response ends with one line
-for each finished Job you started but have not polled yet (up to ten, then a
-count of the rest; input prompts carry none), and the Dashboard's
-Job details show how long each result waited before it was read.
+one specific Job. Jobs started by another T3 Code thread, another Codex
+conversation, or a nested Specialist are not included. Every Booley MCP tool
+response ends with one line for each finished Job you started but have not
+polled yet (up to ten, then a count of the rest; input prompts carry none).
 
 ### Resource use
 
@@ -160,10 +160,11 @@ verdict:
 - `tool-output.log`: the complete transcript of the EDA tool's output.
 - `run.log`: a capped snapshot of the latest output.
 
-The paths are inside the Sandbox. To follow a run from a second terminal:
+The paths are inside the Sandbox. To follow a run from a second container
+terminal, such as another terminal in the T3 Code thread:
 
 ```bash
-booley session enter -- tail -f <printed tool-output.log path>
+tail -f <printed tool-output.log path>
 ```
 
 A terminal run prints the path only at the end, so while it runs, follow the

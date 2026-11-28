@@ -62,7 +62,8 @@ summary {
 
 .header,
 .card,
-.error {
+.error,
+.run-form {
   padding: 0.6rem 0.8rem;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -113,4 +114,62 @@ summary {
   border-color: var(--error);
   background: var(--error-surface);
   color: var(--error-text);
+}
+
+.topbar,
+.run-form {
+  max-width: 64rem;
+  margin: 0 auto;
+}
+
+.topbar[hidden] {
+  display: none;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--border);
+  font-weight: 600;
+}
+
+button.primary {
+  padding: 0.3rem 0.8rem;
+  border: 0;
+  border-radius: var(--radius);
+  background: var(--primary);
+  color: #fff;
+  font-weight: 600;
+}
+
+button.primary:disabled {
+  opacity: 0.5;
+}
+
+.run-form {
+  margin-top: 1rem;
+}
+
+.field {
+  display: grid;
+  grid-template-columns: 12rem 1fr;
+  gap: 0.1rem 1rem;
+  margin-top: 0.6rem;
+}
+
+.field .muted {
+  grid-column: 2;
+}
+
+.run-command {
+  display: flex;
+  gap: 0.8rem;
+  margin: 1rem 0 0.8rem;
+}
+
+.run-command code {
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-all;
 }

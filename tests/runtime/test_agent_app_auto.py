@@ -1,9 +1,8 @@
 """``BOOLEY_AGENT_APP=auto``: the registrar picks the app and every consumer agrees (#2425).
 
 Every test runs as a Sandbox start: the registrar hook runs, then the Specialist,
-MCP-server, ``booley chat``, ``booley auth``, ``booley shell`` and Doctor consumers
-read what the start decided. Nothing here depends on host credentials or on
-``claude``/``codex`` being on PATH.
+MCP-server, ``booley auth``, ``booley shell`` and Doctor consumers read what the start
+decided. Nothing here depends on host credentials or on ``claude``/``codex`` being on PATH.
 """
 
 from __future__ import annotations
@@ -18,12 +17,13 @@ from types import SimpleNamespace
 import pytest
 from tests.devcontainer_spec_support import build_spec
 from tests.sandbox_venue_fake import place
+from tests.t3code_fake import serve_t3_code
 
 from booley.config import agent as config_agent
 from booley.config import agent_app
 from booley.config.agent import BackendConfigError, get_agent_settings, load_agent_settings
 from booley.config.settings import set_agent_settings
-from booley.harness import auth_cmd, chat_cmd, doctor
+from booley.harness import auth_cmd, doctor
 from booley.harness import booley as booley_cli
 from booley.harness import incontainer_register as entry
 from booley.runtime import devcontainer as dc
@@ -70,6 +70,7 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_AGENT_APP", "auto")
     _pin_venue(monkeypatch, inside=True)
     monkeypatch.setattr(reg, "ensure_http_server", lambda: "started")
+    serve_t3_code(monkeypatch, foreign=True)
     monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
     monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "started")
     monkeypatch.setattr(shutil, "which", lambda name, mode=None: None)
@@ -205,9 +206,6 @@ def test_auto_choice_reaches_every_consumer(sandbox, monkeypatch, capsys, kind):
     assert [f.subject for f in findings if f.check_id == "agent.credential-policy"] == []
     assert _audited_clis(findings) == set(clis)
     assert _graded_on_the_gateway(findings) == (policy == "gateway")
-    monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
-    assert chat_cmd.run(argparse.Namespace(agent_args=[]), sandbox.project) == 2
-    assert f"configured agent CLI '{app}'" in capsys.readouterr().err
 
 
 def test_consumers_keep_the_start_choice_when_a_credential_appears_later(

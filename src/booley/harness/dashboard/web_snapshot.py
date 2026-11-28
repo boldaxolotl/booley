@@ -1,12 +1,13 @@
 """One worktree's Jobs, resources and admission as plain JSON values.
 
-Textual-free and HTTP-free: ``web`` routes requests and calls ``read_snapshot``.
-Sizes are bytes and durations are seconds; timestamps are the stored RFC 3339 strings.
+HTTP-free: ``web`` routes requests and calls ``read_snapshot``.
+Sizes are bytes and durations are seconds; timestamps are the stored RFC 3339 strings,
+but an ``owner`` label may format a Job's start time for display.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from time import monotonic
 from time import time as wall_clock
@@ -20,14 +21,15 @@ from booley.harness.dashboard.jobs import (
     job_elapsed_seconds,
 )
 from booley.harness.dashboard.resources import Resources, ResourceSampler
-from booley.harness.dashboard.sessions import session_key_label
+from booley.harness.dashboard.specialist_form import SimRun, sim_runs
+from booley.harness.dashboard.thread_titles import ThreadTitles
 from booley.presentation.report_results import present_job_report
 from booley.runtime import job_records, job_slots
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.handles import job_prefix
 from booley.runtime.memory_budget import compute_memory_budget
 from booley.runtime.pid import DEAD_PROCESS_STATES, observe_process
-from booley.runtime.timefmt import parse_timestamp
+from booley.runtime.timefmt import format_human_datetime_safe, parse_timestamp
 
 # The newest finished Jobs listed under Results.
 MAX_RESULTS = 50
@@ -44,6 +46,7 @@ def read_snapshot(
     proc_root: Path,
     worktree: Path,
     branch: str | None,
+    titles: ThreadTitles,
 ) -> dict[str, Any]:
     """Read every retained Job once and project the part that belongs to *worktree*."""
     now = wall_clock()
@@ -51,10 +54,16 @@ def read_snapshot(
     resources = sampler.sample(worktree, now=monotonic())
     admission = _admission(jobs, slots, proc_root)
     mine = _worktree_jobs(worktree, jobs)
+    unfinished, finished = _listed(mine)
+    names = titles.resolve(
+        job.record.thread
+        for job in (*unfinished, *finished)
+        if job.record.client == "claude" and job.record.thread
+    )
     return {
         "header": _header(worktree, branch, resources, admission),
-        "now": _now_rows(mine, now),
-        "results": _results(mine, worktree, now),
+        "now": _now_rows(unfinished, now, names),
+        "results": _results(finished, worktree, now, names),
     }
 
 
@@ -71,6 +80,11 @@ def find_report(reader: JobReader, worktree: Path, report: str) -> Path | None:
     )
 
 
+def finished_sim_runs(reader: JobReader, worktree: Path) -> tuple[SimRun, ...]:
+    """The finished Simulation Jobs of *worktree*, read now: their directories hold Coverage Records."""
+    return sim_runs(_worktree_jobs(worktree, _read_jobs(reader, worktree, wall_clock())))
+
+
 def _read_jobs(reader: JobReader, worktree: Path, now: float) -> tuple[JobView, ...]:
     # A checkout outside the Main Booley Directory keeps its Standalone Jobs' reports in
     # its own Booley Directory.
@@ -85,15 +99,15 @@ def _worktree_jobs(worktree: Path, jobs: Sequence[JobView]) -> list[JobView]:
     resolved: dict[str, Path | None] = {}
     mine: list[JobView] = []
     for job in jobs:
-        work_dir = job.record.work_dir
-        if not work_dir:
+        checkout = job.checkout
+        if not checkout:
             continue
-        if work_dir not in resolved:
+        if checkout not in resolved:
             try:
-                resolved[work_dir] = Path(work_dir).resolve()
+                resolved[checkout] = Path(checkout).resolve()
             except (OSError, ValueError, RuntimeError):
-                resolved[work_dir] = None
-        if resolved[work_dir] == worktree:
+                resolved[checkout] = None
+        if resolved[checkout] == worktree:
             mine.append(job)
     return mine
 
@@ -157,14 +171,26 @@ def _memory_claims(slots: Path | None, proc_root: Path) -> tuple[int, bool]:
     return round(reserved * _MIB), any(claim.run_alone for claim in claims)
 
 
-def _label(job: JobView) -> str:
-    return job.handle or job_prefix(job.record.endpoint) + "?"
+def job_label(handle: str, endpoint: str) -> str:
+    """What a Job's row shows: its handle, else ``J-SIM?`` for a live Job whose handle was not reserved."""
+    return handle or job_prefix(endpoint) + "?"
 
 
-def _owner(job: JobView) -> str:
-    """``you`` for a Standalone Job (no owning session), else the session's handle or key."""
-    key = job.record.session_key
-    return "you" if not key else session_key_label(job.owner_handle or key)
+def _owner(job: JobView, titles: Mapping[str, str]) -> str:
+    """The title of the thread that started the Job, else what a user can match to the thread.
+
+    A Claude thread id is T3 Code's own and appears in the thread's link. T3 Code does not
+    show a Codex thread id, so a Codex Job names its start time instead (#5934).
+    A Job without a recorded thread is its client when one is recorded, else ``you``.
+    """
+    record = job.record
+    if not record.thread:
+        return record.client or "you"
+    if title := titles.get(record.thread):
+        return title
+    if record.client == "claude":
+        return f"claude · {record.thread[-8:]}"
+    return f"{record.client} · started {format_human_datetime_safe(record.started_at)}"
 
 
 def _started(job: JobView) -> float:
@@ -175,16 +201,26 @@ def _finished_at(job: JobView) -> float:
     return parse_timestamp(job.record.ended_at or job.record.started_at).timestamp()
 
 
-def _now_rows(jobs: Sequence[JobView], now: float) -> list[dict[str, Any]]:
+def _listed(jobs: Sequence[JobView]) -> tuple[list[JobView], list[JobView]]:
+    """The unfinished Jobs, newest first, and the newest finished ones listed under Results."""
     unfinished = sorted(
         (job for job in jobs if job.state not in FINISHED_JOB_STATES), key=_started, reverse=True
     )
+    finished = sorted(
+        (job for job in jobs if job.state in FINISHED_JOB_STATES), key=_finished_at, reverse=True
+    )[:MAX_RESULTS]
+    return unfinished, finished
+
+
+def _now_rows(
+    unfinished: Sequence[JobView], now: float, titles: Mapping[str, str]
+) -> list[dict[str, Any]]:
     return [
         {
-            "handle": _label(job),
+            "handle": job_label(job.handle, job.record.endpoint),
             "flow": job.record.endpoint,
             "target": job_records.target_arg(job.record.argv),
-            "owner": _owner(job),
+            "owner": _owner(job, titles),
             "state": job.state,
             "stage": job.stage,
             "elapsed_s": job_elapsed_seconds(job, now),
@@ -194,11 +230,10 @@ def _now_rows(jobs: Sequence[JobView], now: float) -> list[dict[str, Any]]:
     ]
 
 
-def _results(jobs: Sequence[JobView], worktree: Path, now: float) -> dict[str, Any]:
-    """The newest finished Jobs, with pass and fail counts over the listed ones."""
-    finished = sorted(
-        (job for job in jobs if job.state in FINISHED_JOB_STATES), key=_finished_at, reverse=True
-    )[:MAX_RESULTS]
+def _results(
+    finished: Sequence[JobView], worktree: Path, now: float, titles: Mapping[str, str]
+) -> dict[str, Any]:
+    """The listed finished Jobs, with pass and fail counts over them."""
     rows: list[dict[str, Any]] = []
     passed = failed = 0
     for job in finished:
@@ -212,10 +247,10 @@ def _results(jobs: Sequence[JobView], worktree: Path, now: float) -> dict[str, A
         passed += semantic in _PASSED
         failed += semantic in _FAILED
         row = {
-            "handle": _label(job),
+            "handle": job_label(job.handle, job.record.endpoint),
             "flow": job.record.endpoint,
             "target": job_records.target_arg(job.record.argv),
-            "owner": _owner(job),
+            "owner": _owner(job, titles),
             "result": presentation.flow_word.value,
             "ended_at": job.record.ended_at,
             "duration_s": job_elapsed_seconds(job, now),

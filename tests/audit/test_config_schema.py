@@ -334,7 +334,14 @@ def test_project_sandbox_rejects_host_policy_with_migration(key: str, value: obj
 
 def test_project_sandbox_accepts_project_fields() -> None:
     assert project_schema.audit_sandbox_table(
-        {"sandbox": {"memory": "8g", "image": "project-image", "pip_requirements": ["req.txt"]}}
+        {
+            "sandbox": {
+                "memory": "8g",
+                "image": "project-image",
+                "pip_requirements": ["req.txt"],
+                "dashboard": "invalid",
+            }
+        }
     ).is_valid
 
 
@@ -346,6 +353,14 @@ def test_project_sandbox_accepts_project_fields() -> None:
             {"jobs": {"max_tickets": 0}},
             "config.ignored-key",
             "delete max_tickets from [jobs] in booley.toml",
+        ),
+        *(
+            (
+                {"sandbox": {"dashboard": value}},
+                "config.ignored-key",
+                "delete dashboard from [sandbox] in booley.toml",
+            )
+            for value in (False, "invalid")
         ),
     ],
 )
@@ -362,27 +377,26 @@ def test_ignored_settings_warn_with_a_delete_fix(
 
 
 @pytest.mark.parametrize(
-    ("data", "failures", "names_chat"),
+    ("data", "message", "fix"),
     [
-        pytest.param({}, 0, False, id="absent"),
-        pytest.param({"worktree": {"chat": "always"}}, 0, False, id="valid-mode"),
-        # Bug caught: Doctor passing a value that `booley chat` then refuses at launch.
-        pytest.param({"worktree": {"chat": 1}}, 1, True, id="chat-not-a-string"),
-        pytest.param({"worktree": []}, 1, False, id="not-a-table"),
-        pytest.param(
-            {"worktree": {"chat": "sometimes", "gc_older_than": "soon"}},
-            2,
-            True,
-            id="both-bad-keys",
+        (
+            {"worktree": {"chat": "auto"}},
+            "booley.toml [worktree].chat was removed and is ignored",
+            "delete chat from [worktree] in booley.toml",
+        ),
+        (
+            {"worktree": {"gc_older_than": "7d"}},
+            "booley.toml [worktree].gc_older_than was removed and is ignored",
+            "delete gc_older_than from [worktree] in booley.toml",
         ),
     ],
 )
-def test_worktree_table_audit(data: dict[str, object], failures: int, names_chat: bool) -> None:
-    audit = project_schema.audit_worktree_table(data)
-
-    assert len(audit.findings) == failures
-    assert audit.is_valid is (failures == 0)
-    assert ("[worktree].chat" in " ".join(f.message for f in audit.findings)) is names_chat
+def test_removed_worktree_keys_warn_with_their_fix(data, message, fix):
+    audit = project_schema.audit_ignored_settings(data)
+    assert audit.is_valid
+    (finding,) = audit.findings
+    assert finding.severity is config_common.ConfigFindingSeverity.WARN
+    assert (finding.check_id, finding.message, finding.fix) == ("config.ignored-key", message, fix)
 
 
 def test_jobs_seats_audit_fails_a_malformed_count_naming_the_key() -> None:

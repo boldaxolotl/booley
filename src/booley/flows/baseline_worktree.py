@@ -54,6 +54,7 @@ from booley.runtime.submodule_materialization import (
     materialize_project_submodules,
 )
 from booley.runtime.worktree_paths import worktree_creation_config, worktree_state_dir
+from booley.runtime.worktree_setup import copy_root_fusesoc_ignore
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,7 @@ def baseline_worktree(
         dangling = (
             _mirror_booley_directory(project_root, wt_dir) if paired_baseline is None else []
         )
-        _copy_root_quarantine_marker(project_root, wt_dir)
+        copy_root_fusesoc_ignore(project_root, wt_dir)
         _run_post_setup(wt_dir, ref)
         _refuse_dangling_links(dangling, wt_dir, ref)
         prepare_core_library_plan(wt_dir)
@@ -112,7 +113,7 @@ def baseline_worktree(
 
 
 def _run_post_setup(wt_dir: Path, ref: str) -> None:
-    """Run the Project's post-setup hook in the baseline checkout, as ``booley worktree new`` does."""
+    """Run the Project's post-setup hook in the baseline checkout, as ``booley worktree prepare`` does."""
     hook = find_post_setup_hook(wt_dir)
     if hook is None:
         return
@@ -301,13 +302,6 @@ def _remove_paired_project_baseline(project_root: Path, baseline: Path) -> None:
         )
 
 
-def _copy_root_quarantine_marker(project_root: Path, wt_dir: Path) -> None:
-    """Preserve an untracked root FuseSoC quarantine in a baseline checkout."""
-    marker = project_root / "FUSESOC_IGNORE"
-    if marker.is_file():
-        shutil.copy2(marker, wt_dir / marker.name)
-
-
 def _mirror_booley_directory(project_root: Path, wt_dir: Path) -> list[Path]:
     """Mirror the checkout's own Booley Directory's authored files into the worktree.
 
@@ -326,10 +320,10 @@ def _mirror_booley_directory(project_root: Path, wt_dir: Path) -> list[Path]:
     ``booley.toml``. The mirror lands at the baseline checkout's own Booley
     Directory (``[project].dir`` from its committed ``booley.toml``, else
     ``.booley``). Without stealth cores the baseline keeps no ``.booley/``
-    when it would resolve that same directory anyway (main checkout, or a host
-    worktree whose own directory is found by walk-up, which finds only a
-    ``.booley``); otherwise the directory is mirrored so the baseline does not
-    fall back to main's configuration.
+    when it would resolve that same directory anyway (the main checkout, where
+    walk-up finds only a ``.booley``); otherwise, as for a linked worktree
+    with its own directory, it is mirrored so the baseline does not fall back
+    to main's configuration.
     Without a Paired Checkout, the *live* content is the pragmatic choice;
     Paired Checkouts take the separate fork-point worktree path before this
     helper is called.

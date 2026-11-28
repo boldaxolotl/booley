@@ -463,7 +463,12 @@ Booley implements all three tooling fixes, but a project can apply them with any
 
 ## Reproducing this study
 
-The [Caliptra project](https://github.com/boldaxolotl/booley-prj-caliptra) used here is public; its README explains the setup. The [reproduction details below](#reproduce) list the recorded versions, the original prompt, and the patches. To try the same workflow on a smaller design, the [PicoRV32 demo](../../demos.md#picorv32) comes preconfigured.
+The [Caliptra project](https://github.com/boldaxolotl/booley-prj-caliptra) used
+here is public; its README explains the setup. The [reproduction details
+below](#reproduce) list the recorded versions, the original prompt, and the
+patches. To try the same workflow on a smaller design, the [PicoRV32
+project](https://github.com/boldaxolotl/booley-prj-picorv32) comes
+preconfigured.
 
 <details id="reproduce" markdown>
 <summary>How to reproduce (spoilers)</summary>

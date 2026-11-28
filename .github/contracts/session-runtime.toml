@@ -21,6 +21,7 @@ required_commands = [
   "npm",
   "claude",
   "codex",
+  "t3",
   "booley",
   "booley-mcp",
   "bwave",
@@ -49,10 +50,12 @@ required_commands = [
   "verible-verilog-preprocessor",
   "verible-verilog-project",
   "verible-verilog-syntax",
+  "chrome-headless-shell",
 ]
 required_paths = [
   "/etc/claude-code/managed-settings.json",
   "/etc/codex/requirements.toml",
+  "/etc/t3code/policy.json",
   "/opt/or-tools/lib/libortools.so.9",
   "/usr/local/share/doc/openroad/OpenROAD-c4d317e4fa2398b9880920a1411c20258a2175a9.tar.gz",
   "/usr/local/share/doc/openroad/source-manifest.json",
@@ -105,8 +108,11 @@ required_paths = [
   "/usr/local/share/verilator/include/verilated.h",
   "/usr/local/share/verilator/include/vltstd/vpi_user.h",
   "/usr/local/libexec/booley/base_package_inventory.py",
-  "/usr/local/libexec/booley/session_activity_hook.py",
+  "/usr/local/libexec/booley/t3code-denied-tools.txt",
+  "/usr/local/libexec/booley/t3code_tool_deny_hook.py",
   "/usr/local/share/booley/base-package-inventory.json",
+  "/opt/chrome-headless-shell/VERSION",
+  "/opt/t3code/preview-browser-version",
 ]
 absent_paths = [
   "/OpenROAD",
@@ -115,6 +121,7 @@ absent_paths = [
   "/opt/or-tools/bin",
   "/opt/or-tools/include",
   "/usr/local/cargo",
+  "/usr/local/libexec/booley/session_activity_hook.py",
   "/usr/local/rustup",
   "/usr/local/lib/python3.14/dist-packages/claude_agent_sdk/_bundled/claude",
 ]
@@ -156,6 +163,7 @@ stripped_elf = [
   "/usr/local/lib/ivl/vvp.tgt",
   "/usr/local/bin/yosys",
   "/usr/local/bin/yosys-abc",
+  "/opt/chrome-headless-shell/chrome-headless-shell",
 ]
 hard_link_groups = [
   [

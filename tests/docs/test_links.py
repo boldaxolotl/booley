@@ -297,29 +297,32 @@ def test_agent_instruction_document_paths_resolve() -> None:
 
 # The site moved from GitHub's project-site host to its own domain. GitHub
 # redirects the old URLs, but new text must name SITE_URL so that links do not
-# depend on that redirect. These files name the old host on purpose.
-_RETIRED_SITE_HOST = "boldaxolotl.github.io"
-_RETIRED_HOST_ALLOWED = {
-    "CHANGELOG.md",  # release history records the move
+# depend on that redirect. The Codespaces demo and the site's demo pages are
+# removed (#4776), so no file links them. These files keep such links on purpose.
+_RETIRED_SITE_LINKS = (
+    r"boldaxolotl\.github\.io|codespaces\.new|booley\.dev/demo|demos?\.md|\.\./demos?/"
+)
+_RETIRED_LINKS_ALLOWED = {
+    "CHANGELOG.md",  # release history
     "docs/adr/0081-publish-user-docs-on-the-project-site.md",  # amendment records the move
     ".github/workflows/pages.yml",  # documents the redirect setting
     "tests/docs/test_links.py",  # this guard
 }
 
 
-def test_tracked_files_name_the_site_by_its_current_domain() -> None:
-    """Old-host links pass the link check above (another host), so catch them here."""
+def test_tracked_files_link_no_retired_site_location() -> None:
+    """Old-host and demo links pass the link check above (another host), so catch them here."""
     # Exit 1 means no match, checked below.
-    result = run_bounded_child(
-        ["git", "grep", "-l", "--fixed-strings", _RETIRED_SITE_HOST], cwd=REPO_ROOT
-    )
+    result = run_bounded_child(["git", "grep", "-l", "-E", _RETIRED_SITE_LINKS], cwd=REPO_ROOT)
     assert result.returncode in (0, 1), result.stderr
     stale = sorted(
         path
-        for path in set(result.stdout.splitlines()) - _RETIRED_HOST_ALLOWED
+        for path in set(result.stdout.splitlines()) - _RETIRED_LINKS_ALLOWED
         if not path.startswith("changelog.d/")  # entries become CHANGELOG.md text
     )
-    assert not stale, f"replace {_RETIRED_SITE_HOST} links with {SITE_URL} in: {stale}"
+    assert not stale, (
+        f"retired site links (use {SITE_URL} for the old host; drop demo links) in: {stale}"
+    )
 
 
 @pytest.fixture(scope="module")

@@ -68,7 +68,6 @@ class _RuntimeImages:
             project_root,
             self._spec,
             current_builder=lambda: self._current_sources(project_root, self._image_id).build,
-            reconcile_dashboard=False,
         )
 
 

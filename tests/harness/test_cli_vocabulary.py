@@ -150,10 +150,10 @@ def test_recursive_command_inventory():
             assert_controls(parser)
     # New nested routes require an explicit ownership/compatibility decision.
     nested = {
-        "session": {"up", "enter", "down", "status", "validate", "prepare", "refresh"},
+        "session": {"up", "enter", "pair", "down", "status", "validate", "prepare", "refresh"},
         "cleanup": {"prepare", "preview", "apply"},
         "upgrade": {"status", "acknowledge"},
-        "worktree": {"new", "list", "rm", "gc"},
+        "worktree": {"prepare"},
         "feedback": {"add", "friction", "say", "win", "triage", "filed"}
         | {"list", "report", "export", "redact"},
     }
@@ -184,7 +184,6 @@ def test_detached_endpoint_inventory():
         ["session", "-C", "../b", "status"],
         ["session", "status", "--project=../b"],
         ["-C../b", "session", "status"],
-        ["-C", "../b"],
         ["cleanup", "preview", "--run-id", "r", "-C", "../b"],
         ["feedback", "list", "-C", "../b"],
         ["upgrade", "status", "-C", "../b"],
@@ -418,8 +417,7 @@ def dispatch(argv, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "route",
-    ["targets", "chat", "doctor", "init", "session", "cleanup", "upgrade", "feedback", "auth"],
+    "route", ["targets", "doctor", "init", "session", "cleanup", "upgrade", "feedback", "auth"]
 )
 def test_handlers_receive_selected_checkout(projects, monkeypatch, route):
     captured = []

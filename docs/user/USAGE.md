@@ -49,7 +49,7 @@ and keeps the Developer Agent away from the rest of your computer.
 | Place | What goes there | Example |
 | --- | --- | --- |
 | **Host terminal** | Commands on your own computer, outside Docker | `booley doctor`, `booley auth` |
-| **Container terminal** | Commands inside the Sandbox, after VS Code has reopened the project in its container | `booley dashboard`, `git diff` |
+| **Container terminal** | Commands inside the Sandbox: a T3 Code thread's terminal, or `booley session enter` on the host | `booley measure`, `git diff` |
 | **Developer Agent chat** | Plain-language requests and skills that start with `/` | *"Run lint and explain every finding"* |
 
 Command blocks go in the terminal named in the text around them. Sentences in
@@ -95,51 +95,24 @@ Don't continue until `booley doctor` shows no failures or warnings.
 
 ### Open your first Developer Agent session
 
-1. Open your RTL project folder in VS Code (**File → Open Folder**).
+1. In a **host terminal** at the Project Root, run `booley session up`. It
+   starts the Sandbox and prints a pairing link.
 
-2. When VS Code offers **Reopen in Container**, accept it. If the offer doesn't
-   appear, open the Command Palette (`Ctrl+Shift+P`) and run **Dev Containers:
-   Reopen in Container**. The first start can take several minutes. When it's
-   done, the lower-left corner of the window says you are in a Dev Container.
-   No VS Code (for example, over SSH)? See
-   [Entering the Sandbox without VS Code](SANDBOX.md#entering-the-sandbox-without-vs-code).
+2. Open the link in a browser on this machine. T3 Code, the web UI the
+   Sandbox serves, opens with your Project. The other `booley session`
+   commands are in [SANDBOX.md](SANDBOX.md).
 
-3. Open **Terminal → New Terminal**. This is a **container terminal**. Start
-   the Developer Agent:
+3. In T3 Code, start a thread on the main checkout (your Project folder) and
+   choose Claude or Codex.
 
-    ```bash
-    booley
-    ```
-
-    `booley` (or `booley chat`) just starts the Developer Agent chosen by
-    `[agent] default` (or its older name `provider`) in `.booley/booley.toml`:
-
-    | Provider | Same as running |
-    | --- | --- |
-    | `claude` | `claude` ([Claude Code](https://code.claude.com/docs/en/quickstart)) |
-    | `codex` | `codex` ([Codex CLI](https://developers.openai.com/codex/cli)) |
-
-    From then on you are using that CLI's own chat. To run several sessions,
-    open more container terminals and run `booley` in each. While one session
-    is working in the main checkout, the next one starts in its own worktree;
-    see [Several agents at once](#several-agents-at-once).
-
-    `booley chat --cli codex` opens another Agent CLI instead, as long as it is
-    listed in `[agent] clis`; otherwise it stops and lists the allowed ones.
-    In the Sandbox, every listed CLI gets Booley's tools and skills and the
-    sign-in its `[agent.auth]` policy allows; an unlisted one gets none. See
+    Every Agent CLI listed in `[agent] clis` in `.booley/booley.toml` gets
+    Booley's tools and skills and the sign-in its `[agent.auth]` policy allows;
+    an unlisted one gets none. See
     [Agent CLI logins in the Sandbox](SANDBOX.md#agent-cli-logins-in-the-sandbox).
 
-    Arguments after `booley chat` and its own options (`--cli`, `-C`,
-    `--new-worktree`, `--here`, `--name`) go to the
-    CLI unchanged. To resume an earlier conversation, run
-    `booley chat --resume <id>` (Claude) or `booley chat resume <id>` /
-    `booley chat resume --last` (Codex); a conversation that ran in a worktree
-    reopens there (see [Several agents at once](#several-agents-at-once)).
-
-    If you see a login screen instead of a chat, run `booley auth --status` in a
+    If the agent can't sign in, run `booley auth --status` in a
     **host terminal** and follow its advice (usually `booley auth`). Then run
-    **Dev Containers: Rebuild Container** and try again. See
+    `booley session down` and `booley session up` there and try again. See
     [Sign-in and billing](SETUP.md#sign-in-and-billing).
 
 4. Type this first request into the chat:
@@ -230,240 +203,30 @@ shows peak memory and run time per Target. How to read a result:
 
 ### The dashboard
 
-The Dashboard opens in a VS Code terminal when you attach to the container (or
-run `booley dashboard` in a container terminal); turn the automatic start off
-with `[sandbox].dashboard=false`. It comes back by itself after a window
-reload (this can take up to about half a minute). If you closed it, **Booley:
-Open Dashboard** in the Command Palette reopens it or reveals the open one.
-`booley dashboard` replaces a Dashboard that no terminal shows any more.
-The Dashboard has three windows; press `←` or `→` to switch:
+The Dashboard is a web page of one worktree's Jobs, the long runs of Flows and
+Specialists. Open it to see what runs there, what waits and how each run ended.
 
-- **Sessions:** every Developer Agent session and what its agent last
-  reported: working, waiting for a tool call, or waiting for your input.
-  Sessions waiting for your input are grouped under
-  **NEEDS YOU**, and the tab reads `Sessions N◆` while N sessions need you.
-  Each session's row lists its running and queued Jobs; Jobs with no session
-  are listed under **STANDALONE JOBS**. Finished Jobs are only in the Jobs
-  window.
-  When the session's checkout declares a `[target.flow]` table in
-  `metrics.toml`, a second line under the session shows its measurement:
-  `Measured 1a2b3c4` when HEAD is Measured, `last Measured 1a2b3c4 · latest
-  5d6e7f8: 1 unmet, 3 not evaluated` when it is not, or `measuring 2/5 · 14m 00s`
-  while a `booley measure` Job runs there. `Enter` on a line that has a report
-  opens its Markdown
-  [Measurement Report](METRIC-DRIVEN-DEVELOPMENT.md#read-the-measurement-report)
-  in your editor.
-- **Jobs:** Running, Finished (the newest 50), or All Jobs, filterable by
-  session. The tab reads `Jobs 1▶ 1 queued` while one Job runs and one waits
-  to start.
-  A `booley flow` or `booley specialist` run typed in a container terminal
-  also appears here as a Standalone Job with no session. Its output is copied
-  to `job.log`, shown as a link.
-- **Targets:** the Targets of one worktree, with their core and the Flows that
-  can drive them. Press `Enter` on a Target for its filesets, tests, Test
-  Variants, and constraints. When Run is available and a Flow can drive the
-  Target, the detail ends with those Flows (for a Simulation Target, also the
-  [Mutation Flow](FLOW-MUTATION.md)): press `↓` past its end, then `Enter`
-  on a Flow to open the Run form with the worktree and Target filled in; `Esc`
-  on the form itself returns to the detail.
-  The **Worktree** item in the top bar picks the worktree: those with a
-  connected session come first, the main checkout last.
+1. Click **Booley Dashboard** in T3 Code's top bar. The page opens in the
+   preview panel; the Sandbox already serves it.
+2. Pick the worktree: the main checkout or one of your T3 Code threads'
+   worktrees. Each has its own page. With no T3 Code worktree, the page opens
+   the main checkout.
 
-The **Run** item in the top bar starts a built-in Booley Flow, or the `reviewer`
-or `coverage_analyst` Specialist, as a Standalone Job. Pick the worktree and the
-Flow, then fill in the form the Dashboard builds from that Flow's options (the Project comes from
-the worktree, so `-C`, `--project`, and `--work-dir` are never offered). Each
-Common and Flow option is
-a field: `Enter` flips an on/off flag, opens a short list for an option with
-choices or a default/on/off pair, or opens a text editor. The Target field picks
-one Target of the worktree that the Flow can drive, or `automatic`; put more
-Targets in **Extra arguments**. Once you have chosen a Target, the test field of
-the Simulation Flow lists its [Test Runs](TESTS.md): each test, and each test
-with one of its Test Variants (written `test+variant`). `Enter` toggles a Test
-Run at once, and `Esc` only goes back to the form; choosing another Target
-clears them. **Extra arguments** takes seeds and further Targets too. When a
-list cannot be read, the open list says why, and **Extra arguments** still takes
-the Targets and Test Runs you type. Output and Expert options go in the
-**Extra arguments** field, typed as on the command line. `Esc` in a choice list
-or editor drops the change, `Enter` keeps it. **Review the command** checks it and shows the equivalent
-`cd … && booley flow …` command. The
-review screen also says whether the Job runs now or is admitted by
-memory. Every Job that takes a slot, Specialists and the Mutation Flow
-included, is admitted by memory: it waits while its estimate does not fit the
-Memory Budget. A dry run runs now. The screen also warns when the worktree has
-a connected session, running or queued Jobs, or uncommitted changes. A check it
-cannot make is reported as such. Synth and FPGA runs show their timeout per
-work unit, a Mutation Flow run its timeout for the whole run, and a Specialist
-its timeout per model call; Simulation and lint runs show none.
-**Submit** starts the Job, unless, for a Specialist, its Agent CLI cannot
-sign in or its settings cannot be read:
-then Submit says why (with the fix) and does nothing until the problem is fixed.
-**Copy command** asks your terminal to copy the
-command instead and always works. The Jobs window then opens on All sessions with the new Job selected; a
-Finished filter switches to Running, which keeps the Job listed after it
-finishes. `Esc` returns to where you started.
+The page shows the running and queued Jobs, and the finished ones with a link
+to each report. A `booley flow` or `booley specialist` run you type in a
+container terminal is a Standalone Job, owned by `you`.
 
-The `coverage_analyst` form has no Extra arguments field. Its Coverage Record
-row lists the `coverage.json` of each finished coverage run among the Jobs the
-Dashboard still lists under All, newest first; with none, only the row that
-types the path of any other `coverage.json` is shown. Instruction, max turns,
-and timeout follow, the last two under More.
-
-Click a report, artifact, or log path to open it in the editor. Press `↑` on
-the first row to reach the top bar with the tabs, filters, Run, and Help; the
-footer shows the keys you can use.
-
-Sessions have short handles such as `S17`; Jobs carry their kind, as in
-`J-SIM25`, `J-SYN34`, `J-MEAS3` for a `booley measure` run or `J-MUT7` for a
-Mutation Flow run. A session resumed after a long pause may get a new handle,
-except a conversation resumed in its worktree, which keeps its handle.
-
-`booley chat --name uart-fix` labels a session: the terminal tab, the Claude
-session name and the Dashboard's session list, header and worktree picker show
-`S3 · uart-fix`. The Codex tab shows the label on Linux only; elsewhere Booley
-prints a note and the Dashboard still shows it. The label is a display aid only;
-the worktree and branch keep the handle (`s3`, `booley/s3`). A conversation
-resumed in its worktree keeps its handle and label, and `--name` on a resume sets
-a new label. The allowed characters are in the
-[CLI reference](CLI-REFERENCE.md#work-in-the-sandbox--container). Pass Claude's own `--name` as
-`booley chat -- --name <name>`.
+Each Job has a short handle that carries its kind, as in `J-SIM25`, `J-SYN34`,
+`J-MEAS3` for a `booley measure` run or `J-MUT7` for a Mutation Flow run.
 
 ### Several agents at once
 
-Agents that share a checkout overwrite each other's edits, so `booley chat`
-keeps them apart. The first session runs in the main checkout. While it is
-running, the next `booley chat` creates a worktree `s<N>` on branch
-`booley/s<N>`, named after the session handle (`S3` gets `s3`), and starts
-there. When the worktree is ready it prints:
-
-```text
-Booley session S3 works in worktree <path> on branch booley/s3 (<reason>).
-```
-
-The reason is `the main checkout is in use by another booley chat`,
-`Session S2 is working in the main checkout`, `--new-worktree`, or
-`[worktree] chat = "always"`. A lone session runs in the main checkout and
-prints no such line.
-
-Ask an agent for Booley's status to see its session's handle, branch and
-checkout, and whether that checkout is the main checkout or a worktree.
-
-The worktree starts at the main checkout's last commit, so commit first what
-the new session needs: uncommitted changes to the Project's files are not
-copied. Booley also fills the Git submodules and runs the Project's post-setup
-hook before the agent starts, which can take minutes on a large Project; if a
-step fails, it removes the worktree and starts no agent.
-The worktree gets your current Booley configuration.
-
-<details markdown>
-<summary>In stealth mode</summary>
-
-The worktree's branch is `wt/s<N>`, so the line above and the exit messages
-below name `wt/s3` instead of `booley/s3`.
-
-One warning names the uncommitted Booley Directory files left out of the new
-worktree.
-See [Stealth Mode](STEALTH.md).
-
-</details>
-
-- `booley chat --new-worktree` always starts in a new worktree.
-- `booley chat --here` always starts in the main checkout, for example to
-  read code alongside another session.
-- `[worktree] chat = "auto" | "always" | "never"` in `.booley/booley.toml` sets
-  the default; see [Worktree settings](CONFIG.md#worktree-settings-worktree).
-- Run from inside an existing linked worktree, `booley chat` starts there and
-  creates nothing.
-
-When the agent of a worktree session exits and you are still at the terminal,
-`booley chat` asks whether to keep or discard the worktree. The question lists
-the work that is not in the main checkout yet: uncommitted changes in the
-worktree and in its Paired Checkout, and the number of commits on each of its
-branches that main lacks (Git-ignored files are not counted):
-
-```text
-Session S3 has ended. Worktree s3: <path>
-Work not in main yet:
-  - 2 uncommitted change(s) in the worktree
-  - 3 commit(s) on booley/s3 not in main
-Discard deletes the uncommitted changes and keeps the branches. Booley never
-merges: merge what you need first.
-Keep or discard worktree s3? [K/d]
-```
-
-Enter keeps it. Discard removes the worktree, the same as
-`booley worktree rm s3`, and keeps its branches, so committed work stays
-reachable. Booley never merges anything for you. If the removal is refused, for
-example because the agent is still running somewhere,
-Booley shows why and asks a second time before it removes the worktree anyway.
-A session in the main checkout gets no question.
-
-Booley keeps the worktree without asking, and prints `Kept worktree s3: <path>`,
-when nobody can answer: output goes to a pipe or a file, the terminal was
-closed, or the agent was stopped by a signal. A kept worktree is normal.
-
-Manage worktrees from a container terminal:
-
-- `booley worktree list` shows each worktree's branch, unmerged work, and
-  live sessions.
-- `booley worktree rm <name>` removes one and keeps its branches. It refuses
-  while a session runs there or work would be lost.
-- `booley worktree gc` removes worktrees idle longer than `[worktree]
-  gc_older_than` (default `7d`). `booley chat` runs it at every launch.
-
-See [Worktrees](WORKTREES.md).
-
-#### Resuming a conversation
-
-Claude Code and Codex keep a conversation with the directory it ran in, so
-a conversation that ran in worktree `s3` cannot be resumed from the main
-checkout. Booley therefore sends a resume to the worktree the conversation ran
-in and keeps its handle (`S3` stays `S3`). It prints
-
-```text
-Booley session S3 resumes conversation <id> in worktree <path>.
-```
-
-- By id: `booley chat --resume <id>` (also `--resume=<id>` and `-r <id>`) for
-  Claude, `booley chat resume <id>` or `booley chat exec resume <id>` for Codex
-  (Codex options may come before `resume` and between `resume` and the id).
-- The latest conversation: Claude's `-c`/`--continue` and Codex's
-  `resume --last` (also after `exec`) continue the most recent conversation
-  (by the agent CLI's own last-update time) among the main checkout and the
-  worktrees whose session is not running; a main checkout in use is skipped
-  too. Booley then resumes that conversation by its id. If
-  Booley cannot tell which is newest, the agent CLI picks from the main
-  checkout, as before. `resume --last --all`, and a Codex resume that chooses
-  its own directory (`-C`/`--cd`, `--worktree`), are left to Codex.
-- A conversation that ran in the main checkout resumes in the main checkout.
-  So does one Booley has no record of; for Codex, a `NOTE` says so.
-- If the worktree has since been removed, the conversation resumes in the main
-  checkout after a `NOTE`.
-- Resuming refuses a checkout that is in use, except the main checkout under
-  `[worktree] chat = "never"`, which is shared. A conversation whose worktree
-  has a running session (a Codex started by hand counts) is refused with exit 2
-  (end that session first). A conversation that belongs in the main checkout
-  while it is in use is refused too; run `booley chat --here ...` to resume it
-  beside that session.
-- `--here` and `--new-worktree` keep their meaning, and a launch from inside a
-  linked worktree stays there: none of them is redirected by a resume. The
-  `[worktree] chat` setting decides where new sessions start, not where a
-  resume goes.
-- A conversation you started by hand inside a worktree (not through
-  `booley chat`) reopens in that worktree, but may get a new handle once its
-  earlier session has ended.
-
-Put both options before any arguments meant for the agent CLI. Claude Code's
-own `--worktree` still goes to the agent.
-
-The check is best effort for agents that did not start through Booley. A plain
-`claude` tab or a VS Code panel does not hold the main checkout, so Booley only
-notices it once it has made a Booley tool call. To keep such a session apart,
-start it with `booley chat --new-worktree` from a container terminal. Asking a
-running agent to create a worktree is not enough: its Booley tool calls still
-run on the main checkout. Start Codex with `booley chat` too. Read-only
-sessions, such as one that only explains code or runs reviews, can share the
-main checkout.
+Agents that share a checkout overwrite each other's edits. Start each parallel
+task as its own T3 Code thread on a new worktree: T3 Code creates the
+worktree, Booley prepares it, and the thread's Booley tool calls run in it.
+Read-only threads, such as one that only explains code or runs reviews, can
+share the main checkout. What a worktree gets, and how to prepare one you made
+yourself, is in [Worktrees](WORKTREES.md).
 
 ### What the Developer Agent is allowed to do
 
@@ -491,9 +254,10 @@ and commits again. See [STEALTH.md](STEALTH.md#commit-messages).
 
 </details>
 
-Per-session logs of Flow and Specialist calls through Booley’s tool server
-are saved in `.booley/job_logs/`. Chat transcripts live in
-the Developer Agent CLI’s own session storage.
+Logs of the Flow and Specialist calls made through Booley's tool server are
+saved under `job_logs/` in the Main Booley Directory (`.booley/job_logs/` in
+the main checkout), for threads on a worktree too. Chat transcripts live in
+the Developer Agent CLI's own session storage.
 
 ### Editing Project instructions
 
@@ -515,12 +279,12 @@ instead: `git -C .booley commit`. See [STEALTH.md](STEALTH.md#turning-it-on).
 
 ### Viewing waveforms
 
-When a simulation with tracing fails, the Developer Agent reads the waveform on its own
-with `bwave`. When *you* want to see it, ask: *"show me the FIFO handshake
-around the failure"*. The agent opens it in a VaporView tab in VS Code, showing
-just the signals and time range that matter. VS Code installs the extension
-automatically when you attach to the container. If it is missing,
-`booley doctor` in the Sandbox prints the command that installs it.
+When a simulation with tracing fails, the Developer Agent reads the waveform
+on its own with `bwave`. Booley has no waveform viewer for now, and
+`bwave gui` fails with a message. When *you* want to know what happened, ask:
+*"what does the FIFO handshake do around the failure"*. The agent answers from
+the waveform, naming the signals, times and values. You can open the FST file
+in a viewer of your own, such as GTKWave or Surfer.
 
 ## When Booley itself misbehaves
 

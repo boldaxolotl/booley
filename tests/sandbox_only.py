@@ -2,7 +2,7 @@
 
 Booley runs on a Windows host only for ``HOST`` and ``EITHER`` commands (see
 ``COMMAND_LOCATIONS`` in ``booley.harness.booley``); Booley Flows, Specialists, MCP
-tools, the Dashboard, chat, and worktree code run inside the Sandbox, a Linux container.
+tools, the Dashboard, and worktree code run inside the Sandbox, a Linux container.
 Windows CI therefore skips tests whose subject only runs there, and Linux CI runs them all.
 
 This registry is the only place that applies the ``sandbox_only`` marker; the guard in
@@ -83,7 +83,6 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/mcp_tools/test_job_lifecycle.py",
     "tests/mcp_tools/test_live_catalog.py",
     "tests/mcp_tools/test_mcp_dispatch.py",
-    "tests/mcp_tools/test_nested_session_presence.py",
     "tests/mcp_tools/test_owned_job_poll.py",
     "tests/mcp_tools/test_peer_checkout.py",
     "tests/mcp_tools/test_report_encoding.py",
@@ -92,30 +91,16 @@ SANDBOX_ONLY_PATHS: tuple[str, ...] = (
     "tests/mcp_tools/test_session_requests.py",
     "tests/mcp_tools/test_sim_seed_dispatch.py",
     "tests/mcp_tools/test_unread_job_notice.py",
-    # Dashboard, chat, and MCP probe commands: Sandbox commands.
-    "tests/harness/test_chat_terminal.py",
-    "tests/harness/test_dashboard.py",
-    "tests/harness/test_dashboard_cli.py",
-    "tests/harness/test_dashboard_job_columns.py",
-    "tests/harness/test_dashboard_job_filters.py",
+    # Dashboard and MCP probe commands: Sandbox commands.
     "tests/harness/test_dashboard_jobs.py",
-    "tests/harness/test_dashboard_keys.py",
-    "tests/harness/test_dashboard_layout.py",
-    "tests/harness/test_dashboard_links.py",
-    "tests/harness/test_dashboard_preview.py",
     "tests/harness/test_dashboard_run.py",
-    "tests/harness/test_dashboard_sessions.py",
     "tests/harness/test_dashboard_targets.py",
-    "tests/harness/test_dashboard_view_owner.py",
-    "tests/harness/test_dashboard_view_probe.py",
-    "tests/harness/test_dashboard_windows.py",
     "tests/harness/test_mcp_probe.py",
     # In-Sandbox registrars, heartbeat, and MCP transport tests (root and runtime directories).
     "tests/runtime/test_incontainer_gateway_provider.py",
     "tests/test_heartbeat.py",
     "tests/test_incontainer_live_preview.py",
     "tests/test_incontainer_register.py",
-    "tests/test_incontainer_vaporview.py",
     "tests/test_mcp_server.py",
     "tests/test_mcp_v2_adapter.py",
 )

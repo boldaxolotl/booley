@@ -1426,7 +1426,7 @@ jobs:
       - name: Prepare isolated validation temp directories
         shell: bash
         run: |
-          for validation in agent-policy openroad verible isolation fifo native-fst verilator coverage-release simulator cocotb; do
+          for validation in agent-policy t3code t3code-tools openroad verible chrome isolation fifo native-fst verilator coverage-release simulator cocotb; do
             install -d -m 0777 "${RUNNER_TEMP}/bwave-smoke/${validation}"
           done
 
@@ -1466,6 +1466,38 @@ jobs:
               booley-test python /work/tests/docker/agent_policy_probe.py
               --evidence /validation-tmp/agent-policy.json
 
+          - name: Run T3 Code binary probe
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/t3code
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-t3code
+              docker run --rm --init --network none --user agent
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-t3code
+              --tmpfs /home/agent:uid=1000,gid=1000,mode=700
+              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              -e TMPDIR=/validation-tmp
+              booley-test python /work/.github/scripts/verify_t3code_runtime.py
+              --evidence /validation-tmp/t3code.json
+
+          # The container name must not extend another probe's prefix: that probe's cleanup
+          # removes every container whose name starts with its prefix, this one included.
+          - name: Run T3 Code agent tool probe
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/t3code-tools
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-agent-tools
+              docker run --rm --init --network none --user agent
+              --name booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-agent-tools
+              --tmpfs /home/agent:uid=1000,gid=1000,mode=700
+              --mount type=bind,src="${{ github.workspace }}",dst=/work,readonly
+              --mount type=bind,src="${VALIDATION_TMP}",dst=/validation-tmp
+              -e TMPDIR=/validation-tmp
+              booley-test python /work/.github/scripts/verify_t3code_agent_tools.py
+              --evidence /validation-tmp/t3code-tools.json
+
           - name: Run Verible production-image end-to-end test
             env:
               VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/verible
@@ -1475,6 +1507,17 @@ jobs:
               .github/scripts/run_with_container_cleanup.sh
               "${BOOLEY_DOCKER_NAME_PREFIX}"
               pytest tests/docker/test_sandbox_verible_e2e.py
+              -q --tb=short -rs --basetemp "${VALIDATION_TMP}/pytest"
+
+          - name: Run headless Chrome production-image test
+            env:
+              VALIDATION_TMP: ${{ runner.temp }}/bwave-smoke/chrome
+              TMPDIR: ${{ runner.temp }}/bwave-smoke/chrome
+              BOOLEY_DOCKER_NAME_PREFIX: booley-ci-${{ github.run_id }}-${{ github.run_attempt }}-chrome
+            run: >-
+              .github/scripts/run_with_container_cleanup.sh
+              "${BOOLEY_DOCKER_NAME_PREFIX}"
+              pytest tests/docker/test_sandbox_headless_chrome_e2e.py
               -q --tb=short -rs --basetemp "${VALIDATION_TMP}/pytest"
 
           - name: Run sandbox isolation suite
@@ -1658,6 +1701,17 @@ jobs:
         with:
           name: agent-policy-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/bwave-smoke/agent-policy/agent-policy.json
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload T3 Code binary probe evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: t3code-probe-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/bwave-smoke/t3code/t3code.json
+            ${{ runner.temp }}/bwave-smoke/t3code-tools/t3code-tools.json
           if-no-files-found: warn
           retention-days: 14
 

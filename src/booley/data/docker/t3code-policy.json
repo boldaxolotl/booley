@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "organization": "Booley",
+  "settings": {
+    "worktreesDirectory": { "value": "/booley/t3-worktrees", "locked": true },
+    "newWorktreesStartFromOrigin": { "value": false, "locked": true },
+    "defaultProjectScripts": {
+      "value": [
+        {
+          "id": "booley-worktree-prepare",
+          "name": "Prepare Booley worktree",
+          "command": "booley worktree prepare",
+          "icon": "configure",
+          "runOnWorktreeCreate": true,
+          "async": false
+        },
+        {
+          "id": "booley-dashboard",
+          "name": "Booley Dashboard",
+          "command": "echo 'Booley Dashboard: http://127.0.0.1:8090/'",
+          "icon": "play",
+          "runOnWorktreeCreate": false,
+          "previewUrl": "http://127.0.0.1:8090/",
+          "autoOpenPreview": true
+        }
+      ],
+      "locked": true
+    }
+  },
+  "limits": {
+    "maxRuntimeMode": "auto",
+    "connect": false,
+    "telemetry": false,
+    "updates": { "mode": "off" },
+    "providers": { "allowedDrivers": ["claudeAgent", "codex"] }
+  }
+}

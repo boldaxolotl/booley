@@ -389,8 +389,7 @@ def test_register_dir_names_stray_vcd_dump(tmp_path):
         "VCD dumps here that are not named trace.vcd: sim.vcd\n"
         "Declare the dump in [flows.sim].trace_files and re-run the sim, "
         "or pass the file directly (a raw VCD needs --build to register):\n"
-        f"  bwave register {quote_arg(str(dump))} --as ALIAS --build\n"
-        f"  bwave gui {quote_arg(str(dump))}"
+        f"  bwave register {quote_arg(str(dump))} --as ALIAS --build"
     )
 
 

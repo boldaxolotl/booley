@@ -192,17 +192,19 @@ def test_bare_host_help_precedes_project_and_runtime_work(
     assert error.value.code == 0
     output = capsys.readouterr()
     assert output.err == ""
+    help_text = " ".join(output.out.split())  # the hint wraps to the terminal width
     for text in (
         "usage: booley",
-        "chat",
         "board",
         "doctor",
         "booley bootstrap",
         "booley init",
-        "devcontainer",
+        "booley session up",
+        "T3 Code thread",
         f"{SITE_URL}docs/setup/",
     ):
-        assert text in output.out
+        assert text in help_text
+    assert "devcontainer" not in help_text
 
 
 @pytest.mark.parametrize("inside", [False, True])
@@ -255,68 +257,6 @@ def cli_project(tmp_path, monkeypatch):
     return project
 
 
-@pytest.mark.parametrize("selector", [False, True])
-def test_bare_sandbox_dispatches_chat_with_selected_project(
-    selector, cli_project, tmp_path, monkeypatch
-):
-    argv = ["booley"]
-    if selector:
-        monkeypatch.chdir(tmp_path)
-        argv += ["--project", str(cli_project)]
-    monkeypatch.setattr(sys, "argv", argv)
-    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
-    calls = []
-    monkeypatch.setitem(
-        cli._EARLY_COMMANDS, "chat", lambda args, root: calls.append((args.command, root)) or 17
-    )
-    assert cli.main() == 17
-    assert calls == [("chat", cli_project)]
-
-
-def test_bare_and_explicit_chat_keep_launch_argv(cli_project, monkeypatch):
-    from booley.harness import chat_cmd
-
-    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
-    monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
-    monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
-    monkeypatch.setattr(
-        chat_cmd, "get_agent_settings", type("Config", (), {"default_cli": "claude"})
-    )
-    # The chat launcher resolves the CLI first; CI hosts have no claude on PATH.
-    monkeypatch.setattr(chat_cmd.shutil, "which", lambda provider, **_kw: f"/bin/{provider}")
-    monkeypatch.setattr(chat_cmd, "capture_process_identity", lambda _pid: object())
-    monkeypatch.setattr(chat_cmd, "process_session_key", lambda _identity: "key")
-    monkeypatch.setattr(chat_cmd, "reserve_session_handle", lambda *_args, **_kwargs: "S17")
-    executed = []
-
-    def execute(executable, argv):
-        executed.append((executable, argv))
-        raise SystemExit(0)
-
-    monkeypatch.setattr(chat_cmd.os, "execvp", execute)
-    # Run the launch in-process: the mocked exec must not fork pytest.
-    monkeypatch.setattr(chat_cmd, "run_foreground_child", lambda launch, **_kw: launch())
-    for argv in (["booley"], ["booley", "chat"]):
-        monkeypatch.setattr(sys, "argv", argv)
-        with pytest.raises(SystemExit):
-            cli.main()
-    assert executed == [("claude", ["S17", "-n", "S17"])] * 2
-
-
-@pytest.mark.parametrize("source", [False, True])
-def test_bare_sandbox_preserves_project_guards(source, tmp_path, monkeypatch, capsys):
-    if source:
-        (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.setattr(sys, "argv", ["booley"])
-    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
-    monkeypatch.setitem(cli._EARLY_COMMANDS, "chat", _unexpected_runtime_work)
-    assert cli.main() == 2
-    assert capsys.readouterr().err
-
-
 @pytest.mark.parametrize(
     ("command", "inside"), [("cheat", False), ("cheat", True), ("doctor", False), ("doctor", True)]
 )
@@ -332,7 +272,7 @@ def test_canonical_replacements_dispatch(command, inside, cli_project, monkeypat
     assert calls == [(command, expected_root)]
 
 
-@pytest.mark.parametrize("command", ["chat", "dashboard"])
+@pytest.mark.parametrize("command", ["dashboard"])
 def test_explicit_sandbox_commands_still_refuse_host(command, cli_project, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["booley", command])
     place(monkeypatch, RuntimeLocation.HOST)

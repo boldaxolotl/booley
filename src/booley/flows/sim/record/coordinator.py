@@ -9,6 +9,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Protocol, cast
 
+from booley.core.booley_dir import main_booley_dir_of
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim import faults
 from booley.flows.sim.build_session import SimulationBuildLeaseStoppedError
@@ -435,12 +436,15 @@ class SimulationRecord:
     ) -> None:
         project_root = request.project_root
         project_data = resolve_checkout_booley_dir(project_root)
+        main_dir = main_booley_dir_of(project_root)  # records are Common Booley State
         interrupted = {
             work_item_id: attempt.document
             for work_item_id in recovery.interrupted
             if (attempt := store.latest_attempt(work_item_id)) is not None
         }
-        recover_interrupted_attempts(manifest, interrupted, project_data, booley_dir=project_data)
+        recover_interrupted_attempts(
+            manifest, interrupted, project_data, booley_dir=project_data, main_booley_dir=main_dir
+        )
         sweep_cancelled_run_inputs(project_data)
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         by_id = {cast(str, item["work_item_id"]): item for item in items}
@@ -458,7 +462,7 @@ class SimulationRecord:
         capacity = SimulationRecordCapacity(
             request.admission,
             manifest,
-            project_data,
+            main_dir,
             None
             if flow_claim is None
             else lambda item: flow_claim.item_claim(store.root, manifest, item),

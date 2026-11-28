@@ -1,4 +1,4 @@
-"""Resolution of supported VS Code-family editor commands."""
+"""Discovery of installed VS Code-family editors."""
 
 from __future__ import annotations
 
@@ -8,24 +8,6 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-
-
-@dataclass(frozen=True)
-class ResolvedEditor:
-    """Concrete editor command templates.
-
-    Each template is an argv tuple. Tokens may contain ``{file}``,
-    ``{line}``, ``{left}``, ``{right}`` placeholders; the click invoker
-    substitutes them per action.
-
-    ``diff`` is ``None`` when the editor exposes no diff command; the
-    click resolver degrades a would-be diff action to ``open`` in that
-    case.
-    """
-
-    open: tuple[str, ...]
-    open_at_line: tuple[str, ...]
-    diff: tuple[str, ...] | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +40,6 @@ _EDITOR_SPECS = (
     _EditorSpec("cursor", "Cursor.app", "Cursor", Path("Programs/cursor/Cursor.exe")),
     _EditorSpec("windsurf", "Windsurf.app", "Windsurf", Path("Programs/Windsurf/Windsurf.exe")),
 )
-EDITOR_COMMANDS = tuple(spec.command for spec in _EDITOR_SPECS)
 
 
 def _editor_install_candidates() -> tuple[_EditorInstallCandidate, ...]:
@@ -104,24 +85,6 @@ def resolve_editor_install() -> Path | None:
     )
 
 
-def editor_for_command(command: str) -> ResolvedEditor:
-    """Build argv templates for one VS Code-compatible command."""
-    return ResolvedEditor(
-        open=(command, "--goto", "{file}"),
-        open_at_line=(command, "--goto", "{file}:{line}"),
-        diff=(command, "--diff", "{left}", "{right}"),
-    )
-
-
-def resolve_editor_command(which: Callable[[str], str | None] | None = None) -> str | None:
-    """Return the first supported editor executable present on ``PATH``."""
-    resolver = which or shutil.which
-    for command in EDITOR_COMMANDS:
-        if found := resolver(command):
-            return found
-    return None
-
-
 def resolve_editor_management_command(
     which: Callable[[str], str | None] | None = None,
 ) -> str | None:
@@ -145,14 +108,3 @@ def resolve_editor_management_command(
             return str(candidate.management_command)
         return None
     return None
-
-
-def resolve_editor(which: Callable[[str], str | None] | None = None) -> ResolvedEditor | None:
-    """Resolve immutable command templates for the installed editor."""
-    command = resolve_editor_command(which)
-    return editor_for_command(command) if command is not None else None
-
-
-# Backward-compatible default for callers that need a launch attempt even when
-# discovery has not run yet.
-VSCODE_EDITOR = editor_for_command("code")

@@ -458,9 +458,17 @@ def test_existing_design_files_finds_rtl_and_cores(tmp_path: Path) -> None:
     stealth = tmp_path / ".booley" / "cores"
     stealth.mkdir(parents=True)
     (stealth / "stealth.core").write_text("CAPI=2:\n")
+    # Linked worktrees under a visible relocated Booley Directory are not this checkout's.
+    (tmp_path / "booley.toml").write_text('[project]\ndir = "state"\n')
+    for copy in ("t3-worktrees/work/t3-1/rtl/copy.core", "worktrees/s1/x.sv"):
+        (tmp_path / "state" / copy).parent.mkdir(parents=True)
+        (tmp_path / "state" / copy).write_text("copy\n")
 
     found = {p.as_posix() for p in existing_design_files(tmp_path)}
     assert found == {"rtl/old.v", "chip.core", ".booley/cores/stealth.core"}
+    # A [project].dir outside the checkout is allowed and skips nothing inside it.
+    (tmp_path / "booley.toml").write_text('[project]\ndir = "../outside"\n')
+    assert Path("state/worktrees/s1/x.sv") in existing_design_files(tmp_path)
 
 
 def test_step_refuses_on_existing_design(tmp_path: Path, monkeypatch, capsys) -> None:

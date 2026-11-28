@@ -91,6 +91,13 @@ def test_repository_contract_preserves_slimmed_image_payload() -> None:
     assert "SPIKE_EXTLIB_MARKER" in spike_probe["command"]
     assert "--extlib=" in spike_probe["command"]
     assert "li t1, 61" in spike_probe["command"]
+    # The image carries no activity hook, and no agent policy runs one (ADR 0093).
+    retired_hook = "session_activity_hook"
+    for contract in (standard, riscv):
+        assert f"/usr/local/libexec/booley/{retired_hook}.py" in contract["absent_paths"]
+        assert f"/usr/local/libexec/booley/{retired_hook}.py" not in contract["required_paths"]
+    for policy in ("claude-managed-settings.json", "codex-requirements.toml", "Dockerfile.base"):
+        assert retired_hook not in (DOCKER_DIR / policy).read_text(encoding="utf-8"), policy
 
 
 def test_openroad_source_archive_contract_matches_runtime_base() -> None:

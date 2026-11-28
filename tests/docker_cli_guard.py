@@ -20,6 +20,7 @@ from booley.harness.setup import docker_image, readiness
 from booley.mcp import server_inspection
 from booley.runtime import (
     booley_dir_migration,
+    bundled_extensions,
     docker_capacity,
     host_base_acquisition,
     host_docker,
@@ -28,7 +29,6 @@ from booley.runtime import (
     platform_paths,
     project_image,
     session_runtime,
-    vaporview,
 )
 
 
@@ -107,7 +107,7 @@ HOST_DOCKER_MODULES = (
     image_lifecycle,
     inspection,
     project_image,
-    vaporview,
+    bundled_extensions,
 )
 
 

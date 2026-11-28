@@ -56,6 +56,10 @@ _COMMON = BooleyDirClass.COMMON
 _VERSIONED = BooleyDirClass.VERSIONED
 _SOURCE_TIED = BooleyDirClass.SOURCE_TIED
 
+# Booley Directory subtrees that are or hold linked worktrees. A checkout's files in
+# them are not the Main Booley Directory's own.
+LINKED_WORKTREE_DIRECTORIES: tuple[str, ...] = ("worktrees/", "t3-worktrees/", ".baseline-wt-*/")
+
 # Every Checkout row says whether it is versioned with the RTL (copied into a
 # Snapshot) or tied to one checkout's sources (never copied). ADR 0082 appendix rows first, then paths other Booley modules write (see the
 # runtime/, mcp/, doctor and setup writers).
@@ -117,9 +121,6 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "goals/": _COMMON,
         "runtime/jobs/": _COMMON,
         "runtime/job-handles/": _COMMON,
-        "runtime/sessions/": _COMMON,
-        "runtime/session_activity/": _COMMON,
-        "runtime/dashboard-task.lock": _COMMON,
         "job_logs/": _COMMON,
         "runtime/doctor_stamp.json": _COMMON,
         "runtime/doctor_deep_stamp.json": _COMMON,
@@ -127,8 +128,7 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         ".runtime/compiler-cache/": _COMMON,
         "result-cache/": _COMMON,
         "measurements/": _COMMON,
-        "worktrees/": _COMMON,
-        ".baseline-wt-*/": _COMMON,
+        **dict.fromkeys(LINKED_WORKTREE_DIRECTORIES, _COMMON),
         "directory-layout.lock": _COMMON,
         ".directory-relocation.json": _COMMON,
         "findings.jsonl": _COMMON,
@@ -141,12 +141,10 @@ BOOLEY_DIR_PATHS: Mapping[str, BooleyDirClass] = MappingProxyType(
         "goalsets/": _COMMON,
         "docker/": _COMMON,
         # Common, written by other Booley modules.
-        "runtime/dashboard-task.json": _COMMON,
         "runtime/upgrade_review.lock": _COMMON,
         "runtime/doctor/": _COMMON,
         "runtime/developer_probe.json": _COMMON,
         "runtime/synth_probe.json": _COMMON,
-        "runtime/chat-main.lock": _COMMON,
         ".runtime/sandbox-mounts.json": _COMMON,
         "runtime/resources/": _COMMON,
         ".runtime/executions/": _COMMON,
@@ -176,6 +174,12 @@ def _covering_depth(pattern: str, parts: tuple[str, ...]) -> int | None:
     if all(fnmatchcase(part, segment) for part, segment in zip(parts, segments, strict=False)):
         return len(segments)
     return None
+
+
+def in_linked_worktree(relative: str | PurePath) -> bool:
+    """Return whether *relative* (to the Booley Directory) is in a linked worktree subtree."""
+    parts = PurePath(relative).parts
+    return any(_covering_depth(row, parts) is not None for row in LINKED_WORKTREE_DIRECTORIES)
 
 
 def booley_dir_part(relative: str | PurePath) -> BooleyDirPart:

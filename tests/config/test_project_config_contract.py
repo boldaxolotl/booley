@@ -34,14 +34,21 @@ class TestProjectName:
         assert project_name(tmp_path) == "rtl_project"
         assert not caplog.records
 
-    def test_malformed_toml_logs_checkout_context(self, tmp_path: Path, caplog):
-        _write_toml(tmp_path, "[project\nname = 'broken'")
+    @pytest.mark.parametrize("body", [b"[project\nname = 'broken'", b"[project]\nname = '\xff'"])
+    def test_malformed_toml_logs_checkout_context(self, tmp_path: Path, caplog, body: bytes):
+        _write_toml(tmp_path, "")
+        (tmp_path / ".booley" / "booley.toml").write_bytes(body)
 
         with caplog.at_level(logging.WARNING, logger="booley.config.project_config"):
             assert project_name(tmp_path) == "rtl_project"
 
         assert str(tmp_path) in caplog.text
         assert "could not read Project name" in caplog.text
+
+    def test_name_with_nul_is_unset(self, tmp_path: Path):
+        _write_toml(tmp_path, '[project]\nname = "a\\u0000b"\n')
+
+        assert project_name(tmp_path) == "rtl_project"
 
 
 @pytest.mark.parametrize(

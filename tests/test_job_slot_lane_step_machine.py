@@ -1467,8 +1467,12 @@ def test_a_cancel_during_promotion_retires_the_scheduled_lane_as_an_abort(
     assert machine.read_entries() == {}
 
 
+@pytest.mark.parametrize("lanes_in", ["main", "checkout"])  # "checkout": recorded before #5913
 def test_resume_keeps_run_directories_of_an_unrecoverable_lane(
-    build_machine: Callable[[], LaneStepMachine], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    build_machine: Callable[[], LaneStepMachine],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    lanes_in: str,
 ) -> None:
     """Resume recovers every lane first: one that cannot be proven terminal keeps all runs."""
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))  # for the run directories' checkout
@@ -1484,6 +1488,10 @@ def test_resume_keeps_run_directories_of_an_unrecoverable_lane(
             tmp_path, run.store, lane.work_item_id, lane.execution_id
         )
         runs.append(directory)
+    other = tmp_path / "other"  # holds no lanes
+    main_dir, checkout = (machine.booley_real, other)
+    if lanes_in == "checkout":
+        main_dir, checkout = checkout, main_dir
     with monkeypatch.context() as patch:
         # Patched: no public entry point makes a child's recovery fail.
         patch.setattr(ChildExecutionRegistry, "cancel", lambda _registry, _execution_id: False)
@@ -1491,8 +1499,9 @@ def test_resume_keeps_run_directories_of_an_unrecoverable_lane(
             recover_interrupted_attempts(
                 machine.record.manifest,
                 attempts,
-                machine.booley_real,
-                booley_dir=machine.booley_real,
+                checkout,
+                booley_dir=checkout,
+                main_booley_dir=main_dir,
             )
     assert all(directory.exists() for directory in runs)
 

@@ -15,15 +15,7 @@ from booley.audit.config_common import (
     pass_finding,
 )
 from booley.config.feature_flags import FEATURES_TABLE, FeatureConfigError, parse_enabled_features
-from booley.config.sandbox import parse_dashboard
-from booley.core.boundary import (
-    BoundaryError,
-    as_dict,
-    as_str,
-    is_str_list,
-    require_bool,
-    require_dict,
-)
+from booley.core.boundary import BoundaryError, as_dict, as_str, is_str_list, require_bool
 from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW
 
 KNOWN_BOOLEY_TOML_TABLES = frozenset(
@@ -302,10 +294,6 @@ def audit_sandbox_table(data: Mapping[str, Any]) -> ConfigTableAudit:
             "booley.toml [sandbox].mode is retired; the Sandbox is always Docker",
             "delete [sandbox].mode",
         )
-    try:
-        parse_dashboard(data)
-    except BoundaryError as exc:
-        return failure(str(exc), "set [sandbox].dashboard to true or false")
     from booley.config.host_config import retired_project_policy_message
 
     migration = retired_project_policy_message({"sandbox": sandbox})
@@ -362,6 +350,28 @@ def audit_ignored_settings(data: Mapping[str, Any]) -> ConfigTableAudit:
                 subject="jobs.max_tickets",
             )
         )
+    worktree = as_dict(data.get("worktree")) or {}
+    for key in ("chat", "gc_older_than"):
+        if key in worktree:
+            findings.append(
+                ConfigFinding(
+                    ConfigFindingSeverity.WARN,
+                    f"booley.toml [worktree].{key} was removed and is ignored",
+                    f"delete {key} from [worktree] in booley.toml",
+                    check_id="config.ignored-key",
+                    subject=f"worktree.{key}",
+                )
+            )
+    if "dashboard" in (as_dict(data.get("sandbox")) or {}):
+        findings.append(
+            ConfigFinding(
+                ConfigFindingSeverity.WARN,
+                "booley.toml [sandbox].dashboard was removed and is ignored",
+                "delete dashboard from [sandbox] in booley.toml",
+                check_id="config.ignored-key",
+                subject="sandbox.dashboard",
+            )
+        )
     return ConfigTableAudit(tuple(findings))
 
 
@@ -387,34 +397,6 @@ def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
     except EdaConfigError as exc:
         return failure(f"booley.toml {exc}", "fix [eda] provisioning configuration")
     return ConfigTableAudit()
-
-
-def audit_worktree_table(data: Mapping[str, Any]) -> ConfigTableAudit:
-    """Validate ``[worktree]``: the ``chat`` placement mode and the ``gc_older_than`` age."""
-    from booley.config.worktree import parse_chat_mode, parse_gc_older_than
-
-    try:
-        require_dict(data.get("worktree", {}), field="[worktree]")
-    except ValueError as exc:
-        return failure(f"booley.toml {exc}", "make [worktree] a table")
-    findings: list[ConfigFinding] = []
-    try:
-        parse_gc_older_than(data)
-    except ValueError as exc:
-        findings.append(
-            fail_finding(
-                f"booley.toml {exc}", 'set [worktree].gc_older_than to an age such as "7d"'
-            )
-        )
-    try:
-        parse_chat_mode(data)
-    except ValueError as exc:
-        findings.append(
-            fail_finding(
-                f"booley.toml {exc}", 'set [worktree].chat to "auto", "always" or "never"'
-            )
-        )
-    return ConfigTableAudit(tuple(findings))
 
 
 def audit_jobs_table(data: Mapping[str, Any]) -> ConfigTableAudit:

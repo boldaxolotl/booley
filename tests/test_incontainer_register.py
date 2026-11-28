@@ -18,6 +18,7 @@ import tomli
 
 from booley.core import sandbox_layout
 from booley.harness import incontainer_register as entry
+from booley.harness import incontainer_t3
 from booley.mcp import catalog
 from booley.runtime import auth_token, booley_dir, mount_history, paths, worktree_mount_repair
 from booley.runtime import devcontainer as dc
@@ -26,6 +27,7 @@ from booley.runtime.worktree_mount_repair import MountRepair, RegistrationProble
 from tests.codex_config_support import count_parses, tomlkit_copy
 from tests.harness.agent_auth_support import pin_venue
 from tests.mcp_server_launch_fake import McpServerLaunchFake
+from tests.t3code_fake import serve_t3_code, t3_listener, write_t3_runtime
 
 _GATEWAY_KEYS = (
     "BOOLEY_GATEWAY_URL",
@@ -41,10 +43,14 @@ _START_ENV = (
     "BOOLEY_AGENT_CLIS",
     "BOOLEY_PRIMARY_AUTH",
     "BOOLEY_CONTAINER",
+    "BOOLEY_T3_BASE_DIR",
     "BOOLEY_MCP_DEVELOPER_AGENT",
     "CODEX_HOME",
     "RTL_PROJECT_ROOT",
 )
+# Bound before the autouse stubs below replace them, for the tests of the UI start.
+_REAL_ENSURE_T3_SERVER = reg.ensure_t3_server
+_REAL_ENSURE_DASHBOARD_SERVER = getattr(reg, "ensure_dashboard_server", None)
 
 
 @pytest.fixture(autouse=True)
@@ -90,6 +96,26 @@ def first_run(tmp_path_factory, monkeypatch):
             doctor=doctor,
         )
     booley_dir.reset_cache()
+
+
+@pytest.fixture(autouse=True)
+def _t3_code_answers(monkeypatch):
+    """No test here starts the real `t3` or `booley dashboard`: both already answer.
+
+    The T3 Code fake replaces the port and descriptor probes and the `subprocess` that the
+    MCP server launch fake drives, so only the T3 Code start tests install it, through `_t3_code`.
+    """
+    monkeypatch.setattr(reg, "ensure_t3_server", lambda _root: "running")
+    monkeypatch.setattr(reg, "ensure_dashboard_server", lambda _root: "running", raising=False)
+
+
+def _t3_code(monkeypatch, **kwargs):
+    """Run the real T3 Code and Dashboard starts against the T3 Code fake; return the fake."""
+    monkeypatch.setattr(reg, "ensure_t3_server", _REAL_ENSURE_T3_SERVER)
+    monkeypatch.setattr(
+        reg, "ensure_dashboard_server", _REAL_ENSURE_DASHBOARD_SERVER, raising=False
+    )
+    return serve_t3_code(monkeypatch, **kwargs)
 
 
 def _main(capsys) -> tuple[int, str]:
@@ -163,7 +189,7 @@ def test_hook_starts_the_server_registers_and_then_launches_doctor(first_run, mo
     code, err = _main(capsys)
 
     assert code == 0
-    assert "server:started" in err and "health:started claude:written" in err
+    assert "server:started t3:running" in err and "health:started claude:written" in err
     # Doctor checks the server, so it launches only once the server serves.
     assert first_run.doctor == [True]
     projects = _claude_config(first_run.home)["projects"]
@@ -225,6 +251,330 @@ def test_hook_without_an_agent_cli_starts_and_writes_nothing(first_run, monkeypa
     assert code == 0 and "server:skipped" in err
     assert first_run.server.launches == []
     assert not list(first_run.home.iterdir())
+
+
+@pytest.mark.parametrize(
+    ("name", "registered", "fake", "expected"),
+    [
+        pytest.param(None, None, {}, ("started", 1, 0, "work", 0), id="registered"),
+        pytest.param(None, "work", {}, ("started", 1, 0, "work", 0), id="already-registered"),
+        pytest.param(
+            None,
+            None,
+            {"add_replies": [(78, "not ready"), (0, "Added")]},
+            ("started", 2, 0, None, 0),
+            id="server-not-ready",
+        ),
+        pytest.param(
+            None,
+            None,
+            {"add_replies": [(1, "boom")]},
+            ("unregistered", 1, 0, None, 1),
+            id="refused",
+        ),
+        pytest.param(
+            None,
+            None,
+            {"add_replies": [OSError("boom")]},
+            ("unregistered", 1, 0, None, 1),
+            id="run-error",
+        ),
+        pytest.param("picorv32", None, {}, ("started", 1, 0, "picorv32", 0), id="titled"),
+        pytest.param("picorv32", "work", {}, ("started", 1, 1, "picorv32", 0), id="retitled"),
+        pytest.param(
+            "picorv32", "picorv32", {}, ("started", 1, 1, "picorv32", 0), id="already-named"
+        ),
+        pytest.param(
+            "picorv32",
+            "work",
+            {"rename_reply": (1, "boom")},
+            ("started", 1, 1, "work", 1),
+            id="rename-refused",
+        ),
+        pytest.param(
+            "picorv32",
+            "work",
+            {"rename_reply": OSError("boom")},
+            ("started", 1, 1, "work", 1),
+            id="rename-run-error",
+        ),
+    ],
+)
+def test_ensure_t3_server_registers_the_project_under_its_name(
+    tmp_path, monkeypatch, capsys, name, registered, fake, expected
+):
+    status, adds, renames, title, lines = expected
+    project, booley = tmp_path / "work", tmp_path / ".booley"
+    project.mkdir()
+    booley.mkdir()
+    if name:
+        (booley / "booley.toml").write_bytes(f'[project]\nname = "{name}"\n'.encode())
+    monkeypatch.setenv("BOOLEY_DIR", str(booley))
+    registrations = {str(project): registered} if registered else {}
+    volume = tmp_path / "t3-volume"
+    t3 = _t3_code(monkeypatch, projects=registrations, volume=volume, **fake)
+    stale = write_t3_runtime(volume, pid=4_194_305, port=3773, environment_id="env-fake")
+
+    assert reg.ensure_t3_server(project) == status
+    assert t3.replaced_records == [stale]  # untouched until T3 Code replaced it
+    base = ["--base-dir", reg.T3_BASE_DIR]
+    assert t3.renamed == [["t3", "project", "rename", *base, str(project), name]] * renames
+    add = ["t3", "project", "add", *base, *(["--title", name] if name else []), str(project)]
+    assert t3.added == [add] * adds
+    assert t3.projects.get(str(project)) == title
+    assert t3.checked == [["t3", "policy", "check", "/etc/t3code/policy.json"]]
+    err = capsys.readouterr().err
+    assert "boom" not in err and err.count("\n") == lines
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the Sandbox's base directory is a symlink")
+@pytest.mark.parametrize("restart", ["kept", "removed", "directory", "elsewhere"])
+def test_t3_code_keeps_its_state_under_the_projects_base_dir(
+    tmp_path, monkeypatch, capsys, restart
+):
+    volume, alias = tmp_path / "t3-volume", tmp_path / "t3-alias"
+    volume.mkdir()
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_bytes(b'[project]\nname = "chip"\n')
+    monkeypatch.setattr(reg, "T3_BASE_DIR", str(volume))  # a host test has no volume mount
+    monkeypatch.setenv("BOOLEY_T3_BASE_DIR", str(alias))
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    t3 = _t3_code(monkeypatch, volume=volume)
+    browser = volume / "tools/chrome-headless-shell/linux64/1.2.3.4/chrome-headless-shell"
+    image_browser = (tmp_path / "sandbox-image/chrome/chrome-headless-shell").resolve()
+    assert reg.ensure_t3_server(tmp_path) == "started"
+    assert browser.resolve() == image_browser
+    assert t3.served[0][t3.served[0].index("--base-dir") + 1] == str(alias)
+    record = (volume / "userdata" / "server-runtime.json").read_bytes()
+
+    t3.running = False  # the container stopped
+    if restart != "kept":
+        alias.unlink()  # a recreated container has a fresh home
+    if restart == "directory":
+        alias.mkdir()
+    elif restart == "elsewhere":
+        alias.symlink_to(tmp_path)
+    status = reg.ensure_t3_server(tmp_path)
+
+    if restart in ("directory", "elsewhere"):
+        assert status == "failed" and len(t3.served) == 1
+        assert f"T3 Code not started: cannot link {alias} to" in capsys.readouterr().err
+        return
+    assert status == "started" and t3.replaced_records == [record]  # found in the volume
+    assert browser.resolve() == image_browser
+    reg.create_t3_pairing("http://127.0.0.1:1")
+    commands = [*t3.served, *t3.added, *t3.renamed, *t3.paired]
+    assert [cmd[cmd.index("--base-dir") + 1] for cmd in commands] == [str(alias)] * 6
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the preview browser is a symlink")
+@pytest.mark.parametrize(
+    ("case", "linked", "report"),
+    [
+        ("match", True, ""),
+        ("updated", True, ""),
+        ("mismatch", False, "expects headless Chrome 9.9.9.9, the Sandbox Image ships 1.2.3.4"),
+        ("downloaded", False, ""),
+        ("unrecorded", False, "T3 Code's preview browser not linked: "),
+    ],
+    ids=["match", "updated", "mismatch", "downloaded", "unrecorded"],
+)
+def test_t3_code_starts_with_the_images_preview_browser(
+    tmp_path, monkeypatch, capsys, case, linked, report
+):
+    volume = tmp_path / "t3-volume"
+    _t3_code(monkeypatch, volume=volume)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    record = tmp_path / "sandbox-image/preview-browser-version"
+    entry = volume / "tools/chrome-headless-shell/linux64/1.2.3.4"
+    if case == "mismatch":
+        record.write_bytes(b"9.9.9.9\n")
+    elif case == "unrecorded":
+        record.unlink()
+    elif case == "updated":  # an older image's link, kept on the volume
+        entry.parent.mkdir(parents=True)
+        (entry.parent / "1.0.0.0").symlink_to(tmp_path / "sandbox-image/chrome")
+    elif case == "downloaded":  # T3 Code's own earlier download
+        entry.mkdir(parents=True)
+
+    assert reg.ensure_t3_server(tmp_path) == "started"
+
+    assert entry.is_symlink() == linked
+    assert entry.exists() == (linked or case == "downloaded")
+    err = capsys.readouterr().err
+    assert report in err
+    assert ("preview" in err) == bool(report)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the Sandbox's base directory is a symlink")
+def test_a_pairing_before_any_start_links_the_projects_base_dir(tmp_path, monkeypatch):
+    """`t3` would otherwise make a directory there, and every later start would refuse it."""
+    volume, alias = tmp_path / "t3-volume", tmp_path / "t3-alias"
+    monkeypatch.setattr(reg, "T3_BASE_DIR", str(volume))  # a host test has no volume mount
+    monkeypatch.setenv("BOOLEY_T3_BASE_DIR", str(alias))
+    t3 = _t3_code(monkeypatch, check_reply=(77, "unknown driver"))
+    assert reg.ensure_t3_server(tmp_path) == "policy-rejected"
+
+    assert reg.create_t3_pairing("http://127.0.0.1:1").returncode == 0
+    assert alias.readlink() == volume and str(alias) in t3.paired[0]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="NTFS would allocate the sparse log files")
+def test_t3_code_restarts_with_its_logs_cut_to_the_cap(tmp_path, monkeypatch, capsys):
+    volume = tmp_path / "t3-volume"
+    t3 = _t3_code(monkeypatch, volume=volume)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    userdata = volume / "userdata"
+    logs = userdata / "logs"
+    data = ["statev2.sqlite", "statev2.sqlite-wal", "statev2.sqlite-shm", "secrets/pairing"]
+    data = [userdata / name for name in data]
+    for path in data:
+        _write_dated(path, 0, path.name.encode())
+
+    assert reg.ensure_t3_server(tmp_path) == "started"  # no log directory yet
+    assert "not pruned" not in capsys.readouterr().err
+
+    t3.running = False  # the container stopped
+    snapshot = logs / "server-1-0.heapsnapshot"
+    _write_dated(snapshot, 0, b"heap")
+    oldest = logs / "provider" / "events.thread-a.log.1"
+    newest = ["server.trace.ndjson.1", "terminals/term.log", "server.trace.ndjson"]
+    newest = [logs / name for name in newest]
+    for mtime, path in enumerate([oldest, *newest], start=1):
+        _write_dated(path, mtime, size=60_000_000)
+
+    assert reg.ensure_t3_server(tmp_path) == "started"
+    assert {path for path in logs.rglob("*") if path.is_file()} == {*newest, snapshot}
+    assert sum(path.stat().st_size for path in newest) <= 200_000_000
+    assert [path.read_bytes() for path in data] == [path.name.encode() for path in data]
+    assert snapshot.read_bytes() == b"heap"
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="needs a POSIX directory mode that stops the deletion",
+)
+def test_t3_code_starts_when_its_logs_cannot_be_pruned(tmp_path, monkeypatch, capsys):
+    volume = tmp_path / "t3-volume"
+    _t3_code(monkeypatch, volume=volume)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    logs = volume / "userdata" / "logs"
+    _write_dated(logs / "server.trace.ndjson", 1, size=250_000_000)
+    logs.chmod(0o500)
+    try:
+        assert reg.ensure_t3_server(tmp_path) == "started"
+    finally:
+        logs.chmod(0o700)
+    assert "T3 Code logs not pruned" in capsys.readouterr().err
+
+
+def _write_dated(path: Path, mtime: int, content: bytes = b"", *, size: int | None = None) -> None:
+    """Write *path* with a fixed modification time; *size* extends it sparsely."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as file:
+        file.write(content)
+        if size is not None:
+            file.truncate(size)
+    os.utime(path, (mtime, mtime))
+
+
+@pytest.mark.parametrize(
+    ("listener", "pid", "port_offset", "status"),
+    [
+        pytest.param("env-own", "live", 0, "running", id="own"),
+        pytest.param("env-other", "live", 0, "port-taken", id="other-base"),
+        pytest.param("not-t3", "live", 0, "port-taken", id="not-t3"),
+        pytest.param("drip", "live", 0, "port-taken", id="drip"),
+        pytest.param("banner", "live", 0, "port-taken", id="banner"),
+        pytest.param("nested", "live", 0, "port-taken", id="nested"),
+        pytest.param("oversized", "live", 0, "port-taken", id="oversized"),
+        pytest.param("env-own", None, 0, "port-taken", id="no-record"),
+        pytest.param("env-own", 4_194_305, 0, "port-taken", id="dead-pid"),
+        pytest.param("env-own", "live", 1, "port-taken", id="wrong-port"),
+    ],
+)
+def test_only_its_own_t3_code_on_the_port_counts_as_running(
+    first_run, tmp_path, monkeypatch, capsys, listener, pid, port_offset, status
+):
+    volume = tmp_path / "t3-volume"
+    monkeypatch.setattr(reg, "T3_BASE_DIR", str(volume))
+    monkeypatch.setattr(reg, "ensure_t3_server", _REAL_ENSURE_T3_SERVER)
+    with t3_listener(listener) as port:
+        monkeypatch.setattr(reg, "T3_PORT", port)  # a test cannot bind T3 Code's fixed port
+        write_t3_runtime(
+            volume,
+            pid=os.getpid() if pid == "live" else pid,
+            port=port + port_offset,
+            environment_id="env-own",
+        )
+
+        assert reg.ensure_t3_server(first_run.project) == status
+
+    assert ("held by another process" in capsys.readouterr().err) == (status == "port-taken")
+
+
+@pytest.mark.parametrize(
+    ("reply", "reported"),
+    [((77, "allowedDrivers: unknown driver"), "unknown driver"), (OSError("no t3"), "OSError")],
+    ids=["rejected", "run-error"],
+)
+def test_a_rejected_t3_code_policy_stops_t3_serve(tmp_path, monkeypatch, capsys, reply, reported):
+    t3 = _t3_code(monkeypatch, check_reply=reply)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+
+    assert reg.ensure_t3_server(tmp_path) == "policy-rejected"
+    assert t3.served == []
+    err = capsys.readouterr().err
+    assert "t3 policy check" in err and reported in err
+
+
+def test_a_t3_code_failure_never_stops_registration(tmp_path, monkeypatch, capsys):
+    _t3_code(monkeypatch).spawn_error = OSError("no t3")
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
+    monkeypatch.setattr(reg, "ensure_http_server", lambda: "running")
+    monkeypatch.setattr(reg, "register", lambda _app, *, trust_paths=(): "claude:current")
+    monkeypatch.setattr(entry, "sandbox_trust_paths", lambda _start: ())
+    monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
+    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "started")
+
+    entry.main()
+
+    assert re.search(r"t3:failed dashboard:failed .* claude:current", capsys.readouterr().err)
+
+
+@pytest.mark.parametrize("no_ui", [False, True], ids=["ui", "no-ui"])
+def test_the_start_step_starts_the_dashboard_once_unless_no_ui(
+    first_run, tmp_path, monkeypatch, capsys, no_ui
+):
+    t3 = _t3_code(monkeypatch, volume=tmp_path / "t3-volume")
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "claude")
+    if no_ui:
+        monkeypatch.setenv("BOOLEY_NO_UI", "1")
+
+    errors = [_main(capsys)[1], _main(capsys)[1]]
+
+    command = [sys.executable, "-m", "booley.harness.booley", "dashboard"]
+    assert t3.dashboards == ([] if no_ui else [command])
+    assert t3.dashboard_cwds == ([] if no_ui else [first_run.project])
+    statuses = ("off", "off") if no_ui else ("started", "running")
+    for status, err in zip(statuses, errors, strict=True):
+        assert f" dashboard:{status} " in err
+
+
+def test_no_agent_cli_skips_t3_code(tmp_path, monkeypatch, capsys):
+    t3 = _t3_code(monkeypatch)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    monkeypatch.delenv("BOOLEY_AGENT_APP", raising=False)
+    monkeypatch.setattr(entry, "observe_upgrade", lambda: "current")
+    monkeypatch.setattr(entry, "launch_auto_doctor", lambda: "started")
+
+    entry.main()
+
+    assert "server:skipped t3:skipped dashboard:skipped " in capsys.readouterr().err
+    assert t3.served == t3.dashboards == []
+    assert incontainer_t3.main(["state"]) == 0
+    assert capsys.readouterr().out == "off skipped\n"
 
 
 # ===========================================================================

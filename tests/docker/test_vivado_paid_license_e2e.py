@@ -127,7 +127,7 @@ def _issue(workspace: Path, p: Prerequisites) -> None:
 
     # The fixture enables the fpga Flow, so preview requests the registered Vivado and licence.
     prepared = runtime_spec.preview(workspace, build)
-    runtime_spec.issue_prepared(workspace, prepared, reconcile_dashboard=False)
+    runtime_spec.issue_prepared(workspace, prepared)
 
 
 def _flow(container: str, *, timeout_ms: int = _FLOW_MS) -> subprocess.CompletedProcess[str]:

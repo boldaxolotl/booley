@@ -81,10 +81,16 @@ def _core(name: str) -> str:
                 ".booley/worktrees/t1/copy.core": "c",
                 ".booley/.baseline-wt-7-abc/copy.core": "c",
                 ".booley/tmp/fusesoc-isolated-cores/copy.core": "c",
+                # A T3 Code thread's checkout and its Paired Checkout.
+                ".booley/t3-worktrees/work/t3-1a2b/rtl/copy.core": "c",
+                ".booley/t3-worktrees/work/t3-1a2b/.booley/cores/copy.core": "c",
             },
             False,
             None,
             id="worktree-and-registry-copies",
+        ),
+        pytest.param(
+            {".booley/notes/worktrees/x.core": "n"}, False, "notes", id="nested-worktrees-name"
         ),
         pytest.param(
             {"repo.core": "dup", ".booley/cores/s.core": "dup"},

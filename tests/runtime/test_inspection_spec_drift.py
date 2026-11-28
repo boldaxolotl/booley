@@ -23,15 +23,7 @@ from booley.config.agent import RetiredAuthError
 from booley.config.host_config import host_config_path
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
-from booley.runtime import (
-    auth_token,
-    dashboard_extension,
-    inspection,
-    project_image,
-    sandbox_apply,
-    session_runtime,
-    vaporview,
-)
+from booley.runtime import auth_token, inspection, project_image, sandbox_apply, session_runtime
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.runtime_context import RuntimeLocation
@@ -343,11 +335,6 @@ def _remove_token_seed(spec: dict) -> None:
     spec["mounts"] = [m for m in spec["mounts"] if dc._parse_mount(m).get("target") != target]
 
 
-def _gallery_vaporview(spec: dict) -> None:
-    extensions = _vscode(spec)["extensions"]
-    extensions[extensions.index(vaporview.BUNDLED_VSIX)] = vaporview.EXTENSION_ID
-
-
 def _remove_extension(entry: str) -> Callable[[dict], None]:
     def mutate(spec: dict) -> None:
         _vscode(spec)["extensions"].remove(entry)
@@ -376,27 +363,16 @@ def _remove_setting(key: str) -> Callable[[dict], None]:
     return mutate
 
 
-def _unpatch_attach(spec: dict) -> None:
-    spec["postAttachCommand"] = dc.live_preview_port_command()
+def _remove_post_attach(spec: dict) -> None:
+    del spec["postAttachCommand"]
 
-
-_PALETTE_KEY = next(iter(vaporview.PRESENTATION_COLOR_SETTINGS))
 
 # One case per predicate the per-feature checks used to have: how to damage a freshly
 # seeded Claude spec, and the key path the drift diff must name.
 _DRIFT_CASES = {
     "state-volume": (_remove_state_volume, "mounts[]"),
     "token-seed-mount": (_remove_token_seed, "mounts[]"),
-    "vaporview-gallery-entry": (_gallery_vaporview, "customizations.vscode.extensions[]"),
-    "booley-integration-vsix": (
-        _remove_extension(dashboard_extension.VSIX_PATH),
-        "customizations.vscode.extensions[]",
-    ),
-    "vaporview-palette": (
-        _set_setting(_PALETTE_KEY, "#123456"),
-        f"customizations.vscode.settings.{_PALETTE_KEY}",
-    ),
-    "attach-patch": (_unpatch_attach, "postAttachCommand"),
+    "post-attach": (_remove_post_attach, "postAttachCommand"),
     "hdl-vsix": (_remove_extension(dc.HDL_VSIX), "customizations.vscode.extensions[]"),
     "retired-extension": (_add_extension("bitwisecook.tcl"), "customizations.vscode.extensions[]"),
     "retired-file-association": (
@@ -476,6 +452,19 @@ def test_missing_state_volume_reports_lost_transcripts(
         line.strip().startswith("+mounts[]") and "type=volume" in line
         for line in finding.message.splitlines()
     )
+
+
+def test_missing_t3_volume_reports_lost_threads_not_transcripts(
+    project: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    spec = _seed(project, dc.APP_CLAUDE)
+    spec["mounts"] = [m for m in spec["mounts"] if "target=/home/agent/.t3," not in m]
+    _write(project, spec)
+
+    finding = _drift(_inspect(project, monkeypatch, expected_spec=_host(project)))
+
+    assert "no persistent volume for T3 Code's state" in finding.message
+    assert "transcripts" not in finding.message
 
 
 def test_long_diff_is_capped(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -614,7 +603,7 @@ def _assert_sandbox_compares_visible_part(
     auth_token.store_token("SYNTHETIC_STORED_TOKEN", dc.APP_CLAUDE)
     spec = _seed(project, dc.APP_CLAUDE)
     {
-        "extension": _remove_extension(vaporview.BUNDLED_VSIX),
+        "extension": _remove_extension(dc.HDL_VSIX),
         "volume": _remove_state_volume,
         "token-seed": _remove_token_seed,
     }[case](spec)

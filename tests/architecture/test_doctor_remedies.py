@@ -66,7 +66,8 @@ _AUDITED_MODULES = (
     "runtime/core_repository_hygiene.py",
     "runtime/incontainer_setup.py",
     "runtime/project_image.py",
-    "runtime/vaporview.py",
+    "runtime/bundled_extensions.py",
+    "runtime/t3_inspection.py",
 )
 
 _NON_DOCTOR_PRINTERS = {
@@ -90,7 +91,6 @@ _BASELINE: tuple[str, ...] = (
     'fail - audit/project_schema.py::audit_specialist_table "booley.toml [specialists."',
     'fail - audit/project_schema.py::audit_specialist_table "booley.toml [specialists] must be a tabl"',
     'fail - audit/project_schema.py::audit_stealth_table "booley.toml [stealth].ignore_native_core"',
-    'fail - audit/project_schema.py::audit_worktree_table "booley.toml"',
     'fail - flows/fpga/vivado_startup.py::inspect_vivado_startup "fpga: Vivado batch startup: runtime did "',
     'fail - flows/fpga/vivado_startup.py::inspect_vivado_startup "fpga: Vivado batch startup:"',
     'fail - harness/doctor.py::_check_git_conflicts "git operation in progress:"',
@@ -187,7 +187,7 @@ _SKIPPED_ENDPOINT = "fix is SkippedEndpoint.fix, built at runtime by endpoint va
 _UNRESOLVED: dict[str, str] = {
     'fail - audit/core_tree_inspection.py::inspect_core_security ".core security ["': "fix is CoreViolation.fix, built per violation by core_security",
     'warn core.security-scope-advisory audit/core_tree_inspection.py::inspect_core_security ".core security ["': "fix is CoreViolation.fix, built per violation by core_security",
-    'fail - runtime/vaporview.py::_report_per_root "message"': "message joins the per-root findings built at runtime",
+    'fail - runtime/bundled_extensions.py::_report_per_root "message"': "message joins the per-root findings built at runtime",
     'fail - audit/core_tree_inspection.py::_check_schema ".core schema"': _SCHEMA_FINDINGS,
     'fail - audit/project_schema.py::_feedback_field_findings "message"': _EXCEPTION_TEXT,
     'fail - audit/project_schema.py::audit_features_table "message"': _EXCEPTION_TEXT,

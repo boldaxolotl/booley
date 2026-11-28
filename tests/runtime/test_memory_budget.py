@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -23,7 +24,6 @@ memory_budget = _LazyModule()
 GIB = 1024**3
 MIB = 1024**2
 SCOPE = "pid:[17]"
-SOCKET_INODE = "5555"
 
 
 def part(role: Any, size: int, pid: int | None = 4_200_000) -> Any:
@@ -39,13 +39,13 @@ def add_process(
     argv: tuple[str, ...] = (),
     rss_kib: int | None = None,
     start: int = 7,
-    sockets: tuple[str, ...] = (),
+    ppid: int = 1,
 ) -> None:
     """Build one fake ``/proc/<pid>`` entry; absent arguments leave the file out."""
     directory = proc / str(pid)
     (directory / "ns").mkdir(parents=True)
     symlink_or_skip(directory / "ns/pid", Path(SCOPE))
-    fields = ["S", "1", *["0"] * 17, str(start), "0"]
+    fields = ["S", str(ppid), *["0"] * 17, str(start), "0"]
     (directory / "stat").write_text(f"{pid} (x y) " + " ".join(fields), encoding="utf-8")
     if comm is not None:
         (directory / "comm").write_text(comm + "\n", encoding="utf-8")
@@ -55,25 +55,13 @@ def add_process(
         (directory / "cmdline").write_bytes(b"\0".join(arg.encode() for arg in argv) + b"\0")
     if rss_kib is not None:
         (directory / "status").write_text(f"Name:\tx\nVmRSS:\t  {rss_kib} kB\n", encoding="utf-8")
-    if sockets:
-        (directory / "fd").mkdir()
-        for number, inode in enumerate(sockets, start=3):
-            symlink_or_skip(directory / "fd" / str(number), Path(f"socket:[{inode}]"))
 
 
-def make_proc(tmp_path: Path, *, dashboard: bool = False) -> Path:
-    """An empty fake ``/proc`` with this PID namespace and an optional Dashboard socket."""
+def make_proc(tmp_path: Path) -> Path:
+    """An empty fake ``/proc`` with this PID namespace."""
     proc = tmp_path / "proc"
     (proc / "self/ns").mkdir(parents=True)
     symlink_or_skip(proc / "self/ns/pid", Path(SCOPE))
-    (proc / "net").mkdir()
-    rows = ["Num RefCount Protocol Flags Type St Inode Path"]
-    rows.append("0000: 00000002 00000000 00010000 0001 01 9999 @unrelated")
-    if dashboard:
-        rows.append(
-            f"0001: 00000002 00000000 00010000 0001 01 {SOCKET_INODE} @booley-dashboard:{SCOPE}"
-        )
-    (proc / "net/unix").write_text("\n".join(rows) + "\n", encoding="utf-8")
     return proc
 
 
@@ -84,7 +72,7 @@ def test_limit_minus_measured_reserve_and_headroom() -> None:
         processes=(
             part(memory_budget.ReserveRole.DEVELOPER_AGENT, GIB),
             part(memory_budget.ReserveRole.MCP_SERVER, 256 * MIB),
-            part(memory_budget.ReserveRole.DASHBOARD, 256 * MIB),
+            part(memory_budget.ReserveRole.T3_CODE, 256 * MIB),
         ),
     )
 
@@ -96,7 +84,7 @@ def test_limit_minus_measured_reserve_and_headroom() -> None:
     assert [p.role for p in result.reserve] == [
         memory_budget.ReserveRole.DEVELOPER_AGENT,
         memory_budget.ReserveRole.MCP_SERVER,
-        memory_budget.ReserveRole.DASHBOARD,
+        memory_budget.ReserveRole.T3_CODE,
         memory_budget.ReserveRole.HEADROOM,
     ]
     assert result.reserve[-1].source is memory_budget.ReserveSource.FIXED
@@ -132,24 +120,18 @@ def test_no_container_limit_uses_installed_memory_and_says_so() -> None:
     assert result.installed_bytes == 16 * GIB
 
 
-def test_compute_measures_agent_mcp_server_and_dashboard(
+def test_compute_measures_every_reserve_role(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(f"{MODULE}.cgroup_memory_limit_bytes", lambda: 32 * GIB)
-    proc = make_proc(tmp_path, dashboard=True)
+    proc = make_proc(tmp_path)
     # The image's Claude: comm "claude", active binary bin/claude.exe.
     add_process(
         proc, 4_200_001, comm="claude", exe="/opt/claude-code/bin/claude.exe", rss_kib=1024
     )
     add_process(proc, 4_200_002, exe="/opt/bin/codex-x86_64-unknown-linux-musl", rss_kib=2048)
-    add_process(
-        proc,
-        4_200_003,
-        comm="python",
-        exe="/usr/bin/python3",
-        argv=("python", "-m", "booley.mcp.server"),
-        rss_kib=4096,
-    )
+    python = partial(add_process, proc, comm="python", exe="/usr/bin/python3")
+    python(4_200_003, argv=("python", "-m", "booley.mcp.server"), rss_kib=4096)
     add_process(
         proc,
         4_200_004,
@@ -158,63 +140,56 @@ def test_compute_measures_agent_mcp_server_and_dashboard(
         argv=("/usr/bin/python3", "/usr/local/bin/booley-mcp"),
         rss_kib=8192,
     )
+    dashboard = ("python", "-m", "booley.harness.dashboard")
+    python(4_200_005, argv=dashboard, rss_kib=16384)  # the web Dashboard has no share
+    python(4_200_006, argv=("python3", "x.py"), rss_kib=99999)
+    # T3 Code's server; a claude it started and the shared codex app-server are agents too.
+    add_process(
+        proc, 4_200_007, exe="/opt/t3code/t3", argv=("/opt/t3code/t3", "serve"), rss_kib=32768
+    )
+    add_process(proc, 4_200_008, comm="claude", ppid=4_200_007, rss_kib=64)
     add_process(
         proc,
-        4_200_005,
-        comm="python",
-        exe="/usr/bin/python3",
-        argv=("python", "-m", "booley.harness.dashboard"),
-        rss_kib=16384,
-        sockets=("1", SOCKET_INODE),
+        4_200_009,
+        exe="/opt/bin/codex-x86_64-unknown-linux-musl",
+        argv=("codex", "app-server"),
+        ppid=4_200_007,
+        rss_kib=128,
     )
-    add_process(
-        proc,
-        4_200_006,
-        comm="python3",
-        exe="/usr/bin/python3",
-        argv=("python3", "x.py"),
-        rss_kib=99999,
+    for pid, rss_kib in ((4_200_010, 256), (4_200_011, 512), (4_200_012, 1024)):
+        add_process(proc, pid, exe="/opt/chrome/chrome-headless-shell", rss_kib=rss_kib)
+    lookalikes = (
+        ("/usr/bin/node", ("node", "serve.js")),
+        ("/usr/bin/node", ("/usr/bin/node", "/srv/app/t3", "serve")),
+        ("/opt/t3code/t3", ("t3", "project", "add", "/work")),
+        ("/usr/lib/chromium/chromium", ("chromium", "--headless")),
+        ("/opt/google/chrome/chrome", ("chrome", "--headless")),
     )
+    for pid, (exe, argv) in enumerate(lookalikes, start=4_200_020):
+        add_process(proc, pid, exe=exe, argv=argv, rss_kib=77777)
 
     result = memory_budget.compute_memory_budget(proc_root=proc)
 
-    measured = [(p.role, p.pid, p.bytes, p.source) for p in result.reserve]
+    roles = memory_budget.ReserveRole
     kib = 1024
-    assert measured == [
-        (
-            memory_budget.ReserveRole.DEVELOPER_AGENT,
-            4_200_001,
-            1024 * kib,
-            memory_budget.ReserveSource.MEASURED,
-        ),
-        (
-            memory_budget.ReserveRole.DEVELOPER_AGENT,
-            4_200_002,
-            2048 * kib,
-            memory_budget.ReserveSource.MEASURED,
-        ),
-        (
-            memory_budget.ReserveRole.MCP_SERVER,
-            4_200_003,
-            4096 * kib,
-            memory_budget.ReserveSource.MEASURED,
-        ),
-        (
-            memory_budget.ReserveRole.MCP_SERVER,
-            4_200_004,
-            8192 * kib,
-            memory_budget.ReserveSource.MEASURED,
-        ),
-        (
-            memory_budget.ReserveRole.DASHBOARD,
-            4_200_005,
-            16384 * kib,
-            memory_budget.ReserveSource.MEASURED,
-        ),
-        (memory_budget.ReserveRole.HEADROOM, None, 8 * GIB, memory_budget.ReserveSource.FIXED),
+    assert [(p.role, p.pid, p.bytes) for p in result.reserve] == [
+        (roles.DEVELOPER_AGENT, 4_200_001, 1024 * kib),
+        (roles.DEVELOPER_AGENT, 4_200_002, 2048 * kib),
+        (roles.DEVELOPER_AGENT, 4_200_008, 64 * kib),
+        (roles.DEVELOPER_AGENT, 4_200_009, 128 * kib),
+        (roles.MCP_SERVER, 4_200_003, 4096 * kib),
+        (roles.MCP_SERVER, 4_200_004, 8192 * kib),
+        (roles.T3_CODE, 4_200_007, 32768 * kib),
+        (roles.HEADLESS_CHROME, None, (256 + 512 + 1024) * kib),
+        (roles.HEADROOM, None, 8 * GIB),
     ]
+    assert {p.source for p in result.reserve} == {
+        memory_budget.ReserveSource.MEASURED,
+        memory_budget.ReserveSource.FIXED,
+    }
     assert result.rule is memory_budget.BudgetRule.LIMIT
-    assert result.bytes == 32 * GIB - 8 * GIB - (1024 + 2048 + 4096 + 8192 + 16384) * kib
+    measured_kib = 1024 + 2048 + 64 + 128 + 4096 + 8192 + 32768 + 256 + 512 + 1024
+    assert result.bytes == 32 * GIB - 8 * GIB - measured_kib * kib
 
 
 def test_compute_without_cgroup_limit_reads_memtotal(
@@ -301,8 +276,17 @@ def test_unreadable_process_counts_one_gib(tmp_path: Path) -> None:
         proc, 4_200_001, exe="/usr/bin/python3", argv=("python", "-m", "booley.mcp.server")
     )
 
+    add_process(proc, 4_200_002, exe="/opt/chrome/chrome-headless-shell", rss_kib=2048)
+    add_process(proc, 4_200_003, exe="/opt/chrome/chrome-headless-shell")
+
     parts = {p.role: p for p in memory_budget.measure_reserve(proc_root=proc)}
 
+    chrome = parts[memory_budget.ReserveRole.HEADLESS_CHROME]
+    assert (chrome.bytes, chrome.source, chrome.pid) == (
+        2048 * 1024 + GIB,
+        memory_budget.ReserveSource.UNREADABLE,
+        None,
+    )
     server = parts[memory_budget.ReserveRole.MCP_SERVER]
     assert (server.bytes, server.source, server.pid) == (
         GIB,
@@ -310,8 +294,8 @@ def test_unreadable_process_counts_one_gib(tmp_path: Path) -> None:
         4_200_001,
     )
     # Contrast: a role with no process is absent and counts nothing.
-    dashboard = parts[memory_budget.ReserveRole.DASHBOARD]
-    assert (dashboard.bytes, dashboard.source, dashboard.pid) == (
+    t3_code = parts[memory_budget.ReserveRole.T3_CODE]
+    assert (t3_code.bytes, t3_code.source, t3_code.pid) == (
         0,
         memory_budget.ReserveSource.ABSENT,
         None,
@@ -354,7 +338,7 @@ def test_reused_pid_counts_one_gib(tmp_path: Path, monkeypatch: pytest.MonkeyPat
 
 def test_scan_skips_foreign_and_unreadable_entries(tmp_path: Path) -> None:
     proc = make_proc(tmp_path)
-    (proc / "4200010").mkdir()  # no exe, comm, cmdline, fd: nothing to classify or hold
+    (proc / "4200010").mkdir()  # no exe, comm, cmdline: nothing to classify
     (proc / "0").mkdir()
     add_process(proc, 4_200_011, exe="/usr/bin/python3 (deleted)", argv=("python", "-m", "other"))
 
@@ -369,13 +353,6 @@ def test_missing_proc_root_reports_every_role_absent(tmp_path: Path) -> None:
     assert [(p.role, p.source) for p in parts] == [
         (memory_budget.ReserveRole.DEVELOPER_AGENT, memory_budget.ReserveSource.ABSENT),
         (memory_budget.ReserveRole.MCP_SERVER, memory_budget.ReserveSource.ABSENT),
-        (memory_budget.ReserveRole.DASHBOARD, memory_budget.ReserveSource.ABSENT),
+        (memory_budget.ReserveRole.T3_CODE, memory_budget.ReserveSource.ABSENT),
+        (memory_budget.ReserveRole.HEADLESS_CHROME, memory_budget.ReserveSource.ABSENT),
     ]
-
-
-def test_dashboard_socket_prefix_matches_view_probe() -> None:
-    from booley.harness.dashboard import view_probe
-
-    assert view_probe.socket_name(SCOPE).replace("\0", "@") == (
-        memory_budget.DASHBOARD_SOCKET_PREFIX + SCOPE
-    )

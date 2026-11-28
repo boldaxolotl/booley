@@ -9,7 +9,7 @@ This test pins that each audited call site uses it and keeps its caller-visible 
 
 Some sites drive a ``_private`` function. The public route to each one (``booley init``,
 the capacity preflight, a Bootstrap base upgrade, image upkeep, runtime inspection, layout
-verification, the VaporView check) runs other Docker commands and checks around that call,
+verification, the bundled-extension check) runs other Docker commands and checks around that call,
 so it cannot show this one call's helper, timeout and per-outcome result.
 """
 
@@ -27,13 +27,13 @@ import pytest
 
 from booley.runtime import (
     booley_dir_migration,
+    bundled_extensions,
     docker_capacity,
     host_base_acquisition,
     image_lifecycle,
     inspection,
     project_image,
     session_issuance,
-    vaporview,
 )
 
 _IMAGE_ID = "sha256:" + "a" * 64
@@ -229,10 +229,10 @@ def _sites() -> list[_Site]:
             "one\ntwo\n",
             {"ok": "returned:['one', 'two']"} | _same("RuntimeError"),
         ),
-        # Private drive: the VaporView check runs several probes around this one, so the public route cannot show this call alone.
+        # Private drive: the bundled-extension check runs several probes around this one, so the public route cannot show this call alone.
         _Site(
-            "vaporview probe",
-            vaporview,
+            "bundled-extension probe",
+            bundled_extensions,
             ["docker", "exec", "c", "python3", "-c"],
             20,
             lambda _root: _probe_returncode(),
@@ -244,7 +244,7 @@ def _sites() -> list[_Site]:
 
 
 def _probe_returncode() -> int | None:
-    result = vaporview._run_probe(["docker", "exec", "c"], "pass")
+    result = bundled_extensions._run_probe(["docker", "exec", "c"], "pass")
     return None if result is None else result.returncode
 
 

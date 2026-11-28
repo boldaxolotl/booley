@@ -17,8 +17,8 @@ the agents' claims: it wraps EDA toolchains as **Booley Flows** with
 structured inputs and machine-checkable results, and exposes those Flows and
 LLM-backed **Specialists** to the Developer Agent through MCP.
 
-[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one per concurrent session) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job and opens them in VaporView. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture.svg#gh-light-mode-only)](../user/assets/architecture.svg)
-[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and VS Code attaches to it. In the Sandbox, Developer Agent sessions edit the Project's Git worktrees (the main checkout plus one per concurrent session) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job and opens them in VaporView. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture-dark.svg#gh-dark-mode-only)](../user/assets/architecture-dark.svg)
+[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and the browser reaches T3 Code in it through the T3 Code relay on the host's loopback. In the Sandbox, T3 Code starts the Developer Agent sessions and shows the Booley Dashboard in its preview panel. The sessions edit the Project's Git worktrees (the main checkout plus the worktrees T3 Code creates for its threads, which Booley prepares) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture.svg#gh-light-mode-only)](../user/assets/architecture.svg)
+[![Booley architecture: on the host, Booley issues and supervises one Sandbox per Project folder, and the browser reaches T3 Code in it through the T3 Code relay on the host's loopback. In the Sandbox, T3 Code starts the Developer Agent sessions and shows the Booley Dashboard in its preview panel. The sessions edit the Project's Git worktrees (the main checkout plus the worktrees T3 Code creates for its threads, which Booley prepares) and call the one MCP server. The MCP server submits each Booley Flow or Specialist run as a Job, admitted against the Memory Budget. A Flow resolves the Target with FuseSoC, runs the EDA tools, and parses their logs into metrics and a report. B-Wave queries FST traces outside any Job. Vivado is mounted read-only from the host, and egress goes through the host's egress proxy by default.](../user/assets/architecture-dark.svg#gh-dark-mode-only)](../user/assets/architecture-dark.svg)
 
 The diagram reads from the outside in, and so does this page:
 
@@ -26,7 +26,7 @@ The diagram reads from the outside in, and so does this page:
    prepares and supervises one container per Project folder, and all Booley
    work runs inside it.
 2. [Agent sessions](#agent-sessions): VS Code attaches to the Sandbox, and
-   each Developer Agent session runs in one of its terminals; concurrent
+   each Developer Agent session runs as a T3 Code thread; concurrent
    sessions get their own worktrees.
 3. [The MCP server](#the-mcp-server): the one surface through which every
    session reaches Booley.
@@ -146,10 +146,10 @@ one trust domain.
 ## Agent sessions
 
 `booley init` issues the Project's devcontainer specification; reopening the
-folder in the container connects VS Code to the Sandbox. `booley chat` (or bare
-`booley`) starts a Developer Agent session in a Sandbox terminal. The first
-session works in the main checkout, and Booley adds a worktree for each further
-concurrent session. See [SETUP.md](../user/SETUP.md) for the lifecycle and
+folder in the container connects VS Code to the Sandbox. A Developer Agent
+session runs as a T3 Code thread, which T3 Code places in its own worktree
+([ADR 0082](../adr/0082-let-t3-code-own-worktrees.md)). See
+[SETUP.md](../user/SETUP.md) for the lifecycle and
 [USAGE.md](../user/USAGE.md#developer-agent-sessions) for daily use.
 
 The MCP surface is the same for every Agent CLI. A Project lists the Agent CLIs
@@ -159,17 +159,20 @@ sessions and Booley's own calls. Configuration is under
 [`[models]`](../user/CONFIG.md#model-selection-models); sign-in and billing
 are in [SETUP.md](../user/SETUP.md#sign-in-and-billing).
 
-`booley dashboard` is the Sandbox view beside the editor. It shows the Sandbox's
-sessions and Jobs and can start Booley Flows as Standalone Jobs.
+`booley dashboard` serves the Booley Dashboard, a web page of each worktree's
+Jobs for T3 Code's preview panel. With the `web-run-panel` Feature Flag on, the
+page can also start Booley Flows and the built-in Specialists as Standalone
+Jobs. The design is in
+[ADR 0093](../adr/0093-show-jobs-per-worktree-in-the-t3-code-preview-panel.md).
 
 ### Why VS Code
 
-Claude Code and Codex both run in VS Code terminals, so both Agent CLIs share
-one editor and the Sandbox. The Dev Containers extension makes "open this
-repository inside the Booley container" a built-in operation, so Booley didn't
-have to build it. And the editor itself matters: hardware work is not pure
-delegation, and the user reads and edits RTL between agent turns in the same
-workspace.
+Claude Code and Codex both run in the Sandbox that VS Code attaches to, so both
+Agent CLIs share one editor and the Sandbox. The Dev Containers extension makes
+"open this repository inside the Booley container" a built-in operation, so
+Booley didn't have to build it. And the editor itself matters: hardware work is
+not pure delegation, and the user reads and edits RTL between agent turns in the
+same workspace.
 
 ## The MCP server
 
@@ -216,7 +219,8 @@ CPU, but they fail by running out of memory.
 
 - **Budget.** The Memory Budget is the container's memory limit
   (`[sandbox].memory`, else the host memory the container sees) minus a
-  reserve for the agents and the MCP server.
+  reserve for the agents, the MCP server, `t3 serve` and the headless Chrome
+  processes, each measured while it runs.
 - **Estimate.** A Job reserves its estimated peak memory: the largest recent
   peak recorded for the same Target and phase, plus headroom. A Job with no
   history borrows the largest estimate for that phase elsewhere in the
@@ -316,9 +320,8 @@ A trace is too large for an LLM to read, so B-Wave answers structured
 questions about signals, events, values, and time ranges in an FST store;
 `bwave register --build` converts a VCD into one.
 
-B-Wave doesn't render waveforms. When the user needs to see one, `bwave gui`
-opens the relevant signals and time window in VaporView inside VS Code, through
-a Booley extension bridge. Query and viewing commands are in
+B-Wave doesn't render waveforms, and Booley has no waveform viewer for now (see
+the [ROADMAP](ROADMAP.md)). Query commands are in
 [USAGE.md](../user/USAGE.md#viewing-waveforms).
 
 ### Why FST is the trace contract
@@ -328,8 +331,7 @@ queryable. A VCD is an unindexed text log: finding a signal's value at time T
 means parsing from the top, which for a multi-gigabyte trace is a batch job,
 not a query. FST is indexed and compact, which makes `bwave`'s time-range
 reads, trigger sampling, and data tracing fast enough for an agent to iterate
-on. GTKWave, Surfer, and VaporView all read it, so `bwave gui` needs no export
-step.
+on. GTKWave and Surfer read it, so a viewer needs no export step.
 
 - **A Verilator Target that declares `--trace-fst` stays native.** It already
   has a matching C++ harness and trace options; Booley only points the output

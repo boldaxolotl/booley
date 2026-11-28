@@ -1,42 +1,8 @@
 """Brief Doctor text shared by presentation adapters, without execution policy."""
 
 from pathlib import Path
-from typing import Literal, NamedTuple
 
 from booley.runtime import health
-
-HealthSeverity = Literal["fail", "warn", "ok", "unavailable", "unknown"]
-
-
-# Trailing marker of a due result; the Dashboard draws it in the attention color.
-RECHECK_DUE_SUFFIX = " · recheck due"
-
-
-class CompactLine(NamedTuple):
-    """Compact Doctor line: full text, count severity, and the due marker as data."""
-
-    text: str
-    severity: HealthSeverity
-    # Trailing part of ``text`` that renderers style apart from the counts; "" when not due.
-    due_suffix: str
-
-
-def count_line(snapshot: health.HealthSnapshot | None) -> CompactLine:
-    """Render compact active counts and freshness from one already-read observation."""
-    if snapshot is None:
-        return CompactLine("Doctor: unavailable: no readable automatic result", "unavailable", "")
-    assessment = snapshot.assessment
-    counts = []
-    if assessment.fail_count:
-        counts.append(f"{assessment.fail_count} FAIL")
-    if assessment.warn_count:
-        counts.append(f"{assessment.warn_count} WARN")
-    text = "Doctor: " + (" · ".join(counts) if counts else "OK")
-    severity: HealthSeverity = (
-        "fail" if assessment.fail_count else "warn" if assessment.warn_count else "ok"
-    )
-    due_suffix = RECHECK_DUE_SUFFIX if snapshot.due else ""
-    return CompactLine(text + due_suffix, severity, due_suffix)
 
 
 def brief_message(snapshot: health.HealthSnapshot) -> str:

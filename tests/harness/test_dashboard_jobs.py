@@ -1,4 +1,4 @@
-"""Read-only retained Jobs, exact reports, uncertainty and resource-unavailable contracts."""
+"""Read-only retained Jobs, exact reports and resource-unavailable contracts."""
 
 from __future__ import annotations
 
@@ -9,14 +9,12 @@ from types import SimpleNamespace
 import pytest
 
 from booley.core.booley_dir import reset_cache
-from booley.harness.dashboard.app import job_detail, job_paths
 from booley.harness.dashboard.jobs import JobReader
 from booley.harness.dashboard.resources import Resources, ResourceSampler
-from booley.harness.standalone_job import standalone_jobs_dir, standalone_log_path
-from booley.runtime import job_records
+from booley.harness.standalone_job import standalone_jobs_dir
+from booley.runtime import job_records, job_slots
 from booley.runtime.pid import ProcessIdentity
 from booley.runtime.runtime_context import RuntimeLocation
-from tests.conftest import symlink_or_skip
 from tests.git_support import git
 from tests.sandbox_venue_fake import place
 
@@ -84,11 +82,7 @@ def test_exact_run_report_never_latest_foreign_and_missing_artifacts(tmp_path):
     view = snapshot_jobs(tmp_path, interactive_root=root).jobs[0]
     assert view.state == "completed"
     assert view.report["passed"] is False
-    assert "Flow result: PASSED" in job_detail(view)
-    assert "Design verdict:" not in job_detail(view)
-    assert f"Report:\n{exact}" in job_detail(view)
-    assert "Peak memory" not in job_detail(view)
-    assert "CPU:" not in job_detail(view)
+    assert view.report_path == exact
 
 
 def test_artifact_bound_keeps_newest_report_and_complete_exact_progress(tmp_path, monkeypatch):
@@ -127,103 +121,6 @@ def test_missing_cgroup_and_root_leave_every_resource_unavailable(tmp_path):
     assert ResourceSampler(missing).sample(missing, now=10) == Resources()
 
 
-def test_process_resource_delta_and_reused_identity_are_honest(tmp_path, monkeypatch):
-    from booley.harness.dashboard import resources
-
-    identity = ProcessIdentity(99, "fixture", 101)
-    directory = tmp_path / "99"
-    directory.mkdir()
-    fields = ["0"] * 20
-    fields[11] = "100"
-    fields[12] = "50"
-    (directory / "stat").write_text("99 (flow) " + " ".join(fields))
-    (directory / "status").write_text("VmRSS: 100 kB\nVmHWM: 200 kB\n")
-    monkeypatch.setattr(resources, "capture_process_identity", lambda *_a, **_k: identity)
-    monkeypatch.setattr(resources.os, "sysconf", lambda _: 100, raising=False)
-    sampler = resources.ProcessSampler(tmp_path)
-    (directory / "task/99").mkdir(parents=True)
-    (directory / "task/99/children").write_text("")
-    first = sampler.sample(identity, now=10, capacity=2)
-    assert first.cpu_percent is None
-    assert (first.memory, first.peak_memory) == (102400, 102400)
-    fields[11] = "200"
-    (directory / "stat").write_text("99 (flow) " + " ".join(fields))
-    assert sampler.sample(identity, now=11, capacity=2).cpu_percent == 100
-    observations = iter([identity, ProcessIdentity(99, "fixture", 102)])
-    monkeypatch.setattr(
-        resources, "capture_process_identity", lambda *_a, **_k: next(observations)
-    )
-    assert sampler.sample(identity, now=12, capacity=2) == resources.ProcessResources()
-
-
-def test_reported_metrics_and_legacy_elapsed_are_not_invented():
-    from dataclasses import replace
-    from pathlib import Path
-
-    from booley.harness.dashboard.app import job_detail
-    from booley.harness.dashboard.jobs import JobView
-
-    view = JobView(
-        Path("/jobs"),
-        rec(status="done"),
-        "completed",
-        report={
-            "estimated_fmax_mhz": 210.5,
-            "cell_count": 42,
-            "elapsed_s": 5,
-            "failure_reason": "timing threshold missed",
-            "stdout": "raw log must remain hidden",
-        },
-    )
-    rendered = job_detail(view, now=1792000000)
-    assert "Estimated Fmax: 210.5" in rendered and "Cells: 42" in rendered
-    assert "Failure reason: timing threshold missed" in rendered
-    assert "raw log must remain hidden" not in rendered
-    assert "elapsed 5s" in job_detail(view, now=1792000000)
-    assert "elapsed 5s" in job_detail(view, now=1892000000)
-    assert "elapsed unavailable" in job_detail(replace(view, report=None), now=1892000000)
-
-
-def test_job_resources_include_eda_descendants_and_reject_child_reuse(tmp_path, monkeypatch):
-    from booley.harness.dashboard.resources import ProcessResources, ProcessSampler
-    from booley.runtime.pid import capture_process_identity
-    from tests.mcp_tools.test_session_registry import _fake_process
-
-    for pid in (98765, 98766):
-        _fake_process(tmp_path, pid, str(pid))
-        directory = tmp_path / str(pid)
-        (directory / f"task/{pid}").mkdir(parents=True)
-        (directory / f"task/{pid}/children").write_text("98766" if pid == 98765 else "")
-        (directory / "status").write_text("VmRSS:\t100 kB\nVmHWM:\t200 kB\n")
-    identity = capture_process_identity(98765, proc_root=tmp_path)
-    sampler = ProcessSampler(tmp_path)
-    first = sampler.sample(identity, now=10, capacity=2)
-    assert first.memory == 204800  # wrapper + EDA child
-    child = tmp_path / "98766/stat"
-    fields = child.read_text().rsplit(")", 1)[1].split()
-    fields[11] = "100"
-    child.write_text("98766 (eda) " + " ".join(fields))
-    monkeypatch.setattr(
-        "booley.harness.dashboard.resources.os.sysconf", lambda _: 100, raising=False
-    )
-    assert sampler.sample(identity, now=11, capacity=2).cpu_percent == 100
-    from booley.harness.dashboard import resources
-
-    real_capture = resources.capture_process_identity
-    calls = 0
-
-    def capture(pid, **kw):
-        nonlocal calls
-        if pid == 98766:
-            calls += 1
-            if calls == 2:
-                return None
-        return real_capture(pid, **kw)
-
-    monkeypatch.setattr(resources, "capture_process_identity", capture)
-    assert sampler.sample(identity, now=12, capacity=2) == ProcessResources()
-
-
 def test_server_job_lifecycle_does_not_include_other_interactive_roots(tmp_path, monkeypatch):
     from booley.mcp import server
 
@@ -234,28 +131,7 @@ def test_server_job_lifecycle_does_not_include_other_interactive_roots(tmp_path,
     assert server.job_roots() == (tmp_path / "job_logs/current/.runtime/jobs",)
 
 
-def test_job_cpu_is_percent_of_one_core_independent_of_sandbox_capacity(tmp_path, monkeypatch):
-    from booley.harness.dashboard import resources
-    from tests.mcp_tools.test_session_registry import _fake_process
-
-    _fake_process(tmp_path, 98765, "101")
-    directory = tmp_path / "98765"
-    (directory / "task/98765").mkdir(parents=True)
-    (directory / "task/98765/children").write_text("")
-    (directory / "status").write_text("VmRSS: 100 kB\n")
-    identity = resources.capture_process_identity(98765, proc_root=tmp_path)
-    sampler = resources.ProcessSampler(tmp_path)
-    assert sampler.sample(identity, now=10, capacity=24).cpu_percent is None
-    fields = (directory / "stat").read_text().rsplit(")", 1)[1].split()
-    fields[11] = "100"
-    (directory / "stat").write_text("98765 (flow) " + " ".join(fields))
-    monkeypatch.setattr(resources.os, "sysconf", lambda _: 100, raising=False)
-    assert sampler.sample(identity, now=11, capacity=24).cpu_percent == 100
-
-
-def test_sandbox_capacity_is_explicit_in_resource_projection(tmp_path, monkeypatch):
-    from booley.harness.dashboard import app
-
+def test_sandbox_capacity_follows_the_cpuset(tmp_path, monkeypatch):
     for name, value in {
         "cpu.max": "max 100000",
         "cpu.stat": "usage_usec 0",
@@ -268,65 +144,12 @@ def test_sandbox_capacity_is_explicit_in_resource_projection(tmp_path, monkeypat
     (tmp_path / "cpu.stat").write_text("usage_usec 1000000")
     sample = sampler.sample(tmp_path, now=11)
     assert sample.cpu_percent == pytest.approx(100 / 24)
-    assert "Sandbox CPU 4.2% of 24 CPUs" in app.resource_summary(sample)
-
-
-@pytest.mark.parametrize("stage", [None, "simulation"])
-def test_running_job_details_use_live_elapsed_reported_stage_and_declared_tool(tmp_path, stage):
-    from booley.flows.progress_lifecycle import progress_document
-    from booley.runtime.pid import capture_process_identity
-    from tests.mcp_tools.test_session_registry import _fake_process
-
-    work = tmp_path / "work"
-    work.mkdir()
-    (work / "fixture.core").write_text(
-        "CAPI=2:\nname: acme:test:fixture:1.0\ntargets:\n  sim_top:\n"
-        "    flow: sim\n    toplevel: top\n    flow_options:\n      tool: icarus\n"
-    )
-    proc = tmp_path / "proc"
-    _fake_process(proc, 98765, "101")
-    identity = capture_process_identity(98765, proc_root=proc)
-    root = tmp_path / "logs/.runtime/jobs"
-    job_records.write_record(
-        rec(
-            pid=98765,
-            process_identity=identity.to_payload(),
-            work_dir=str(work),
-            argv=["--target", "sim_top"],
-            run_started_at="2026-10-08T10:00:00Z",
-        ),
-        root,
-    )
-    progress = root.parent / "flow-reports/sim/1/progress.json"
-    progress.parent.mkdir(parents=True)
-    document = progress_document(
-        flow="sim",
-        run_id="one",
-        phase="starting",
-        targets=["sim_top"],
-        completed_targets=[],
-        detail={},
-        extra={} if stage is None else {"stage": stage},
-    )
-    progress.write_text(json.dumps(document))
-    before = files(tmp_path)
-    now = 1791453605
-    view = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc, now=now).jobs[0]
-    text = job_detail(view, now=now)
-    assert "elapsed 5s" in text
-    assert f"Stage: {stage}" in text if stage else "Stage:" not in text
-    assert "EDA tool: icarus" in text
-    assert files(tmp_path) == before
-    (work / "fixture.core").unlink()
-    missing = snapshot_jobs(tmp_path, interactive_root=root, proc_root=proc, now=now).jobs[0]
-    assert "EDA tool:" not in job_detail(missing, now=now)
 
 
 def test_dashboard_artifacts_are_indexed_once_and_reparsed_only_when_changed(
     tmp_path, monkeypatch
 ):
     from booley.flows.progress_lifecycle import progress_document
-    from booley.harness.dashboard.model import DashboardReader
 
     root = tmp_path / "job_logs/current/.runtime/jobs"
     paths = []
@@ -360,8 +183,8 @@ def test_dashboard_artifacts_are_indexed_once_and_reparsed_only_when_changed(
         return data
 
     monkeypatch.setattr(json, "loads", read)
-    reader = DashboardReader(tmp_path, tmp_path)
-    assert len(reader.read().jobs.jobs) == 2
+    reader = JobReader(tmp_path)
+    assert len(reader.read().jobs) == 2
     assert len(reads) == 4
     reader.read()
     assert len(reads) == 4
@@ -369,8 +192,7 @@ def test_dashboard_artifacts_are_indexed_once_and_reparsed_only_when_changed(
     updated = reader.read()
     assert len(reads) == 5
     assert (
-        next(job for job in updated.jobs.jobs if job.record.run_id == "one").report["passed"]
-        is False
+        next(job for job in updated.jobs if job.record.run_id == "one").report["passed"] is False
     )
 
 
@@ -444,7 +266,7 @@ def test_report_under_an_allowed_extra_root_is_found(tmp_path):
     assert found.report_path == report
 
 
-@pytest.mark.parametrize("malformed", [{"session_key": 5}, {"work_dir": []}])
+@pytest.mark.parametrize("malformed", [{"work_dir": []}, {"thread": ["x"]}, {"client": 5}])
 def test_malformed_job_is_isolated_from_other_records(tmp_path, malformed):
     root = tmp_path / "jobs"
     job_records.write_record(rec("good", status="done"), root)
@@ -456,164 +278,8 @@ def test_malformed_job_is_isolated_from_other_records(tmp_path, malformed):
     assert "bad.json" in str(observed.diagnostics)
 
 
-def test_job_completed_between_refreshes_keeps_recorded_figures(tmp_path, monkeypatch):
-    from booley.harness.dashboard.model import DashboardReader
-    from tests.flows.sim.test_endpoint_record_lifecycle import completed_simulation_record_report
-
-    root = tmp_path / "job_logs/test/.runtime/jobs"
-    reader = DashboardReader(tmp_path, tmp_path)
-    assert not reader.read().jobs.jobs
-    monkeypatch.setenv("BOOLEY_RUN_ID", "one")
-    report = completed_simulation_record_report(
-        tmp_path, monkeypatch, reports=root.parent / "flow-reports"
-    )
-    job_records.write_record(rec(status="done", exit_code=0), root)
-    # The exact-run report must win over a foreign last-writer-wins flat copy.
-    (root.parent / "flow-reports/sim.json").write_text(
-        json.dumps({"run_id": "foreign", "eda_tool": "wrong"})
-    )
-    for current in (reader, DashboardReader(tmp_path, tmp_path)):
-        snapshot = current.read()
-        assert len(snapshot.jobs.jobs) == 1
-        view = snapshot.jobs.jobs[0]
-        assert view.report == report
-        rendered = job_detail(view)
-        assert "EDA tool: icarus" in rendered
-        assert "CPU time: 4.5s" in rendered
-        assert "Peak memory (largest process): 256 MiB" in rendered
-        assert "CPU:" not in rendered
-
-
-@pytest.mark.parametrize("state", ["completed", "failed", "cancelled", "orphaned"])
-def test_terminal_job_uses_recorded_resources_and_tool(tmp_path, state):
-    from booley.harness.dashboard.jobs import JobView
-
-    view = JobView(
-        tmp_path,
-        rec(status="done"),
-        state,
-        report={
-            "flow": "sim",
-            "eda_tool": "verilator",
-            "resources": {"cpu_user_s": 2, "cpu_sys_s": 1, "peak_rss_mb": 32},
-        },
-    )
-    rendered = job_detail(view)
-    assert "CPU time: 3s" in rendered
-    assert "Peak memory (largest process): 32 MiB" in rendered
-    assert "Memory:" not in rendered
-
-
-def test_no_eda_specialist_hides_tool(tmp_path):
-    from dataclasses import replace
-
-    from booley.harness.dashboard.jobs import JobView
-
-    view = JobView(
-        tmp_path,
-        replace(rec(status="done"), endpoint="reviewer"),
-        "completed",
-        report={"mcp_tool": "reviewer"},
-    )
-    assert "EDA tool" not in job_detail(view)
-    assert "resources" not in job_detail(view)
-
-
-@pytest.mark.parametrize("state", ["completed", "orphaned"])
-def test_terminal_job_without_report_explains_missing_resources(tmp_path, state):
-    from booley.harness.dashboard.jobs import JobView
-
-    text = job_detail(JobView(tmp_path, rec(status="done"), state))
-    assert "resources not recorded (no report)" in text
-    assert "EDA tool: not recorded by this Flow" in text
-
-
-def test_terminal_flow_without_tool_explains_missing_record(tmp_path):
-    from booley.harness.dashboard.jobs import JobView
-
-    view = JobView(tmp_path, rec(status="done"), "completed", report={"flow": "project_flow"})
-    assert "EDA tool: not recorded by this Flow" in job_detail(view)
-
-
-@pytest.mark.parametrize(
-    "resources", [[], {"cpu_user_s": 10**400, "cpu_sys_s": 1, "peak_rss_mb": 32}]
-)
-def test_invalid_recorded_resources_are_unavailable(tmp_path, resources):
-    from booley.harness.dashboard.jobs import JobView
-
-    view = JobView(
-        tmp_path, rec(status="done"), "completed", report={"flow": "sim", "resources": resources}
-    )
-    assert "CPU time" not in job_detail(view)
-    assert "Peak memory" not in job_detail(view)
-
-
-@pytest.mark.parametrize(
-    "tools", [{"z": None, "a": "verilator"}, {"z": "icarus", "a": "Verilator"}]
-)
-def test_terminal_job_sorts_target_tool_associations(tmp_path, tools):
-    from booley.harness.dashboard.jobs import JobView
-
-    text = job_detail(
-        JobView(
-            tmp_path, rec(status="done"), "completed", report={"flow": "sim", "eda_tools": tools}
-        )
-    )
-    assert text.index("a: ") < text.index("z: ")
-    if tools["z"] is None:
-        assert "z: not recorded by this Flow" in text
-
-
-def test_zero_resource_measurements_are_recorded(tmp_path):
-    from booley.harness.dashboard.jobs import JobView
-
-    text = job_detail(
-        JobView(
-            tmp_path,
-            rec(status="done"),
-            "completed",
-            report={"resources": {"cpu_user_s": 0, "cpu_sys_s": 0, "peak_rss_mb": 0}},
-        )
-    )
-    assert "CPU time: 0s" in text
-    assert "Peak memory (largest process): 0 MiB" in text
-
-
-def test_job_detail_read_latency_unread_and_legacy():
-    from pathlib import Path
-
-    from booley.harness.dashboard.app import job_detail
-    from booley.harness.dashboard.jobs import JobView
-    from booley.runtime.timefmt import format_clock
-
-    def detail(state, **fields):
-        record = rec(status="done", **fields)
-        return job_detail(JobView(Path("/jobs"), record, state))
-
-    finished = {"ended_at": "2026-10-08T10:01:00Z", "owner": "mcp-stdio:one"}
-    # (a) The first-read time and how long the result waited after the Job ended.
-    read_at = "2026-10-08T10:03:10Z"
-    assert f"Read: {format_clock(read_at)} · 2m 10s after end" in detail(
-        "completed", **finished, read_at=read_at
-    )
-    # (b) A finished, owned, unread Job says so, orphaned ones included.
-    assert "Read: unread" in detail("completed", **finished)
-    assert "Read: unread" in detail("orphaned", **finished)
-    # (c) A record without an owner invents no latency, and (d) neither does a running Job.
-    assert "Read:" not in detail("completed", ended_at=finished["ended_at"])
-    assert "Read:" not in detail("running", owner="mcp-stdio:one")
-    # (e) A read without an end time shows the clock only.
-    clock_only = detail("completed", owner="mcp-stdio:one", read_at=read_at)
-    assert f"Read: {format_clock(read_at)}" in clock_only
-    assert "after end" not in clock_only
-    # A read stamped before the end clamps to zero rather than going negative.
-    assert "· 0s after end" in detail(
-        "completed", ended_at="2026-10-08T10:05:00Z", owner="o", read_at=read_at
-    )
-
-
 def test_standalone_job_lists_with_log_and_report(layout, monkeypatch, capsys):
-    """A shell Flow run shows in the Dashboard with its ``job.log`` and its own report."""
+    """A shell Flow run shows in the Dashboard with its own report."""
     from booley.flows.lint.flow import LintFlow
     from booley.harness import booley as cli
     from booley.mcp.registry import McpToolInfo
@@ -643,15 +309,10 @@ def test_standalone_job_lists_with_log_and_report(layout, monkeypatch, capsys):
 
     capsys.readouterr()
     (view,) = snapshot_jobs(layout.control).jobs
-    assert view.record.session_key is None
+    assert view.record.client is None
     assert view.state == "completed"
-    log = layout.control / "job_logs/standalone" / view.record.run_id / "job.log"
     assert view.report is not None  # found under the checkout's reports, by the run's own id
-    detail = job_detail(view)
-    assert f"Log:\n{log}" in detail
     assert view.report_path.name == "report.json"
-    assert f"Report:\n{view.report_path}" in detail
-    assert job_paths(view) == (str(log), str(view.report_path))
 
 
 @pytest.mark.parametrize(
@@ -667,65 +328,8 @@ def test_target_arg_reads_both_spellings(argv, expected):
     assert job_records.target_arg(argv) == expected
 
 
-def test_job_detail_links_job_log(tmp_path):
-    root = tmp_path / "logs/.runtime/jobs"
-    job_records.write_record(rec(status="done", exit_code=0), root)
-    log = root / "one" / "job.log"
-    log.parent.mkdir()
-    log.write_bytes(b"full output\n")
-    view = snapshot_jobs(tmp_path, interactive_root=root).jobs[0]
-    assert view.log_path == str(log)
-    assert f"Log:\n{log}" in job_detail(view)
-    assert str(log) in job_paths(view)
-
-
-def test_symlinked_job_log_is_not_linked(tmp_path):
-    root = tmp_path / "logs/.runtime/jobs"
-    job_records.write_record(rec(status="done", exit_code=0), root)
-    target = tmp_path / "elsewhere.log"
-    target.write_bytes(b"secret\n")
-    (root / "one").mkdir()
-    symlink_or_skip(root / "one" / "job.log", target)
-    view = snapshot_jobs(tmp_path, interactive_root=root).jobs[0]
-    assert view.log_path == ""
-    assert "Log:" not in job_detail(view)
-    assert str(root / "one" / "job.log") not in job_paths(view)
-
-
-def standalone_job_dirs(tmp_path):
-    """A done standalone record (under ``booley_dir``) and its ``job.log`` directory."""
-    booley_dir = tmp_path / ".booley"
-    job_records.write_record(rec(status="done", exit_code=0), standalone_jobs_dir(booley_dir))
-    run_dir = standalone_log_path(booley_dir, "one").parent
-    run_dir.mkdir(parents=True)
-    (run_dir / "job.log").write_bytes(b"full output\n")
-    return booley_dir, run_dir
-
-
-def test_job_detail_links_specialist_transcript_dir(tmp_path):
-    booley_dir, run_dir = standalone_job_dirs(tmp_path)
-    transcripts = run_dir / "transcripts"
-    transcripts.mkdir()
-    view = snapshot_jobs(booley_dir).jobs[0]
-    assert view.transcript_dir == str(transcripts)
-    assert f"Transcripts:\n{transcripts}" in job_detail(view)
-    assert job_paths(view) == (str(run_dir / "job.log"), str(transcripts))
-
-
-def test_symlinked_transcript_dir_is_not_linked(tmp_path):
-    booley_dir, run_dir = standalone_job_dirs(tmp_path)
-    target = tmp_path / "elsewhere"
-    target.mkdir()
-    symlink_or_skip(run_dir / "transcripts", target, target_is_directory=True)
-    view = snapshot_jobs(booley_dir).jobs[0]
-    assert view.transcript_dir == ""
-    assert "Transcripts:" not in job_detail(view)
-    assert str(run_dir / "transcripts") not in job_paths(view)
-
-
 def _old_session_jobs_world(tmp_path):
     """65 recent session roots; the oldest holds every kind of record."""
-    from booley.runtime import job_slots
 
     logs = tmp_path / "job_logs"
     for index in range(65):
@@ -780,8 +384,7 @@ def _old_session_jobs_world(tmp_path):
     return identities
 
 
-def test_dashboard_model_lists_unfinished_jobs_of_old_sessions(tmp_path, monkeypatch):
-    from booley.harness.dashboard.model import DashboardReader
+def test_reader_lists_unfinished_jobs_of_old_sessions(tmp_path, monkeypatch):
     from booley.runtime.job_observation import _observer
     from booley.runtime.pid import ProcessObservation, ProcessState
 
@@ -795,7 +398,7 @@ def test_dashboard_model_lists_unfinished_jobs_of_old_sessions(tmp_path, monkeyp
 
     monkeypatch.setattr(_observer, "observe_process", observe)
 
-    jobs = DashboardReader(tmp_path, tmp_path).read().jobs.jobs
+    jobs = JobReader(tmp_path, slots_root=job_slots.slots_dir(tmp_path)).read().jobs
 
     assert {job.record.run_id: job.state for job in jobs} == {
         "spawning": "spawning",

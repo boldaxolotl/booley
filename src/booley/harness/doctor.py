@@ -73,6 +73,7 @@ from booley.core.boundary import (
     require_str_value,
 )
 from booley.core.host_shell import quote_arg
+from booley.core.sandbox_layout import CHROME_VERSION_RECORD, T3_BROWSER_VERSION_RECORD
 from booley.flows import execution, runtime_reality, target_test_plan_inspection
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.fpga import vivado_startup
@@ -110,6 +111,7 @@ from booley.presentation.colors import bold, bold_green, bold_red, dim, yellow
 from booley.presentation.terminal_table import render_table, width_budget
 from booley.runtime import (
     auth_token,
+    bundled_extensions,
     core_repository_hygiene,
     core_resolution,
     doctor_stamp,
@@ -120,7 +122,7 @@ from booley.runtime import (
     project_repositories,
     runtime_context,
     session_runtime,
-    vaporview,
+    t3_inspection,
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import handles as handle_maps
@@ -967,6 +969,7 @@ def _run_project_phase(
         reporter.diagnostics(readiness.check_guidance(project))
         _check_project_data_destination_branch(project.project_root, reporter)
     _check_worktree_booley_pairing(project_root, reporter)
+    _check_kept_worktree_branches(project_root, reporter)
     _check_common_state_in_worktrees(project_root, reporter)
     _check_worktree_prune_guard(project_root, reporter.pass_, reporter.skip_, reporter.fail_)
     reporter.diagnostics(
@@ -1045,7 +1048,7 @@ def _check_project_data_destination_branch(project_root: Path, reporter: _Report
 def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> None:
     """Warn when a linked worktree holds a plain copy of a Versioned Booley Directory.
 
-    ``booley worktree new`` gives such a worktree a Paired Checkout. A copy
+    ``booley worktree prepare`` gives such a worktree a Paired Checkout. A copy
     made by hand looks healthy, but it records no paired revision, and measurements of
     its commits read the copy's live files instead of versioned ones.
     """
@@ -1068,9 +1071,39 @@ def _check_worktree_booley_pairing(project_root: Path, reporter: _Reporter) -> N
     _warning_sink(reporter.warn_, "project-data.worktree-unpaired", subject="project-data")(
         f"{local} is a plain copy, not a Paired Checkout of the Versioned Booley Directory "
         f"{versioned}; measurements will not use its committed revisions",
-        "save any work in this worktree, then recreate it with `booley worktree new <name>` "
-        f"from {primary}",
+        f"save any work in {local}, move it out of the worktree, then run "
+        f"`booley worktree prepare` in {project_root}",
     )
+
+
+def _check_kept_worktree_branches(project_root: Path, reporter: _Reporter) -> None:
+    """Warn about each ``booley-worktree/*`` branch that has no worktree.
+
+    ``booley worktree prepare`` deletes such a branch once all its commits are on the
+    Booley Directory's branch, so one still listed may hold work to merge or discard.
+    """
+    from booley.core.booley_dir import resolve_main_checkout_root
+    from booley.core.booley_layout import BooleyLayoutError
+    from booley.runtime.project_worktree_pairing import (
+        ProjectPairingError,
+        kept_paired_branches,
+        project_pairing_source,
+    )
+
+    try:
+        source = project_pairing_source(resolve_main_checkout_root(project_root))
+        if source is None:
+            return
+        branches = kept_paired_branches(source)
+    except (ProjectPairingError, BooleyLayoutError, OSError):
+        return  # Git layout problems are reported by the Git state checks.
+    repository = f"git -C {quote_arg(str(source))}"
+    for branch in branches:
+        _warning_sink(reporter.warn_, "project-data.worktree-branch-kept", subject=branch)(
+            f"{branch} in {source} has no worktree",
+            f"merge it with `{repository} merge {quote_arg(branch)}` or delete it with "
+            f"`{repository} branch -D {quote_arg(branch)}`",
+        )
 
 
 _COMMON_STATE_CHECK_ID = "project-data.common-state-in-worktree"
@@ -1209,7 +1242,7 @@ def _outer_branch_for_project_data(
 
 
 def _common_booley_dir(root: Path, reporter: _Reporter) -> Path | None:
-    """The Main Booley Directory holding Session Registry and handle maps.
+    """The Main Booley Directory holding the Job handle map.
 
     Reports a skip with the reason when it cannot be resolved, so the checks
     that read it never vanish silently.
@@ -1326,8 +1359,36 @@ def _run_runtime_phase(
         reporter.fail_,
     )
     _run_mcp_checks(project, docker_exe, sandbox_image, reporter)
+    # Before the Flow phase, which can start a stopped Sandbox.
+    _run_t3_code_checks(project, docker_exe, sandbox_image, reporter)
     progress("Project checks")
     _run_project_checks(project, reporter)
+
+
+def _run_t3_code_checks(
+    project: ProjectAudit | None, docker_exe: str | None, image: str, reporter: _Reporter
+) -> None:
+    """Check the pinned T3 Code install, its preview browser, its server and the host relay."""
+    _section("T3 Code checks")
+    remedy = functools.partial(_image_stale_remedy, project)
+    records = ["cat", T3_BROWSER_VERSION_RECORD, CHROME_VERSION_RECORD]
+    if runtime_context.inside_session_runtime():
+        reporter.diagnostics(t3_inspection.inspect_install(["t3", "--version"], remedy))
+        reporter.diagnostics(t3_inspection.inspect_preview_browser(records, remedy))
+        reporter.diagnostics(t3_inspection.inspect_ui_in_sandbox())
+    elif project is None:
+        reporter.skip_("T3 Code checks skipped - project config invalid")
+    elif docker_exe is None:
+        reporter.skip_("T3 Code checks skipped - no Docker/Podman runtime found on this host")
+    else:
+        if _docker_image_exists_by_name(image):
+            command = [docker_exe, "run", "--rm", image, "t3", "--version"]
+            reporter.diagnostics(t3_inspection.inspect_install(command, remedy))
+            command = [docker_exe, "run", "--rm", image, *records]
+            reporter.diagnostics(t3_inspection.inspect_preview_browser(command, remedy))
+        else:
+            reporter.skip_("T3 Code version check skipped - Sandbox Image missing")
+        reporter.diagnostics(t3_inspection.inspect_ui(project.project_root))
 
 
 def _target_checks_blocker(project: ProjectAudit | None) -> str | None:
@@ -1589,7 +1650,7 @@ def _check_worktree_core_shadow_guard(
     checkouts carrying COPIES of the project's ``.core`` files (same VLNV). A
     stale copy shadows the source at the Project Root in FuseSoC's recursive
     ``--cores-root`` scan — silently building the worktree's RTL, not ``/work``'s.
-    ``booley init`` and ``worktree_create.sh`` drop the marker that suppresses
+    ``booley init`` and ``booley worktree prepare`` drop the marker that suppresses
     this; catch a project that predates the fix (or whose marker was removed),
     escalating the message when a live shadowing ``.core`` is already present.
     """
@@ -1625,10 +1686,6 @@ def _check_worktree_core_shadow_guard(
             ".booley/FUSESOC_IGNORE missing; a future worktree's "
             f".core could shadow the source at the Project Root — run {runtime_context.booley_init_hint(code=True)}"
         )
-
-
-# Booley Directory subtrees that legitimately hold transient .core COPIES (worktree /
-# baseline checkouts, build caches) — never authored sources, never "stranded".
 
 
 # ---------------------------------------------------------------------------
@@ -1916,9 +1973,8 @@ def _check_host_agent_session(_pass: Check) -> None:
         message = (
             f"{app} is running on the HOST, as expected for host-side Project Setup. "
             "The Booley MCP server, booley_status, and Booley Flows (sim, lint, synth) "
-            "exist only inside the Sandbox. For Interactive work, reopen the project "
-            'in the devcontainer ("Reopen in Container"), or use '
-            "`booley session up && booley session enter`"
+            "exist only inside the Sandbox. For Interactive work, run `booley session up`, "
+            "open the pairing link it prints and work in a T3 Code thread"
         )
     _pass(warning("session.agent-on-host", message))
 
@@ -1977,7 +2033,8 @@ def _check_image_bakes_runtime_marker(
 # Shown wherever a Claude session cannot grade the gateway it was deliberately kept from.
 _HIDDEN_GATEWAY_NOTE = (
     "Codex gateway settings are hidden from Claude sessions; "
-    "run `booley doctor` from a VS Code terminal to check them"
+    "run `booley doctor` in a T3 Code thread's terminal to check them "
+    "(from a host shell: `booley session enter -- booley doctor`)"
 )
 
 
@@ -2592,33 +2649,6 @@ def _check_current_runtime_web_isolation(_pass: Check, _fail: Fail) -> None:
     _pass("agent provider-side web access disabled")
 
 
-def _check_current_runtime_activity_hooks(_pass: Check, _warn: Check) -> None:
-    """Validate the Dashboard's session-activity hooks from inside the Sandbox."""
-    from booley.harness.activity_hooks import hooks_error
-
-    error = hooks_error()
-    if error:
-        _warning_sink(_warn, "sandbox.activity-hooks-unavailable")(
-            f"Dashboard session activity or worktree conversation records are unavailable: {error}; "
-            "rebuild the sandbox image, then rebuild/reopen the Sandbox"
-        )
-        return
-    _pass("Dashboard session-activity hooks installed")
-
-
-def _check_current_runtime_dashboard_extension(_pass: Check, _warn: Check) -> None:
-    """Check image-owned delivery independently of editor trust and user preferences."""
-    from booley.runtime.dashboard_extension import installed_error
-
-    error = installed_error()
-    if error:
-        _warning_sink(_warn, "sandbox.dashboard-extension-unavailable")(
-            f"{error}; rebuild the Sandbox Image, then rebuild/reopen the Sandbox"
-        )
-        return
-    _pass("Dashboard workspace extension bundled in the Sandbox Image")
-
-
 def _check_current_runtime_git_identity(
     project: ProjectAudit | None, _pass: Check, _warn: Warn, _skip: Check
 ) -> None:
@@ -2720,8 +2750,6 @@ def _run_container_checks(
     _section("Container checks")
     if runtime_context.inside_session_runtime():
         _check_current_runtime_web_isolation(_pass, _fail)
-        _check_current_runtime_activity_hooks(_pass, _warn)
-        _check_current_runtime_dashboard_extension(_pass, _warn)
         _check_current_runtime_git_identity(project, _pass, _warn, _skip)
         _check_current_runtime_egress(_pass, _warn, _fail)
         _skip(_no_docker_skip_reason())
@@ -2869,8 +2897,8 @@ def _run_mcp_checks(
     )
     _run_agent_credential_checks(project, reporter)
     reporter.diagnostics(
-        vaporview.inspect_viewer_bridge(
-            vaporview.ViewerBridgeRequest(project.project_root, docker_exe)
+        bundled_extensions.inspect_bundled_extensions(
+            bundled_extensions.BundledExtensionsRequest(project.project_root, docker_exe)
         )
     )
     reporter.diagnostics(inspection.inspect_retained_resources(project.project_root, docker_exe))
@@ -3794,21 +3822,19 @@ def _handle_map_restart(project_root: Path) -> str:
 
 
 def _check_handle_map_size(booley_dir: Path, project_root: Path, _warn: Check) -> None:
-    """Warn when a display handle map nears the cap past which allocation fails."""
-    for jobs in (False, True):
-        path = handle_maps.HandleStore(booley_dir, jobs=jobs).path
-        subject = "job" if jobs else "session"
-        try:
-            size = path.stat().st_size
-        except OSError:
-            continue
-        if size > handle_maps.MAP_WARN_BYTES:
-            _warning_sink(_warn, "handles.map-size", subject=subject)(
-                f"{subject} handle map {path} is {size / 2**20:.1f} MiB of its "
-                f"{handle_maps.MAX_MAP_BYTES // 2**20} MiB cap",
-                "restart the Sandbox so its MCP server prunes expired handles at start: "
-                + _handle_map_restart(project_root),
-            )
+    """Warn when the Job handle map nears the cap past which allocation fails."""
+    path = handle_maps.HandleStore(booley_dir).path
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return
+    if size > handle_maps.MAP_WARN_BYTES:
+        _warning_sink(_warn, "handles.map-size", subject="job")(
+            f"job handle map {path} is {size / 2**20:.1f} MiB of its "
+            f"{handle_maps.MAX_MAP_BYTES // 2**20} MiB cap",
+            "restart the Sandbox so its MCP server prunes expired handles at start: "
+            + _handle_map_restart(project_root),
+        )
 
 
 def _check_project_gitignore(booley_dir: Path, _pass: Check, _warn: Warn) -> None:

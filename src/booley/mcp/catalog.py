@@ -181,8 +181,8 @@ def _status_mcp_tool_def() -> dict[str, Any]:
     return {
         "name": _STATUS_MCP_TOOL_NAME,
         "description": (
-            "Show whether Booley is ready, and the Session handle, branch and checkout "
-            "(main checkout or worktree) Booley attributes to this caller."
+            "Show whether Booley is ready, and the branch and checkout (main checkout or "
+            "worktree) this caller's calls run in."
         ),
         "schema": {"type": "object", "properties": {}, "additionalProperties": False},
     }

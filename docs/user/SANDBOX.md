@@ -10,10 +10,11 @@ instead of reaching your machine; read the
 treat it as a security boundary.
 
 Everyday use needs none of this page: `booley init` and the `booley-setup`
-skill configure the Sandbox, and VS Code opens it. Come here to work without
-VS Code, add Python packages or EDA tools to the image, use a licensed EDA tool
-from the host, change host-wide network or session limits, or apply a settings
-change or a Booley upgrade.
+skill configure the Sandbox, and `booley session up` starts it with T3 Code, the
+web UI it serves. Come here to enter the Sandbox from a terminal, see what T3
+Code keeps and what Booley turns off in it, add Python packages or EDA tools to
+the image, use a licensed EDA tool from the host, change host-wide network or
+session limits, or apply a settings change or a Booley upgrade.
 
 ## Known Sandbox escape through shared Git metadata
 
@@ -41,34 +42,50 @@ Until it is fixed, after untrusted agent work:
 - For a stronger boundary, use a disposable VM or a separate machine without
   valuable credentials or data.
 
-## Entering the Sandbox without VS Code
+## Entering the Sandbox
 
-Without VS Code (for example over SSH), `booley session` starts the same
-container that **Reopen in Container** does. Run these on the host, after
-`booley init`:
+The `booley session` commands start, enter and stop the Sandbox. Run them on the
+host, after `booley init`:
 
 ```bash
-booley session up                       # create or start the Sandbox
+booley session up                       # create or start the Sandbox and print a T3 Code pairing link
+booley session up --no-ui               # the same without T3 Code, the Dashboard and the link
+booley session pair                     # print a new pairing link, for a second browser
 booley session enter                    # open a shell inside it (starts it if needed)
 booley session enter -- booley doctor   # or run one command and exit
-booley session status                   # running, stopped, absent, or a pending start/recovery
+booley session status                   # running, stopped, absent, or a pending start/recovery; whether T3 Code and the Dashboard run
 booley session refresh                  # rebuild the image if needed and recreate the Sandbox
 booley session down                     # stop and remove the Sandbox
 ```
 
-`session enter` works like a terminal inside the container, so every
-in-Sandbox command works through it. Ending a `session enter` command, with
-`Ctrl-C` or by closing the shell, stops everything it started, background
-processes included, except a Flow or Specialist started from the Dashboard:
-that Standalone Job keeps running until it finishes or the Sandbox stops. `up`
-and `enter` reuse a running Sandbox, including one VS Code opened.
+`session up` and `session pair` print a link to T3 Code, the web UI the Sandbox
+serves. Open it in a browser on the host within 5 minutes to pair that
+browser; each command prints a new link. Treat the link like a password: it
+holds a one-time token. `up --no-ui` is for scripted Sandboxes and starts no
+UI, but it doesn't stop one that already runs: run `session down` first.
+`session status` reports whether T3 Code and the
+[Dashboard](USAGE.md#the-dashboard) run.
+[What survives `session down`](#what-survives-session-down) lists what T3 Code
+keeps for the next `up`.
+
+T3 Code lists the Project under its `[project].name` from
+[`booley.toml`](CONFIG.md#booleytoml). Booley sets that name again each time
+the Sandbox starts, so a name you give the Project in T3 Code lasts only until
+then.
+
+A T3 Code thread's terminal is a [container terminal](USAGE.md#read-this-first):
+it runs inside the Sandbox, so type in-Sandbox commands there. From a host
+terminal, `session enter` gets you in too, for example without a browser or in a
+script. Ending a `session enter` command, with `Ctrl-C` or by closing the shell,
+stops everything it started, background processes included, except a Flow or
+Specialist started from the Dashboard: that Standalone Job keeps running until
+it finishes or the Sandbox stops. `up` and `enter` reuse a running Sandbox.
 `session down` also stops any `booley flow` or `booley specialist` run typed in
-a Sandbox shell.
+a container terminal.
 
 `session refresh` rebuilds only what changed and is safe to rerun after a
 failure. It doesn't touch tracked files; when it reports pending file changes,
-run `booley init`. Don't use it on a Project you open in VS Code; see
-[Applying Sandbox changes](#applying-sandbox-changes).
+run `booley init`.
 
 ## Project settings (`[sandbox]`)
 
@@ -86,8 +103,7 @@ memory = "8g"                                  # container memory limit; unset =
 ```
 
 `memory` sets the [Memory Budget](CONFIG.md#jobs--concurrency-jobs) that
-admits Jobs; `booley doctor` warns while it is unset. `[sandbox] dashboard` is
-covered in [CONFIG.md](CONFIG.md#dashboard-sandboxdashboard).
+admits Jobs; `booley doctor` warns while it is unset.
 
 `swap` is the swap the Sandbox may use beyond `memory`. Unset, it is a quarter
 of `memory`, but no more than the swap your Docker host has: `memory = "12g"`
@@ -182,10 +198,11 @@ Testbenches that need cocotb 1.x (for example for `TestFactory` or
   runs Python 3.14, which has no `distutils`, and cocotb-1.x-era
   packages such as `cocotb-test` 0.2.0 still import it.
 - **Check the exact import the testbench uses.** `import cocotb_test` can
-  succeed while `import cocotb_test.simulator` fails:
+  succeed while `import cocotb_test.simulator` fails. Check it in a container
+  terminal:
 
     ```bash
-    booley session enter -- python -c "import cocotb_test.simulator, cocotb; print(cocotb.__version__)"
+    python -c "import cocotb_test.simulator, cocotb; print(cocotb.__version__)"
     ```
 
 The base image checks its own cocotb at build time, not yours, so the first
@@ -330,13 +347,12 @@ These keys are host-only: `booley.toml` rejects them, and Booley stops on an
 unknown key or an invalid value.
 
 - **`idle_timeout_seconds`**: a Sandbox stops after this long with no Booley
-  activity and no open editor or terminal session in it. A Job started from the
-  Dashboard counts as activity while it is running or queued.
+  activity, no open T3 Code page and no terminal session in it. A Job started
+  from the Dashboard counts as activity while it is running or queued.
 - **`max_sessions`**: counts every Booley Sandbox on the Docker daemon, across
   all Projects. At the limit, starting another one fails with a list of the
   running Sandboxes; Booley never stops existing work to make room. Free a
-  slot with `booley session down` (headless) or by closing the VS Code window,
-  or raise the limit.
+  slot with `booley session down`, or raise the limit.
 - **`egress = "proxy"`** (default): Sandboxes reach the network only through
   Booley's proxy, which allows the Claude and OpenAI API and login hosts plus
   the hostnames in `egress_allowlist` and their subdomains. Each entry is a
@@ -367,8 +383,8 @@ host login, the `booley auth` token, or the API key from your shell. Its
 session history is kept across rebuilds.
 
 Booley's tools and skills work in every listed CLI, so a plain `claude` or
-`codex` in a Sandbox terminal has them. The Developer Agent's window uses the
-`default` CLI; Specialists use whichever listed CLI their model needs.
+`codex` in a container terminal has them. Specialists use the `default` CLI
+unless their model needs another listed one.
 
 After changing `clis`, `auth`, or `default`,
 [apply the change](#after-changing-sandbox-settings). Until you do, a changed
@@ -376,42 +392,71 @@ CLI set or `auth` stops the Sandbox from starting. Adding a CLI hands its login
 to the Sandbox, and the agent inside can edit `booley.toml`, so review `[agent]`
 edits before you apply them.
 
-## Editor credential forwarding
+## T3 Code in the Sandbox
 
-Opening the Sandbox in VS Code can forward your host Git credentials into it,
-so any process in the Sandbox, the Developer Agent included, can use them.
-`booley doctor` run inside the Sandbox warns `sandbox.git-credential-helper`
-once for each helper and names the file it is in. The warning's subject is the
-helper's `<key>=<value>`, with URL user names and passwords and `username=` and
-`password=` values masked.
+T3 Code runs inside the Sandbox. Booley reaches it through a relay on the host
+that listens on `127.0.0.1` only, so only a browser on this machine can open it.
+A paired browser stays paired across `session up` unless another process has
+taken the relay's port.
 
-To keep host Git credentials out of the Sandbox:
+### What survives `session down`
 
-1. In your host VS Code user settings, set
-   `dev.containers.gitCredentialHelperConfigLocation` to `"none"` and
-   `dev.containers.copyGitConfig` to `false`.
-2. In the Sandbox, delete the `helper` lines from each file Doctor names.
+- **Threads and browser pairings** live in a Docker volume, one per Project.
+  [`booley projects forget --purge <project>`](SETUP.md#projects-on-this-machine--host)
+  removes it.
+- **T3 Code's worktrees** are in `.booley/t3-worktrees/` of the Project's main
+  checkout on the host. They stay plain Git worktrees if the volume is lost,
+  usable from a container terminal.
+- **T3 Code's logs** in that volume are capped: each time T3 Code starts, Booley
+  deletes the oldest until at most 200 MB remain.
 
-If you accept one helper,
-[waive](DOCTOR.md#doctor-waivers-doctor-waiverstoml) it by its subject:
+### What Booley's policy turns off
 
-```toml
-version = 1
+Booley runs T3 Code under a managed policy:
 
-[[waiver]]
-check = "sandbox.git-credential-helper"
-subject = "credential.helper=/.codespaces/bin/gitcredential_github.sh"
-reason = "Codespaces GitHub access"
-permanent = true
-```
+- Telemetry, remote connections and update checks are off.
+- Threads run only with Claude or Codex, and only with those listed in
+  [`[agent] clis`](#agent-cli-logins-in-the-sandbox).
+- A thread's runtime mode is capped at `auto`, below **Full access**.
+- **Start from remote** is off for a new thread you start: its new worktree
+  starts from the base branch as it is in your local repository, with no fetch.
+  A new scheduled task has it on, so turn it off there if the Sandbox cannot
+  reach the remote.
+
+Booley mounts the policy read-only, so the Developer Agent cannot change it.
+
+### T3 Code tools turned off in the Sandbox
+
+T3 Code gives every agent thread a set of tools of its own: starting threads,
+delegating, rendering HTML, the preview browser, and more. In the Sandbox,
+Claude and Codex threads that T3 Code starts cannot use the following tools.
+If Claude reports `No such tool available` for one of them, or Codex reports
+`The Booley Sandbox turns off the T3 Code tool`, this is why:
+
+- **Scheduled tasks:** `schedule_task`, `delete_scheduled_task`,
+  `list_scheduled_tasks`, `run_scheduled_task_now`.
+- **Linking machines:** `t3_environment_link`, `t3_environment_links`,
+  `t3_environment_unlink`.
+- **Moving a thread:** `t3_thread_transfer`.
+- **Managing T3 Code projects:** `t3_project_create`, `t3_project_delete`,
+  `t3_project_clone`.
+- **Devices:** `device_open`, `device_close`, `device_list`,
+  `device_screenshot`.
+- **Secrets:** `request_secret`. Booley
+  [forwards your agent logins](#agent-cli-logins-in-the-sandbox) itself.
+
+### Opening files in a host editor
+
+T3 Code's **Open in VS Code** button is disabled in the Sandbox. Use your own
+editor on the host instead: open the Project Root, or a thread's worktree under
+`.booley/t3-worktrees/` in the Project's main checkout. After untrusted agent
+work, first read the advice on the
+[known escape](#known-sandbox-escape-through-shared-git-metadata).
 
 ## Applying Sandbox changes
 
 A Sandbox keeps the settings and Booley version it was created with until you
-recreate it. Recreate it the way you open it: a Project you open in VS Code is
-rebuilt from VS Code, even while its window is closed. `booley session refresh`
-is only for Projects you enter with `booley session`; on a VS Code Project it
-either refuses or starts a second Sandbox that VS Code won't open.
+recreate it.
 
 ### After changing Sandbox settings
 
@@ -421,9 +466,7 @@ This covers `[sandbox]` and `[agent]` in `booley.toml`, a
 [EDA Grants](#commercial-eda-provisioning). The other `config.toml` keys need
 only `booley bootstrap`.
 
-- **In VS Code:** run `booley init` on the host, then
-  **Dev Containers: Rebuild Container**.
-- **Headless:** run `booley session refresh` on the host.
+Run `booley session refresh` on the host.
 
 Until you do, Doctor reports that the Sandbox differs from the settings.
 
@@ -444,16 +487,11 @@ These steps apply when `[sandbox].image` names an image Booley doesn't build.
 `booley session refresh` refuses such an image.
 
 After upgrading Booley, first rebuild your image with the new Booley wheel
-installed, and run `python3 -I -m booley.runtime.dashboard_extension` as root
-in its recipe. Without that step, Dashboard auto-open and `bwave gui` views are
-unavailable.
+installed.
 
-Then, after an upgrade or a settings change:
-
-- **In VS Code:** run `booley init --seed` on the host, then
-  **Dev Containers: Rebuild Container**.
-- **Headless:** run `booley session down`, `booley init --seed`, and
-  `booley session up` on the host.
+Then recreate the Sandbox after each upgrade or settings change. Run
+`booley session down`, `booley init --seed`, and `booley session up` on the
+host.
 
 `--seed` rewrites the Sandbox's container settings without building any image.
 See [Custom sandbox image](#custom-sandbox-image).

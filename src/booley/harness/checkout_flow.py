@@ -160,8 +160,9 @@ class CheckoutFlowRequest:
     coverage: bool = False  # run the Flow with coverage collection (``sim`` only)
     # The table's integer settings, each passed as ``--<name> <value>`` (``mutation``'s count, seed).
     settings: Mapping[str, int] = field(default_factory=dict[str, int])
-    # The session whose Job (a ``booley_measure``) runs this Flow; ``None`` is Standalone.
-    session_key: str | None = None
+    # The agent whose Job (a ``booley_measure``) runs this Flow; ``None`` is Standalone.
+    client: str | None = None
+    thread: str | None = None
 
 
 @dataclass(frozen=True)
@@ -848,11 +849,12 @@ class PreparedCheckoutFlow:
             else math.ceil(request.timeout_s),
             argv=["booley", "flow", request.flow, *_flow_arguments(request)],
             report_root=str(self.report_dir),
-            session_key=request.session_key,
+            client=request.client,
+            thread=request.thread,
         )
         try:
             job_records.write_record_strict(record, jobs_root)
-            register_job(main, run_id, request.flow, request.session_key)
+            register_job(main, run_id, request.flow)
             process = _launch(
                 request, self.checkout, main, self.report_dir, run_id, log_path, self.environment
             )

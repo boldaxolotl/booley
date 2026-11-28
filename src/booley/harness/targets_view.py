@@ -130,10 +130,19 @@ def render_detail(payload: TargetDetailPayload) -> str:
         lines.append("")
         lines.append(f"Resolved view unavailable: {resolved_error}")
         if resolution_command := payload.get("resolution_command"):
-            lines.append(f"  Run `{resolution_command}`.")
+            lines.extend(_entry_lines(resolution_command))
 
     lines.extend(f"WARNING: {warning}" for warning in payload.get("warnings", []))
     return "\n".join(lines)
+
+
+def _entry_lines(host_command: str) -> list[str]:
+    """How to resolve this Target in the Sandbox: T3 Code first, then a host shell."""
+    return [
+        "  Run `booley session up` on the host, open the pairing link it prints and run",
+        "  `booley targets` for this Target in a T3 Code thread's terminal.",
+        f"  From a host shell, run `{host_command}`.",
+    ]
 
 
 def _render_parameters(params: Mapping[str, object]) -> str:

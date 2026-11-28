@@ -19,6 +19,8 @@ from typing import Any
 from booley.audit import agent_schema, config_common, flow_schema, project_schema
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.config.eda import EdaConfig, parse_eda_config
+from booley.core.booley_dir_parts import in_linked_worktree
+from booley.core.booley_layout import BooleyLayoutError
 from booley.core.config_paths import resolve_toml
 from booley.core.host_shell import quote_arg
 from booley.fusesoc import core_projection, fusesoc_registry
@@ -49,13 +51,13 @@ from booley.runtime.booley_dir import (
 )
 from booley.runtime.git import _git_common_dir
 from booley.runtime.platform_paths import run_captured_bounded
-from booley.runtime.worktree_paths import worktree_state_dir
+from booley.runtime.worktrees import list_worktrees
 from booley.targets.catalog import TargetCatalog
 
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _GUIDANCE_BTOOL_MARKER = "booley_status"
 _GUIDANCE_SANDBOX_MARKERS = ("inside the sandbox", "session runtime")
-_STATE_TRANSIENT_DIR_NAMES = frozenset({"worktrees", "build", "_build", ".runtime", ".git", "tmp"})
+_STATE_TRANSIENT_DIR_NAMES = frozenset({"build", "_build", ".runtime", ".git", "tmp"})
 
 
 @dataclass(frozen=True)
@@ -446,29 +448,41 @@ def _worktree_metadata_problems(worktree: Path) -> tuple[str, ...]:
 
 
 def _live_worktree_paths(project: ProjectAudit) -> tuple[Path, ...]:
-    # The registry is Common Booley State: a linked worktree reads main's, not its own.
-    registry = worktree_state_dir(
-        resolve_main_checkout_root(project.project_root), booley_dir=project.common_booley_dir
-    )
-    root = registry / "worktrees"
-    if not root.is_dir():
+    # Git's registry is shared by every checkout of the repository, so any of them lists
+    # the linked worktrees: T3 Code's anywhere on disk and old ones under .booley/worktrees/.
+    main = resolve_main_checkout_root(project.project_root)
+    try:
+        entries = list_worktrees(main)
+    except (subprocess.TimeoutExpired, OSError):
         return ()
     worktrees: list[Path] = []
-    for outer in sorted(root.iterdir()):
+    for entry in entries[1:]:
+        outer = entry.path
         if not (outer / ".git").is_file():
             continue
         worktrees.append(outer)
         try:
             paired = resolve_checkout_booley_dir(outer)
-        except (FileNotFoundError, ValueError):
-            continue
+        except (FileNotFoundError, ValueError, BooleyLayoutError):
+            continue  # No Booley Directory, or a retired layout: only the outer is checked.
         if paired.is_relative_to(outer) and (paired / ".git").is_file():
             worktrees.append(paired)
     return tuple(worktrees)
 
 
 def _inspect_live_worktrees(project: ProjectAudit, report: Findings) -> None:
-    for worktree in _live_worktree_paths(project):
+    try:
+        worktrees = _live_worktree_paths(project)
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or f"git exited {exc.returncode}"
+        report.warn(
+            f"cannot list worktrees: {detail}",
+            "fix the Git error and rerun Doctor",
+            check_id="git.worktree-portability",
+            subject=str(project.project_root),
+        )
+        return
+    for worktree in worktrees:
         problems = _worktree_metadata_problems(worktree)
         if problems:
             report.warn(
@@ -564,7 +578,6 @@ def _validate_booley_toml(data: dict[str, Any], booley_dir: Path, report: Findin
     valid &= _add_config_audit(project_schema.audit_stealth_table(data), report)
     valid &= _add_config_audit(flow_schema.audit_flow_tables(data, _REQUIRED_FLOW_TABLES), report)
     valid &= _add_config_audit(project_schema.audit_sandbox_table(data), report)
-    valid &= _add_config_audit(project_schema.audit_worktree_table(data), report)
     valid &= _add_config_audit(project_schema.audit_jobs_table(data), report)
     valid &= _add_config_audit(project_schema.audit_interactive_table(data), report)
     valid &= _add_config_audit(project_schema.audit_ignored_settings(data), report)
@@ -669,7 +682,7 @@ def _check_stealth_cores(
         for p in booley_dir.rglob("*.core")
         if not p.is_relative_to(stealth_root)
         and not _STATE_TRANSIENT_DIR_NAMES.intersection(p.relative_to(booley_dir).parts)
-        and not any(part.startswith(".baseline-wt") for part in p.relative_to(booley_dir).parts)
+        and not in_linked_worktree(p.relative_to(booley_dir))
         and TRACE_OVERLAY_MARKER not in p.name
     ]
     if stranded:

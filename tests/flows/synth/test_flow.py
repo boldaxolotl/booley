@@ -50,7 +50,6 @@ from booley.flows.synth.request import SynthRequest
 from booley.flows.synth.timing import StaTimingConfig
 from booley.fusesoc import fusesoc_registry
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
-from booley.presentation.report_results import present_job_report
 from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
@@ -623,7 +622,7 @@ def test_dry_run_records_evidence_for_projected_stealth_core(
 
 @pytest.mark.skipif(
     shutil.which("git") is None or os.name == "nt",
-    reason="`booley worktree new` runs only in the Sandbox on POSIX with git",
+    reason="`booley worktree prepare` runs only in the Sandbox on POSIX with git",
 )
 @pytest.mark.parametrize("isolation", ["isolated", "projected"])
 def test_synth_plan_identity_matches_in_booley_worktree(
@@ -640,7 +639,7 @@ def test_synth_plan_identity_matches_in_booley_worktree(
     pytest.importorskip("edalize")
     from booley.harness import worktree_cmd
 
-    # `booley worktree new` refuses a foreign ambient BOOLEY_DIR.
+    # `booley worktree prepare` refuses a foreign ambient BOOLEY_DIR.
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     root = tmp_path / "repo"
     _write_syn_demo_project(root)
@@ -660,8 +659,15 @@ def test_synth_plan_identity_matches_in_booley_worktree(
         ("commit", "-m", "init"),
     ):
         run_bounded_child(["git", *args], cwd=root, check=True)
-    # Created before any preparation, so the Snapshot holds no generated state.
-    assert worktree_cmd.run(argparse.Namespace(worktree_command="new", name="wt"), root) == 0
+    worktree = tmp_path / "wt"
+    run_bounded_child(
+        ["git", "worktree", "add", "-q", "-b", "wt", str(worktree), "HEAD"], cwd=root, check=True
+    )
+    # Prepared before any run, so the Snapshot holds no generated state.
+    assert (
+        worktree_cmd.run(argparse.Namespace(worktree_command="prepare", path=worktree), worktree)
+        == 0
+    )
 
     def plans(checkout: Path):
         synth_cli.project = checkout
@@ -676,7 +682,7 @@ def test_synth_plan_identity_matches_in_booley_worktree(
         return dry, synth_cli.run_plan
 
     main_dry, main_real = plans(root)
-    wt_dry, wt_real = plans(booley_dir / "worktrees" / "wt")
+    wt_dry, wt_real = plans(worktree)
 
     assert main_dry["semantic_plan_fingerprint"] == wt_dry["semantic_plan_fingerprint"]
     assert main_real.semantic_plan_fingerprint == wt_real.semantic_plan_fingerprint
@@ -3793,12 +3799,6 @@ def test_public_latch_allowance_excess_is_design_failure(synth_cli: SynthCli):
     )
     reason = "8 latches (actual=8, expected=7, excess=1; types: $_DLATCH_P_=8)"
     assert report["implementation"]["status"]["failure_reasons"] == [reason]
-    job = present_job_report(
-        {"detail": result.detail}, endpoint="synth", exit_code=result.exit_code, argv=[]
-    )
-    assert ("Failure reason", reason) in [
-        (row.label.strip(), row.value) for row in job.result_rows
-    ]
 
 
 def test_expected_latch_unknown_area_still_fails_mapping(synth_cli: SynthCli):

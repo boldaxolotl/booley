@@ -10,9 +10,10 @@ Setup has two parts:
    Project. It is a plain CLI command that you run in a host terminal; no agent
    is involved.
 2. The **`booley-setup` skill** completes design-aware Project Setup. Your
-   Claude Code or Codex agent runs it. Host Bootstrap already installed it,
-   and this guide hands off to it (see
-   [The `booley-setup` skill](#the-booley-setup-skill) below).
+   Claude Code or Codex agent runs it: it starts in your chat on the host and
+   finishes in T3 Code. Host Bootstrap already installed it, and this guide
+   hands off to it (see [The `booley-setup` skill](#the-booley-setup-skill)
+   below).
 
 Two paths, one sequence: Install, `booley init`, then `/booley-setup` on the
 host (`/booley-setup new` for a new IP). They differ only in the skill mode:
@@ -61,7 +62,7 @@ Directory (the `.booley/` that setup produces) published as its own
 repository. When you set up your own design, compare your
 [`booley.toml`](CONFIG.md), [`.core` files](TARGETS.md), and
 [`tests.toml`](TESTS.md) with theirs. PicoRV32 is the small one; Caliptra shows a large SoC with firmware
-tests. Both are also on the [Demos](https://booley.dev/demos/) page.
+tests.
 
 The upstream build systems have nothing in common, which is the useful part:
 the real requirement is just RTL that some EDA tool can already build. If your
@@ -121,9 +122,7 @@ Initialization walks through:
 4. Prepares the Project's Sandbox Image: the Docker image your agent and EDA
    tools run in, built on top of Booley's base image
 5. Installs Booley's Git hooks
-6. Writes the devcontainer config, so VS Code can open the Project in the
-   Sandbox (Reopen in Container)
-7. Prints any follow-up advice
+6. Prints any follow-up advice
 
 `booley init --check-only` reports what init would change and changes nothing.
 It exits 0 when everything is current, 1 when work is pending or a required
@@ -191,8 +190,9 @@ Codex has no long-lived subscription token, so for Codex this means paying per
 token instead of using your subscription.
 
 The saved login lives in `~/.config/booley/`, outside every project, so it can't
-be committed by accident. Booley passes it to every container on its own,
-including VS Code's; rebuild an existing container once to pick it up.
+be committed by accident. Booley passes it to every Sandbox on its own; a
+Sandbox that already runs picks it up after `booley session down` and
+`booley session up`.
 
 ### What `/booley-setup new` asks and writes
 
@@ -262,8 +262,9 @@ Codex chat at the Project Root.
 ## The `booley-setup` skill
 
 Setup proper is driven by the skill. You invoke it **on the host** first; it
-tells you when to **Reopen in Container**, and you re-invoke it in the Developer
-Agent's chat to finish.
+tells you when to start the Sandbox. Then
+[open the Project in T3 Code](#open-the-project-in-t3-code--host) and invoke
+it again in a thread on the main checkout to finish.
 
 > **Use the most capable model you have** (`/model` in Claude Code). A weaker
 > one tends to skip decisions and cost you round-trips.
@@ -294,7 +295,8 @@ and cleanup. The skill stops for your approval only once, after Step 0.
   go. It writes the result to `.booley/SETUP-PLAN.md` and stops for your
   approval.
 - **1 · Environment · host.** Applies the plan's sandbox-image decision if it
-  made one (`booley init` re-run), then hands you into **Reopen in Container**.
+  made one (`booley init` re-run), then hands you into the Sandbox:
+  [open the Project in T3 Code](#open-the-project-in-t3-code--host).
 - **2 · Project config.** The [`.core` Target(s)](TARGETS.md),
   [`tests.toml`](TESTS.md), and [`booley.toml`](CONFIG.md).
 - **3 · AGENTS.md.** A concise Project-level guidance file for Developer Agents.
@@ -317,9 +319,8 @@ during project config.
 Each step is also a standalone how-to file in the skill's `steps/` directory if
 you'd rather write it by hand.
 
-Once `booley doctor` (and `--deep`) is green, you're set up. Head to
-[Developer Agent sessions](USAGE.md#developer-agent-sessions) to start your
-first session.
+Once `booley doctor` (and `--deep`) is green, you're set up: start
+[your first task](#your-first-task).
 
 ### A new IP: greenfield mode
 
@@ -331,10 +332,12 @@ then writes a working,
 green-by-construction project. So there's no feasibility triage and no config
 to author.
 
-When the scaffold is written, the skill tells you to **Reopen in Container**
-and to run `/booley-setup new` again there. It finds its recorded answers and
-does not re-ask. Because the scaffold already wrote the config (Step 2) and the
-project adopts the built-in Booley Flows, it skips config authoring and runs:
+When the scaffold is written, the skill tells you to start the Sandbox.
+[Open the Project in T3 Code](#open-the-project-in-t3-code--host) and run
+`/booley-setup new` again in a thread on the main checkout. It finds its
+recorded answers and does not re-ask. Because the scaffold already wrote the
+config (Step 2) and the project adopts the built-in Booley Flows, it skips
+config authoring and runs:
 
 - **The Doctor check (Step 4).** Run `booley doctor`, then `booley doctor
   --deep`, and fix until both are clean with no warnings. Record a deliberate
@@ -353,8 +356,41 @@ testbench, keeping the generated wiring as the pattern. Refresh
 to match the current interface, keeping it buildable and behaviorally failing
 the selected smoke Test. Re-run the Doctor check
 whenever the shape of the project changes (new Target, new flow, new
-constraints). From there, drive development the normal way: start a
-[Developer Agent session](USAGE.md#open-your-first-developer-agent-session).
+constraints). From there, start [your first task](#your-first-task).
+
+## Open the Project in T3 Code · host
+
+T3 Code is the web UI the Sandbox serves. You talk to Developer Agents in its
+threads, and the [Dashboard](USAGE.md#the-dashboard) opens in its preview panel.
+
+1. In a host terminal at the Project Root, run `booley session up`. It creates
+   or starts the Sandbox and prints a pairing link.
+2. Open the link in a browser on this machine within 5 minutes. T3 Code opens
+   with your Project in its project list. The link holds a one-time token, so
+   treat it like a password; `booley session pair` prints a new one, for
+   example for a second browser.
+3. Start a thread on the main checkout and choose Claude or Codex. During
+   Setup, this is where you run `/booley-setup` again.
+
+For the other `booley session` commands, see
+[the Sandbox guide](SANDBOX.md#entering-the-sandbox).
+
+### Your first task
+
+First commit what Setup wrote, along with your own changes: a new worktree
+starts from your last commit.
+
+Start each task in its own thread on a new worktree. T3 Code creates the
+worktree and its branch, and Booley prepares it before the thread's first turn,
+so agents working in parallel never overwrite each other. Then type the task,
+for example:
+
+> Run the `<target>` simulation.
+
+Replace `<target>` with one of your simulation Targets.
+
+[Worktrees](WORKTREES.md) says what a new worktree gets, and
+[Usage](USAGE.md#what-you-can-ask-for) what else to ask for.
 
 ## Projects on this machine · host
 
@@ -378,9 +414,14 @@ build trees; to import a Project nested inside another, name its path directly.
 `forget` releases the Project's Sandbox Image tag and cleans up its older
 unused Sandbox Images. It then lists what the Project still holds in Docker,
 with sizes: images, agent state volumes (a copy of the agent's login and
-history), containers, and networks. These stay until you add `--purge`, which
+history), T3 Code's state volume (its threads and browser pairings),
+containers, and networks. These stay until you add `--purge`, which
 removes the unused ones, even for a Project already forgotten or deleted.
 To use a forgotten Project again, run `booley init` in it.
+
+Purging deletes T3 Code's threads and pairings, but not its worktrees: they
+stay as plain Git worktrees in `t3-worktrees/` of the main checkout's Booley
+Directory.
 
 <details markdown>
 <summary>With host-installed licensed tools</summary>

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import socket
 
@@ -17,9 +18,9 @@ except ImportError:
     pytest.skip("mcp package not installed", allow_module_level=True)
 
 from booley.mcp import job_ownership
+from booley.mcp.agent_thread import AgentThread
 from booley.mcp.application import McpApplication, McpRequestContext, McpToolPayload
 from booley.mcp.job_lifecycle import JobLifecycle
-from booley.mcp.session_registry import Attribution
 from booley.runtime import job_records as jobrec
 from booley.runtime.session_paths import session_jobs_dir
 from booley.runtime.timefmt import utc_now_rfc3339
@@ -51,9 +52,9 @@ def _env(tmp_path, monkeypatch):
     monkeypatch.setattr(mcp_server, "is_pid_alive", lambda _pid: True)  # the fake PID
 
 
-def _caller(thread: str = "t1", *, session_key: str | None = None):
+def _caller(thread: str = "t1"):
     """The caller of one agent tab: server identity plus its thread key."""
-    return job_ownership.Caller(f"{SERVER}|codex:{thread}", session_key or f"codex:{thread}")
+    return job_ownership.Caller(f"{SERVER}|codex:{thread}")
 
 
 def _all_text(result) -> str:
@@ -89,10 +90,8 @@ def _app(monkeypatch, tmp_path) -> McpApplication:
     return mcp_runner_fake.application(monkeypatch, tmp_path)
 
 
-def _context(
-    key: str = "codex:t1", kind: str = "thread", worktree_key: str = ""
-) -> McpRequestContext:
-    return McpRequestContext(attribution=Attribution(key, kind, "/w", worktree_key))
+def _context(thread: str | None = "t1", client: str = "codex") -> McpRequestContext:
+    return McpRequestContext(agent=AgentThread(client, thread))
 
 
 def _owner(context: McpRequestContext) -> str:
@@ -224,17 +223,11 @@ def test_inline_completion_counts_as_read(monkeypatch, tmp_path):
 
 
 def test_job_owner_separates_tabs_and_scopes(monkeypatch):
-    from booley.mcp import job_ownership
-    from booley.mcp.session_registry import Attribution
-
-    def attribution(key: str, kind: str) -> Attribution:
-        return Attribution(key=key, kind=kind, work_dir="/w", worktree_key="wk")
-
-    tab_1 = job_ownership.job_owner(SERVER, attribution("codex:t1", "thread"))
-    tab_2 = job_ownership.job_owner(SERVER, attribution("codex:t2", "thread"))
-    claude = job_ownership.job_owner(SERVER, attribution("pid:ns:7:9", "process"))
+    tab_1 = job_ownership.job_owner(SERVER, AgentThread("codex", "t1"))
+    tab_2 = job_ownership.job_owner(SERVER, AgentThread("codex", "t2"))
+    claude = job_ownership.job_owner(SERVER, AgentThread("claude", "t1"))
     assert len({tab_1, tab_2, claude, SERVER}) == 4
-    assert job_ownership.job_owner(SERVER, attribution("wk", "worktree")) == SERVER
+    assert job_ownership.job_owner(SERVER, AgentThread("claude", None)) == SERVER
     assert job_ownership.job_owner(SERVER, None) == SERVER
 
     developer = job_ownership.server_identity()
@@ -245,7 +238,7 @@ def test_job_owner_separates_tabs_and_scopes(monkeypatch):
 
 
 def test_non_owner_read_keeps_owner_unread(monkeypatch, tmp_path):
-    app, me, other = _app(monkeypatch, tmp_path), _context(), _context("codex:t2")
+    app, me, other = _app(monkeypatch, tmp_path), _context(), _context("t2")
     _write("mine", owner=_owner(me), ended_at="2026-01-01T00:01:00Z")
 
     seen = _text(asyncio.run(_booley_poll(app, other, run_id="mine")))
@@ -295,6 +288,24 @@ def test_adopted_job_keeps_owner_across_restart(monkeypatch, tmp_path):
     assert stored.read_at is not None
 
 
+@pytest.mark.parametrize("client", ["claude", "codex"])
+def test_argument_free_poll_finds_the_threads_jobs(monkeypatch, tmp_path, client):
+    gates = {"a": asyncio.Event()}
+    gates["a"].set()
+    _gated(monkeypatch, gates)
+    app = _app(monkeypatch, tmp_path)
+
+    async def scenario():
+        run_id = await _submit(app, "a", _context("th-1", client))
+        other_thread = _text(await _booley_poll(app, _context("th-2", client)))
+        return run_id, other_thread, _text(await _booley_poll(app, _context("th-1", client)))
+
+    run_id, other_thread, same_thread = asyncio.run(scenario())
+    assert "NOTHING TO WAIT FOR" in other_thread and run_id not in other_thread
+    assert f"Result of job {run_id}" in same_thread
+    assert (_read(run_id).client, _read(run_id).thread) == (client, "th-1")
+
+
 def _stub_http_server(monkeypatch, build=None):
     """Stub everything but the bind and announcement of ``_run_http``; return the served list."""
     # Private seams: ``_run_http`` is the HTTP entry ``main()`` calls only after the
@@ -305,13 +316,10 @@ def _stub_http_server(monkeypatch, build=None):
     monkeypatch.setattr(mcp_server, "_build_server", build or (lambda *_a, **_k: (object(), [])))
     monkeypatch.setattr(mcp_server.handle_pruning, "prune_at_start", lambda: None)
     monkeypatch.setattr(mcp_server, "_streamable_http_app", lambda _server: object())
-    monkeypatch.setattr(mcp_server, "SessionMaintenanceApp", lambda app, _sessions: app)
     return capture_serving(monkeypatch)
 
 
 def test_http_server_passes_stable_owner(monkeypatch, caplog):
-    from booley.mcp import job_ownership
-
     assert job_ownership.http_server_identity("box", 8765) == job_ownership.http_server_identity(
         "box", 8765
     )
@@ -357,28 +365,25 @@ def test_http_server_on_a_held_port_exits_2_without_announcing(monkeypatch, capl
     assert served == []
 
 
-def test_legacy_record_falls_back_to_session_key(monkeypatch, tmp_path):
-    app = _app(monkeypatch, tmp_path)
-    mine_k = _context("worktree:k", "worktree", "k")
-    theirs_z = _context("worktree:z", "worktree", "z")
-    _write("old-running", owner=None, status=jobrec.STATUS_RUNNING, session_key="worktree:k")
+def _write_pre_owner(**fields) -> None:
+    """A record as written before owners existed, still carrying the retired caller key."""
+    _write("old-job", owner=None, **fields)
+    path = session_jobs_dir() / "old-job.json"
+    record = json.loads(path.read_bytes())
+    path.write_bytes(json.dumps({**record, "session_key": "worktree:k"}).encode())
 
-    mine = _text(asyncio.run(_booley_poll(app, mine_k, wait=0)))
-    theirs = _text(asyncio.run(_booley_poll(app, theirs_z, wait=0)))
-    by_id = _text(asyncio.run(_booley_poll(app, _context(), run_id="old-running", wait=0)))
 
-    assert "old-running" in mine
-    assert "NOTHING TO WAIT FOR" in theirs
-    assert "old-running" in by_id
+def test_record_without_owner_is_reached_only_by_run_id(monkeypatch, tmp_path):
+    app, me = _app(monkeypatch, tmp_path), _context(None)
+    _write_pre_owner(status=jobrec.STATUS_RUNNING)
 
-    _write(
-        "old-running",
-        owner=None,
-        exit_code=0,
-        session_key="worktree:k",
-        ended_at=utc_now_rfc3339(),
-    )
-    done = _text(asyncio.run(_booley_poll(app, mine_k, wait=0)))
-    assert "Result of job old-running" in done
-    by_id = _text(asyncio.run(_booley_poll(app, _context(), run_id="old-running", wait=0)))
-    assert "EXIT_CODE: 0" in by_id
+    running = _text(asyncio.run(_booley_poll(app, me, wait=0)))
+    by_id = _text(asyncio.run(_booley_poll(app, me, run_id="old-job", wait=0)))
+    _write_pre_owner(ended_at=utc_now_rfc3339())
+    done = _text(asyncio.run(_booley_poll(app, me, wait=0)))
+    done_by_id = _text(asyncio.run(_booley_poll(app, me, run_id="old-job", wait=0)))
+
+    assert "NOTHING TO WAIT FOR" in running
+    assert "old-job" in by_id
+    assert "NOTHING TO WAIT FOR" in done
+    assert "EXIT_CODE: 0" in done_by_id

@@ -218,6 +218,32 @@ def test_pending_bootstrap_stops_seed_but_not_its_check(
     assert "pending" in row and "!" in row and "✗" not in row
 
 
+@pytest.mark.parametrize(("resource", "pending"), [("vscode", False), ("host-agent-cli", True)])
+def test_optional_editor_warning_is_not_pending_init_work(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    resource: str,
+    pending: bool,
+) -> None:
+    login(empty_host(tmp_path, monkeypatch), "claude")
+    stub_host_images(monkeypatch)
+    finding = _finding(init_cmd.BootstrapState.WARNING, resource)
+    # Host Bootstrap inspects and builds Docker-backed host resources.
+    monkeypatch.setattr(
+        init_cmd,
+        "reconcile_bootstrap",
+        lambda intent, **_kwargs: init_cmd.BootstrapResult(intent, (finding,)),
+    )
+
+    seed_init(tmp_path, check_only=True)
+
+    output = capsys.readouterr().out
+    assert f"{resource}: warning" in output
+    verdict = output[output.index("Checked initialization:") :]
+    assert (f"bootstrap.{resource}" in verdict) is pending
+
+
 @pytest.mark.parametrize("table", ["interactive", "sandbox"])
 def test_retired_project_policy_fails_before_project_mutation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], table: str

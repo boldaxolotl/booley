@@ -5,7 +5,7 @@ visitor's credentials at every start and publishes its choice (every CLI with a
 credential, and the default among them) as a record in the Sandbox home
 directory. Every other consumer reads that record through
 :func:`auto_choice`; none of them looks at credentials again, so Specialists,
-the MCP server, ``booley chat`` and Doctor cannot disagree with the
+the MCP server and Doctor cannot disagree with the
 registration. The config layer cannot look up credentials itself (it may not
 import ``booley.runtime``), which is why the choice is a published record.
 """

@@ -89,6 +89,7 @@ can replace the Python packages.
 | FuseSoC / Edalize | 2.4.7 / 0.6.8 |
 | cocotb | 2.1.0, with `cocotbext-axi` 0.1.28, `cocotbext-uart` 0.1.4, `numpy` 2.5.5 |
 | Cell library | Nangate45 typical corner, downloaded by `booley bootstrap` |
+| Headless Chrome | `chrome-headless-shell` 157.0.8103.78, at `/opt/chrome-headless-shell/chrome-headless-shell` and on `PATH` |
 
 <details markdown>
 <summary>With the RISC-V image</summary>
@@ -100,16 +101,16 @@ Spike, not lowRISC's `ibex-cosim` fork that Ibex's UVM co-simulation needs.
 
 </details>
 
-To see what your image actually has, run these on the host:
+To see what your image actually has, run `booley doctor -v` in a host
+terminal: it prints version lines from the Sandbox image for Verilator, Yosys,
+Icarus, and sv2v. Inside the Sandbox it prints none, so run the tools directly
+in a [container terminal](USAGE.md#read-this-first) (a T3 Code thread's
+terminal, or `booley session enter` on the host):
 
 ```bash
-booley doctor -v                              # host only: version lines from the Sandbox image for Verilator, Yosys, Icarus, sv2v
-booley session enter -- verilator --version   # any EDA tool
-booley session enter -- python -m pip list    # Python packages
+verilator --version   # any EDA tool
+python -m pip list    # Python packages
 ```
-
-Inside the Sandbox, `booley doctor -v` prints no version lines; run the tool
-directly (`verilator --version`).
 
 ## Missing a tool?
 

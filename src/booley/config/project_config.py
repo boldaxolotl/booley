@@ -173,16 +173,26 @@ def project_name(work_dir: Path | None = None) -> str:
         return str(_get("PROJECT_NAME"))
     try:
         booley_dir = resolve_checkout_booley_dir(work_dir)
-        path = resolve_toml(booley_dir)
-        with path.open("rb") as stream:
-            document = tomllib.load(stream)
     except FileNotFoundError:
         return "rtl_project"
-    except (OSError, tomllib.TOMLDecodeError) as exc:
+    except OSError as exc:
         _logger.warning("could not read Project name for checkout %s: %s", work_dir, exc)
         return "rtl_project"
-    project = as_dict(document.get("project"), default={}) or {}
-    return as_str(project.get("name"), "rtl_project") or "rtl_project"
+    return configured_project_name(booley_dir) or "rtl_project"
+
+
+def configured_project_name(booley_dir: Path) -> str | None:
+    """Return ``[project].name`` from *booley_dir*; ``None`` when unset or unreadable."""
+    try:
+        with resolve_toml(booley_dir).open("rb") as stream:
+            document = tomllib.load(stream)
+    except FileNotFoundError:
+        return None
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        _logger.warning("could not read Project name in %s: %s", booley_dir, exc)
+        return None
+    name = as_str((as_dict(document.get("project")) or {}).get("name"))
+    return name if name and "\x00" not in name else None  # NUL cannot go on a command line
 
 
 # ---------------------------------------------------------------------------

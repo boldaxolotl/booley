@@ -156,20 +156,13 @@ def test_backfill_preserves_already_tracked_findings(versioned_project):
 
 def _publish_bookkeeping(root, data, repo):
     """Doctor, MCP sessions/jobs, supervision: runtime/ and .runtime/."""
-    from tests.mcp_tools.test_session_registry import facts
-
     from booley.core.atomic_files import atomic_write_json
-    from booley.mcp.session_registry import SessionRegistry
     from booley.runtime.doctor_stamp import record_clean_run
     from booley.runtime.execution_records import execution_paths
     from booley.runtime.job_records import JobRecord, write_record
 
     stamp = record_clean_run(data, root, deep=False)
     assert stamp is not None and stamp.is_file()
-    assert_clean(repo)
-    SessionRegistry(data).upsert(facts(), "sim", "completed", now=100)
-    sessions = tuple((data / "runtime/sessions").glob("*.json"))
-    assert sessions
     assert_clean(repo)
     jobs = data / "runtime/jobs"
     jobs.mkdir(parents=True, exist_ok=True)
@@ -178,7 +171,7 @@ def _publish_bookkeeping(root, data, repo):
     assert_clean(repo)
     execution = execution_paths("a" * 32, booley_dir=data).record
     atomic_write_json(execution, {"schema_version": 1, "state": "starting"})
-    return (stamp, *sessions, jobs / "run.json", execution)
+    return (stamp, jobs / "run.json", execution)
 
 
 def _publish_ticket(root, data, repo):
@@ -398,17 +391,6 @@ def test_default_mutation_log_storage_keeps_project_clean(versioned_project, mon
     mutant_log.parent.mkdir(parents=True, exist_ok=True)
     mutant_log.write_bytes(b"mutant simulator output\n")
     assert mutant_log.is_file()
-    assert_clean(repo)
-
-
-def test_dashboard_task_runtime_ownership_keeps_project_clean(versioned_project):
-    from booley.runtime.dashboard_tasks import reconcile
-
-    _root, data, repo = versioned_project
-    transaction = reconcile(repo, data)
-    assert transaction.applied
-    assert (data / "runtime/dashboard-task.json").is_file()
-    assert (data / "runtime/dashboard-task.lock").is_file()
     assert_clean(repo)
 
 

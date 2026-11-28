@@ -8,19 +8,22 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import stat
 import subprocess
 import sys
 import tempfile
-import threading
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
 from typing import Any
 
 # Standalone script run as /work/tests/docker/agent_policy_probe.py: put the repository
-# root on sys.path so the shared time-budget policy imports.
+# root on sys.path so the shared time-budget policy imports, and the CI scripts folder so
+# the shared fake model API does.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / ".github/scripts"))
 
+from fake_model_api import FakeModelApi
 from tests.time_budget import hang_guard_s
 
 from booley.runtime import dockerfile_syntax
@@ -31,9 +34,11 @@ _HANG_S = hang_guard_s()
 # The repository manifest is the single source of the pinned CLI versions. Reading
 # it (CI mounts the checkout at /work) checks the image against the current pins.
 _MANIFEST = Path(__file__).resolve().parents[2] / "src/booley/data/docker/agent-clis-package.json"
-_PINNED = json.loads(_MANIFEST.read_text(encoding="utf-8"))["dependencies"]
-EXPECTED_CLAUDE = _PINNED["@anthropic-ai/claude-code"]
-EXPECTED_CODEX = _PINNED["@openai/codex"]
+_PINS = json.loads(_MANIFEST.read_text(encoding="utf-8"))
+EXPECTED_CLAUDE = _PINS["dependencies"]["@anthropic-ai/claude-code"]
+EXPECTED_CODEX = _PINS["dependencies"]["@openai/codex"]
+EXPECTED_T3CODE = _PINS["t3code"]["version"]
+T3CODE_POLICY = Path("/etc/t3code/policy.json")
 CLAUDE_WEB_TOOLS = {"WebFetch", "WebSearch"}
 CODEX_POLICY_SOURCE = "/etc/codex/requirements.toml"
 CANARY_TEXT = "booley-agent-policy-canary"
@@ -72,15 +77,53 @@ def _assert_versions(expected_node: str, expected_npm: str) -> dict[str, str]:
         "npm": _run(["npm", "--version"]).stdout.strip(),
         "claude": _run(["claude", "--version"]).stdout.split()[0],
         "codex": _run(["codex", "--version"]).stdout.split()[1],
+        "t3": _run(["t3", "--version"]).stdout.split()[1].removeprefix("v"),
     }
     expected = {
         "node": expected_node,
         "npm": expected_npm,
         "claude": EXPECTED_CLAUDE,
         "codex": EXPECTED_CODEX,
+        "t3": EXPECTED_T3CODE,
     }
     assert versions == expected, f"runtime versions differ: {versions!r} != {expected!r}"
     return versions
+
+
+def _assert_t3code_policy_is_read_only() -> dict[str, Any]:
+    """The Sandbox user finds the policy as shipped and cannot change it or its directory."""
+    shipped = _MANIFEST.with_name("t3code-policy.json").read_bytes()
+    assert T3CODE_POLICY.read_bytes() == shipped, "installed policy differs from the repository's"
+    owners = {
+        name: (info.st_uid, info.st_gid, stat.S_IMODE(info.st_mode))
+        for name, info in (
+            ("directory", T3CODE_POLICY.parent.stat()),
+            ("file", T3CODE_POLICY.stat()),
+        )
+    }
+    assert owners == {"directory": (0, 0, 0o755), "file": (0, 0, 0o644)}, owners
+    refused: list[str] = []
+    # The spare lives on the container's root filesystem, like /etc: a rename
+    # across mounts fails with EXDEV before any permission check.
+    with tempfile.TemporaryDirectory(dir="/tmp") as spare_dir:
+        spare = Path(spare_dir) / "spare.json"
+        spare.write_bytes(shipped)
+        attempts: dict[str, Callable[[], object]] = {
+            "modify": lambda: T3CODE_POLICY.open("ab"),
+            "chmod": lambda: T3CODE_POLICY.chmod(0o666),
+            "replace": lambda: spare.replace(T3CODE_POLICY),
+            "delete": T3CODE_POLICY.unlink,
+            "create": lambda: (T3CODE_POLICY.parent / "extra.json").open("xb"),
+        }
+        for action, attempt in attempts.items():
+            try:
+                attempt()
+            except PermissionError:
+                refused.append(action)
+            else:
+                raise AssertionError(f"the Sandbox user could {action} the T3 Code policy")
+    assert T3CODE_POLICY.read_bytes() == shipped
+    return {"owners": owners, "refused": refused}
 
 
 def _assert_diagnostics() -> None:
@@ -170,143 +213,8 @@ def _assert_booley_configuration(root: Path) -> dict[str, str]:
     return statuses
 
 
-def _sse_event(event: str, data: dict[str, Any]) -> bytes:
-    return f"event: {event}\ndata: {json.dumps(data, separators=(',', ':'))}\n\n".encode()
-
-
-def _message_start() -> bytes:
-    message = {
-        "id": "msg_policy_probe",
-        "type": "message",
-        "role": "assistant",
-        "model": "claude-sonnet-4-5",
-        "content": [],
-        "stop_reason": None,
-        "stop_sequence": None,
-        "usage": {"input_tokens": 1, "output_tokens": 0},
-    }
-    return _sse_event("message_start", {"type": "message_start", "message": message})
-
-
-def _tool_response(canary: Path) -> bytes:
-    start = {
-        "type": "content_block_start",
-        "index": 0,
-        "content_block": {
-            "type": "tool_use",
-            "id": "toolu_policy_probe",
-            "name": "Read",
-            "input": {},
-        },
-    }
-    delta = {
-        "type": "content_block_delta",
-        "index": 0,
-        "delta": {
-            "type": "input_json_delta",
-            "partial_json": json.dumps({"file_path": str(canary)}),
-        },
-    }
-    return b"".join(
-        [
-            _message_start(),
-            _sse_event("content_block_start", start),
-            _sse_event("content_block_delta", delta),
-            _sse_event("content_block_stop", {"type": "content_block_stop", "index": 0}),
-            _sse_event(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "tool_use"},
-                    "usage": {"output_tokens": 1},
-                },
-            ),
-            _sse_event("message_stop", {"type": "message_stop"}),
-        ]
-    )
-
-
-def _final_response() -> bytes:
-    start = {
-        "type": "content_block_start",
-        "index": 0,
-        "content_block": {"type": "text", "text": ""},
-    }
-    delta = {
-        "type": "content_block_delta",
-        "index": 0,
-        "delta": {"type": "text_delta", "text": "OK"},
-    }
-    return b"".join(
-        [
-            _message_start(),
-            _sse_event("content_block_start", start),
-            _sse_event("content_block_delta", delta),
-            _sse_event("content_block_stop", {"type": "content_block_stop", "index": 0}),
-            _sse_event(
-                "message_delta",
-                {
-                    "type": "message_delta",
-                    "delta": {"stop_reason": "end_turn"},
-                    "usage": {"output_tokens": 1},
-                },
-            ),
-            _sse_event("message_stop", {"type": "message_stop"}),
-        ]
-    )
-
-
-class _Provider(ThreadingHTTPServer):
-    def __init__(self, canary: Path) -> None:
-        super().__init__(("127.0.0.1", 0), _ProviderHandler)
-        self.canary = canary
-        self.requests: list[dict[str, Any]] = []
-
-
-class _ProviderHandler(BaseHTTPRequestHandler):
-    server: _Provider
-
-    def do_POST(self) -> None:
-        length = int(self.headers.get("Content-Length", "0"))
-        body = json.loads(self.rfile.read(length) or b"{}")
-        if self.path.rstrip("/").endswith("count_tokens"):
-            self._send_json({"input_tokens": 1})
-            return
-        self.server.requests.append(body)
-        has_result = CANARY_TEXT in json.dumps(body.get("messages", []))
-        self._send_sse(_final_response() if has_result else _tool_response(self.server.canary))
-
-    def log_message(self, _format: str, *_args: object) -> None:
-        return
-
-    def _send_json(self, body: dict[str, Any]) -> None:
-        encoded = json.dumps(body).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(encoded)))
-        self.end_headers()
-        self.wfile.write(encoded)
-
-    def _send_sse(self, body: bytes) -> None:
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-
-def _claude_environment(home: Path, provider: _Provider) -> dict[str, str]:
-    env = os.environ.copy()
-    env.update(
-        {
-            "HOME": str(home),
-            "ANTHROPIC_API_KEY": "policy-probe-placeholder",
-            "ANTHROPIC_BASE_URL": f"http://127.0.0.1:{provider.server_port}",
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-            "DISABLE_TELEMETRY": "1",
-        }
-    )
-    return env
+def _claude_environment(home: Path, model_api: FakeModelApi) -> dict[str, str]:
+    return {**os.environ, "HOME": str(home), **model_api.claude_environment()}
 
 
 def _contains_canary_result(requests: list[dict[str, Any]]) -> bool:
@@ -320,9 +228,6 @@ def _run_claude_case(case: str, root: Path, extra_args: list[str]) -> list[str]:
     (project / ".claude").mkdir(parents=True, exist_ok=True)
     canary = project / "canary.txt"
     canary.write_text(CANARY_TEXT, encoding="utf-8")
-    provider = _Provider(canary)
-    thread = threading.Thread(target=provider.serve_forever, daemon=True)
-    thread.start()
     command = [
         "claude",
         "--print",
@@ -333,12 +238,8 @@ def _run_claude_case(case: str, root: Path, extra_args: list[str]) -> list[str]:
         *extra_args,
         "Read canary.txt, then search the web and fetch https://example.com.",
     ]
-    try:
+    with FakeModelApi([("Read", {"file_path": str(canary)})]) as provider:
         _run(command, cwd=project, env=_claude_environment(home, provider), timeout=_HANG_S)
-    finally:
-        provider.shutdown()
-        provider.server_close()
-        thread.join(timeout=_HANG_S)
     assert provider.requests, f"Claude {case} sent no model request"
     tools = {tool["name"] for tool in provider.requests[0].get("tools", [])}
     assert "Read" in tools, f"Claude {case} omitted Read canary: {sorted(tools)}"
@@ -424,6 +325,36 @@ def _assert_codex_policy(root: Path) -> dict[str, str]:
     return {case: _run_codex_case(case, root, args) for case, args in cases.items()}
 
 
+def _assert_codex_hooks_pinned(root: Path) -> dict[str, str]:
+    """No user layer turns off Codex's hooks, which run the managed deny hook (#5788)."""
+    # Every layer also turns off the unpinned fast_mode: false there shows Codex applied it.
+    off = "[features]\nhooks = false\nfast_mode = false\n"
+    project = root / "codex-hooks-repo"
+    (project / ".codex").mkdir(parents=True)
+    (project / ".codex" / "config.toml").write_text(off, encoding="utf-8")
+    _run(["git", "init", "-q"], cwd=project)
+    # Each case: the user config and the command line arguments.
+    cases: dict[str, tuple[str, list[str]]] = {
+        "user": (off, []),
+        "legacy_alias": ("[features]\ncodex_hooks = false\nfast_mode = false\n", []),
+        "project": (f'[projects."{project}"]\ntrust_level = "trusted"\n', []),
+        "cli_config": ("", ["-c", "features.hooks=false", "-c", "features.fast_mode=false"]),
+        "cli_disable": ("", ["--disable", "hooks", "--disable", "fast_mode"]),
+    }
+    states: dict[str, str] = {}
+    for case, (config, args) in cases.items():
+        codex_home = root / f"codex-hooks-{case}" / ".codex"
+        codex_home.mkdir(parents=True)
+        (codex_home / "config.toml").write_text(config, encoding="utf-8")
+        env = {**os.environ, "HOME": str(codex_home.parent), "CODEX_HOME": str(codex_home)}
+        listed = _run(["codex", *args, "features", "list"], cwd=project, env=env).stdout
+        rows = {line.split()[0]: line.split()[-1] for line in listed.splitlines() if line}
+        found = (rows["hooks"], rows["fast_mode"])
+        assert found == ("true", "false"), f"Codex {case} hooks and fast_mode: {listed}"
+        states[case] = rows["hooks"]
+    return states
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--evidence", type=Path)
@@ -437,10 +368,12 @@ def main() -> None:
         root = Path(temporary)
         evidence = {
             "versions": _assert_versions(*_recipe_versions()),
+            "t3code_policy": _assert_t3code_policy_is_read_only(),
             "installed_packages": _assert_npm_tree(),
             "sdk_cli": _assert_sdk_uses_system_claude(),
             "booley_configuration": _assert_booley_configuration(root),
             "codex_policy": _assert_codex_policy(root),
+            "codex_hooks": _assert_codex_hooks_pinned(root),
             "claude_tools": _assert_claude_policy(root),
         }
         _assert_diagnostics()

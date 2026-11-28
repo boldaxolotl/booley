@@ -19,10 +19,11 @@ directory, findings format, and cleanup bookkeeping; this file says where to loo
 - Taxi: https://github.com/fpganinja/taxi @ `cc70b270b910d369ab1ad7b3855e76399fd461f1`, fresh direct
   clone on a run-owned branch (no wrapper; no submodules).
 - Needs: Docker ≥6 GB free plus run-dir room; Codex or Claude login; Sandbox Image with Verilator,
-  Cocotb, Verible, Yosys+slang, OpenROAD; VS Code attached for the area-6 viewer.
+  Cocotb, Verible, Yosys+slang, OpenROAD.
 - Optional: Vivado on x86-64 Linux, plus a paid license and relay, for area 14.
-- Primary: Ubuntu x86-64 + Codex CLI; rerun on Windows (Docker Desktop, WSL2), VS Code Codex or
-  Claude CLI for coverage.
+- Primary: Ubuntu x86-64 with Codex (a T3 Code thread or the CLI in the
+  Sandbox); rerun on Windows (Docker Desktop, WSL2) or with Claude for
+  coverage.
 - Budget: 8 h for the primary run: 460 area minutes plus 20 contingency.
   Areas 8 and 14 are optional follow-up work outside this timebox (75 minutes
   total). Log them as skipped unless a follow-up is requested. Run primary areas sequentially;
@@ -64,10 +65,10 @@ Try:
 - The `src/eth/lib/taxi -> ../../../` symlink is unchanged; sources resolve without a working host
   symlink (Windows). Rerun plain `booley init`: no drift. Another run with the other provider:
   issued auth/client policy follows.
-- Image faults: changed dependency pin → stale image rebuilt; bounded post-setup hook in a new
-  new worktree (`booley worktree new`) runs once; status/resume does not rerun
-  it; nonzero hook blocks, fix + documented retry; opted-in
-  disposable host skill is read-only.
+- Image faults: changed dependency pin → stale image rebuilt; bounded
+  post-setup hook in a new worktree prepared with `booley worktree prepare`
+  runs once; status/resume does not rerun it; nonzero hook blocks, fix +
+  documented retry; opted-in disposable host skill is read-only.
 Look for: re-approval requests, Taxi edits, missing `cocotb_test`/`pytest` (imported at TB module
 scope), implicit stealth, symlink loops, stale Session Runtime after `init` rebuilds the image.
 
@@ -147,7 +148,7 @@ Try:
   per step. Seed one fault and recover using only the docs.
 Look for: child writes, cancels shown as failures, lost `run_id`s, disagreeing catalogs.
 
-### 6. bwave — FST traces, B-Wave queries and the Waveform Viewer (~35 min)
+### 6. bwave — FST traces and B-Wave queries (~35 min)
 Intent: B-Wave is right on a real trace and a known oracle, and loud on bad input.
 Try:
 - Real trace: focused-PFC FST is fresh, nonempty, queryable, expected scopes/counts. Register
@@ -173,12 +174,11 @@ Try:
 - Raw VCD, old `.bwave`, empty and truncated stores → actionable rejection; regenerate after. Also
   try `--version`, `schema`, `docs topics`/`search`/`show`, `skill`, the old v0.1 flag form
   (`--wave`, `--find`), a pattern miss, an ambiguous name, and a `--limit` output cap.
-- Viewer (VS Code only): open a scoped `bwave gui` with clock, PFC request, packet start, XGMII,
-  statistics, start/end markers and cursor; check the printed readback and screenshot. Append keeps
-  rows; a small max-signals cap holds; a dropped signal warns with the discrepancy; no clock → none
-  added; no attached window → scoped request fails, bare GUI falls back to the editor; restore →
-  exact view. From that client call status, targets, a Flow and a Specialist, and read the MCP
-  schemas.
+- `bwave gui` reports a bad selection (unknown trace, no matching signal,
+  a time or cursor past the end) and exits non-zero without the no-viewer
+  message; a valid or absent selection exits 1 with the no-viewer message.
+  From an MCP client call status, targets, a Flow and a Specialist, and
+  read the MCP schemas.
 Look for: exit 0 with wrong values, ignored options, off-by-one markers, dropped signals.
 
 ### 7. isolation — Sandbox security boundary (~15 min)
@@ -230,7 +230,7 @@ Try:
 - Commit, `booley measure --base <the commit that registered the tests>` (the
   default Base is the upstream pin, so the registry would read as "tests
   changed"): one child Flow per table in a clean checkout, a stored Measurement
-  Run, green header, exit 0; the Dashboard session line reads `Measured <sha>`.
+  Run, green header, exit 0.
   Again: the stored run, no Flow, exit 0. `--again` stores a second run;
   `--again --target synth_mac_10g` is never stored or Measured (reports under
   `job_logs/standalone/<run_id>/`); `--json` matches the Markdown
@@ -305,9 +305,8 @@ Try:
   identical SDC/library/recipe. RTL bugs review is clean; protocol/spec reviews
   done; keep the review reports.
 - Message-only amend: amend the Measured repair commit's message; `booley
-  measure` prints the stored run, starts no Flow, exits 0, and the Dashboard
-  reads `Measured <new sha>`. Amend with a one-byte content change: measured
-  again.
+  measure` prints the stored run, starts no Flow and exits 0. Amend with a
+  one-byte content change: measured again.
 - Loosened rules, each in a disposable commit with and without a `notes` entry,
   measured with `--base <the commit holding area 9's final rules>` (the default
   Base on this run-owned branch is the upstream pin, which has no

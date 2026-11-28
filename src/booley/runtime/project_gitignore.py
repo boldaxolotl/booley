@@ -72,6 +72,8 @@ PROJECT_GITIGNORE_PATTERNS = (
     # Developer Agents' plans and handoffs (Project AGENTS template): working notes.
     "/plans/",
     "/handoffs/",
+    # T3 Code's worktrees (Common Booley State): nested checkouts, never committed.
+    "/t3-worktrees/",
 )
 
 PROJECT_GITIGNORE = "# Transient Booley state — do not commit.\n" + "".join(

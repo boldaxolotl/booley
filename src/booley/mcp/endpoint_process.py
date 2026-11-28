@@ -92,7 +92,7 @@ class _JobLog:
             return
         try:
             # Buffered handle: ``write`` finishes partial writes; flush so a tailing
-            # reader (the Dashboard link) sees output while the Job runs.
+            # reader sees output while the Job runs.
             self._file.write(chunk)
             self._file.flush()
         except OSError as exc:

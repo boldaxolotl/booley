@@ -248,7 +248,7 @@ def test_legacy_schema_loads_missing_goal_facts() -> None:
             "timeout_s": 30,
         }
     )
-    assert rec.work_dir is None and rec.session_key is None
+    assert rec.work_dir is None and rec.client is None
     assert rec.schema == 2
     assert (rec.owner, rec.read_at, rec.display_scope) == (None, None, "developer")
 
@@ -261,7 +261,7 @@ def test_run_id_has_random_eight_hex_suffix() -> None:
 
 @pytest.mark.parametrize(
     ("field", "value"),
-    [("work_dir", 17), ("session_key", []), ("schema", False), ("schema", 0), ("schema", "2")],
+    [("work_dir", 17), ("client", []), ("schema", False), ("schema", 0), ("schema", "2")],
 )
 def test_malformed_routing_envelope_is_job_error(tmp_path, field, value):
     raw = jobrec.JobRecord("bad-envelope", "lint", "20261007T120000Z", 60).to_dict()

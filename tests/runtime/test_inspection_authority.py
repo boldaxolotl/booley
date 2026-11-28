@@ -97,7 +97,7 @@ def _fake_runtime_transport(monkeypatch):
 
 def _issue_runtime_request(project, *, active: bool):
     prepared = session_issuance.preview(project, plain_builder(project))
-    session_issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
+    session_issuance.issue_prepared(project, prepared)
     return inspection.RuntimeInspectionRequest(
         project,
         "sha256:" + "a" * 64,
@@ -222,7 +222,7 @@ def test_doctor_issuance_owner_reports_alias_probe_failure_without_mutation(
     project = request.project_root
     monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image: True)
     prepared = session_issuance.preview(project, plain_builder(project))
-    session_issuance.issue_prepared(project, prepared, reconcile_dashboard=False)
+    session_issuance.issue_prepared(project, prepared)
     stamp = session_issuance.stamp_path(project)
     before = stamp.read_bytes()
 

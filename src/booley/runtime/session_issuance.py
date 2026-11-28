@@ -46,7 +46,13 @@ from booley.core.egress_modes import declared_egress
 from booley.core.file_hash import file_sha256
 from booley.core.private_store import PrivateStore, ProjectStore
 from booley.core.project_identity import project_label_id
-from booley.core.sandbox_layout import DEVCONTAINER_TARGET
+from booley.core.sandbox_layout import (
+    DEVCONTAINER_TARGET,
+    T3_BASE_DIR,
+    T3_BASE_DIR_ENV,
+    T3_POLICY_TARGET,
+    t3_project_base_dir,
+)
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
@@ -62,6 +68,7 @@ from booley.runtime.devcontainer import (
     render_devcontainer_json,
 )
 from booley.runtime.filesystem_utils import open_with_sharing_retry, replace_file, unlink_file
+from booley.runtime.guarded_write import replace_regular_file
 from booley.runtime.incontainer_git_identity import (
     GitIdentity,
     GitIdentityError,
@@ -71,6 +78,7 @@ from booley.runtime.incontainer_git_identity import (
 from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.private_store import session_store_repair
+from booley.runtime.t3code_policy import narrowed_policy
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 _IS_WINDOWS = os.name == "nt"
@@ -101,7 +109,7 @@ _FIXED_GIT_IDENTITY = "python -m booley.runtime.incontainer_git_identity_cleanup
 _ACCEPTED_FIXED_START_TAILS = frozenset(
     {_FIXED_GIT_IDENTITY, f"{_FIXED_GIT_IDENTITY} && {_FIXED_REGISTRAR}"}
 )
-_FIXED_ATTACH = "python -m booley.runtime.incontainer_live_preview && python -m booley.runtime.incontainer_vaporview"
+_FIXED_ATTACH = "python -m booley.runtime.incontainer_live_preview"
 _FIXED_SEED_FRAGMENTS = frozenset(
     {
         "cp -n /home/agent/.claude-config-seed.json /home/agent/.claude.json 2>/dev/null || true",
@@ -590,6 +598,7 @@ def _prepare_spec(
     _pin_initialize_command(project, spec)
     _pin_project_data_mount(spec, docker_mount_path(project_data_path), project, project_data_path)
     _pin_devcontainer_mount(spec, project)
+    _mount_t3_policy(spec, project)
     digest = _seal_with_requirements(project, spec, project_data_path, requirements, inputs.egress)
     # The Booley Directory layout is derived from the sealed spec (and the pinned
     # image's alias capability), so it belongs to the prospective issuance, not
@@ -684,7 +693,6 @@ def issue_prepared(
     *,
     force_dependencies: bool = False,
     current_builder: Callable[[], SpecBuilder] | None = None,
-    reconcile_dashboard: bool = True,
 ) -> Issuance:
     """Persist one exact preview after revalidating its authority inputs."""
     project = project_root.resolve(strict=True)
@@ -698,12 +706,7 @@ def issue_prepared(
             requirements = eda_requirements.prepare_runtime_dependencies(
                 leased, runner=host_docker.relay_docker, force_relay=force_dependencies
             )
-            return _persist_prepared(
-                project,
-                prepared,
-                requirements=requirements,
-                reconcile_dashboard=reconcile_dashboard,
-            )
+            return _persist_prepared(project, prepared, requirements=requirements)
     except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
         raise RuntimeSpecError(str(exc)) from exc
 
@@ -713,20 +716,14 @@ def _persist_prepared(
     prepared: PreparedSessionSpec,
     *,
     requirements: eda_requirements.SessionEdaRequirements,
-    reconcile_dashboard: bool = True,
 ) -> Issuance:
     """Persist and issue one prepared spec, restoring its predecessor on failure."""
-    from booley.runtime import dashboard_tasks, devcontainer
+    from booley.runtime import devcontainer
 
     project = project_root.resolve(strict=True)
     path = devcontainer.devcontainer_path(project)
-    if path.is_symlink():
-        # Checked before the snapshot so rollback never replaces or unlinks the link.
-        raise RuntimeSpecError(f"refusing to write through symlinked {path}")
-    previous = path.read_bytes() if path.is_file() else None
-    previous_mode = stat.S_IMODE(path.stat().st_mode) if previous is not None else 0o644
-    stamp_file = stamp_path_for_identity(str(project))
-    stamp_snapshot = _file_snapshot(stamp_file, default_mode=0o600)
+    snapshots = _issued_file_snapshots(project, path)
+    t3_policy = _narrowed_t3_policy(prepared.spec)
     previous_issuance = None
     previous_stamp_path = _stamp_read_path(project)
     if previous_stamp_path.is_file():
@@ -739,17 +736,14 @@ def _persist_prepared(
     )
     try:
         mount_history.record_former_mount(
-            authorized_project_data_source(project), previous, BOOLEY_DIR_TARGET, path
+            authorized_project_data_source(project), snapshots[path][0], BOOLEY_DIR_TARGET, path
         )
     except mount_history.MountHistoryError as exc:
         raise RuntimeSpecError(str(exc)) from exc
-    task_transaction = None
     try:
         written = devcontainer.write_devcontainer(project, prepared.spec)
-        if reconcile_dashboard:
-            task_transaction = dashboard_tasks.reconcile(
-                project, prepared.inputs.project_data_source
-            )
+        if t3_policy is not None:
+            replace_regular_file(t3_policy_path(project), t3_policy)
         return _issue_document_with_requirements(
             project,
             prepared.spec,
@@ -758,12 +752,52 @@ def _persist_prepared(
             str(authorized_project_data_source(project)),
         )
     except Exception:
-        if task_transaction is not None:
-            task_transaction.rollback()
-        _restore_file(path, previous, previous_mode)
-        _restore_file(stamp_file, *stamp_snapshot)
+        for issued_file, snapshot in snapshots.items():
+            _restore_file(issued_file, *snapshot)
         _restore_keeper(project, previous_keeper_id)
         raise
+
+
+def _issued_file_snapshots(project: Path, path: Path) -> dict[Path, tuple[bytes | None, int]]:
+    """Snapshot the files issuance rewrites, refusing a symlinked one before any write."""
+    policy = t3_policy_path(project)
+    for target in (path, policy):
+        if target.is_symlink():
+            # Checked before the snapshot so rollback never replaces or unlinks the link.
+            raise RuntimeSpecError(f"refusing to write through symlinked {target}")
+    stamp = stamp_path_for_identity(str(project))
+    return {
+        path: _file_snapshot(path, default_mode=0o644),
+        policy: _file_snapshot(policy, default_mode=0o644),
+        stamp: _file_snapshot(stamp, default_mode=0o600),
+    }
+
+
+def _narrowed_t3_policy(spec: dict[str, Any]) -> bytes | None:
+    """The policy the spec mounts: the pinned image's, narrowed to its Agent CLIs."""
+    record = _spec_cli_record(spec)
+    if not record:
+        return None
+    base = _image_t3_policy(spec["image"])
+    try:
+        return narrowed_policy(base, record)
+    except ValueError as exc:
+        raise RuntimeSpecError(
+            f"Sandbox Image T3 Code policy {T3_POLICY_TARGET} is unusable: {exc}"
+        ) from exc
+
+
+def _image_t3_policy(image_id: str) -> bytes:
+    """Read the T3 Code policy out of the pinned Sandbox Image."""
+    with tempfile.TemporaryDirectory(prefix="booley-t3-policy-") as raw:
+        copy = Path(raw) / "policy.json"
+        _copy_from_image(
+            image_id,
+            {T3_POLICY_TARGET: copy},
+            refusal="Sandbox Image has no T3 Code policy at {source}; "
+            "build it FROM the Booley Sandbox Image",
+        )
+        return copy.read_bytes()
 
 
 def _file_snapshot(path: Path, *, default_mode: int) -> tuple[bytes | None, int]:
@@ -1033,6 +1067,28 @@ def expected_devcontainer_mount(project_root: Path) -> str:
     return f"source={source},target={DEVCONTAINER_TARGET},type=bind,readonly"
 
 
+def t3_policy_path(project_root: Path) -> Path:
+    """The host file holding this Sandbox's T3 Code policy."""
+    return project_root.resolve() / ".devcontainer" / "t3code-policy.json"
+
+
+def expected_t3_policy_mount(project_root: Path) -> str:
+    """Read-only bind of the Sandbox's T3 Code policy over the image's own."""
+    source = docker_mount_path(t3_policy_path(project_root))
+    return f"source={source},target={T3_POLICY_TARGET},type=bind,readonly"
+
+
+def _require_t3_policy_mount(mounts: list[str], project: Path) -> None:
+    """Require the read-only policy bind, in a folder the Sandbox cannot reach another way."""
+    folder = t3_policy_path(project).parent
+    if folder.is_symlink():
+        # A link target inside a writable mount would bypass the read-only binds.
+        raise RuntimeSpecError(
+            f"cannot protect the T3 Code policy: {folder} is a symlink; make it a real folder"
+        )
+    _require_exact_readonly_mount(mounts, expected_t3_policy_mount(project))
+
+
 def _validate_spec_identity(spec: dict[str, Any]) -> str:
     expected_location = {"workspaceFolder": "/work", "remoteUser": "agent"}
     actual_location = {
@@ -1098,7 +1154,7 @@ def _validate_generated_spec(
     _validate_issued_mounts(project, spec, requirements, issuance, app)
     assert issuance.project_data_source is not None
     _validate_git_identity_environment(spec, Path(issuance.project_data_source))
-    _validate_environment(spec, requirements.license_environment, egress)
+    _validate_environment(spec, requirements.license_environment, egress, project)
     _validate_run_args(
         spec.get("runArgs"),
         expected_labels=labels(issuance),
@@ -1132,6 +1188,8 @@ def _validate_issued_mounts(
     _validate_credential_policy(spec, project, project_data, app, record)
     _validate_state_volume(mounts, record, project)
     _require_exact_readonly_mount(mounts, expected_devcontainer_mount(project), last=True)
+    if record:
+        _require_t3_policy_mount(mounts, project)
     vivado_mounts = [item for item in mounts if _mount_target(item) == CONTAINER_TARGET]
     if requirements.installation_mount is not None:
         _require_exact_readonly_mount(mounts, requirements.installation_mount)
@@ -1410,8 +1468,16 @@ def _validate_credential_seed_sources(spec: dict[str, Any], record: dict[str, st
                 raise RuntimeSpecError(str(exc)) from exc
 
 
+def _validate_t3_base_dir(container: dict[str, Any], project: Path) -> None:
+    """T3 Code's base directory spelling is the one of this Project."""
+    from booley.runtime import devcontainer as dc
+
+    if container.get(T3_BASE_DIR_ENV) != t3_project_base_dir(dc.canonical_project_id(project)):
+        raise RuntimeSpecError("T3 Code base directory environment differs from the Project's")
+
+
 def _validate_environment(
-    spec: dict[str, Any], license_environment: str | None, egress: str
+    spec: dict[str, Any], license_environment: str | None, egress: str, project: Path
 ) -> None:
     container, remote = _environment_sections(spec)
     # Checked before the exact key set so a Sandbox issued before the shared
@@ -1431,6 +1497,10 @@ def _validate_environment(
     if egress == "unproxied":
         # Its value was already checked by _validate_egress_mode.
         allowed_container.add("BOOLEY_EGRESS")
+    cli_record = _spec_cli_record(spec)
+    if cli_record:  # T3 Code's state volume is issued; checked before the key set, as above
+        _validate_t3_base_dir(container, project)
+        allowed_container.add(T3_BASE_DIR_ENV)
     if set(container) != allowed_container:
         raise RuntimeSpecError(
             "devcontainer.json contains unsupported container environment: "
@@ -1439,7 +1509,7 @@ def _validate_environment(
                 {"container_environment_keys": sorted(container)},
             )
         )
-    _validate_remote_environment(remote, egress, _spec_cli_record(spec))
+    _validate_remote_environment(remote, egress, cli_record)
     expected = license_environment
     actual = container.get("XILINXD_LICENSE_FILE")
     if actual != expected:
@@ -1680,6 +1750,12 @@ def _pin_devcontainer_mount(spec: dict[str, Any], project: Path) -> None:
             f"trusted target {DEVCONTAINER_TARGET} must have one exact read-only bind"
         )
     mounts[index] = canonical
+
+
+def _mount_t3_policy(spec: dict[str, Any], project: Path) -> None:
+    """Mount the T3 Code policy, before the final mount, when an Agent CLI is allowed."""
+    if _spec_cli_record(spec):
+        spec["mounts"].insert(-1, expected_t3_policy_mount(project))
 
 
 def _project_data_shadow_target(project: Path, source: Path) -> str | None:
@@ -1928,7 +2004,10 @@ def _require_project_data_mount(
 
 
 def _validate_state_volume(mounts: list[str], record: dict[str, str], project: Path) -> None:
-    """One state volume per allowed CLI, in record order, and nothing else under any state dir."""
+    """One state volume per allowed CLI, in record order, then T3 Code's when any is allowed.
+
+    No other volume is mounted, and nothing else at or under a state dir.
+    """
     from booley.runtime import devcontainer as dc
 
     project_id = dc.canonical_project_id(project)
@@ -1937,7 +2016,9 @@ def _validate_state_volume(mounts: list[str], record: dict[str, str], project: P
         str(dc.state_volume_mount(cli, project_id, policy, legacy=cli in legacy))
         for cli, policy in record.items()
     ]
-    targets = {f"{dc.AGENT_HOME}/.claude", f"{dc.AGENT_HOME}/.codex"}
+    targets = {f"{dc.AGENT_HOME}/.claude", f"{dc.AGENT_HOME}/.codex", T3_BASE_DIR}
+    if record:
+        expected.append(dc.t3_state_volume_mount(project_id))
     # A volume other than an expected one may hold a login copied for a dropped CLI or
     # another Project; a bind at or under a state dir would shadow what the volume owns.
     stray = [
@@ -2062,6 +2143,30 @@ def _retain_issued_image(issuance: Issuance) -> None:
 
 def _validate_image_contract(image_id: str) -> None:
     """Inspect the fixed compatibility contract without executing image code."""
+    with tempfile.TemporaryDirectory(prefix="booley-image-contract-") as raw:
+        root = Path(raw)
+        _copy_from_image(
+            image_id,
+            {
+                "/usr/local/bin/vivado": root / "vivado-wrapper",
+                "/usr/lib/x86_64-linux-gnu/libudev.so.1": root / "libudev.so.1",
+                "/usr/lib/x86_64-linux-gnu/libpixman-1.so.0": root / "libpixman-1.so.0",
+                "/usr/lib/locale/locale-archive": root / "locale-archive",
+            },
+            refusal="Sandbox Image does not satisfy the built-in "
+            "Vivado compatibility contract ({source} is unavailable)",
+        )
+        try:
+            eda_requirements.validate_image_observations(root)
+        except eda_requirements.SessionRequirementsError as exc:
+            raise RuntimeSpecError(str(exc)) from exc
+
+
+def _copy_from_image(image_id: str, sources: Mapping[str, Path], *, refusal: str) -> None:
+    """Copy files out of an image through an inert container, running no image code.
+
+    *refusal* is the message for a file that cannot be copied; ``{source}`` names it.
+    """
     from booley.runtime import host_docker as docker
 
     created = docker._run_docker(
@@ -2087,28 +2192,12 @@ def _validate_image_contract(image_id: str) -> None:
     if created.returncode != 0 or not container:
         raise RuntimeSpecError("cannot create inert container for Sandbox Image inspection")
     try:
-        with tempfile.TemporaryDirectory(prefix="booley-image-contract-") as raw:
-            root = Path(raw)
-            sources = {
-                "/usr/local/bin/vivado": root / "vivado-wrapper",
-                "/usr/lib/x86_64-linux-gnu/libudev.so.1": root / "libudev.so.1",
-                "/usr/lib/x86_64-linux-gnu/libpixman-1.so.0": root / "libpixman-1.so.0",
-                "/usr/lib/locale/locale-archive": root / "locale-archive",
-            }
-            for source, destination in sources.items():
-                copied = docker._run_docker(
-                    ["container", "cp", "-L", f"{container}:{source}", str(destination)],
-                    timeout=60,
-                )
-                if copied.returncode != 0:
-                    raise RuntimeSpecError(
-                        "Sandbox Image does not satisfy the built-in "
-                        f"Vivado compatibility contract ({source} is unavailable)"
-                    )
-            try:
-                eda_requirements.validate_image_observations(root)
-            except eda_requirements.SessionRequirementsError as exc:
-                raise RuntimeSpecError(str(exc)) from exc
+        for source, destination in sources.items():
+            copied = docker._run_docker(
+                ["container", "cp", "-L", f"{container}:{source}", str(destination)], timeout=60
+            )
+            if copied.returncode != 0:
+                raise RuntimeSpecError(refusal.format(source=source))
     finally:
         removed = docker._run_docker(["container", "rm", "-f", container], timeout=30)
         if removed.returncode != 0:

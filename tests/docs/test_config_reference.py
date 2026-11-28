@@ -21,7 +21,8 @@ def _config_pages_text() -> str:
 # Project [interactive] recognizes migration inputs only: policy and app are
 # rejected, and no field supplies a current setting. Recognition stays intact;
 # tests/harness/test_doctor.py proves each field's user-visible replacement.
-MIGRATION_ONLY_TABLES = {"interactive"}
+# [worktree] is recognized so a leftover key gets one warning; it has no setting.
+MIGRATION_ONLY_TABLES = {"interactive", "worktree"}
 
 
 @pytest.mark.parametrize("table", sorted(KNOWN_BOOLEY_TOML_TABLES - MIGRATION_ONLY_TABLES))
@@ -54,11 +55,3 @@ def test_default_model_table_matches_builtin_defaults() -> None:
     for cli, model in documented.items():
         settings = AgentSettings(default_cli=cli)
         assert {settings.model_for_specialist(name) for name in bc.SPECIALISTS} == {model}, cli
-
-
-def test_worktrees_section_documents_every_worktree_key() -> None:
-    text = CONFIG_REFERENCE.read_text(encoding="utf-8")
-    section = text.split("\n## Worktrees\n", 1)[1].split("\n## ", 1)[0]
-
-    assert "[worktree]\nchat = " in section
-    assert "gc_older_than = " in section

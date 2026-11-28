@@ -37,7 +37,7 @@ catch planted bugs is the job of the Mutation Flow, see
 
     > *"Rerun the failing seed with a waveform and find out why it fails."*
 
-4. To look at the waveform yourself, see
+4. To find out what the waveform shows, see
    [Viewing waveforms](USAGE.md#viewing-waveforms).
 
 To reproduce a run yourself inside the Sandbox:
@@ -346,10 +346,8 @@ card and in the report.
 Ask the agent to rerun a failing test with a waveform, or pass `--trace`.
 Then ask the agent what happened in that run, for example why a test failed
 or when a signal changed, and it answers by reading the waveform with B-Wave.
-It can also open the part you care about in VS Code
-([Viewing waveforms](USAGE.md#viewing-waveforms)). A traced run
-that produces no fresh, readable waveform is inconclusive rather than passing
-silently. The card names each Test Run's waveform; see
+A traced run that produces no fresh, readable waveform is inconclusive rather
+than passing silently. The card names each Test Run's waveform; see
 [Reading results](#reading-results).
 
 A traced run also registers its waveforms as B-Wave sessions, so queries need
@@ -366,7 +364,7 @@ the temporary directory instead. A failure to
 register never changes the run's result.
 
 Booley stores every waveform as FST, a compact format that B-Wave and common
-viewers (GTKWave, VaporView) read. An FST file from the simulator is used as
+viewers (GTKWave, Surfer) read. An FST file from the simulator is used as
 it is; a VCD file is converted to FST for you. How tracing is switched on, and
 when the conversion runs, depends on the simulator.
 

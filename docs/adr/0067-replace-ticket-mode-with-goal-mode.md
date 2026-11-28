@@ -25,8 +25,7 @@ evidence machinery and is followed by a large dead-code removal.
   commit first). Entry creates a new Goal Branch from HEAD; that HEAD is the
   base for baseline-relative Goals. Entry from the main checkout is refused.
   One worktree hosts at most one Goal Mode; any Interactive session sharing a
-  worktree with another Booley session is warned, using the session
-  registry of ADR 0068.
+  worktree with another Booley session is warned.
 - **Goals.** Criteria are renamed Goals. Every Goal is mandatory; optional
   Criteria are gone. Goals keep today's evidence rules: met only by Booley
   Flow or Specialist evidence, invalidated when the code they depend on
@@ -105,10 +104,9 @@ evidence machinery and is followed by a large dead-code removal.
   again after context compaction. Projects add their own rules in `AGENTS.md`,
   not through Booley. Both ticket skills are retired.
 - **Goal status.** The agent pulls status with the `goal_status` MCP tool;
-  Flow and Specialist results carry no Goal delta. The human watches live
-  status in the Booley Dashboard (ADR 0068). `booley goal status` prints a
-  snapshot: inside a worktree hosting a Goal Mode it shows that one;
-  elsewhere it shows every active Goal Mode in the Project. It defaults
+  Flow and Specialist results carry no Goal delta. `booley goal status`
+  prints a snapshot: inside a worktree hosting a Goal Mode it shows that
+  one; elsewhere it shows every active Goal Mode in the Project. It defaults
   to the long view for one Goal Mode and the short view for several;
   `--short` and `--long` override. Each Goal shows met, unmet, or stale, without naming the
   change that made it stale.

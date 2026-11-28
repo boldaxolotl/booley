@@ -1,8 +1,7 @@
-"""`booley dashboard --web`: the per-worktree Jobs snapshot as JSON, over real Job records."""
+"""`booley dashboard`: the per-worktree Jobs snapshot as JSON, over real Job records."""
 
 from __future__ import annotations
 
-import argparse
 import html
 import json
 import os
@@ -30,7 +29,8 @@ from tests.conftest import symlink_or_skip
 from tests.git_support import git
 from tests.memory_budget_support import DASHBOARD, fail_budget, pin_budget
 from tests.subprocess_budget import run_bounded_child
-from tests.time_budget import hang_guard_s
+from tests.t3_cli_fake import write_t3_cli
+from tests.time_budget import hang_guard_s, scaled
 from tests.uvicorn_support import capture_serving
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
@@ -59,6 +59,13 @@ def _web():
     from booley.harness.dashboard import web
 
     return web
+
+
+def _registered(world: World) -> set[Path]:
+    """The checkouts Git registers for the Project, read as the Dashboard reads them."""
+    from booley.harness.dashboard.git_worktrees import worktree_registrations
+
+    return {entry.path.resolve() for entry in worktree_registrations(world.main)}
 
 
 def _snapshot_module():
@@ -131,7 +138,8 @@ def _job(
     *,
     target: str | None = "uart",
     session: str | None = "sess1",
-    key: str | None = None,
+    client: str | None = None,
+    thread: str | None = None,
     status: str = "done",
     exit_code: int | None = 0,
     started: str = STARTED,
@@ -161,7 +169,8 @@ def _job(
             exit_code=exit_code,
             run_started_at=started if running and pid else None,
             work_dir=None if work_dir is None else str(work_dir),
-            session_key=key or session,
+            client=client,
+            thread=thread,
             process_identity=identity,
             ended_at=None if running else ended,
             report_root=(
@@ -209,12 +218,6 @@ def _targets(rows: list[dict]) -> list[str]:
     return [row["target"] for row in rows]
 
 
-def _dashboard_args(*words: str) -> argparse.Namespace:
-    # Only test_dashboard_without_web_opens_the_textual_dashboard uses the private parser:
-    # it stubs the Textual Dashboard, which #4561 deletes with that test.
-    return tlr._build_parser().parse_args(["dashboard", *words])
-
-
 def _booley(monkeypatch: pytest.MonkeyPatch, project: Path, *argv: str) -> int:
     """`booley -C <project> <argv>` through the CLI entry point, inside a Sandbox."""
     for name, value in (("BOOLEY_CONTAINER", "1"), ("BOOLEY_EGRESS", "unproxied")):
@@ -228,7 +231,7 @@ _SERVE_SCRIPT = "import sys; from pathlib import Path; from booley.harness.dashb
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="stops the child with SIGINT, a POSIX signal")
-def test_web_flag_serves_loopback_after_binding(world):
+def test_serve_binds_loopback_before_its_banner(world):
     proc = subprocess.Popen(
         [sys.executable, "-c", _SERVE_SCRIPT, str(world.main)],
         stdout=subprocess.PIPE,
@@ -273,7 +276,7 @@ def test_held_port_is_a_booley_error_without_banner(world, monkeypatch, capsys):
         holder.listen()
         port = holder.getsockname()[1]
 
-        assert _booley(monkeypatch, world.main, "dashboard", "--web", "--port", str(port)) == 2
+        assert _booley(monkeypatch, world.main, "dashboard", "--port", str(port)) == 2
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -288,7 +291,7 @@ def test_held_port_is_a_booley_error_without_banner(world, monkeypatch, capsys):
 @pytest.mark.parametrize(
     ("port", "code", "shown"),
     [
-        (None, 0, ("[--web]", "127.0.0.1", "--port PORT", "default: 8090")),
+        (None, 0, ("127.0.0.1", "--port PORT", "default: 8090")),
         *(
             (port, 2, ("port must be a whole number from 1 to 65535",))
             for port in ("0", "65536", "-1", "http")
@@ -296,7 +299,7 @@ def test_held_port_is_a_booley_error_without_banner(world, monkeypatch, capsys):
     ],
 )
 def test_dashboard_help_and_port_range(tmp_path, monkeypatch, capsys, port, code, shown):
-    words = ("--help",) if port is None else ("--web", "--port", port)
+    words = ("--help",) if port is None else ("--port", port)
     with pytest.raises(SystemExit) as stop:
         _booley(monkeypatch, tmp_path, "dashboard", *words)
 
@@ -305,26 +308,18 @@ def test_dashboard_help_and_port_range(tmp_path, monkeypatch, capsys, port, code
     text = " ".join((captured.err if code else captured.out).split())
     for fragment in shown:
         assert fragment in text
+    assert "--web" not in text
 
 
-def test_port_without_web_is_refused(tmp_path, monkeypatch, capsys):
-    from booley.harness.dashboard import command
+def test_dashboard_serves_the_web_dashboard(world, monkeypatch, capsys):
+    served = capture_serving(monkeypatch)
+    # The default port belongs to the host; an ephemeral one keeps parallel workers apart.
+    monkeypatch.setattr("booley.core.sandbox_layout.DASHBOARD_PORT", 0)
 
-    monkeypatch.setattr(command, "run_dashboard", lambda _root: 0)
-    args = argparse.Namespace(attach_policy=False, on_attach=False, web=False, port=9123)
+    assert _booley(monkeypatch, world.main, "dashboard") == 0
 
-    assert tlr._cmd_dashboard(args, tmp_path) == 2
-    assert "booley dashboard: --port needs --web" in capsys.readouterr().err
-
-
-def test_dashboard_without_web_opens_the_textual_dashboard(tmp_path, monkeypatch):
-    from booley.harness.dashboard import command
-
-    opened: list[Path] = []
-    monkeypatch.setattr(command, "run_dashboard", lambda root: opened.append(root) or 0)
-
-    assert tlr._cmd_dashboard(_dashboard_args(), tmp_path) == 0
-    assert opened == [tmp_path]
+    assert [address[0] for _app, address in served] == ["127.0.0.1"]
+    assert "Booley Dashboard (web): http://127.0.0.1:" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(
@@ -332,16 +327,21 @@ def test_dashboard_without_web_opens_the_textual_dashboard(tmp_path, monkeypatch
     [
         ("wt", ["t_wt"], "booley/wt"),
         ("link", ["t_wt"], "booley/wt"),
-        ("main", ["t_main"], "main"),
+        ("main", ["t_main", "t_nowhere"], "main"),
         ("detached", [], None),
     ],
 )
 def test_snapshot_lists_only_the_named_worktrees_jobs(
     world, tmp_path, monkeypatch, name, targets, branch
 ):
-    for target, work_dir in (("t_wt", world.wt), ("t_main", world.main), ("t_other", world.other)):
+    for target, work_dir in (("t_wt", world.wt), ("t_other", world.other)):
         _job(world, f"run-{target}", work_dir, target=target)
-    _job(world, "run-nowhere", None, target="t_nowhere")
+    thread = "codex-thread-9c0d1e2f"
+    _job(world, "run-main", world.main, target="t_main", client="codex", thread=thread)
+    # Without `work_dir`: an older MCP record (listed under main) and a measure child's (in none).
+    _job(world, "run-nowhere", None, target="t_nowhere", ended="2026-10-08T09:00:00Z")
+    _job(world, "run-child", None, target="t_child", session=None)
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+02:00")
     worktree = {"wt": world.wt, "main": world.main}.get(name, tmp_path / name)
     if name == "link":
         symlink_or_skip(worktree, world.wt, target_is_directory=True)
@@ -352,9 +352,14 @@ def test_snapshot_lists_only_the_named_worktrees_jobs(
         body = _snapshot(client, worktree)
 
     assert _targets(body["results"]["jobs"]) == targets
+    if name == "main":
+        owner = body["results"]["jobs"][0]["owner"]
+        assert owner == "codex \u00b7 started 12:00 \u00b7 08 OCT 2026"
     assert body["now"] == []
     assert body["header"]["worktree"] == str(worktree.resolve())
     assert body["header"]["branch"] == branch
+    if name in {"wt", "main"}:
+        assert worktree.resolve() in _registered(world)
 
 
 @pytest.mark.parametrize(
@@ -402,6 +407,8 @@ def test_unaccepted_worktree_gets_a_json_error_without_jobs(
 
     with _client(world, monkeypatch) as client:
         response = client.get("/api/snapshot", params=params)
+        # Without a worktree the page asks which one, so it needs the list too.
+        page = client.get("/") if kind == "unlistable" else None
 
     assert response.status_code == status
     assert response.headers["content-type"].startswith("application/json")
@@ -410,16 +417,21 @@ def test_unaccepted_worktree_gets_a_json_error_without_jobs(
     assert isinstance(body["error"], str)
     if kind == "unlistable":
         assert body["error"].startswith("Git could not list the worktrees: ")
+        assert page is not None
+        assert page.status_code == 503
+        assert page.json() == body
     assert "leak" not in response.text
 
 
-def test_a_sessions_key_without_a_handle_reads_as_its_process(world, monkeypatch):
-    _job(world, "run-pid", world.wt, session="pid", key="pid:pid:[4026531836]:42:7")
+@pytest.mark.parametrize(("client", "owner"), [("claude", "claude"), (None, "you")])
+def test_a_job_without_a_thread_is_owned_by_its_client_or_you(client, owner):
+    from types import SimpleNamespace
 
-    with _client(world, monkeypatch) as client:
-        (row,) = _snapshot(client, world.wt)["results"]["jobs"]
+    from booley.harness.dashboard.web_snapshot import _owner
 
-    assert row["owner"] == "PID 42 · ns 4026531836"
+    record = SimpleNamespace(client=client, thread=None)
+
+    assert _owner(SimpleNamespace(record=record), {}) == owner
 
 
 def test_report_route_serves_only_reports_of_the_named_worktree(world, monkeypatch):
@@ -471,7 +483,7 @@ def test_now_lists_running_and_queued_jobs_with_queue_position(world, monkeypatc
         "handle": "J-SIM?",
         "flow": "sim",
         "target": "t_queued",
-        "owner": "sess1",
+        "owner": "you",
         "state": "queued",
         "stage": "",
         "elapsed_s": 5.0,
@@ -532,7 +544,7 @@ def test_results_are_newest_first_capped_with_counts_and_report_links(world, mon
         "handle": "J-SIM?",
         "flow": "sim",
         "target": "t12",
-        "owner": "sess1",
+        "owner": "you",
         "result": "PASSED",
         "ended_at": "2026-10-08T10:00:12Z",
         "duration_s": 12.0,
@@ -543,6 +555,92 @@ def test_results_are_newest_first_capped_with_counts_and_report_links(world, mon
     assert by_target["t20"]["report_url"] is None
     assert linked.status_code == 200
     assert linked.json() == {"run_id": "run-sa", "criterion_key": "k", "criterion_met": True}
+
+
+@pytest.mark.parametrize("t3", ["available", "stalled", "unavailable"])
+def test_job_owner_is_the_thread_title_or_a_fallback(world, monkeypatch, tmp_path, t3):
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+02:00")
+    for run_id, client, thread, session in (
+        ("claude", "claude", "t3-claude-thread-1a2b3c4d", "sess2"),
+        ("gone", "claude", "t3-gone-thread-5e6f7a8b", "sess2"),
+        ("codex", "codex", "codex-thread-9c0d1e2f", "sess3"),
+        ("old", None, None, "sess1"),
+    ):
+        _job(world, run_id, world.wt, target=run_id, session=session, client=client, thread=thread)
+
+    from booley.harness.dashboard import thread_titles
+
+    if t3 != "unavailable" and sys.platform == "win32":
+        pytest.skip("the t3 fake is a POSIX script")
+    cli, log = write_t3_cli(
+        tmp_path,
+        {"t3-claude-thread-1a2b3c4d": "Fix the UART"},
+        delay_s=hang_guard_s() if t3 == "stalled" else 0,
+    )
+    monkeypatch.setenv(
+        "T3CODE_CLI_PATH", str(tmp_path / "missing" if t3 == "unavailable" else cli)
+    )
+    # A stall must outlast the budget; a working lookup keeps the real one, scaled for slow hosts.
+    budget = scaled(0.5 if t3 == "stalled" else thread_titles._LOOKUP_BUDGET_S)
+    monkeypatch.setattr(thread_titles, "_LOOKUP_BUDGET_S", budget)
+
+    with _client(world, monkeypatch) as client:
+        owners = [
+            {row["target"]: row["owner"] for row in _snapshot(client, world.wt)["results"]["jobs"]}
+            for _ in range(2)
+        ]
+
+    titled = "Fix the UART" if t3 == "available" else "claude · 1a2b3c4d"
+    assert owners == 2 * [
+        {
+            "claude": titled,
+            "gone": "claude · 5e6f7a8b",
+            "codex": "codex · started 12:00 · 08 OCT 2026",
+            "old": "you",
+        }
+    ]
+    # One call per Claude thread over both snapshots (cached; none for Codex), or a single
+    # call before T3 Code is given up on.
+    calls = len(log.read_text().split()) if log.exists() else 0
+    assert calls == {"available": 2, "stalled": 1, "unavailable": 0}[t3]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the t3 fake is a POSIX script")
+def test_threads_a_snapshot_has_no_time_for_are_titled_by_a_later_one(
+    world, monkeypatch, tmp_path
+):
+    from booley.harness.dashboard import thread_titles
+
+    titles = {f"t3-thread-{n}": f"Title {n}" for n in range(3)}
+    for n, thread in enumerate(titles):
+        _job(world, f"run{n}", world.wt, target=f"run{n}", client="claude", thread=thread)
+    cli, log = write_t3_cli(tmp_path, titles)
+    monkeypatch.setenv("T3CODE_CLI_PATH", str(cli))
+    budget = scaled(1.2)
+    monkeypatch.setattr(thread_titles, "_LOOKUP_BUDGET_S", budget)
+    # Each lookup costs a third of the budget on a clock the test moves itself, so a slow host
+    # cannot change how many threads one snapshot has time for.
+    now = [0.0]
+    lookup = thread_titles.run_captured_bounded
+
+    def slow_lookup(*args, **kwargs):
+        now[0] += budget / 3
+        return lookup(*args, **kwargs)
+
+    monkeypatch.setattr(thread_titles, "monotonic", lambda: now[0])
+    monkeypatch.setattr(thread_titles, "run_captured_bounded", slow_lookup)
+
+    with _client(world, monkeypatch) as client:
+        rounds = [
+            {row["target"]: row["owner"] for row in _snapshot(client, world.wt)["results"]["jobs"]}
+            for _ in range(3)
+        ]
+
+    # The first snapshot runs out of time for the third thread, which a slow T3 Code must not
+    # read as a stalled one: the next snapshots title it, each thread looked up once.
+    assert rounds[0] != rounds[-1]
+    assert rounds[-1] == {f"run{n}": f"Title {n}" for n in range(3)}
+    assert len(log.read_text().split()) == 3
 
 
 def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypatch):
@@ -692,9 +790,12 @@ class _References(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.urls: list[str] = []
+        self.hidden: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         self.urls.extend(value for name, value in attrs if name in {"src", "href"} and value)
+        if ("hidden", None) in attrs:
+            self.hidden.extend(value for name, value in attrs if name == "id" and value)
 
 
 def _page_js(client: TestClient) -> str:
@@ -757,16 +858,50 @@ def test_page_and_its_assets_are_served_from_this_server(world, monkeypatch):
     assert page.status_code == 200
     assert page.headers["content-type"].startswith("text/html")
     assert page.headers["content-security-policy"] == "default-src 'self'"
-    assert sorted(references.urls) == ["/assets/dashboard.css", "/assets/dashboard.js"]
+    assert references.urls == ["/assets/dashboard.css", "/assets/dashboard.js", "/assets/run.js"]
     for url, response in assets.items():
         assert response.status_code == 200, url
         assert "http://" not in response.text
         assert "https://" not in response.text
     assert assets["/assets/dashboard.css"].headers["content-type"].startswith("text/css")
     assert "javascript" in assets["/assets/dashboard.js"].headers["content-type"]
+    assert "javascript" in assets["/assets/run.js"].headers["content-type"]
     css = assets["/assets/dashboard.css"].text
     assert "url(" not in css
     assert "@import" not in css
+
+
+def test_page_without_a_worktree_offers_the_main_checkout_and_t3_worktrees(world, monkeypatch):
+    t3 = world.booley / "t3-worktrees" / "work" / "t3-1a2b3c4d"
+    gone = world.booley / "t3-worktrees" / "work" / "gone"
+
+    with _client(world, monkeypatch) as client:
+        alone = client.get("/", follow_redirects=False)
+        assert alone.status_code == 307
+        (target,) = parse_qs(urlparse(alone.headers["location"]).query)["worktree"]
+        assert Path(target) == world.main.resolve()
+        git(world.main, "worktree", "add", "-q", "-b", "t3code/a&b", str(t3), "HEAD")
+        git(world.main, "worktree", "add", "-q", "--detach", str(gone), "HEAD")
+        gone_picker = client.get("/", params={"worktree": ""}).text
+        shutil.rmtree(gone)
+        picker = client.get("/", follow_redirects=False)
+        references = _References()
+        references.feed(picker.text)
+        links = {
+            Path(parse_qs(urlparse(url).query)["worktree"][0]): url
+            for url in references.urls
+            if url.startswith("/?")
+        }
+        assert set(links) == {world.main.resolve(), t3.resolve()}
+        picked = client.get(links[t3.resolve()])
+        snapshot = client.get("/api/snapshot" + links[t3.resolve()].removeprefix("/"))
+
+    assert picker.status_code == 200
+    assert picker.headers["content-security-policy"] == "default-src 'self'"
+    assert "Which worktree?" in picker.text and "t3code/a&amp;b" in picker.text
+    assert "detached HEAD" in gone_picker
+    assert (picked.status_code, snapshot.status_code) == (200, 200)
+    assert snapshot.json()["header"]["branch"] == "t3code/a&b"
 
 
 def test_page_renders_the_snapshot_with_results_collapsed_and_polls(world, monkeypatch, tmp_path):
@@ -902,7 +1037,6 @@ def test_page_shows_the_snapshot_error_instead_of_jobs(world, tmp_path, monkeypa
         good_deleted = _reply(client, deleted)
         shutil.rmtree(deleted)
         scenarios = {
-            "missing": ("", [_reply(client, "")]),
             "unknown": (_search(nowhere), [_reply(client, nowhere)]),
             "outside": (_search(outside), [_reply(client, outside)]),
             "deleted": (_search(deleted), [good_deleted, _reply(client, deleted)]),

@@ -10,7 +10,6 @@ import pytest
 
 from booley.harness import incontainer_register, upgrade_cli, upgrade_review
 from booley.harness.booley import _build_parser
-from booley.harness.dashboard import model as dashboard
 from booley.runtime import sandbox_apply
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.runtime_context import RuntimeLocation
@@ -212,7 +211,5 @@ def test_acknowledge_from_worktree_clears_main_review(
     assert upgrade_cli.run(args, worktree) == 0
 
     reset_cache()
-    assert upgrade_review.read_status(common).condition is upgrade_review.ReviewCondition.CURRENT
     assert incontainer_register.observe_upgrade(main) == "current"
-    assert not any("Upgrade review" in line.text for line in dashboard.health_lines(main, common))
     assert not (worktree / ".booley" / "runtime" / "upgrade_review.json").exists()

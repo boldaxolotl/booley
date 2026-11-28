@@ -291,7 +291,6 @@ def _inspection_detail(finding: BootstrapFinding) -> str:
         "host-install": "restore read access to the recorded identity or reinstall a valid canonical wheel",
         "git": "install supported Git and put git on PATH, then retry",
         "docker": "install Docker on PATH, start its daemon and restore Docker access, then retry",
-        "vscode": "install a supported VS Code editor and its shell command, then retry",
         "vscode-dev-containers": "restore access to the editor extension-management command and retry",
         "skills": "repair access to the named packaged skills or skill-link manifest and retry",
         "nangate45": "restore read access to the named cache paths and retry",

@@ -1,4 +1,4 @@
-"""Dashboard Job history and Target display enrichment."""
+"""Dashboard Job history and Job handles."""
 
 from __future__ import annotations
 
@@ -9,18 +9,11 @@ from pathlib import Path
 from typing import NamedTuple
 
 from booley.core.booley_layout import JOB_LOGS_DIR_NAME
-from booley.core.boundary import as_dict, as_float
-from booley.harness.standalone_job import (
-    standalone_jobs_dir,
-    standalone_log_path,
-    standalone_transcript_dir,
-)
-from booley.runtime import job_records
+from booley.core.boundary import as_float
+from booley.harness.standalone_job import standalone_jobs_dir
 from booley.runtime.handles import HandleStore, job_handle_expired
 from booley.runtime.job_observation import JobObservation, JobObserver
 from booley.runtime.timefmt import parse_timestamp
-from booley.targets.catalog import TargetCatalog
-from booley.targets.domain import FuseSocError
 
 MAX_INTERACTIVE_ROOTS = 64
 TERMINAL_JOB_STATES = frozenset({"completed", "failed", "cancelled"})
@@ -32,44 +25,9 @@ FINISHED_JOB_STATES = TERMINAL_JOB_STATES | {"orphaned"}
 class JobView(JobObservation):
     """A neutral observation enriched for Dashboard display."""
 
-    cpu_percent: float | None = None
-    memory: int | None = None
-    peak_memory: int | None = None
-    eda_tool: str = ""
     handle: str = ""
-    owner_handle: str = ""
-    # ``job.log`` of a Standalone or MCP Job, when it is a regular file.
-    log_path: str = ""
-    # A detached Specialist's transcript directory, when it is a real directory.
-    transcript_dir: str = ""
-
-    @property
-    def recorded_resources(self) -> tuple[float, float] | None:
-        """Validated recorded CPU seconds and largest-process RSS in MiB."""
-        values = as_dict((self.report or {}).get("resources")) or {}
-        try:
-            numbers = [
-                as_float(values.get(key)) for key in ("cpu_user_s", "cpu_sys_s", "peak_rss_mb")
-            ]
-        except OverflowError:
-            return None
-        user, system, peak = numbers
-        if user is None or system is None or peak is None:
-            return None
-        return user + system, peak
-
-    @property
-    def recorded_tools(self) -> str:
-        """Retain Target association and reject malformed optional tool records."""
-        report = self.report or {}
-        tools = report.get("eda_tools")
-        if isinstance(tools, dict) and tools:
-            return ", ".join(
-                f"{key}: {value or 'not recorded by this Flow'}"
-                for key, value in sorted(tools.items())
-            )
-        tool = report.get("eda_tool") or report.get("tool")
-        return tool if isinstance(tool, str) else ""
+    # The checkout whose Dashboard shows the Job; ``None`` when none does.
+    checkout: str | None = None
 
 
 @dataclass(frozen=True)
@@ -111,16 +69,21 @@ class JobReader:
     """Compose retained history and display policy over one persistent observer."""
 
     def __init__(
-        self, booley_dir: Path, *, slots_root: Path | None = None, proc_root: Path = Path("/proc")
+        self,
+        booley_dir: Path,
+        *,
+        main: Path | None = None,
+        slots_root: Path | None = None,
+        proc_root: Path = Path("/proc"),
     ) -> None:
         self._booley_dir = booley_dir
+        self._main = main
         self._observer = JobObserver(booley_dir, slots_root=slots_root, proc_root=proc_root)
 
     def read(
         self,
         *,
         interactive_root: Path | None = None,
-        session_handles: dict[str, str] | None = None,
         now: float | None = None,
         artifact_roots: Sequence[Path] = (),
     ) -> JobSnapshot:
@@ -133,47 +96,33 @@ class JobReader:
         observed = self._observer.read(
             roots.history, unfinished_roots=roots.older, artifact_roots=artifact_roots
         )
-        catalogs: dict[str, TargetCatalog | None] = {}
-        handles, diagnostics = HandleStore(self._booley_dir, jobs=True).snapshot()
-        owners, owner_diagnostics = (
-            HandleStore(self._booley_dir).snapshot()
-            if session_handles is None
-            else (session_handles, ())
-        )
+        handles, diagnostics = HandleStore(self._booley_dir).snapshot()
         when = time.time() if now is None else now
         standalone = standalone_jobs_dir(self._booley_dir)
         rows = tuple(
-            _job_view(job, catalogs, handles, owners, when, self._booley_dir, standalone)
-            for job in observed.jobs
+            _job_view(job, handles, when, standalone, self._main) for job in observed.jobs
         )
-        return JobSnapshot(rows, (*observed.diagnostics, *diagnostics, *owner_diagnostics))
+        return JobSnapshot(rows, (*observed.diagnostics, *diagnostics))
 
 
 def _job_view(
-    job: JobObservation,
-    catalogs: dict[str, TargetCatalog | None],
-    handles: dict[str, str],
-    owners: dict[str, str],
-    now: float,
-    booley_dir: Path,
-    standalone: Path,
+    job: JobObservation, handles: dict[str, str], now: float, standalone: Path, main: Path | None
 ) -> JobView:
     record = job.record
     state = job.state
-    log_path = job_records.job_log_path(record.run_id, job.root)
-    transcript_dir: Path | None = None
+    checkout = record.work_dir
+    if not checkout and main is not None and job.root != standalone:
+        # An MCP server can leave ``work_dir`` out (older ones did for a Job run in
+        # their cwd), and a Developer Agent's server cwd is the main checkout.
+        checkout = str(main)
     if job.root == standalone:
-        # A Standalone Job has no supervisor: its dead process is a failed run,
-        # and its log lives under the human-facing standalone log root.
+        # A Standalone Job has no supervisor: its dead process is a failed run.
         state = "failed" if state == "orphaned" else state
-        log_path = standalone_log_path(booley_dir, record.run_id)
-        transcript_dir = standalone_transcript_dir(booley_dir, record.run_id)
     handle = handles.get(record.run_id, "")
-    owner_handle = owners.get(record.session_key or "", "")
     if not handle and job_handle_expired(record, now):
         # A pruned Job is history, not an unallocated live one: name it by run ID
-        # and its owner by session key so neither shows the live-only "?".
-        handle, owner_handle = record.run_id, owner_handle or record.session_key or ""
+        # so it does not show the live-only "?".
+        handle = record.run_id
     return JobView(
         root=job.root,
         record=job.record,
@@ -185,11 +134,8 @@ def _job_view(
         artifacts=job.artifacts,
         queue=job.queue,
         queue_position=job.queue_position,
-        eda_tool=_configured_tool(job.record, catalogs),
         handle=handle,
-        owner_handle=owner_handle,
-        log_path=_linkable(log_path, directory=False),
-        transcript_dir=_linkable(transcript_dir, directory=True),
+        checkout=checkout,
     )
 
 
@@ -208,33 +154,3 @@ def job_elapsed_seconds(job: JobView, now: float | None = None) -> float | None:
         return max(0, end - start)
     except ValueError:
         return None
-
-
-def _linkable(path: Path | None, *, directory: bool) -> str:
-    """Absolute *path* when a regular file (or a directory) that is no symlink, else ``""``.
-
-    Neither *path* nor its parent may be a symlink.
-    """
-    if path is None:
-        return ""
-    try:
-        exists = path.is_dir() if directory else path.is_file()
-        if path.parent.is_symlink() or path.is_symlink() or not exists:
-            return ""
-    except OSError:
-        return ""
-    return str(path)
-
-
-def _configured_tool(rec: job_records.JobRecord, catalogs: dict[str, TargetCatalog | None]) -> str:
-    target = job_records.target_arg(rec.argv)
-    if rec.status != job_records.STATUS_RUNNING or not rec.work_dir or target is None:
-        return ""
-    try:
-        if rec.work_dir not in catalogs:
-            catalogs[rec.work_dir] = None
-            catalogs[rec.work_dir] = TargetCatalog.build(rec.work_dir)
-        catalog = catalogs[rec.work_dir]
-        return "" if catalog is None else (catalog.select(target).eda_tool or "")
-    except (OSError, ValueError, FuseSocError):
-        return ""

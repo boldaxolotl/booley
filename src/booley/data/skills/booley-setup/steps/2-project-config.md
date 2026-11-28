@@ -1,7 +1,7 @@
 # Step 2 — Project config (.core, tests.toml, booley.toml)
 
 > Part of the `booley-setup` skill. Run in order, or invoke this step alone
-> with `booley-setup 2`. Most of this step runs inside the devcontainer. When
+> with `booley-setup 2`. Most of this step runs inside the Sandbox. When
 > the plan selects host-provisioned EDA, the small host-authority bootstrap
 > below runs first, before that Sandbox is created.
 > It **consumes the approved `SETUP-PLAN.md`** (Step 0): every decision-level
@@ -71,9 +71,9 @@ python -c "import booley, pathlib; print(pathlib.Path(booley.__file__).parent / 
 Two project-side extension points:
 
 - **`post-setup` hook** — `.booley/hooks/post-setup.sh`, `….py`, or
-  extensionless `post-setup` runs in each new sandboxed worktree that
-  `booley worktree new` creates, and a failure removes the
-  worktree again; make it idempotent. It may install/build dependencies, copy
+  extensionless `post-setup` runs in each worktree that
+  `booley worktree prepare` prepares, and a failure removes what the run
+  created; make it idempotent. It may install/build dependencies, copy
   files, create symlinks, or prepare generated inputs. `booley measure` also
   runs it in its Git-less checkout of a commit, so it must not call `git`.
 - **Project image** — to add open-source tools and project dependencies that
@@ -121,8 +121,10 @@ booley eda license register <name> \
 Do not invent those values from Project files. When the approved paid-site
 inputs are unavailable, omit the License Profile and record floating licensing
 as an experimental, unverified limitation. After the authority and host Doctor
-are clean, create the issued Sandbox with VS Code Rebuild/Reopen or
-`booley session up --rebuild`, then continue the rest of this step inside it.
+are clean, create the issued Sandbox and move into it as item 4 of the
+[execution phase](../SKILL.md#execution-phase-after-an-approved-plan) says,
+then continue the rest of this step there; in a one-step run, the skill to
+invoke again is `booley-setup 2`.
 
 ## Phase 1 — Gather config-level evidence
 
@@ -928,5 +930,4 @@ approved config is on disk.
 
 Do not put `[developer]` or `[jobs].max_tickets` in the Project configuration;
 Doctor treats
-them as ignored settings with delete fixes. Document `[sandbox].dashboard=false`
-when the human opts out of the default Dashboard attachment task.
+them as ignored settings with delete fixes.

@@ -141,7 +141,7 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
             "booley.presentation.colors",
             "seed.py",
         ),
-        ("D26", "booley.runtime.vaporview", "booley.harness.setup.common", "seed.py"),
+        ("D26", "booley.runtime.bundled_extensions", "booley.harness.setup.common", "seed.py"),
         ("D26", "booley.flows.target_test_plan_inspection", "booley.harness.doctor", "seed.py"),
         ("D26", "booley.audit.core_tree_inspection", "booley.harness.init_cmd", "seed.py"),
         ("D26", "booley.runtime.core_repository_hygiene", "booley.harness.booley", "seed.py"),

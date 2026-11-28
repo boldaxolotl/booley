@@ -2,8 +2,8 @@
 
 The budget is the container's memory limit (``[sandbox].memory``, or installed
 memory when the container has none) minus a reserve for what the Jobs do not own:
-the running Developer Agents, the MCP server, the Dashboard, and, without a swap
-allowance, a quarter of the base as headroom.
+the running Developer Agents, the MCP server, ``t3 serve``, the headless Chrome
+processes, and, without a swap allowance, a quarter of the base as headroom.
 Memory admission holds each Job's Memory Reservation against this number; the
 module computes and explains it.
 """
@@ -23,20 +23,26 @@ from booley.audit.resource_policy import (
     cgroup_swap_limit_bytes,
     parse_meminfo,
 )
-from booley.runtime.chat_sessions import CODEX_NATIVE_NAMES
 from booley.runtime.pid import capture_process_identity
 
 # A process found running whose memory cannot be read still reserves 1 GiB.
 UNREADABLE_PROCESS_BYTES = GIB_BYTES
-# Prefix of the Dashboard's socket address as ``/proc/net/unix`` prints it (the
-# abstract-namespace NUL shows as "@"); a test pins it to ``view_probe.socket_name``.
-DASHBOARD_SOCKET_PREFIX = "@booley-dashboard:"
-
 _MAX_PROCESSES = 8192
-_MAX_FDS_PER_PROCESS = 4096
 _CLAUDE_NAMES = frozenset({"claude", "claude.exe"})
+_CODEX_NAMES = frozenset(
+    {
+        "codex",
+        "codex-x86_64-unknown-linux-musl",
+        "codex-aarch64-unknown-linux-musl",
+        "codex-x86_64-unknown-linux-gnu",
+        "codex-aarch64-unknown-linux-gnu",
+    }
+)
 _MCP_SERVER_MODULE = "booley.mcp.server"
 _MCP_SERVER_SCRIPT = "booley-mcp"
+_T3_EXECUTABLE = "t3"
+_T3_SERVE_COMMAND = "serve"
+_HEADLESS_CHROME_NAME = "chrome-headless-shell"
 
 
 class BudgetRule(StrEnum):
@@ -51,7 +57,8 @@ class ReserveRole(StrEnum):
 
     DEVELOPER_AGENT = "developer-agent"
     MCP_SERVER = "mcp-server"
-    DASHBOARD = "dashboard"
+    T3_CODE = "t3-code"
+    HEADLESS_CHROME = "headless-chrome"
     HEADROOM = "headroom"
 
 
@@ -71,7 +78,7 @@ class ReservePart:
     role: ReserveRole
     bytes: int
     source: ReserveSource
-    pid: int | None  # None for the headroom and for an absent role
+    pid: int | None  # None for the headroom, an absent role and the summed Chrome processes
 
 
 @dataclass(frozen=True, slots=True)
@@ -187,42 +194,26 @@ def _is_mcp_server(argv: Sequence[str]) -> bool:
     return any(Path(arg).name == _MCP_SERVER_SCRIPT for arg in argv[:2])
 
 
+def _is_t3_server(argv: Sequence[str]) -> bool:
+    """Recognize ``t3 serve``, not another ``t3`` command or a script named ``t3``."""
+    return len(argv) >= 2 and Path(argv[0]).name == _T3_EXECUTABLE and argv[1] == _T3_SERVE_COMMAND
+
+
 def _classify(proc_root: Path, pid: int) -> ReserveRole | None:
-    """Return the agent or MCP server role of *pid*; the Dashboard is found by socket."""
+    """Return the role of *pid* (agent, headless Chrome, MCP server, ``t3 serve``)."""
     executable = _read_executable_name(proc_root, pid)
     if (
         _read_comm(proc_root, pid) == "claude"
         or executable in _CLAUDE_NAMES
-        or executable in CODEX_NATIVE_NAMES
+        or executable in _CODEX_NAMES
     ):
         return ReserveRole.DEVELOPER_AGENT
-    if _is_mcp_server(_read_argv(proc_root, pid)):
+    if executable == _HEADLESS_CHROME_NAME:
+        return ReserveRole.HEADLESS_CHROME
+    argv = _read_argv(proc_root, pid)
+    if _is_mcp_server(argv):
         return ReserveRole.MCP_SERVER
-    return None
-
-
-def _dashboard_socket_inode(proc_root: Path) -> str | None:
-    """Return the inode of this PID namespace's Dashboard socket, if one is bound."""
-    try:
-        scope = str((proc_root / "self" / "ns" / "pid").readlink())
-        table = (proc_root / "net" / "unix").read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-    address = DASHBOARD_SOCKET_PREFIX + scope
-    for line in table.splitlines()[1:]:
-        fields = line.split()
-        if len(fields) >= 8 and fields[7] == address:
-            return fields[6]
-    return None
-
-
-def _holds_socket(proc_root: Path, pid: int, inode: str) -> bool:
-    wanted = f"socket:[{inode}]"
-    try:
-        links = (proc_root / str(pid) / "fd").iterdir()
-        return any(str(link.readlink()) == wanted for link in islice(links, _MAX_FDS_PER_PROCESS))
-    except OSError:
-        return False
+    return ReserveRole.T3_CODE if _is_t3_server(argv) else None
 
 
 def _scan_processes(proc_root: Path) -> dict[ReserveRole, list[int]]:
@@ -235,19 +226,13 @@ def _scan_processes(proc_root: Path) -> dict[ReserveRole, list[int]]:
     found: dict[ReserveRole, list[int]] = {
         ReserveRole.DEVELOPER_AGENT: [],
         ReserveRole.MCP_SERVER: [],
-        ReserveRole.DASHBOARD: [],
+        ReserveRole.T3_CODE: [],
+        ReserveRole.HEADLESS_CHROME: [],
     }
-    inode = _dashboard_socket_inode(proc_root)
     for pid in pids:
         role = _classify(proc_root, pid)
         if role is not None:
             found[role].append(pid)
-        elif (
-            inode is not None
-            and not found[ReserveRole.DASHBOARD]
-            and _holds_socket(proc_root, pid, inode)
-        ):
-            found[ReserveRole.DASHBOARD].append(pid)
     return found
 
 
@@ -261,18 +246,33 @@ def _measure_process(role: ReserveRole, pid: int, proc_root: Path) -> ReservePar
     return ReservePart(role, rss, ReserveSource.MEASURED, pid)
 
 
+def _measure_summed(role: ReserveRole, pids: Sequence[int], proc_root: Path) -> ReservePart:
+    """Add the processes of *role* into one part, ``UNREADABLE`` if any member is."""
+    members = [_measure_process(role, pid, proc_root) for pid in pids]
+    source = (
+        ReserveSource.UNREADABLE
+        if any(m.source is ReserveSource.UNREADABLE for m in members)
+        else ReserveSource.MEASURED
+    )
+    return ReservePart(role, sum(m.bytes for m in members), source, None)
+
+
 def measure_reserve(*, proc_root: Path = Path("/proc")) -> tuple[ReservePart, ...]:
-    """Measure the Developer Agents, MCP server and Dashboard now running.
+    """Measure the Developer Agents, MCP server, ``t3 serve`` and Chrome now running.
 
     Each process counts alone (its own VmRSS), not with its descendants: those
-    include running Jobs, which their own reservations already cover. A role
-    with no running process contributes an ``ABSENT`` part of 0 bytes.
+    include running Jobs, which their own reservations already cover. The
+    headless Chrome processes count as one summed share. A role with no running
+    process contributes an ``ABSENT`` part of 0 bytes.
     """
     parts: list[ReservePart] = []
     for role, pids in _scan_processes(proc_root).items():
         if not pids:
             parts.append(ReservePart(role, 0, ReserveSource.ABSENT, None))
-        parts.extend(_measure_process(role, pid, proc_root) for pid in pids)
+        elif role is ReserveRole.HEADLESS_CHROME:
+            parts.append(_measure_summed(role, pids, proc_root))
+        else:
+            parts.extend(_measure_process(role, pid, proc_root) for pid in pids)
     return tuple(parts)
 
 

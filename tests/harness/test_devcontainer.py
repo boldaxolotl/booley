@@ -7,8 +7,6 @@ import json
 import pytest
 
 from booley.runtime import devcontainer as dc
-from booley.runtime import vaporview
-from booley.runtime.dashboard_extension import VSIX_PATH
 from booley.runtime.incontainer_git_identity import GitIdentity, git_identity_environment
 from tests.devcontainer_spec_support import build_spec
 
@@ -234,27 +232,13 @@ class TestMaskPathsValidation:
 class TestAppExtension:
     def test_claude_spec_installs_no_agent_extension(self):
         vscode = build_spec(dc.APP_CLAUDE)["customizations"]["vscode"]
-        assert vscode["extensions"] == [
-            vaporview.BUNDLED_VSIX,
-            dc.HDL_VSIX,
-            dc.LIVE_PREVIEW_VSIX,
-            VSIX_PATH,
-        ]
+        assert vscode["extensions"] == [dc.HDL_VSIX, dc.LIVE_PREVIEW_VSIX]
         assert "remote.extensionKind" not in vscode["settings"]
-        # The viewer bridge drives VaporView; its own WCP endpoint stays off.
-        assert not any(key.startswith("vaporview.wcp.") for key in vscode["settings"])
-        assert vscode["settings"]["vaporview.customColor5"] == "#e5484d"
-        assert vscode["settings"]["vaporview.customColor6"] == "#3b82f6"
-        assert vscode["settings"]["vaporview.customColor7"] == "#2da44e"
+        assert not any(key.startswith("booley.dashboard") for key in vscode["settings"])
 
     def test_codex_spec_installs_no_agent_extension(self):
         vscode = build_spec(dc.APP_CODEX)["customizations"]["vscode"]
-        assert vscode["extensions"] == [
-            vaporview.BUNDLED_VSIX,
-            dc.HDL_VSIX,
-            dc.LIVE_PREVIEW_VSIX,
-            VSIX_PATH,
-        ]
+        assert vscode["extensions"] == [dc.HDL_VSIX, dc.LIVE_PREVIEW_VSIX]
         assert "remote.extensionKind" not in vscode["settings"]
 
     def test_generated_spec_omits_tcl_highlighting(self):
@@ -270,28 +254,10 @@ class TestAppExtension:
             assert "mshr-h.veriloghdl" not in extensions
 
     def test_none_installs_no_agent_extension(self):
-        # Waveform viewing isn't tied to an agent app, so "none" carries the
-        # app-agnostic extensions (VaporView, its Booley bridge host, HDL
-        # highlighting) but no agent extension.
+        # "none" carries the app-agnostic extensions (HDL highlighting, Live
+        # Preview) but no agent extension.
         vscode = build_spec(dc.APP_NONE)["customizations"]["vscode"]
-        assert vscode["extensions"] == [
-            vaporview.BUNDLED_VSIX,
-            dc.HDL_VSIX,
-            dc.LIVE_PREVIEW_VSIX,
-            VSIX_PATH,
-        ]
-
-    def test_vaporview_presentation_settings_for_every_app(self):
-        # The Waveform Viewer (ADR 0078) palette rides along regardless of agent
-        # app; the per-app extension lists above pin the VSIX entries.
-        for app in dc.SUPPORTED_APPS:
-            spec = build_spec(app)
-            vscode = spec["customizations"]["vscode"]
-            # private: VaporView's presentation settings have no public reader; T3 retires
-            # this test with VaporView
-            assert {
-                key: vscode["settings"][key] for key in dc._VAPORVIEW_PRESENTATION_SETTINGS
-            } == dc._VAPORVIEW_PRESENTATION_SETTINGS  # private: as above
+        assert vscode["extensions"] == [dc.HDL_VSIX, dc.LIVE_PREVIEW_VSIX]
 
     def test_live_preview_does_not_restore_stale_port_tunnels(self):
         # F-14: restored 3000/3001 tunnels can point the embedded browser at a
@@ -302,11 +268,9 @@ class TestAppExtension:
             # private: the Live Preview seed port has no public name
             assert settings["livePreview.portNumber"] == dc._LIVE_PREVIEW_SEED_PORT
 
-    def test_live_preview_randomizer_runs_before_extension_patch(self):
+    def test_post_attach_runs_only_the_live_preview_port_hook(self):
         for app in dc.SUPPORTED_APPS:
-            assert build_spec(app)["postAttachCommand"] == (
-                f"{dc.live_preview_port_command()} && {dc.vaporview_patch_command()}"
-            )
+            assert build_spec(app)["postAttachCommand"] == dc.live_preview_port_command()
 
     def test_python_terminal_autoactivation_disabled_for_every_app(self):
         # The runtime already has its Python stack system-wide.  Do not let a
@@ -317,14 +281,6 @@ class TestAppExtension:
             settings = spec["customizations"]["vscode"]["settings"]
             assert settings["python-envs.terminal.autoActivationType"] == "off"
             assert settings["python.terminal.activateEnvironment"] is False
-
-    def test_spec_wires_vaporview_autostart_postattach(self):
-        # Every app (incl. "none") gets the patch hook on attach — attach is
-        # the first lifecycle point where the extension exists on disk.
-        for app in dc.SUPPORTED_APPS:
-            spec = build_spec(app)
-            assert spec["postAttachCommand"] == dc.post_attach_command()
-            assert "booley.runtime.incontainer_vaporview" in spec["postAttachCommand"]
 
 
 @pytest.mark.parametrize(
@@ -340,11 +296,12 @@ class TestAppExtension:
 def test_seed_is_bound_readonly_beside_the_state_dir(app, option, source, seed):
     # Seeds are read-only sidecars, never the real file, so the in-container refresh
     # can rewrite the writable copy. The persisted state volume owns ~/.<app> and would
-    # shadow a seed nested in it, and stays the last mount so it nests under the binds.
+    # shadow a seed nested in it; it and T3 Code's state volume stay the last mounts so
+    # they nest under the binds.
     spec = build_spec(app, **{option: source})
     assert f"source={source},target={dc.AGENT_HOME}/{seed},type=bind,readonly" in spec["mounts"]
     assert not any(f"target={dc.AGENT_HOME}/.{app}/" in m for m in spec["mounts"])
-    assert "type=volume" in spec["mounts"][-1]
+    assert all("type=volume" in mount for mount in spec["mounts"][-2:])
     assert f"{dc.AGENT_HOME}/.{app}" in dc.spec_volume_targets(spec)
 
 
@@ -377,9 +334,9 @@ class TestAuthMount:
 
     @pytest.mark.parametrize("app", dc.SUPPORTED_APPS)
     def test_no_seed_mounts_without_sources(self, app):
-        # project-dir mount, plus the persistent state volume for an agent app
+        # project-dir mount, plus the CLI's and T3 Code's state volumes for an agent app
         mounts = build_spec(app)["mounts"]
-        assert len(mounts) == (1 if app == dc.APP_NONE else 2)
+        assert len(mounts) == (1 if app == dc.APP_NONE else 3)
         assert all("token-seed" not in m and "api-key-seed" not in m for m in mounts)
 
     @pytest.mark.parametrize("option", ["login_source", "token_source"])
@@ -410,10 +367,20 @@ class TestTokenSeedMount:
 class TestStateVolume:
     @pytest.mark.parametrize("app", [dc.APP_CLAUDE, dc.APP_CODEX])
     def test_persists_the_app_home(self, app):
-        vol = build_spec(app)["mounts"][-1]
+        vol, t3 = build_spec(app)["mounts"][-2:]
+        assert t3 == dc.t3_state_volume_mount("${localWorkspaceFolderBasename}")
         assert f"source=booley-{app}-state-${{localWorkspaceFolderBasename}}" in vol
         assert f"target={dc.AGENT_HOME}/.{app}" in vol
         assert "type=volume" in vol
+
+    def test_t3_base_dir_is_the_projects_own(self):
+        first, second, again = (
+            build_spec(dc.APP_CLAUDE, project_id=name)["containerEnv"]["BOOLEY_T3_BASE_DIR"]
+            for name in ("aaa", "bbb", "aaa")
+        )
+        assert first != second
+        assert first == again == "/home/agent/.t3-aaa"  # users' pairings depend on it
+        assert "BOOLEY_T3_BASE_DIR" not in build_spec(dc.APP_NONE)["containerEnv"]
 
     def test_none_has_no_state_volume(self):
         spec = build_spec(dc.APP_NONE)
@@ -426,7 +393,7 @@ class TestStateVolume:
         assert dc.state_volume_name("codex", "myproj") == "booley-codex-state-myproj"
         assert dc.state_volume_name("none", "myproj") is None
         expected = dc.state_volume_name("claude", "${localWorkspaceFolderBasename}")
-        assert f"source={expected}" in build_spec(dc.APP_CLAUDE)["mounts"][-1]
+        assert f"source={expected}" in build_spec(dc.APP_CLAUDE)["mounts"][-2]
 
     def test_canonical_project_identity_separates_same_basename(self, tmp_path):
         first = tmp_path / "one" / "project"
@@ -467,6 +434,18 @@ class TestSpecAgentApp:
 class TestConfigSeed:
     _SRC = "/home/u/.claude.json"
     _MCP = "python -m booley.harness.incontainer_register"
+
+    def test_state_volumes_follow_seeds(self):
+        # Ordering contract: the persisted state volumes stay after the seeds,
+        # the CLI's first, then T3 Code's.
+        spec = build_spec(
+            dc.APP_CLAUDE,
+            login_source="/home/u/.claude/.credentials.json",
+            config_source=self._SRC,
+        )
+        vol, t3 = spec["mounts"][-2:]
+        assert f"target={dc.AGENT_HOME}/.claude,type=volume" in vol
+        assert t3 == dc.t3_state_volume_mount("${localWorkspaceFolderBasename}")
 
     def test_postcreate_seeds_before_registrar(self):
         # cp must precede the registrar so upsert_claude merges into the

@@ -5,109 +5,23 @@
   "permissions": {
     "deny": [
       "WebFetch",
-      "WebSearch"
-    ]
-  },
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
-            "timeout": 3
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
-            "timeout": 3
-          }
-        ]
-      }
-    ],
-    "PreToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
-            "timeout": 3
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
-            "timeout": 3
-          }
-        ]
-      }
-    ],
-    "PostToolUseFailure": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
-            "timeout": 3
-          }
-        ]
-      }
-    ],
-    "PermissionRequest": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
-            "timeout": 3
-          }
-        ]
-      }
-    ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
-            "timeout": 3
-          }
-        ]
-      }
-    ],
-    "Notification": [
-      {
-        "matcher": "idle_prompt|permission_prompt|elicitation_dialog",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
-            "timeout": 3
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 -I -S /usr/local/libexec/booley/session_activity_hook.py claude",
-            "timeout": 3
-          }
-        ]
-      }
+      "WebSearch",
+      "mcp__t3-code__schedule_task",
+      "mcp__t3-code__delete_scheduled_task",
+      "mcp__t3-code__list_scheduled_tasks",
+      "mcp__t3-code__run_scheduled_task_now",
+      "mcp__t3-code__t3_environment_link",
+      "mcp__t3-code__t3_environment_links",
+      "mcp__t3-code__t3_environment_unlink",
+      "mcp__t3-code__t3_thread_transfer",
+      "mcp__t3-code__t3_project_create",
+      "mcp__t3-code__t3_project_delete",
+      "mcp__t3-code__t3_project_clone",
+      "mcp__t3-code__device_open",
+      "mcp__t3-code__device_close",
+      "mcp__t3-code__device_list",
+      "mcp__t3-code__device_screenshot",
+      "mcp__t3-code__request_secret"
     ]
   }
 }

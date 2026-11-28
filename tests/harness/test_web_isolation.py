@@ -1,4 +1,4 @@
-"""Shipped managed agent policies: web-tool isolation and no CLI self-update."""
+"""Shipped managed agent policies: web-tool isolation, no CLI self-update, no risky T3 Code tools."""
 
 from __future__ import annotations
 
@@ -7,7 +7,9 @@ import tomllib
 from pathlib import Path
 
 import booley
+from booley.core import sandbox_layout
 from booley.core.models import AgentCallParams
+from booley.core.sandbox_layout import BOOLEY_DIR_TARGET
 from booley.harness import web_isolation
 from booley.runtime import _claude_backend, _codex_backend, mcp_config
 
@@ -25,6 +27,20 @@ def test_shipped_managed_policies_disable_provider_web_tools() -> None:
     assert set(claude["permissions"]["deny"]) >= web_isolation.CLAUDE_WEB_CAPABILITIES
 
 
+def test_shipped_claude_policy_denies_the_shared_t3code_tool_list() -> None:
+    # The maintainer chose the tools on #4782; Codex's hook reads the same file (#5511).
+    shared = (_docker_data() / "t3code-denied-tools.txt").read_text(encoding="utf-8").split()
+    claude = json.loads(
+        (_docker_data() / "claude-managed-settings.json").read_text(encoding="utf-8")
+    )
+    rules = claude["permissions"]["deny"]
+
+    assert len(rules) == len(set(rules))
+    assert set(rules) == web_isolation.CLAUDE_WEB_CAPABILITIES | {
+        f"mcp__t3-code__{name}" for name in shared
+    }
+
+
 def test_shipped_managed_policies_disable_agent_cli_self_update() -> None:
     # The CLIs live in a root-owned npm prefix, so any self-update must fail.
     data = _docker_data()
@@ -33,6 +49,42 @@ def test_shipped_managed_policies_disable_agent_cli_self_update() -> None:
 
     assert claude.get("env", {}).get("DISABLE_UPDATES") == "1"
     assert codex.get("check_for_update_on_startup") is False
+
+
+def test_shipped_t3code_policy_turns_off_remote_features_and_limits_drivers() -> None:
+    policy = json.loads((_docker_data() / "t3code-policy.json").read_text(encoding="utf-8"))
+
+    assert policy["limits"] == {
+        "maxRuntimeMode": "auto",
+        "connect": False,
+        "telemetry": False,
+        "updates": {"mode": "off"},
+        "providers": {"allowedDrivers": ["claudeAgent", "codex"]},
+    }
+
+
+def test_shipped_t3code_policy_locks_worktrees_prepare_and_the_dashboard_button() -> None:
+    # T3 Code's managed policy format fixes the shape; ADR 0082 fixes the values.
+    settings = json.loads((_docker_data() / "t3code-policy.json").read_text(encoding="utf-8"))[
+        "settings"
+    ]
+
+    assert settings["worktreesDirectory"] == {
+        "value": f"{BOOLEY_DIR_TARGET}/t3-worktrees",
+        "locked": True,
+    }
+    # Fixed by #5907, not ADR 0082: T3 Code's fetch of origin fails under default egress.
+    assert settings["newWorktreesStartFromOrigin"] == {"value": False, "locked": True}
+    assert settings["defaultProjectScripts"]["locked"] is True
+    scripts = settings["defaultProjectScripts"]["value"]
+    assert [
+        (script["command"], script["async"]) for script in scripts if script["runOnWorktreeCreate"]
+    ] == [("booley worktree prepare", False)]
+    buttons = [script for script in scripts if not script["runOnWorktreeCreate"]]
+    assert [button["autoOpenPreview"] for button in buttons] == [True]
+    # ADR 0093: the button opens the page in the preview panel, at a fixed URL whose
+    # port is the one the start step's `booley dashboard` binds.
+    assert buttons[0]["previewUrl"] == f"http://127.0.0.1:{sandbox_layout.DASHBOARD_PORT}/"
 
 
 def test_sandbox_image_installs_both_managed_policies() -> None:

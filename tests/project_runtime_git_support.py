@@ -21,6 +21,7 @@ NEW_RUNTIME_PATHS = (
     "PARITY-REPORT.md",
     "plans/note.md",
     "handoffs/note.md",
+    "t3-worktrees/work/t3-1a2b3c4d-0123456789abcdef/rtl/top.sv",
 )
 
 

@@ -1,10 +1,7 @@
-"""Expired Job and Session handles are pruned at MCP server start (#1550)."""
+"""Expired Job handles are pruned at MCP server start (#1550)."""
 
 import importlib
-import os
 import re
-import subprocess
-import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -12,19 +9,8 @@ from types import SimpleNamespace
 import pytest
 
 from booley.mcp import server
-from booley.mcp.session_registry import Attribution, SessionRegistry
-from booley.runtime import handles, job_records, platform_paths
-from booley.runtime.chat_sessions import reserve_codex_chat
-from booley.runtime.pid import (
-    ProcessIdentity,
-    ProcessObservation,
-    ProcessState,
-    capture_process_identity,
-)
-from booley.runtime.session_activity import process_session_key
+from booley.runtime import handles, job_records
 from booley.runtime.timefmt import rfc3339_from_epoch
-from tests.booley_checkouts_support import init_repo, isolate_git, main_project
-from tests.project_runtime_git_support import git
 from tests.time_budget import hang_guard_s
 from tests.uvicorn_support import capture_serving
 
@@ -48,11 +34,10 @@ def add_job(
     *,
     status: str = job_records.STATUS_DONE,
     ended_ago: float | None = 0.0,
-    session_key: str | None = None,
     write: bool = True,
 ) -> None:
     """Register a Job handle and (optionally) its record, ended *ended_ago* seconds before NOW."""
-    handles.register_job(booley_dir, run_id, "sim", session_key)
+    handles.register_job(booley_dir, run_id, "sim")
     if not write:
         return
     ended = None if ended_ago is None else rfc3339_from_epoch(NOW - ended_ago)
@@ -63,7 +48,6 @@ def add_job(
         60,
         status=status,
         ended_at=ended,
-        session_key=session_key,
     )
     job_records.write_record(record, jobs_root(booley_dir))
 
@@ -73,10 +57,6 @@ def prune(booley_dir: Path, now: float = NOW) -> None:
 
 
 def job_map(booley_dir: Path) -> handles.HandleMap:
-    return handles.HandleStore(booley_dir, jobs=True).load()
-
-
-def session_map(booley_dir: Path) -> handles.HandleMap:
     return handles.HandleStore(booley_dir).load()
 
 
@@ -107,91 +87,28 @@ def test_reconciled_terminal_job_without_ended_at_ages_from_started_at(tmp_path)
     assert set(job_map(tmp_path).entries) == {"sim-one"}
 
 
-def test_rowless_session_lives_while_its_job_lives_then_goes_with_aliases(tmp_path):
-    add_job(tmp_path, "sim-one", ended_ago=0.0, session_key="codex:one")
-    handles.HandleStore(tmp_path).reserve("worktree:new", "S", predecessors=("codex:one",))
-    prune(tmp_path)
-    kept = session_map(tmp_path)
-    assert kept.entries == {"codex:one": "S1"}
-    assert kept.aliases == {"worktree:new": "codex:one"}
-    prune(tmp_path, now=NOW + DAY + EPSILON)
-    assert session_map(tmp_path).entries == {}
-    assert session_map(tmp_path).aliases == {}
-
-
-PROCESS = ProcessIdentity(4242, "fixture", 7)
-
-
-@pytest.mark.parametrize(
-    ("state", "codex", "kept"),
-    [
-        (ProcessState.RUNNING, False, True),
-        (ProcessState.UNKNOWN, False, True),
-        (ProcessState.DEAD, False, False),
-        (ProcessState.REUSED, False, False),
-        (ProcessState.ZOMBIE, False, False),
-        (ProcessState.RUNNING, True, True),
-        (ProcessState.DEAD, True, False),
-    ],
-    ids=[
-        "running",
-        "unknown",
-        "dead",
-        "reused",
-        "zombie",
-        "codex-alias-running",
-        "codex-alias-dead",
-    ],
-)
-def test_rowless_process_session_lives_until_its_process_is_proven_dead(
-    tmp_path, monkeypatch, state, codex, kept
-):
-    key = process_session_key(PROCESS)
-    if codex:
-        reserve_codex_chat(tmp_path, PROCESS)
-    else:
-        handles.reserve_session_handle(tmp_path, key)
-    monkeypatch.setattr(pruning(), "observe_process", lambda identity: ProcessObservation(state))
-    prune(tmp_path)
-    loaded = session_map(tmp_path)
-    assert (key in loaded.entries) is kept
-    assert bool(loaded.aliases) is (kept and codex)
-
-
-def test_own_process_session_key_survives_pruning(tmp_path):
-    identity = capture_process_identity(os.getpid())
-    key = process_session_key(identity)
-    from_key = importlib.import_module(
-        "booley.runtime.session_activity"
-    ).process_identity_from_session_key
-    assert from_key(key) == identity
-    assert from_key("codex:thread") is None
-    handles.reserve_session_handle(tmp_path, key)
-    prune(tmp_path)
-    assert session_map(tmp_path).entries == {key: "S1"}
-
-
-def test_full_expiry_resets_both_counters_and_allocation_restarts_at_one(tmp_path):
+def test_full_expiry_resets_the_counter_and_allocation_restarts_at_one(tmp_path):
     for index in range(3):
-        add_job(tmp_path, f"sim-{index}", ended_ago=2 * DAY, session_key=f"codex:{index}")
+        add_job(tmp_path, f"sim-{index}", ended_ago=2 * DAY)
     prune(tmp_path)
     assert job_map(tmp_path) == handles.HandleMap()
-    assert session_map(tmp_path) == handles.HandleMap()
-    assert handles.reserve_session_handle(tmp_path, "codex:next") == "S1"
-    handles.register_job(tmp_path, "lint-new", "lint", None)
+    handles.register_job(tmp_path, "lint-new", "lint")
     assert job_map(tmp_path).entries == {"lint-new": "J-LINT1"}
 
 
 def test_partial_prune_keeps_counter_and_never_reissues_live_numbers(tmp_path):
-    add_job(tmp_path, "sim-old", ended_ago=2 * DAY, session_key="codex:old")
-    add_job(tmp_path, "sim-live", ended_ago=0.0, session_key="codex:live")
+    add_job(tmp_path, "sim-old", ended_ago=2 * DAY)
+    add_job(tmp_path, "sim-live", ended_ago=0.0)
     prune(tmp_path)
     assert job_map(tmp_path).entries == {"sim-live": "J-SIM2"}
-    assert session_map(tmp_path).entries == {"codex:live": "S2"}
     assert job_map(tmp_path).next_number == 3
-    assert handles.reserve_session_handle(tmp_path, "codex:next") == "S3"
-    handles.register_job(tmp_path, "sim-next", "sim", None)
+    handles.register_job(tmp_path, "sim-next", "sim")
     assert job_map(tmp_path).entries["sim-next"] == "J-SIM3"
+
+
+def test_prune_without_a_map_creates_nothing(tmp_path):
+    prune(tmp_path)
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.parametrize("damage", ["malformed", "unreadable"])
@@ -222,21 +139,9 @@ def test_job_entry_without_a_record_is_pruned_only_after_its_submit_stamp_ages(
     assert (run_id in job_map(tmp_path).entries) is kept
 
 
-def test_session_with_a_registry_row_under_an_alias_is_kept(tmp_path):
-    handles.reserve_session_handle(tmp_path, "codex:old")
-    handles.HandleStore(tmp_path).reserve("codex:canonical", "S", predecessors=("codex:old",))
-    attribution = Attribution("codex:canonical", "thread", "/work", "repo:main", namespace="x")
-    SessionRegistry(tmp_path).upsert(attribution, "sim", "completed", now=100)
-    before = session_map(tmp_path)
-    assert before.aliases == {"codex:canonical": "codex:old"}
-    prune(tmp_path)
-    assert session_map(tmp_path) == before
-
-
-@pytest.mark.parametrize("which", ["jobs", "sessions"])
-def test_corrupt_map_is_left_unchanged_and_still_refused(tmp_path, which):
-    add_job(tmp_path, "sim-one", ended_ago=2 * DAY, session_key="codex:one")
-    store = handles.HandleStore(tmp_path, jobs=which == "jobs")
+def test_corrupt_map_is_left_unchanged_and_still_refused(tmp_path):
+    add_job(tmp_path, "sim-one", ended_ago=2 * DAY)
+    store = handles.HandleStore(tmp_path)
     store.path.write_text("broken")
     with pytest.raises(ValueError):
         prune(tmp_path)
@@ -246,7 +151,7 @@ def test_corrupt_map_is_left_unchanged_and_still_refused(tmp_path, which):
 
 
 def test_nested_server_does_not_prune(tmp_path, monkeypatch):
-    add_job(tmp_path, "sim-one", ended_ago=2 * DAY, session_key="codex:one")
+    add_job(tmp_path, "sim-one", ended_ago=2 * DAY)
     before = {p: p.read_bytes() for p in tmp_path.rglob("*.json")}
     monkeypatch.setenv("BOOLEY_MCP_NESTED", "1")
     monkeypatch.setattr(pruning(), "resolve_common_booley_dir", lambda: tmp_path)
@@ -256,7 +161,7 @@ def test_nested_server_does_not_prune(tmp_path, monkeypatch):
 
 def test_server_start_logs_pruning_failure_and_still_serves(tmp_path, monkeypatch, caplog):
     add_job(tmp_path, "sim-one", ended_ago=2 * DAY)
-    handles.HandleStore(tmp_path, jobs=True).path.write_text("broken")
+    handles.HandleStore(tmp_path).path.write_text("broken")
     monkeypatch.delenv("BOOLEY_MCP_NESTED", raising=False)
     monkeypatch.setattr(pruning(), "resolve_common_booley_dir", lambda: tmp_path)
     started: list[threading.Thread | None] = []
@@ -271,122 +176,13 @@ def test_server_start_logs_pruning_failure_and_still_serves(tmp_path, monkeypatc
     monkeypatch.setattr(server, "_maybe_configure_job_logs_dir", lambda: None)
     monkeypatch.setattr(server, "_load_agent_settings_from_toml", lambda: None)
     monkeypatch.setattr(
-        server._McpLifetime,
-        "from_env",
-        classmethod(lambda cls, **_: SimpleNamespace(sessions=None)),
+        server._McpLifetime, "from_env", classmethod(lambda cls, **_: SimpleNamespace())
     )
     monkeypatch.setattr(server, "_build_server", lambda lifetime, **_: (object(), []))
     monkeypatch.setattr(server, "_streamable_http_app", lambda srv: object())
-    monkeypatch.setattr(server, "SessionMaintenanceApp", lambda app, sessions: app)
     with caplog.at_level("WARNING"):
         server._run_http(0)
         assert started[0] is not None
         started[0].join(timeout=hang_guard_s())
     assert len(served) == 1
     assert any("Handle pruning skipped" in r.getMessage() for r in caplog.records)
-
-
-def test_session_entry_lives_while_its_worktree_exists(tmp_path):
-    """A handle named ``S<N>`` stays while ``worktrees/s<N>`` exists, whatever else is gone (#2610)."""
-    assert handles.reserve_session_handle(tmp_path, "codex:x") == "S1"
-    worktree = tmp_path / "worktrees" / "s1"
-    worktree.mkdir(parents=True)
-    prune(tmp_path)
-    assert session_map(tmp_path).entries == {"codex:x": "S1"}
-    worktree.rmdir()
-    prune(tmp_path)
-    assert session_map(tmp_path).entries == {}
-
-
-def test_only_session_labels_are_tied_to_worktrees(tmp_path):
-    """A label that is not ``S<N>`` has no worktree to keep it."""
-    (tmp_path / "worktrees" / "s1").mkdir(parents=True)
-    handles.HandleStore(tmp_path).save(handles.HandleMap({"codex:y": "X1"}, next_number=2))
-    prune(tmp_path)
-    assert session_map(tmp_path).entries == {}
-
-
-def take_number_one(kind: str, main: Path, booley_dir: Path) -> None:
-    """Make ``s1`` taken in the way *kind* names, in the checkout that owns that name."""
-    if kind == "worktree":
-        (booley_dir / "worktrees" / "s1").mkdir(parents=True)
-    elif kind == "paired-branch":
-        init_repo(booley_dir)
-        git(booley_dir, "commit", "--allow-empty", "-qm", "fixture")
-        git(booley_dir, "branch", "booley-worktree/s1")
-    else:
-        branch = {
-            "branch": "booley/s1",
-            "nested-branch": "booley/s1/x",
-            "wt-branch": "wt/s1",
-            "nested-wt-branch": "wt/s1/x",
-        }[kind]
-        git(main, "branch", branch)
-
-
-def test_allocation_after_full_prune_skips_taken_numbers(tmp_path, monkeypatch):
-    """An emptied map restarts numbering, but never at a number whose worktree or branch lives."""
-    isolate_git(tmp_path, monkeypatch)
-    for kind in (
-        "worktree",
-        "branch",
-        "nested-branch",
-        "wt-branch",
-        "nested-wt-branch",
-        "paired-branch",
-    ):
-        (tmp_path / kind).mkdir()
-        main = main_project(tmp_path / kind)
-        booley_dir = main / ".booley"
-        assert handles.reserve_session_handle(booley_dir, "codex:old") == "S1", kind
-        prune(booley_dir)
-        assert session_map(booley_dir) == handles.HandleMap(), kind
-        # Taken only after the prune, so retention cannot explain the result.
-        take_number_one(kind, main, booley_dir)
-        assert handles.reserve_session_handle(booley_dir, "codex:new") == "S2", kind
-        assert session_map(booley_dir).entries == {"codex:new": "S2"}, kind
-
-
-def test_allocation_without_usable_git_skips_only_worktree_directories(
-    tmp_path, monkeypatch, caplog
-):
-    """Allocation never fails for want of Git: it warns and honours the directory rule alone."""
-
-    def timeout(*_args, **kwargs):
-        raise subprocess.TimeoutExpired("git", kwargs["timeout"])
-
-    for failure in ("not-a-repository", "git-missing", "timeout"):
-        checkout = tmp_path / failure / "checkout"
-        booley_dir = checkout / ".booley"
-        (booley_dir / "worktrees" / "s1").mkdir(parents=True)
-        pointer = "gitdir: " + str(tmp_path / "nowhere") + "\n"
-        (checkout / ".git").write_text(pointer, encoding="utf-8")
-        caplog.clear()
-        with monkeypatch.context() as patch, caplog.at_level("WARNING"):
-            if failure == "git-missing":
-                patch.setenv("PATH", "")
-            elif failure == "timeout":
-                patch.setattr(platform_paths, "run_captured_bounded", timeout)
-            assert handles.reserve_session_handle(booley_dir, "codex:new") == "S2", failure
-        assert any("Git branch list unavailable" in r.getMessage() for r in caplog.records), (
-            failure
-        )
-        assert session_map(booley_dir).entries == {"codex:new": "S2"}, failure
-
-
-def test_allocation_survives_a_branch_name_that_is_not_utf8(tmp_path, monkeypatch):
-    """One undecodable branch name must not stop handle allocation."""
-    real_run = platform_paths.run_captured_bounded
-    listing = (
-        "import sys; sys.stdout.buffer.write(b'refs/heads/booley/s1\\nrefs/heads/booley/\\xff\\n')"
-    )
-
-    def run_listing(_command, **kwargs):
-        return real_run([sys.executable, "-c", listing], **kwargs)
-
-    checkout = tmp_path / "checkout"
-    booley_dir = checkout / ".booley"
-    booley_dir.mkdir(parents=True)
-    (checkout / ".git").mkdir()
-    monkeypatch.setattr(platform_paths, "run_captured_bounded", run_listing)
-    assert handles.reserve_session_handle(booley_dir, "codex:new") == "S2"

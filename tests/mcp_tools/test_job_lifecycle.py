@@ -136,7 +136,7 @@ async def test_job_creation_allocates_handles_and_broken_maps_do_not_gate_execut
     project = tmp_path / "project-data"
     project.mkdir()
     monkeypatch.setattr("booley.runtime.booley_dir.resolve_common_booley_dir", lambda: project)
-    store = HandleStore(project, jobs=True)
+    store = HandleStore(project)
     if broken:
         store.root.mkdir(parents=True)
         store.path.write_text("broken")

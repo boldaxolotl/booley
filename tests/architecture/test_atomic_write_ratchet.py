@@ -20,7 +20,7 @@ _WRITES = frozenset(
 )
 _SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)
 
-STAGED_WRITE_CEILING = 37
+STAGED_WRITE_CEILING = 34
 
 
 def _call_name(call: ast.Call) -> str:

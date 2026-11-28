@@ -4,7 +4,7 @@ The harness runs Booley endpoints in two contexts:
 
 * TOP_LEVEL: the outer harness Python process invokes a Flow directly
   (CLI: ``python -m booley.flows.sim``). Owns outer-harness durable-record
-  hygiene: ghost Job record cleanup, handle pruning and Session registry writes.
+  hygiene: ghost Job record cleanup and handle pruning.
 * NESTED: the endpoint runs underneath an MCP server (either the
   developer's MCP server or a specialist sub-agent's nested MCP
   server). Outer-process bookkeeping is unsafe here — a parent's live Jobs
@@ -52,7 +52,6 @@ def should_run_outer_bookkeeping() -> bool:
 
     * ``mcp.handle_pruning.prune_at_start`` and
       ``mcp.job_lifecycle.reconcile_orphaned`` (ghost record cleanup)
-    * Session registry writes and maintenance (``mcp.server._McpLifetime``)
 
     It must short-circuit in NESTED mode — see the module docstring.
     """

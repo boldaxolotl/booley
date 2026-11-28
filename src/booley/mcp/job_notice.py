@@ -78,7 +78,7 @@ class UnreadNotice:
         )
 
     def _verdict(self, rec: jobrec.JobRecord) -> str:
-        """``WORD`` or ``WORD · metric``, as the Dashboard shows the same Job."""
+        """``WORD`` or ``WORD · metric``."""
         result = self._jobs.terminal_result(rec.run_id)
         report = result.report if result.report_fresh and result.report is not None else {}
         flow_result = present_job_report(

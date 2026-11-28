@@ -14,13 +14,6 @@ them and metrics you can trust.
 
 **Website:** [booley.dev](https://booley.dev/) for the full feature tour, videos, and blog.
 
-<picture>
-  <source media="(prefers-color-scheme: light)" srcset="https://booley.dev/docs/assets/booley-screenshot-light.png">
-  <img alt="Booley in VS Code with two Developer Agent sessions, the Booley
-  Dashboard, and waveform inspection"
-  src="https://booley.dev/docs/assets/booley-screenshot.png">
-</picture>
-
 ## What it does
 
 The [Features page](https://booley.dev/docs/features/) is the complete feature reference.
@@ -58,14 +51,15 @@ access limited to the LLM provider. You can leave it running unattended; it
 can't touch the rest of your machine. The same container gives everyone on the
 team identical tool versions.
 
-Run several agents at once. Booley creates and manages a separate git worktree
-and branch for each one, so they work independently and never overwrite each
-other. A built-in scheduler learns how much memory each simulation or synthesis
-run needs and starts as many together as your machine can hold, so small runs
-don't wait behind big ones and nothing runs out of memory.
+Run several agents at once. T3 Code gives each one a separate git worktree
+and branch, which Booley prepares, so they work independently and never
+overwrite each other. A built-in scheduler learns how much memory each
+simulation or synthesis run needs and starts as many together as your machine
+can hold, so small runs don't wait behind big ones and nothing runs out of
+memory.
 
-Everything sits in one VS Code window: agent chats, RTL, terminals, waveforms,
-and a dashboard showing what every agent is doing.
+Agent chats and terminals sit in T3 Code, a web UI in your browser, and a
+dashboard there shows each worktree's Jobs.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://booley.dev/docs/assets/feature-parallel-dark.svg">
@@ -105,7 +99,8 @@ recorded numbers show how the design moved over time.
 Three ways in, ordered by how much you want to invest:
 
 1. **[Watch](#watch).** See an engineer drive Booley on a demo project, start to finish. Zero setup.
-2. **[Demo](#demo).** Open the demo free in your browser, or clone it, then type your first request to the agent.
+2. **[Demo](#demo).** Clone a demo project already set up for Booley, then type
+   your first request to the agent.
 3. **[Your own project](#your-own-project).** Full integration on your own RTL.
 
 ### Watch
@@ -114,27 +109,31 @@ Two videos on the [Videos page](https://booley.dev/videos/) show an engineer dri
 
 ### Demo
 
-Try the demo in browser VS Code with one click. It is free, needs no install,
-and works on macOS too:
-
-[![Open in GitHub Codespaces](https://github.com/codespaces/badge.svg)](https://codespaces.new/boldaxolotl/booley-prj-picorv32?quickstart=1)
-
-The Codespace fits in GitHub's free monthly Codespaces allowance, and the
-agent runs GPT-6 Luna on us after a quick GitHub sign-in. Connect your own
-Claude or ChatGPT account if you want a smarter model. The first launch takes
-3-4 minutes while the container image builds. [How the free demo works](https://booley.dev/demo/).
-
-Or **[follow the demo repository's README](https://github.com/boldaxolotl/booley-prj-picorv32#readme)** to run the demo locally, after you [install Booley](#installation).
+The PicoRV32 demo is a small RISC-V CPU already set up for Booley. After you
+[install Booley](#installation), follow
+[its README](https://github.com/boldaxolotl/booley-prj-picorv32#readme).
 
 ### Your own project
 
-Follow the [Setup guide](https://booley.dev/docs/setup/) to integrate Booley with your own RTL project, after you [install Booley](#installation).
+After you [install Booley](#installation):
+
+1. Run `booley init` in your RTL repository to make it a Booley Project.
+2. Run `/booley-setup` in your Claude Code or Codex chat. It plans the setup
+   with you.
+3. Run `booley session up`. It starts the Sandbox and prints a pairing link.
+   Open it in your browser: T3 Code, Booley's user interface, shows your
+   Project. Run `/booley-setup` again in a thread on the main checkout to
+   finish.
+4. Commit what setup wrote. Then start a thread in a new worktree and give the
+   agent its first task.
+
+The [Setup guide](https://booley.dev/docs/setup/) has every step.
 
 ## Installation
 
 Booley runs on Windows and Linux (macOS is not supported) for SystemVerilog
-or Verilog designs. It needs Python 3.11+, Git, Docker, VS Code, and a Claude
-Code or Codex CLI. With
+or Verilog designs. It needs Python 3.11+, Git, Docker, a Claude Code or Codex
+CLI, and a web browser. With
 [pipx installed](https://pipx.pypa.io/latest/how-to/install-pipx.html):
 
 ```bash
@@ -154,7 +153,7 @@ Current integrations:
 - **Simulate / elaborate** — Verilator, Icarus Verilog; cocotb testbenches supported
 - **Lint** — Verilator, Verible
 - **ASIC synthesis** (PPA estimate, not tape-out) — logical Yosys or physical Yosys + OpenROAD
-- **Waveform debug** — `bwave` (+ VaporView GUI in VS Code)
+- **Waveform debug** — `bwave`
 - **FPGA implementation** — AMD Vivado
 - **Coming soon** — Synopsys VCS, Cadence Xcelium
 
@@ -190,7 +189,6 @@ Booley stands on a lot of other people's work. Thank you to:
 - **The authors of [Edalize](https://github.com/olofk/edalize) and [FuseSoC](https://github.com/olofk/fusesoc)**, and especially their lead maintainer, Olof Kindgren, for the framework that makes Booley's whole idea of a simple, unified CLI-over-EDA interface possible.
 - **The author of [vcdvcd](https://github.com/cirosantilli/vcdvcd), Ciro Santilli**, for the VCD-parsing work that seeded the `bwave` idea.
 - **The author of [wavepeek](https://github.com/kleverhq/wavepeek)**, another neat waveform-to-CLI EDA tool, for the clean top-level CLI interface that inspired `bwave`'s top-level CLI (the internals started well before wavepeek and are quite different).
-- **The author of [VaporView](https://github.com/Lramseyer/vaporview), Lloyd Ramseyer**, for the excellent VS Code waveform viewer that `bwave gui` drives for scoped waveform inspection right in VS Code.
 - **The authors of [Yosys](https://github.com/YosysHQ/yosys), [Verilator](https://github.com/verilator/verilator), [Icarus Verilog](https://github.com/steveicarus/iverilog), [Verible](https://github.com/chipsalliance/verible), and [sv2v](https://github.com/zachjs/sv2v)**, for the excellent open-source EDA tools that make Booley possible at all.
 - **[Matt Pocock](https://www.aihero.dev/)**, for his great agentic software engineering techniques, which shaped how Booley's agents are built and driven.
 

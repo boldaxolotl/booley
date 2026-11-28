@@ -161,13 +161,7 @@ from booley.harness.setup.skills import _deploy_skills
 from booley.harness.terminal_status import LineStatus, section_header, status_line
 from booley.presentation.colors import bold_amber, green, red, yellow
 from booley.projects.inventory import ProjectInventoryError, remember_project
-from booley.runtime import (
-    auth_token,
-    dashboard_tasks,
-    doctor_stamp,
-    project_repositories,
-    runtime_context,
-)
+from booley.runtime import auth_token, doctor_stamp, project_repositories, runtime_context
 from booley.runtime import devcontainer as dc
 from booley.runtime import host_docker as idk
 from booley.runtime import project_image as pi
@@ -1108,12 +1102,6 @@ def inspect_refreshable_runtime_image(project_root: Path) -> None:
         )
 
 
-def _dashboard_enabled(booley_dir: Path) -> bool:
-    from booley.runtime.dashboard_tasks import enabled
-
-    return enabled(booley_dir)
-
-
 def _project_sandbox_config(
     project_root: Path, project_data_source: Path | None = None
 ) -> SandboxConfig:
@@ -1297,7 +1285,6 @@ class _SandboxSpecSources:
     project_data_source: Path
     memory: str
     memory_swap: str
-    dashboard: bool
     timezone: str
     legacy_subscription_clis: frozenset[str] = frozenset()
 
@@ -1320,7 +1307,6 @@ class _SandboxSpecSources:
             mcp_start_command=dc.mcp_post_start_command(),
             memory=self.memory,
             memory_swap=self.memory_swap,
-            dashboard=self.dashboard,
             host_skills=list(self.host_skills),
             trusted_eda_mounts=trusted_eda_mounts,
             protected_devcontainer_source=docker_mount_path(
@@ -1434,7 +1420,6 @@ def _sandbox_spec_sources(
         project_data_source=source,
         memory=sandbox.memory,
         memory_swap=memory_swap,
-        dashboard=_dashboard_enabled(source),
         timezone=detect_host_timezone(),
         legacy_subscription_clis=_legacy_subscription_clis(ctx.project_root),
     )
@@ -1599,7 +1584,7 @@ def _step_sandbox(
     init_will_create_booley_dir: bool = False,
 ) -> None:
     """Seed the untracked devcontainer spec + long-lived Docker objects (ADR 0018)."""
-    ctx.step_banner("Sandbox (Reopen in Container)")
+    ctx.step_banner("Sandbox")
     if _sandbox_precondition_failed(
         ctx, nangate_pdk_root, init_will_create_booley_dir=init_will_create_booley_dir
     ):
@@ -1621,8 +1606,6 @@ def _step_sandbox(
     plan = _inspect_sandbox_plan(ctx, request)
     if plan is None:
         return
-    for notice in plan.dashboard_tasks.notices:
-        info(notice)
     if ctx.check_only or (not plan.pending_details and not ctx.force):
         _report_sandbox_state(ctx, plan)
         return
@@ -1633,7 +1616,7 @@ def _step_sandbox(
 
 
 def _step_sandbox_files(ctx: InitContext) -> None:
-    """Reconcile the Dashboard task and Interactive excludes without a Sandbox.
+    """Reconcile the Interactive excludes without a Sandbox.
 
     These are the Project-file parts of the Sandbox: no Docker, no Sandbox
     Issuance. Records nothing when everything is current, and nothing in check-only.
@@ -1643,20 +1626,12 @@ def _step_sandbox_files(ctx: InitContext) -> None:
     root = ctx.project_root
     try:
         excludes_changed = add_git_excludes(root, interactive_init.exclude_names(root))
-        transaction = dashboard_tasks.reconcile(root, authorized_project_data_source(root))
-    except (OSError, RuntimeError, RuntimeSpecError) as exc:
+    except (OSError, RuntimeError) as exc:
         err(f"could not reconcile Sandbox files: {exc}")
         ctx.record("interactive_files", "err", str(exc))
         return
     if excludes_changed:
         ok("reconciled Sandbox git exclusions (info/exclude); existing exclusions retained")
-    for notice in transaction.plan.notices:
-        info(notice)
-    for diagnostic in transaction.plan.diagnostics:
-        warn(diagnostic)
-    if transaction.plan.diagnostics:
-        ctx.record("interactive_files", "warn", "; ".join(transaction.plan.diagnostics))
-    elif excludes_changed or transaction.applied:
         ctx.record("interactive_files", "ok", "reconciled")
 
 
@@ -1762,7 +1737,8 @@ def _print_configured_advisory(ctx: InitContext) -> None:
     """
     if read_project_origin(booley_dir_for_init(ctx.project_root) / "booley.toml") == "scaffold":
         info("This scaffold Project is already configured; every enabled Flow is wired.")
-        info("Optional guide: AGENTS.md. Verify with `booley doctor --deep` in the container.")
+        info("Optional guide: AGENTS.md. Verify with `booley doctor --deep` in a")
+        info("T3 Code thread's terminal.")
     else:
         info("This project is already configured — booley.toml is populated, AGENTS.md is")
         info(
@@ -1941,15 +1917,10 @@ def _print_published_advisory(ctx: InitContext) -> None:
     subject = f"preconfigured {name} Project" if name else "preconfigured Project"
     info(f"This is the {subject} — the booley-setup skill does not apply.")
     print()
-    info(f"  * Open the {ctx.project_root.name} folder in VS Code")
-    info('  * In the popup notification, choose "Reopen in Container"')
-    info('    No popup? Press F1 (or Ctrl+Shift+P) and run "Dev Containers: Reopen in Container"')
-    # Only some published Projects ship a post-setup hook; naming a script
-    # that is not there would send the user to a "No such file" error.
-    booley_dir = resolve_booley_dir(ctx.project_root)
-    if (booley_dir / "hooks" / "post-setup.sh").is_file():
-        info("  * In the container, run `bash .booley/hooks/post-setup.sh`")
-    info("  * Then run `booley doctor --deep`; use booley-heal if it reports warnings")
+    info("  * Run `booley session up` here on the host and open the pairing link it prints")
+    info("  * In T3 Code, start a thread on the main checkout")
+    info("  * Then run `booley doctor --deep` in that thread's terminal; use")
+    info("    booley-heal if it reports warnings")
 
 
 def _failed_step_names(ctx: InitContext) -> list[str]:
@@ -1987,8 +1958,9 @@ def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bo
         if scaffolded:
             info("Scaffolded starter project; finish greenfield setup with `/booley-setup new`.")
         info("Next: run `/booley-setup new` in your agent chat here on the host (or continue")
-        info("it, if it ran this scaffold); it tells you when to Reopen in Container and")
-        info("runs the Doctor gate there.")
+        info("it, if it ran this scaffold); it tells you when to run `booley session up`,")
+        info("open its pairing link and continue in a T3 Code thread, and runs the Doctor")
+        info("gate there.")
         info("AGENTS.md is optional; commit the scaffolded files before verification.")
         if outstanding:
             info("Check the current enabled Flow wiring and Project configuration.")
@@ -2015,7 +1987,8 @@ def _print_success_advisory(ctx: InitContext, *, published: bool, scaffolded: bo
 def _print_planned_scaffold_advisory() -> None:
     info("After applying the scaffold, the greenfield route would be:")
     info("  * Run `/booley-setup new` in your agent chat here on the host; it tells you when")
-    info("    to Reopen in Container and runs the Doctor gate there")
+    info("    to run `booley session up`, open its pairing link and continue in a T3 Code")
+    info("    thread, and runs the Doctor gate there")
     info("No scaffold files were written by this check.")
 
 
@@ -2122,6 +2095,12 @@ _SUMMARY_STATUS = {
 }
 
 
+_SESSION_UP_NEXT = (
+    "Next: run `booley session up`, open the pairing link it prints and start a\n"
+    "T3 Code thread on the main checkout."
+)
+
+
 def _print_summary(ctx: InitContext) -> int:
     banner("Summary")
     exit_code = 0
@@ -2159,12 +2138,7 @@ def _print_summary(ctx: InitContext) -> int:
         print(green("Booley base setup complete."))
     elif advisory.detail == "published":
         print(green("Booley setup complete — this preconfigured Project is ready."))
-        folder = ctx.project_root.name
-        print(green(f"Next: open the {folder} folder in VS Code and use its popup notification"))
-        print(
-            green('to choose "Reopen in Container". No popup? Press F1 (or Ctrl+Shift+P) and run')
-        )
-        print(green('"Dev Containers: Reopen in Container".'))
+        print(green(_SESSION_UP_NEXT))
     elif advisory.detail == "scaffold":
         print(green("Booley base setup complete. Next: `/booley-setup new` in your agent chat"))
         print(green("here on the host."))
@@ -2173,14 +2147,15 @@ def _print_summary(ctx: InitContext) -> int:
         print(green("chat here on the host (or `/booley-setup` to port an existing design)."))
     elif advisory.detail == "configured":
         print(green("Booley setup complete — this project is ready."))
-        print(green('Next: open this repo in VS Code and choose "Reopen in Container".'))
+        print(green(_SESSION_UP_NEXT))
     else:
         # Setup starts with the skill's plan phase, which runs on the HOST; the
         # skill itself says when to move into the container (only its execution
         # steps need the Sandbox toolchain).
         print(green("Booley base setup complete. Run the booley-setup skill from your agent"))
         print(green("chat here on the host — it plans setup with you first, then tells you"))
-        print(green('when to "Reopen in Container" for the remaining steps.'))
+        print(green("when to run `booley session up`, open its pairing link and continue in a"))
+        print(green("T3 Code thread."))
     return exit_code
 
 
@@ -2430,7 +2405,8 @@ def _record_bootstrap(ctx: InitContext, result: BootstrapResult) -> None:
             ctx.record(name, "err", finding.detail)
         elif finding.state in {BootstrapState.PENDING, BootstrapState.WARNING}:
             warn(f"{finding.resource}: {finding.detail}")
-            ctx.record(name, "warn", finding.detail)
+            # The editor is optional: its absence is not pending work for `--check-only`.
+            ctx.record(name, "skip" if finding.resource == "vscode" else "warn", finding.detail)
         elif finding.state is BootstrapState.CHANGED:
             ok(f"{finding.resource}: {finding.detail}")
             ctx.record(name, "ok", finding.detail)
@@ -2556,8 +2532,8 @@ class ProjectInitialization:
     agent_config_path: Path
     #: Called once, after the Booley Directory content steps and before Git integration.
     host_facts: Callable[[], ProjectFacts]
-    #: Also reconcile the Dashboard task and Interactive excludes (host init leaves
-    #: them to its Sandbox Issuance step, which owns their preconditions).
+    #: Also reconcile the Interactive excludes (host init leaves them to its Sandbox
+    #: Issuance step, which owns their preconditions).
     reconcile_interactive_files: bool = True
     guidance_plan: InitPlan | None = None
     line_ending_baseline: Mapping[Path, bool | None] | None = None
@@ -2949,7 +2925,7 @@ def _sandbox_init_refusal(args: argparse.Namespace) -> str | None:
     if runtime_context.runtime_location() is runtime_context.RuntimeLocation.ISSUED_SANDBOX:
         return (
             "ERROR: `booley init` cannot run inside a Booley-issued Sandbox: the host "
-            "owns this Project's Sandbox and Dashboard task. Run `booley init` on the host."
+            "owns this Project's Sandbox. Run `booley init` on the host."
         )
     for attribute, flag in _SANDBOX_REFUSED_OPTIONS:
         if getattr(args, attribute, None):

@@ -10,15 +10,9 @@ from typing import NamedTuple
 
 from booley.config.settings import SubmoduleConfigError, load_submodule_config
 from booley.runtime import platform_paths
-from booley.runtime.booley_dir import checkout_booley_dir_relative_to, own_booley_dir
+from booley.runtime.booley_dir import checkout_booley_dir_relative_to
 from booley.runtime.filesystem_utils import safe_rmtree
-from booley.runtime.project_repositories import (
-    RepositoryCheckoutError,
-    common_git_dir,
-    is_standalone_git_repository,
-    paired_project_repository,
-    project_topology,
-)
+from booley.runtime.project_repositories import RepositoryCheckoutError, project_topology
 
 _TIMEOUT_S = 300
 _GIT_CONFIG = ("-c", "protocol.allow=never", "-c", "submodule.recurse=false")
@@ -89,32 +83,6 @@ def _materialize_selections(rollback_root: Path, selections: list[_Selection]) -
     except BaseException:
         _rollback(rollback_root, created)
         raise
-
-
-def materialize_worktree_submodules(worktree: Path) -> None:
-    """Populate a linked worktree's gitlinks, and its Paired Checkout's, from the main checkout.
-
-    Sources are the same paths in the repository's main checkout (and its
-    Versioned Booley Directory). Either selection failing removes everything this call created.
-    """
-    worktree = worktree.resolve()
-    try:
-        paired = paired_project_repository(worktree)
-    except RepositoryCheckoutError as exc:
-        raise SubmoduleMaterializationError(str(exc)) from exc
-    common = common_git_dir(worktree)
-    main = common.parent if common is not None and common.name == ".git" else None
-    selections = [_Selection(main, worktree, _selected_top_level_paths(worktree))]
-    if paired is not None:
-        # Main's own Versioned Booley Directory, else the pair's prefix (an older layout).
-        paired_source = None
-        if main is not None:
-            candidates = (own_booley_dir(main), main / paired.path_prefix)
-            paired_source = next((c for c in candidates if is_standalone_git_repository(c)), None)
-        selections.append(
-            _Selection(paired_source, paired.worktree.resolve(), submodule_paths(paired.worktree))
-        )
-    _materialize_selections(worktree, selections)
 
 
 def materialize_project_submodules(

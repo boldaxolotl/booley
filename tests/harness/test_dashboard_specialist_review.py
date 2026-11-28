@@ -1,7 +1,7 @@
-"""The Run wizard's reviewer form note and review lines: model, token use, timeout and sign-in (#3817).
+"""The Run form's reviewer note and review lines: model, token use, timeout and sign-in (#3817).
 
-Pilots drive the real wizard and the real argument check child, which resolves the
-worktree's settings and runs the Agent CLI's real health check in an empty home.
+The real argument check child resolves the worktree's settings and runs the Agent CLI's
+real health check in an empty home.
 """
 
 from __future__ import annotations
@@ -9,39 +9,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import pytest
-from textual.widgets import OptionList
-
 from booley.harness.dashboard import launch
 from tests.harness import test_dashboard_run as run_tests
-from tests.harness.test_dashboard_run import (
-    make_app,
-    real_launcher,
-    review_command,
-    set_choice,
-    set_text,
-    shown,
-    write_config,
-)
+from tests.harness.test_dashboard_run import write_config
 from tests.harness.test_dashboard_run_specialist import empty_home as empty_home_fixture
-from tests.harness.test_dashboard_run_specialist import to_reviewer
 
 # Fixtures of the Run tests, shared by assignment so a test finds them by name.
 checkout = run_tests.checkout
-spawned = run_tests.spawned
 empty_home = empty_home_fixture
 
 SIGN_IN = "run claude and use /login, or on the host: booley auth --cli claude"
 BASE_ARGUMENTS = ("--category", "rtl", "--focus", "bugs", "--scope", "fifo.v")
-
-
-async def review_reviewer(app, pilot):
-    """Fill the reviewer's form with a valid command and review it."""
-    wizard = await to_reviewer(app, pilot)
-    await set_choice(pilot, wizard, "Focus", "bugs")
-    await set_text(pilot, wizard, "Scope", "fifo.v")
-    await review_command(app, pilot, wizard)
-    return wizard
 
 
 def lines_of(facts: launch.SpecialistFacts) -> list[str]:
@@ -58,23 +36,6 @@ def check_facts(checkout: Path, *extra: str) -> launch.SpecialistFacts:
     specialist = getattr(result.facts, "specialist", None)
     assert specialist is not None, "the check reports no Specialist facts"
     return specialist
-
-
-@pytest.mark.asyncio
-async def test_review_shows_the_model_and_token_use_lines(
-    checkout, spawned, empty_home, monkeypatch
-):
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")
-    write_config(
-        checkout, '[agent]\nauth = "api_key"\n\n[models]\nreviewer = "claude-sonnet-5-5"\n'
-    )
-    app = make_app(checkout, real_launcher(checkout / ".booley"))
-    async with app.run_test(size=(120, 40)) as pilot:
-        wizard = await review_reviewer(app, pilot)
-        review = shown(wizard, "#run-review").splitlines()
-        assert "Model: claude-sonnet-5-5 on the claude Agent CLI" in review
-        assert "Uses model tokens on the claude Agent CLI's credential (auth = api_key)" in review
-        assert shown(wizard, "#run-error") == ""
 
 
 def test_review_shows_the_first_usable_fallback_entry(checkout, empty_home, monkeypatch):
@@ -94,29 +55,6 @@ def test_review_shows_the_first_usable_fallback_entry(checkout, empty_home, monk
         "cannot check the agent settings: ValueError: no usable [models] reviewer"
     )
     assert "gpt-6-luna: " in refusal
-
-
-@pytest.mark.asyncio
-async def test_a_failed_auth_check_refuses_the_launch_and_shows_the_fix(
-    checkout, spawned, empty_home
-):
-    write_config(checkout, '[agent]\nauth = "api_key"\n')
-    app = make_app(checkout, real_launcher(checkout / ".booley"))
-    copied: list[str] = []
-    app.copy_to_clipboard = copied.append  # type: ignore[method-assign]
-    async with app.run_test(size=(120, 40)) as pilot:
-        wizard = await review_reviewer(app, pilot)
-        expected = (
-            "Refused: [agent] auth = 'api_key' but ANTHROPIC_API_KEY is not set — export it,"
-            " or switch auth to 'subscription'. Copy command still works."
-        )
-        assert shown(wizard, "#run-error") == expected
-        await pilot.press("enter")  # Submit
-        await pilot.pause()
-        assert spawned == []
-        assert shown(wizard, "#run-error") == expected
-        await pilot.press("down", "enter")  # Copy command still works
-        assert copied == [shown(wizard, "#run-command")]
 
 
 def test_visitor_without_a_credential_warns_with_the_fix():
@@ -181,22 +119,6 @@ def test_an_error_the_check_cannot_evaluate_refuses_with_its_message(
     spaced = check_facts(checkout)
     assert "credential contains whitespace" in spaced.refusal
     assert agent_refusal(spaced).startswith("Refused: ")
-
-
-@pytest.mark.asyncio
-async def test_form_note_shows_the_model_and_agent_cli(checkout, empty_home):
-    write_config(
-        checkout, '[agent]\nclis = ["claude", "codex"]\n\n[models]\nreviewer = "gpt-6-luna"\n'
-    )
-    launcher = real_launcher(checkout / ".booley")
-    app = make_app(checkout, launcher)
-    async with app.run_test(size=(120, 40)) as pilot:
-        wizard = await to_reviewer(app, pilot)
-        assert shown(wizard, "#run-note") == "Model: gpt-6-luna on the codex Agent CLI"
-        assert wizard.query_one("#run-form", OptionList).display
-    write_config(checkout, '[models]\nbogus = "x"\n')
-    note = launcher.form("specialist", "reviewer", checkout).note
-    assert note.startswith("Cannot read the agent settings: BackendConfigError:")
 
 
 def test_malformed_specialist_facts_are_no_facts():

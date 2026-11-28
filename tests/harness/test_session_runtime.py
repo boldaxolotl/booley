@@ -8,15 +8,19 @@ rather than a hand-written dict.
 from __future__ import annotations
 
 import json
+import logging
 import ntpath
 import os
 import re
+import socket
+import struct
 import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar
@@ -50,7 +54,10 @@ from tests.harness.session_docker_fake import (
     headless_session_entry,
     isolate_session_cli,
     run_cli,
+    run_registrar_on_post_start,
+    sandbox_exec_on_path,
     serve_sandbox_docker,
+    serve_standalone_probe,
 )
 from tests.lifecycle_lock_support import held_lifecycle_lock, observe_lifecycle_contention
 from tests.pipe_holding_tree import (
@@ -61,6 +68,7 @@ from tests.pipe_holding_tree import (
 )
 from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
+from tests.t3code_fake import TOKEN, echo_listener, serve_t3_code
 from tests.time_budget import hang_guard_s, scaled
 
 
@@ -1057,21 +1065,28 @@ def _sandbox_state(
     return state
 
 
+def _issue_project(docker: SandboxDocker, root: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Give *root* a spec on disk, and its image and the egress network on the Docker fake."""
+    (root / ".booley").mkdir()
+    image = sr.project_image.project_image_name(root)
+    _write_spec(root, _spec(image=image))
+    docker.networks.add(dc.EGRESS_NETWORK)
+    docker.images[image] = {"Id": _test_issuance(root).image_id}
+    # The host-issued authority store and its licence record lie outside these entry points.
+    monkeypatch.setattr(
+        runtime_spec, "validate", lambda project, *_a, **_k: _test_issuance(project)
+    )
+    monkeypatch.setattr(
+        runtime_spec, "authorized_project_data_source", lambda path: path / ".booley"
+    )
+    monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
+
+
 @pytest.fixture
 def up_docker(workspace: Path, monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
     """A Project with a spec on disk, and the egress network and spec image on a Docker fake."""
     docker = serve_sandbox_docker(monkeypatch)
-    (workspace / ".booley").mkdir()
-    image = sr.project_image.project_image_name(workspace)
-    _write_spec(workspace, _spec(image=image))
-    docker.networks.add(dc.EGRESS_NETWORK)
-    docker.images[image] = {"Id": _test_issuance(workspace).image_id}
-    # The host-issued authority store and its licence record lie outside these entry points.
-    monkeypatch.setattr(runtime_spec, "validate", lambda *_a, **_k: _test_issuance(workspace))
-    monkeypatch.setattr(
-        runtime_spec, "authorized_project_data_source", lambda _path: workspace / ".booley"
-    )
-    monkeypatch.setattr(runtime_spec, "requested_license", lambda _path, **_kwargs: None)
+    _issue_project(docker, workspace, monkeypatch)
     return docker
 
 
@@ -1096,6 +1111,12 @@ def _configure_image(monkeypatch: pytest.MonkeyPatch, workspace: Path, image: st
     )
     monkeypatch.setenv("BOOLEY_DIR", str(workspace / ".booley"))
     reset_cache()
+
+
+def _add_post_setup_hook(workspace: Path) -> None:
+    hooks = workspace / ".booley" / "hooks"
+    hooks.mkdir(parents=True, exist_ok=True)
+    (hooks / "post-setup.sh").write_bytes(b"#!/bin/sh\n")
 
 
 def _mutations(docker: SandboxDocker) -> list[list[str]]:
@@ -1160,6 +1181,7 @@ class TestUp:
             pytest.param(True, [], ["postStartCommand"], id="running"),
         ],
     )
+    @pytest.mark.parametrize("hooked", [False, True], ids=["no-hook", "hook"])
     def test_lifecycle_verbs_and_hooks(
         self,
         workspace: Path,
@@ -1169,19 +1191,77 @@ class TestUp:
         verbs: list[str],
         hooks: list[str],
         entry: str,
+        hooked: bool,
     ) -> None:
         name = sr.session_container_name(workspace)
         if state is not None:
             up_docker.containers[name] = _sandbox_state(workspace, running=state)
+        if hooked:
+            _add_post_setup_hook(workspace)
         spec = json.loads(dc.devcontainer_path(workspace).read_text(encoding="utf-8"))
 
         assert getattr(sr, entry)(workspace) == name
 
         assert [call[1] for call in up_docker.calls if call[1] in {"run", "start"}] == verbs
+        # Before the lifecycle commands, whose registrar launches the Automatic Doctor.
+        setup = ["python -m booley.harness.incontainer_post_setup"] if hooked else []
         assert [call for call in up_docker.calls if call[1] == "exec"] == [
-            ["docker", "exec", name, "bash", "-lc", spec[hook]] for hook in hooks
+            ["docker", "exec", name, "bash", "-lc", command]
+            for command in [*setup, *(spec[hook] for hook in hooks)]
         ]
+        # The hook's output and warning reach the `session up` terminal only uncaptured.
+        assert [call[-1] for call in up_docker.uncaptured if call[-1] in setup] == setup
         assert "superseded" not in caplog.text
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="the registrar runs in the Linux Sandbox")
+    def test_post_start_starts_t3_code_and_the_dashboard_once(
+        self,
+        workspace: Path,
+        up_docker: SandboxDocker,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        tmp_path: Path,
+    ) -> None:
+        t3 = serve_t3_code(monkeypatch, volume=tmp_path / "t3-volume")
+        runs = run_registrar_on_post_start(up_docker, workspace, monkeypatch)
+        up_docker.containers[sr.session_container_name(workspace)] = _sandbox_state(
+            workspace, running=False
+        )
+
+        sr.up(workspace)
+        sr.up(workspace)
+        before_down = len(up_docker.calls)
+        sr.down(workspace)
+        t3.running = t3.dashboard_running = False  # the removed container's processes are gone
+        sr.up(workspace)
+
+        base = "/home/agent/.t3"
+        serve = ["t3", "serve", "--host", "127.0.0.1", "--port", "3773", "--base-dir", base]
+        assert t3.served == [[*serve, str(workspace)]] * 2
+        assert t3.added == [["t3", "project", "add", "--base-dir", base, str(workspace)]] * 2
+        dashboard = [sys.executable, "-m", "booley.harness.booley", "dashboard"]
+        assert t3.dashboards == [dashboard] * 2
+        for name in ("t3", "dashboard"):
+            assert [(f"{name}:started" in run, f"{name}:running" in run) for run in runs] == [
+                (True, False),
+                (False, True),
+            ] * 2
+        later = up_docker.calls[before_down:]
+        (created,) = [call for call in later if call[1] == "run"]
+        mounts = _flag_values(created, "--mount")
+        assert f"source=booley-t3-state-i2c,target={base},type=volume" in mounts
+        assert f"BOOLEY_T3_BASE_DIR={base}-i2c" in _flag_values(created, "-e")
+        assert any(mount.endswith("target=/booley,type=bind") for mount in mounts)
+        assert not any(c[1] == "volume" or (c[1] == "rm" and "-v" in c) for c in later)
+        logs = [
+            caplog.text,
+            *runs,
+            *(f.read_text(errors="replace") for f in tmp_path.rglob("*") if f.is_file()),
+        ]
+        logs += [Path(sink).read_text() for sink in t3.sinks]
+        assert t3.sinks
+        assert t3.serve_stdouts == [subprocess.DEVNULL] * 2
+        assert TOKEN not in "".join(logs)
 
     def test_existing_container_with_runtime_drift_is_never_started(
         self, workspace: Path, up_docker: SandboxDocker
@@ -1372,14 +1452,36 @@ class TestUp:
     def test_failing_hook_warns_but_leaves_container_up(
         self, workspace: Path, up_docker: SandboxDocker, caplog: pytest.LogCaptureFixture
     ) -> None:
+        _add_post_setup_hook(workspace)
         up_docker.exec_reply = lambda argv: subprocess.CompletedProcess(
             argv, 1, "", "registrar boom"
         )
 
         assert sr.up(workspace) == sr.session_container_name(workspace)
 
+        assert "post-setup hook in the main checkout failed (exit 1)" in caplog.text
         assert "postCreateCommand failed" in caplog.text
         assert sr.session_container_name(workspace) in up_docker.containers
+
+    @pytest.mark.parametrize("state", [None, False], ids=["absent", "stopped"])
+    def test_interrupted_main_checkout_hook_keeps_no_new_sandbox(
+        self, workspace: Path, up_docker: SandboxDocker, state: bool | None
+    ) -> None:
+        name = sr.session_container_name(workspace)
+        if state is not None:
+            up_docker.containers[name] = _sandbox_state(workspace, running=state)
+        _add_post_setup_hook(workspace)
+
+        def interrupt(_argv: list[str]) -> subprocess.CompletedProcess[str]:
+            raise KeyboardInterrupt
+
+        up_docker.exec_reply = interrupt
+
+        with pytest.raises(KeyboardInterrupt):
+            sr.up(workspace)
+
+        # A new Sandbox without its lifecycle commands would be reused as it is.
+        assert (name in up_docker.containers) is (state is not None)
 
 
 def _docker_mounts(spec: dict, workspace: Path, booley_dir_target: str) -> list[dict]:
@@ -1406,7 +1508,8 @@ def _docker_mounts(spec: dict, workspace: Path, booley_dir_target: str) -> list[
 
 def _issued_container(spec: dict, workspace: Path, *, vscode: bool = False) -> dict:
     """Inspect state of a container started exactly as *spec* issues it."""
-    sections = (spec["containerEnv"],) if vscode else (spec["remoteEnv"], spec["containerEnv"])
+    container = {key: sr.substitute(str(v), workspace) for key, v in spec["containerEnv"].items()}
+    sections = (container,) if vscode else (spec["remoteEnv"], container)
     environment = {key: value for section in sections for key, value in section.items()}
     return {
         "Image": spec["image"],
@@ -1879,6 +1982,776 @@ class TestStaleBooleyBakeWarning:
             assert "revision abc123 -> def456" in caplog.text
             assert "wheel_source_fingerprint current -> stale" in caplog.text
             assert sr.sandbox_remedy(workspace) in caplog.text
+
+
+_RELAY_SLOT_WIDTH = 16
+_RELAY_SLOTS = 300
+
+
+class TestT3CodeRelay:
+    @pytest.fixture
+    def relay_ports(self) -> Iterator[range]:
+        """Claim a port range of this test's own: concurrent test processes share the host.
+
+        The product range is 100 ports from 3780 that every test process would prefer first, so
+        one test's relay (or its "nothing listens here" probe) would answer another's. A slot's
+        lock port is held for the test, which makes its range exclusive among test processes.
+        """
+        start = os.getpid() % _RELAY_SLOTS
+        for offset in range(_RELAY_SLOTS):
+            slot = (start + offset) % _RELAY_SLOTS
+            lock = socket.socket()
+            try:
+                lock.bind(("127.0.0.1", 25000 + slot))
+            except OSError:
+                lock.close()
+                continue
+            break
+        else:  # pragma: no cover - every slot is held by another test process
+            pytest.fail("no free relay port slot")
+        with lock:
+            yield range(20000 + slot * _RELAY_SLOT_WIDTH, 20000 + (slot + 1) * _RELAY_SLOT_WIDTH)
+
+    @staticmethod
+    def relay_module(monkeypatch: pytest.MonkeyPatch, ports: range):
+        """The relay module, pointed at *ports* instead of the product range."""
+        from booley.runtime import t3_relay
+
+        monkeypatch.setattr(t3_relay, "PORTS", ports)
+        return t3_relay
+
+    @pytest.fixture
+    def relay_cli(
+        self,
+        up_docker: SandboxDocker,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        relay_ports: range,
+    ):
+        """Run `booley session up` and `down` on the Docker fake; stop every relay at teardown."""
+        from booley.harness import booley as cli
+        from booley.harness import doctor
+
+        isolate_session_cli(monkeypatch, tmp_path)
+        # Doctor, its due check and upgrade advice need a real image and host state that the
+        # Docker fake lacks, and they are not what these tests observe.
+        monkeypatch.setattr(health, "due_reason", lambda _root: None)
+        monkeypatch.setattr(cli, "_report_upgrade_before_session", lambda _root: None)
+        monkeypatch.setattr(
+            doctor, "observe_deep_status", lambda *_a, **_k: SimpleNamespace(render=lambda: "")
+        )
+        serve_standalone_probe(monkeypatch)  # `session down` warns of Standalone Jobs
+        roots: dict[Path, None] = {}
+        # Any exec answers a pairing request with a link on the relay port it names.
+        up_docker.exec_reply = lambda argv: completed(
+            stdout=json.dumps({"pairUrl": f"http://127.0.0.1:{argv[-1].split()[-1]}/pair#token=t"})
+        )
+
+        def run(command: list[str], root: Path) -> tuple[str, str]:
+            self.relay_module(monkeypatch, relay_ports)
+            roots[root] = None
+            assert run_cli(monkeypatch, ["-C", str(root), "session", *command]) == 0
+            captured = capsys.readouterr()
+            return captured.out, captured.err
+
+        def up(root: Path) -> tuple[int, str]:
+            out, err = run(["up"], root)
+            assert "localhost" not in out
+            match = re.search(r"T3 Code relay: 127\.0\.0\.1:(\d+)", out)
+            assert match, f"no T3 Code relay address in: {out}"
+            return int(match[1]), err
+
+        yield SimpleNamespace(up=up, run=run, down=lambda root: run(["down"], root)[0])
+        for root in roots:
+            run(["down"], root)
+
+    linux_only = pytest.mark.skipif(
+        sys.platform != "linux", reason="a script runs as docker; 127.0.0.2 is Linux loopback"
+    )
+
+    @linux_only
+    def test_session_up_relays_host_loopback_into_the_sandbox_until_down(
+        self,
+        workspace: Path,
+        tmp_path: Path,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        def connect(host: str, port: int) -> socket.socket:
+            return socket.create_connection((host, port), timeout=hang_guard_s())
+
+        with echo_listener() as echo:
+            sandbox_exec_on_path(
+                monkeypatch, tmp_path / "bin", echo.port, sr.session_container_name(workspace)
+            )
+            port, _ = relay_cli.up(workspace)
+            with connect("127.0.0.1", port) as client:
+                client.sendall(b"ping")
+                client.shutdown(socket.SHUT_WR)
+                assert b"".join(iter(lambda: client.recv(64), b"")) == b"ping"
+            with pytest.raises(
+                OSError
+            ):  # a wildcard bind would accept this other loopback address
+                connect("127.0.0.2", port)
+            down = relay_cli.down(workspace)
+
+        assert "stopped the T3 Code relay" in down
+        with pytest.raises(OSError):
+            connect("127.0.0.1", port)
+
+    @linux_only
+    def test_a_client_reset_ends_the_connection_into_the_sandbox(
+        self,
+        workspace: Path,
+        tmp_path: Path,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        with echo_listener() as echo:
+            sandbox_exec_on_path(
+                monkeypatch, tmp_path / "bin", echo.port, sr.session_container_name(workspace)
+            )
+            port, _ = relay_cli.up(workspace)
+            with socket.create_connection(("127.0.0.1", port), timeout=hang_guard_s()) as client:
+                client.sendall(b"ping")
+                assert client.recv(64) == b"ping"
+                # Closing with a zero linger time sends a reset, not a graceful close.
+                client.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+
+            assert echo.closed.wait(hang_guard_s())
+
+    def test_the_relay_never_imports_from_its_working_directory(
+        self, workspace: Path, tmp_path: Path, relay_ports: range, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        t3_relay = self.relay_module(monkeypatch, relay_ports)
+        shadow, marker = tmp_path / "shadow", tmp_path / "ran"
+        shadow.mkdir()
+        (shadow / "booley.py").write_bytes(f"open({str(marker)!r}, 'w').close()\n".encode())
+        monkeypatch.chdir(shadow)
+        try:
+            t3_relay.start(workspace, "one")
+        finally:
+            t3_relay.stop(workspace)
+
+        assert not marker.exists()
+
+    def test_start_reuses_a_running_relay_and_replaces_one_for_another_container(
+        self, workspace: Path, relay_ports: range, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        t3_relay = self.relay_module(monkeypatch, relay_ports)
+
+        def record() -> dict[str, object]:
+            document = t3_relay.relay_store().read(str(workspace.resolve()))
+            assert document is not None
+            return document
+
+        first = t3_relay.start(workspace, "one")
+        try:
+            one = record()
+            assert t3_relay.start(workspace, "one") == first
+            assert record() == one
+            # The old relay holds the port until it ends, so the same port is a new relay.
+            assert t3_relay.start(workspace, "two") == first
+            assert record()["container"] == "two"
+            assert record()["process"] != one["process"]
+        finally:
+            assert t3_relay.stop(workspace)
+
+    @pytest.mark.parametrize(
+        ("changes", "problem"),
+        [
+            ({"port": 80}, "port 80 is outside"),
+            ({"process": {"pid": 1}}, "not a process identity"),
+            ({"schema_version": 2}, "schema_version must be 1"),
+        ],
+    )
+    def test_session_up_refuses_an_invalid_relay_record(
+        self,
+        workspace: Path,
+        relay_cli: SimpleNamespace,
+        relay_ports: range,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+        changes: dict[str, object],
+        problem: str,
+    ) -> None:
+        t3_relay = self.relay_module(monkeypatch, relay_ports)
+        root = str(workspace.resolve())
+        record = {
+            "schema_version": 1,
+            "project_root": root,
+            "port": t3_relay.PORTS[0],
+            "container": "c",
+            "process": None,
+        }
+        t3_relay.relay_store().write(root, json.dumps({**record, **changes}))
+
+        assert run_cli(monkeypatch, ["-C", root, "session", "up"]) == 2
+
+        assert problem in capsys.readouterr().err
+        t3_relay.relay_store().path(root).unlink()
+
+    def test_relay_port_is_per_project_stable_and_moves_off_a_held_port(
+        self,
+        workspace: Path,
+        tmp_path: Path,
+        up_docker: SandboxDocker,
+        relay_cli: SimpleNamespace,
+        relay_ports: range,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        other = tmp_path / "other"
+        other.mkdir()
+        _issue_project(up_docker, other, monkeypatch)
+
+        first, _ = relay_cli.up(workspace)
+        second, _ = relay_cli.up(other)
+        relay_cli.down(workspace)
+        again, notice = relay_cli.up(workspace)
+        relay_cli.down(workspace)
+        with socket.socket() as holder:
+            with suppress(OSError):  # already held by another process is as good
+                holder.bind(("127.0.0.1", first))
+                holder.listen()
+            moved, warning = relay_cli.up(workspace)
+
+        assert {first, second, moved} <= set(relay_ports)
+        assert first != second
+        assert (again, notice) == (first, "")
+        assert moved not in {first, second}
+        assert f"127.0.0.1:{first} is held" in warning
+        assert "must pair again" in warning
+
+    def record_port(self, root: Path, port: int) -> None:
+        """Record *port* for the Project at *root*, as an earlier `session up` and `down` did."""
+        from booley.runtime import t3_relay
+
+        document = {
+            "schema_version": 1,
+            "project_root": str(root.resolve()),
+            "port": port,
+            "container": "c",
+            "process": None,
+        }
+        t3_relay.relay_store().write(str(root.resolve()), json.dumps(document))
+
+    def test_a_held_recorded_port_moves_to_the_next_port_up_not_the_first_free_one(
+        self, workspace: Path, relay_cli: SimpleNamespace, relay_ports: range
+    ) -> None:
+        recorded = relay_ports[10]
+        self.record_port(workspace, recorded)
+        assert relay_cli.up(workspace) == (recorded, "")
+        relay_cli.down(workspace)
+
+        with socket.socket() as holder:
+            with suppress(OSError):  # already held by another process is as good
+                holder.bind(("127.0.0.1", recorded))
+                holder.listen()
+            moved, warning = relay_cli.up(workspace)
+
+        assert moved > recorded
+        assert f"127.0.0.1:{recorded} is held" in warning
+
+    def test_a_free_recorded_port_stays_when_another_project_recorded_it_too(
+        self,
+        workspace: Path,
+        tmp_path: Path,
+        up_docker: SandboxDocker,
+        relay_cli: SimpleNamespace,
+        relay_ports: range,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        other = tmp_path / "other"
+        other.mkdir()
+        _issue_project(up_docker, other, monkeypatch)
+        recorded = relay_ports[10]
+        self.record_port(other, recorded)
+        self.record_port(workspace, recorded)
+
+        assert relay_cli.up(workspace) == (recorded, "")
+
+    def test_session_up_fails_when_the_range_has_no_free_port(
+        self,
+        workspace: Path,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from booley.runtime import t3_relay
+
+        with socket.socket() as holder:
+            holder.bind(("127.0.0.1", 0))
+            holder.listen()
+            port = holder.getsockname()[1]
+            # The real range is 100 ports on a shared host: a one-port range stands in for it.
+            monkeypatch.setattr(t3_relay, "PORTS", range(port, port + 1))
+
+            assert run_cli(monkeypatch, ["-C", str(workspace), "session", "up"]) == 2
+
+        assert f"no free port in 127.0.0.1:{port}-{port}" in capsys.readouterr().err
+
+    @linux_only
+    def test_pairing_links_ui_state_and_no_ui(
+        self,
+        workspace: Path,
+        tmp_path: Path,
+        up_docker: SandboxDocker,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        from booley.runtime import session_admission
+
+        caplog.set_level(logging.DEBUG)
+        monkeypatch.setattr(
+            session_admission, "running_project_sandboxes", real_running_project_sandboxes
+        )
+        up_docker.created = _sandbox_state(workspace)
+        t3 = serve_t3_code(monkeypatch, volume=tmp_path / "t3-volume")
+        runs = run_registrar_on_post_start(up_docker, workspace, monkeypatch)
+
+        no_ui, _ = relay_cli.run(["up", "--no-ui"], workspace)
+        off, _ = relay_cli.run(["status"], workspace)
+        up, _ = relay_cli.run(["up"], workspace)
+        pair, _ = relay_cli.run(["pair"], workspace)
+        status, _ = relay_cli.run(["status"], workspace)
+
+        assert "pair#token" not in no_ui
+        assert "T3 Code thread" in up and "T3 Code thread" not in no_ui
+        assert "booley session enter" in no_ui
+        assert all("t3:off dashboard:off" in run for run in runs[:2])  # create and start hook
+        assert off == "running\nUI: off\nDashboard: off\n"
+        assert len(t3.served) == len(t3.dashboards) == 1
+        (port,) = re.findall(r"T3 Code relay: 127\.0\.0\.1:(\d+)", up)
+        base = f"http://127.0.0.1:{port}"
+        assert f"{base}/pair#token={TOKEN}-1" in up
+        assert f"{base}/pair#token={TOKEN}-2" in pair
+        assert [
+            (cmd[cmd.index("--ttl") + 1], cmd[cmd.index("--base-url") + 1]) for cmd in t3.paired
+        ] == [("5m", base)] * 2
+        ui = f"T3 Code: running\nT3 Code relay: 127.0.0.1:{port}\nDashboard: "
+        assert status.endswith(f"{ui}running\n")
+        files = (f.read_text(errors="replace") for f in tmp_path.rglob("*") if f.is_file())
+        assert TOKEN not in "".join([caplog.text, *runs, *files])
+        t3.dashboard_running = False
+        dead, _ = relay_cli.run(["status"], workspace)
+        assert dead.endswith(f"{ui}not answering on 127.0.0.1:8090\n")
+
+    @linux_only
+    def test_a_foreign_listener_on_the_t3_code_port_gets_no_pairing_link(
+        self,
+        workspace: Path,
+        up_docker: SandboxDocker,
+        relay_cli: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from booley.runtime import session_admission
+
+        monkeypatch.setattr(
+            session_admission, "running_project_sandboxes", real_running_project_sandboxes
+        )
+        up_docker.created = _sandbox_state(workspace)
+        t3 = serve_t3_code(monkeypatch, foreign=True)
+        runs = run_registrar_on_post_start(up_docker, workspace, monkeypatch)
+
+        up, warned = relay_cli.run(["up"], workspace)
+        status, _ = relay_cli.run(["status"], workspace)
+
+        held = "127.0.0.1:3773 in the Sandbox is held by another process"
+        assert "t3:port-taken" in runs[0] and held in runs[0]
+        assert "pair#token" not in up and held in warned
+        assert f"T3 Code: off ({held}" in status
+        with pytest.raises(sr.SessionError, match=held):
+            sr.pairing_link(workspace)
+        assert t3.served == t3.paired == []
+
+    def test_session_up_warns_and_succeeds_when_the_pairing_link_fails(
+        self, workspace: Path, up_docker: SandboxDocker, relay_cli: SimpleNamespace
+    ) -> None:
+        up_docker.exec_reply = lambda _argv: completed(1, TOKEN)
+
+        _, err = relay_cli.up(workspace)
+
+        assert "no T3 Code pairing link: t3 auth pairing create failed (exit 1)" in err
+        assert TOKEN not in err
+
+    def test_status_and_pair_report_an_unobservable_relay(
+        self, workspace: Path, attached: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from booley.runtime import t3_relay
+
+        _running_headless(attached.docker, workspace)
+        attached.docker.exec_reply = lambda argv: completed(stdout="running running\n")
+        _record_relay(workspace, monkeypatch, "UNKNOWN")
+
+        status = "T3 Code: running\nT3 Code relay: unknown\nDashboard: running"
+        assert sr.ui_status(workspace) == status
+        with pytest.raises(t3_relay.T3RelayError, match="cannot tell whether"):
+            sr.pairing_link(workspace)
+
+
+@pytest.mark.parametrize(
+    ("reply", "problem"),
+    [
+        (subprocess.CompletedProcess([], 1, TOKEN, TOKEN), r"failed \(exit 1\)"),
+        (subprocess.CompletedProcess([], 0, f"not json {TOKEN}", ""), "is not a link"),
+        (
+            subprocess.CompletedProcess(
+                [], 0, json.dumps({"pairUrl": f"http://localhost:3780/pair#token={TOKEN}"}), ""
+            ),
+            "is not a link",
+        ),
+        (subprocess.TimeoutExpired("docker", 1), r"no pairing link in \d+ seconds"),
+    ],
+    ids=["exit", "not-json", "localhost", "timeout"],
+)
+def test_a_bad_pairing_reply_is_refused_without_its_token(
+    reply: subprocess.CompletedProcess[str] | Exception,
+    problem: str,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def answer(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    caplog.set_level(logging.DEBUG)
+    monkeypatch.setattr(sr, "run_captured_bounded", answer)
+
+    with pytest.raises(sr.SessionError, match=problem) as refused:
+        sr.create_pairing_link("c", 3780)
+
+    assert TOKEN not in f"{refused.value}{caplog.text}"
+
+
+@pytest.mark.parametrize("argv", [[], ["unknown"], ["pair"], ["pair", "not-a-port"]])
+def test_the_in_sandbox_t3_entry_refuses_a_bad_verb_or_port(argv: list[str]) -> None:
+    from booley.harness import incontainer_t3
+
+    with pytest.raises(SystemExit) as refused:
+        incontainer_t3.main(argv)
+
+    assert refused.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("sandbox", "problem"),
+    [(None, "no running Sandbox"), ("editor", "VS Code owns"), ("headless", "the UI is off")],
+)
+def test_pair_is_refused_without_a_headless_sandbox_and_relay(
+    workspace: Path, attached: SimpleNamespace, sandbox: str | None, problem: str
+) -> None:
+    if sandbox is not None:
+        name = sandbox if sandbox == "editor" else sr.session_container_name(workspace)
+        attached.docker.containers[name] = _sandbox_state(
+            workspace, vscode=sandbox == "editor", name=name
+        )
+
+    with pytest.raises(sr.SessionError, match=problem):
+        sr.pairing_link(workspace)
+
+
+def _record_relay(workspace: Path, monkeypatch: pytest.MonkeyPatch, process: str) -> None:
+    """Record a relay into the canonical Sandbox whose process is observed as *process*."""
+    from booley.core.process_identity import ProcessIdentity
+    from booley.runtime import t3_relay
+    from booley.runtime.pid import ProcessState, capture_process_identity
+
+    identity = capture_process_identity(os.getpid())
+    assert isinstance(identity, ProcessIdentity)
+    root = str(workspace.resolve())
+    record = {"schema_version": 1, "project_root": root, "port": 3780}
+    record.update(container=sr.session_container_name(workspace), process=identity.to_payload())
+    t3_relay.relay_store().write(root, json.dumps(record))
+    state = SimpleNamespace(state=ProcessState[process])
+    # The process observation is the boundary: no test starts a relay process.
+    monkeypatch.setattr(t3_relay, "observe_process", lambda _identity: state)
+
+
+def _ui_findings(workspace: Path) -> list[tuple[str, str, str]]:
+    from booley.runtime import t3_inspection
+
+    report = t3_inspection.inspect_ui(workspace)
+    return [(str(f.severity), f.message, f.fix) for f in report.findings]
+
+
+def _t3_not_applicable(reason: str) -> list[tuple[str, str, str]]:
+    return [
+        ("skip", f"T3 Code {check} check not applicable - {reason}", "")
+        for check in ("server", "relay")
+    ]
+
+
+_SERVER_OK = ("pass", "T3 Code answers on 127.0.0.1:3773 in the Sandbox", "")
+_SERVER_OFF = (
+    "fail",
+    "T3 Code does not answer on 127.0.0.1:3773 in the Sandbox",
+    "run `booley session up`, which starts T3 Code",
+)
+_SERVER_UNKNOWN = (
+    "fail",
+    "Doctor cannot tell whether T3 Code answers in the Sandbox",
+    "run `booley session up`, then rerun `booley doctor`",
+)
+_SERVER_TAKEN = (
+    "fail",
+    "127.0.0.1:3773 in the Sandbox is held by another process, so T3 Code is off",
+    "stop that process, then run `booley session up`",
+)
+_RELAY_OK = ("pass", "T3 Code relay runs on 127.0.0.1:3780", "")
+_RELAY_DOWN = (
+    "fail",
+    "the T3 Code relay is not running for this Sandbox",
+    "run `booley session up`, which starts the relay",
+)
+_RELAY_UNOBSERVABLE = (
+    "fail",
+    f"cannot tell whether the T3 Code relay (process {os.getpid()}) still runs; "
+    "run `booley session up` again",
+    "rerun `booley doctor` after the repair the message names",
+)
+_RELAY_UNJUDGED = (
+    "skip",
+    "T3 Code relay check skipped - no relay is recorded and Doctor cannot tell whether "
+    "T3 Code runs",
+    "",
+)
+
+
+def _dashboard_not_applicable(reason: str) -> tuple[str, str, str]:
+    return ("skip", f"Dashboard check not applicable - {reason}", "")
+
+
+_NO_UI = "the UI is off (booley session up --no-ui)"
+_UI_OFF = [*_t3_not_applicable(_NO_UI), _dashboard_not_applicable(_NO_UI)]
+_STOPPED = "the Sandbox is not running"
+_VSCODE = "VS Code owns the Sandbox, which has no T3 Code relay"
+_DASH_OK = ("pass", "Dashboard answers on 127.0.0.1:8090 in the Sandbox", "")
+_DASH_DOWN = ("fail", "Dashboard does not answer on 127.0.0.1:8090 in the Sandbox")
+_DASH_OFF = (*_DASH_DOWN, "run `booley session up`, which starts the Dashboard")
+_REBUILD_IN_VSCODE = "run `Dev Containers: Rebuild Container` in VS Code"
+_DASH_OFF_VSCODE = (*_DASH_DOWN, f"{_REBUILD_IN_VSCODE}, which starts the Dashboard")
+_NO_AGENT_CLI = "the Sandbox allows no Agent CLI"
+_DASH_UNKNOWN = (
+    "fail",
+    "Doctor cannot tell whether the Dashboard answers in the Sandbox",
+    "run `booley session up`, then rerun `booley doctor`",
+)
+_DASH_UNKNOWN_VSCODE = (*_DASH_UNKNOWN[:2], f"{_REBUILD_IN_VSCODE}, then rerun `booley doctor`")
+
+
+@pytest.mark.parametrize(
+    ("sandbox", "reply", "relay", "expected"),
+    [
+        pytest.param(
+            "headless",
+            "running running",
+            "RUNNING",
+            [_SERVER_OK, _RELAY_OK, _DASH_OK],
+            id="healthy",
+        ),
+        pytest.param(
+            "headless",
+            "off running",
+            "RUNNING",
+            [_SERVER_OFF, _RELAY_OK, _DASH_OK],
+            id="server-off",
+        ),
+        pytest.param(
+            "headless",
+            "running running",
+            "DEAD",
+            [_SERVER_OK, _RELAY_DOWN, _DASH_OK],
+            id="relay-died",
+        ),
+        pytest.param(
+            "headless", "off running", "DEAD", [_SERVER_OFF, _RELAY_DOWN, _DASH_OK], id="both-died"
+        ),
+        pytest.param(
+            "headless",
+            "running running",
+            "UNKNOWN",
+            [_SERVER_OK, _RELAY_UNOBSERVABLE, _DASH_OK],
+            id="relay-unobservable",
+        ),
+        pytest.param(
+            "headless",
+            "running running",
+            None,
+            [_SERVER_OK, _RELAY_DOWN, _DASH_OK],
+            id="relay-unrecorded",
+        ),
+        pytest.param(
+            "headless",
+            "",
+            None,
+            [_SERVER_UNKNOWN, _RELAY_UNJUDGED, _DASH_UNKNOWN],
+            id="server-unknown",
+        ),
+        pytest.param(
+            "headless",
+            "running off",
+            "RUNNING",
+            [_SERVER_OK, _RELAY_OK, _DASH_OFF],
+            id="dashboard-off",
+        ),
+        pytest.param(
+            "stopped",
+            "off off",
+            "RUNNING",
+            [*_t3_not_applicable(_STOPPED), _dashboard_not_applicable(_STOPPED)],
+            id="stopped",
+        ),
+        pytest.param("headless", "off off", None, _UI_OFF, id="no-ui"),
+        pytest.param(
+            "headless",
+            "port-taken running",
+            "RUNNING",
+            [_SERVER_TAKEN, _RELAY_OK, _DASH_OK],
+            id="port-taken",
+        ),
+        pytest.param("headless", "port-taken off", None, _UI_OFF, id="no-ui-port-taken"),
+        pytest.param(
+            "headless",
+            "off running",
+            None,
+            [*_t3_not_applicable(_NO_UI), _DASH_OK],
+            id="no-ui-hand-started",
+        ),
+        pytest.param(
+            "editor",
+            "off off",
+            None,
+            [*_t3_not_applicable(_VSCODE), _DASH_OFF_VSCODE],
+            id="vscode",
+        ),
+        pytest.param(
+            "editor",
+            "off skipped",
+            None,
+            [*_t3_not_applicable(_VSCODE), _dashboard_not_applicable(_NO_AGENT_CLI)],
+            id="vscode-no-agent-cli",
+        ),
+        pytest.param(
+            "editor",
+            "",
+            None,
+            [*_t3_not_applicable(_VSCODE), _DASH_UNKNOWN_VSCODE],
+            id="vscode-unknown",
+        ),
+    ],
+)
+def test_t3_code_ui_inspection(
+    workspace: Path,
+    attached: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    sandbox: str,
+    reply: str,
+    relay: str | None,
+    expected: list[tuple[str, str, str]],
+) -> None:
+    name = "editor" if sandbox == "editor" else sr.session_container_name(workspace)
+    attached.docker.containers[name] = _sandbox_state(
+        workspace, vscode=sandbox == "editor", running=sandbox != "stopped", name=name
+    )
+    attached.docker.exec_reply = lambda _argv: completed(0 if reply else 1, f"{reply}\n")
+    if relay is not None:
+        _record_relay(workspace, monkeypatch, relay)
+
+    assert _ui_findings(workspace) == expected
+
+
+@pytest.mark.parametrize(
+    ("foreign", "server", "dashboard"),
+    [
+        pytest.param(
+            False,
+            "T3 Code does not answer in the Sandbox; ",
+            ("skip", "Dashboard does not answer in the Sandbox; "),
+            id="off",
+        ),
+        pytest.param(
+            True,
+            "127.0.0.1:3773 in the Sandbox is held by",
+            ("pass", "Dashboard answers on 127.0.0.1:8090 in the Sandbox"),
+            id="port-taken",
+        ),
+    ],
+)
+def test_t3_code_inspection_in_the_sandbox_skips_an_unproven_server(
+    monkeypatch: pytest.MonkeyPatch, foreign: bool, server: str, dashboard: tuple[str, str]
+) -> None:
+    from booley.runtime import t3_inspection
+
+    serve_t3_code(monkeypatch, foreign=foreign).dashboard_running = foreign
+
+    report = t3_inspection.inspect_ui_in_sandbox()
+
+    first, last = report.findings[0], report.findings[-1]
+    assert [str(f.severity) for f in report.findings] == ["skip", "skip", dashboard[0]]
+    assert first.message.startswith(server)
+    assert last.message.startswith(dashboard[1])
+
+
+def test_status_shows_off_where_no_agent_cli_starts_the_dashboard(
+    workspace: Path, attached: SimpleNamespace
+) -> None:
+    name = sr.session_container_name(workspace)
+    attached.docker.containers[name] = _sandbox_state(workspace, vscode=True, name=name)
+    attached.docker.exec_reply = lambda _argv: completed(stdout="off skipped\n")
+
+    assert sr.ui_status(workspace) == "UI: off\nDashboard: off"
+
+
+def test_t3_code_ui_inspection_skips_when_the_sandbox_cannot_be_listed(
+    workspace: Path, attached: SimpleNamespace
+) -> None:
+    attached.docker.failing.add("ps")
+
+    ((severity, message, _fix),) = _ui_findings(workspace)
+
+    assert severity == "skip"
+    assert message.startswith("T3 Code server and relay checks could not run: ")
+
+
+def test_no_ui_start_of_a_stopped_sandbox_leaves_no_ui_to_check(
+    workspace: Path, attached: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    name = sr.session_container_name(workspace)
+    attached.docker.containers[name] = _sandbox_state(workspace, running=False)
+    attached.docker.exec_reply = lambda _argv: completed(stdout="off off\n")
+    _record_relay(workspace, monkeypatch, "DEAD")
+
+    assert sr.ensure(workspace, ui=False).started
+
+    assert _ui_findings(workspace) == _UI_OFF
+
+
+def test_no_ui_start_of_a_running_sandbox_keeps_its_relay_record(
+    workspace: Path, attached: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _running_headless(attached.docker, workspace)
+    attached.docker.exec_reply = lambda _argv: completed(stdout="off off\n")
+    _record_relay(workspace, monkeypatch, "DEAD")
+
+    assert not sr.ensure(workspace, ui=False).started
+
+    assert _ui_findings(workspace) == [_SERVER_OFF, _RELAY_DOWN, _DASH_OFF]
+
+
+def test_no_ui_start_fails_when_it_cannot_tell_whether_the_old_relay_runs(
+    workspace: Path, attached: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from booley.runtime import t3_relay
+
+    name = sr.session_container_name(workspace)
+    attached.docker.containers[name] = _sandbox_state(workspace, running=False)
+    _record_relay(workspace, monkeypatch, "UNKNOWN")
+
+    with pytest.raises(t3_relay.T3RelayError, match="cannot tell whether"):
+        sr.ensure(workspace, ui=False)
 
 
 class TestDownAndStatus:
@@ -3087,6 +3960,7 @@ def test_project_sandbox_resolution_cli_editor_reuse_reports_due(
     assert cli._session_up(argparse.Namespace(rebuild=False), workspace) == 0
     captured = capsys.readouterr()
     assert "Reusing Sandbox owned by VS Code: editor" in captured.out
+    assert "T3 Code relay" not in captured.out
     assert "Automatic Doctor is due" in captured.err
     assert "Automatic Doctor is running" not in captured.err
 

@@ -17,11 +17,12 @@ import pytest
 
 from booley import __version__
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
+from booley.core.resources import package_data_dir
 from booley.harness import doctor, host_diagnostics
 from booley.harness import image_lifecycle as harness_lifecycle
 from booley.runtime import devcontainer as dc
 from booley.runtime import image_lifecycle as lifecycle
-from booley.runtime import runtime_context, session_issuance
+from booley.runtime import incontainer_setup, runtime_context, session_issuance
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.runtime_context import RuntimeLocation
 from tests.diagnostic_helpers import _issued_runtime_state
@@ -34,6 +35,20 @@ from tests.git_command_fake import GitCommandFake
 from tests.sandbox_venue_fake import place
 
 _MCP_TOOLS = ["synth", "bwave", "coverage_analyst", "lint", "mutation", "reviewer", "sim"]
+
+
+def t3_pin() -> str:
+    """Return the T3 Code version the packaged agent CLI manifest pins."""
+    manifest = package_data_dir() / "docker" / "agent-clis-package.json"
+    return json.loads(manifest.read_text(encoding="utf-8"))["t3code"]["version"]
+
+
+# T3 Code's preview browser version record, then the Sandbox Image browser's.
+BROWSER_RECORDS = [
+    "cat",
+    "/opt/t3code/preview-browser-version",
+    "/opt/chrome-headless-shell/VERSION",
+]
 
 
 def patch_doctor_environment(
@@ -52,6 +67,8 @@ def patch_doctor_environment(
     # it Doctor's container checks start real `docker run`s that can each wait 30 s.
     route_docker_helper_through_subprocess_run(monkeypatch)
     fake_docker_host(monkeypatch)
+    # Never probe this machine's own T3 Code port.
+    monkeypatch.setattr(incontainer_setup, "t3_state", lambda: "off")
     monkeypatch.setenv("BOOLEY_DIR", str(booley_dir))
     # Doctor tests exercise the host-side orchestration path deterministically,
     # whatever machine the suite itself runs on.
@@ -137,6 +154,11 @@ def _other_command(cmd, payload: dict, runtime_booley_version: str):  # noqa: PL
         return subprocess.CompletedProcess(cmd, 0, stdout=f"{os.getuid()}\n", stderr="")
     if cmd[1:3] == ["run", "--rm"] and cmd[-2:] == ["git", "--version"]:
         return subprocess.CompletedProcess(cmd, 0, stdout="git version 2.53.0\n", stderr="")
+    if cmd[-2:] == ["t3", "--version"]:
+        # The Sandbox Image the fake stands for is built from the packaged manifest.
+        return subprocess.CompletedProcess(cmd, 0, stdout=f"t3 v{t3_pin()}\n", stderr="")
+    if cmd[-3:] == BROWSER_RECORDS:
+        return subprocess.CompletedProcess(cmd, 0, stdout="1.2.3.4\n1.2.3.4\n", stderr="")
     if cmd[1:3] == ["image", "ls"]:
         # No issued Sandbox Image keepers; the strict listing rejects stray output.
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")

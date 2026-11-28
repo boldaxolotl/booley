@@ -124,6 +124,7 @@ def test_issuance_forwards_gateway_refs_and_seeds_no_codex_login(tmp_path, monke
     assert volumes == [
         dc.state_volume_mount("claude", project_id, "subscription"),
         dc.state_volume_mount("codex", project_id, "gateway"),
+        dc.t3_state_volume_mount(project_id),
     ]
     assert dc.state_volume_name("codex", project_id, "gateway") in dc.state_volume_names(
         project_id

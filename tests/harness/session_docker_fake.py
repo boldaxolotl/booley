@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
+import io
+import itertools
 import json
 import os
 import shutil
@@ -18,9 +21,16 @@ import pytest
 
 from booley.core.project_identity import project_label_id
 from booley.harness import booley as cli
-from booley.harness import sandbox_stop_warning
+from booley.harness import incontainer_register, sandbox_stop_warning
 from booley.runtime import booley_dir as booley_dir_module
-from booley.runtime import booley_dir_migration, host_docker, runtime_attachment, session_runtime
+from booley.runtime import (
+    booley_dir_migration,
+    host_docker,
+    incontainer_setup,
+    runtime_attachment,
+    session_runtime,
+    worktree_mount_repair,
+)
 from tests.docker_cli_guard_plugin import allow_docker_cli
 
 _SRC_ROOT = Path(__file__).parents[2] / "src"
@@ -137,7 +147,8 @@ class SandboxDocker:
     `docker image inspect` record; *networks* names the existing networks. `run`
     stores *created* (a copy) under the new name, or a minimal running state; `exec`
     answers *exec_reply*. *missing* makes every call raise like an absent CLI, and
-    *on_call* observes each argv before it is answered.
+    *on_call* observes each argv before it is answered. *uncaptured* lists the calls
+    whose output stays on the caller's terminal.
     """
 
     def __init__(self) -> None:
@@ -145,6 +156,7 @@ class SandboxDocker:
         self.networks: set[str] = set()
         self.images: dict[str, dict] = {}
         self.calls: list[list[str]] = []
+        self.uncaptured: list[list[str]] = []
         self.removed: list[str] = []
         self.rm_attempts: list[list[str]] = []
         self.failing: set[str] = set()
@@ -168,12 +180,14 @@ class SandboxDocker:
                 return name
         return None
 
-    def run(self, argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+    def run(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if self.missing:
             raise FileNotFoundError("docker")
         if self.on_call is not None:
             self.on_call(argv)
         self.calls.append(argv)
+        if kwargs.get("capture") is False:
+            self.uncaptured.append(argv)
         for prefix, reply in self.scripted:
             if tuple(argv[1 : 1 + len(prefix)]) == prefix:
                 if isinstance(reply, Exception):
@@ -340,6 +354,80 @@ def serve_sandbox_docker(monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
     return docker
 
 
+def sandbox_exec_on_path(
+    monkeypatch: pytest.MonkeyPatch, bin_dir: Path, target_port: int, container: str
+) -> None:
+    """Put a `docker` script first on PATH whose `exec -i <container> python3 ...` is a local run.
+
+    The in-Sandbox command runs on this host with its last argument, the T3 Code port,
+    replaced by *target_port*: a Sandbox whose loopback is the host's. Other calls fail.
+    """
+    bin_dir.mkdir()
+    script = bin_dir / "docker"
+    script.write_bytes(
+        f"""#!{sys.executable}
+import os, sys
+args = sys.argv[1:]
+if args[:3] != ["exec", "-i", {container!r}] or args[3] != "python3" or args[-1] != "{incontainer_setup.T3_PORT}":
+    sys.exit(1)
+os.execv({sys.executable!r}, [{sys.executable!r}, *args[4:-1], "{target_port}"])
+""".encode()
+    )
+    script.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+
+
+def run_registrar_on_post_start(
+    docker: SandboxDocker, workspace: Path, monkeypatch: pytest.MonkeyPatch
+) -> list[str]:
+    """Run the registrar in-process for each `docker exec` of it; return its stderr per run."""
+    # The advisory upgrade and health steps spawn a worker and read host install state.
+    monkeypatch.setattr(incontainer_register, "observe_upgrade", lambda: "current")
+    monkeypatch.setattr(incontainer_register, "launch_auto_doctor", lambda: "started")
+    monkeypatch.setattr(
+        worktree_mount_repair,
+        "repair_mount_registrations",
+        lambda _root: worktree_mount_repair.MountRepair(),
+    )
+    for name, value in {
+        "HOME": str(workspace / "home"),
+        "PWD": str(workspace),
+        "BOOLEY_AGENT_APP": "claude",
+        "BOOLEY_DIR": str(workspace / ".booley"),
+    }.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("BOOLEY_T3_BASE_DIR", raising=False)  # never the host Sandbox's own
+    monkeypatch.chdir(workspace)
+    runs: list[str] = []
+
+    def reply(argv: list[str]) -> subprocess.CompletedProcess[str]:
+        registrar = "booley.harness.incontainer_register" in argv[-1]
+        if not registrar and "booley.harness.incontainer_t3" not in argv[-1]:
+            return completed()
+        booley_dir_module.reset_cache()
+        out, err = io.StringIO(), io.StringIO()
+        with (
+            monkeypatch.context() as scope,
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            for flag, pair in itertools.pairwise(argv):
+                if flag == "-e":  # the exec's own environment
+                    scope.setenv(*pair.split("=", 1))
+            code = 0
+            if registrar:
+                incontainer_register.main()
+                runs.append(err.getvalue())
+            else:
+                from booley.harness import incontainer_t3
+
+                code = incontainer_t3.main(argv[-1].split()[3:])
+        return completed(code, out.getvalue(), err.getvalue())
+
+    docker.exec_reply = reply
+    return runs
+
+
 def route_docker_commands(
     monkeypatch: pytest.MonkeyPatch, docker: SandboxDocker, *, executable: str = "docker"
 ) -> SandboxDocker:
@@ -420,6 +508,18 @@ def route_session_commands(
     monkeypatch.setattr(session_runtime, "_run", run)
     monkeypatch.setattr(host_docker, "container_exists", lambda name: name in existing)
     monkeypatch.setattr(host_docker, "network_exists", lambda _name: False)
+    return serve_standalone_probe(monkeypatch, probe)
+
+
+def serve_standalone_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    probe: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None,
+) -> list[tuple[list[str], dict[str, Any]]]:
+    """Answer the `docker exec` of `session down`'s Standalone Job probe.
+
+    *probe* answers its argv (default: no running Job); returns the `(argv, kwargs)` of
+    each probe call.
+    """
     probed: list[tuple[list[str], dict[str, Any]]] = []
 
     def run_probe(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:

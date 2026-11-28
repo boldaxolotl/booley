@@ -46,6 +46,7 @@ from booley.runtime.project_gitignore import PROJECT_GITIGNORE_PATTERNS
 from tests.conftest import symlink_or_skip, use_terminal_stdin
 from tests.docker_host_support import fake_docker_host
 from tests.harness.test_project_initialization import _initialize
+from tests.session_issuance_support import SHIPPED_T3_POLICY
 from tests.subprocess_budget import run_bounded_child
 
 HAND_EDIT = "# HAND EDIT — must survive re-init\n"
@@ -124,6 +125,8 @@ def repo(tmp_path: Path, monkeypatch) -> Path:
     # private: image ids come from Docker, which these tests never reach.
     monkeypatch.setattr(runtime_spec, "_resolve_image_id", lambda _image: "sha256:test-image")
     monkeypatch.setattr(runtime_spec, "_keeper_image_id", lambda _image: "sha256:test-image")
+    # private: the image's T3 Code policy is read through Docker too.
+    monkeypatch.setattr(runtime_spec, "_image_t3_policy", lambda _image: SHIPPED_T3_POLICY)
     fake_docker_host(monkeypatch)
     monkeypatch.setattr("booley.runtime.host_docker.image_id", lambda _image: None)
     # private: host-only probes (editor detection, credentials) that the public `run_init`
@@ -1008,8 +1011,8 @@ def test_check_only_scaffold_reports_prospective_greenfield_route(repo, monkeypa
     assert "After applying the scaffold" in output, "planned scaffold needs prospective advice"
     assert "/booley-setup new` in your agent chat here on the host" in output
     advice = output[output.index("After applying the scaffold") :]
-    assert advice.index("/booley-setup new") < advice.index("Reopen in Container")
-    assert 'choose "Reopen in Container"' not in output
+    assert advice.index("/booley-setup new") < advice.index("booley session up")
+    assert "Reopen in Container" not in output
     assert "Scaffolded starter project" not in output
     assert "plan phase, here on the host" not in output
     assert "Checked initialization: pending or unresolved" in output.splitlines()[-1]
@@ -1419,7 +1422,7 @@ EXPECTED_FRESH_INIT = (
         "worktree link policy",
         "line endings",
         "guidance links",
-        "Sandbox (Reopen in Container)",
+        "Sandbox",
         "Project Inventory",
         "post-setup advisories",
     ],
@@ -1453,7 +1456,7 @@ EXPECTED_RERUN_INIT = (
         "worktree link policy",
         "line endings",
         "guidance links",
-        "Sandbox (Reopen in Container)",
+        "Sandbox",
         "Project Inventory",
         "post-setup advisories",
     ],

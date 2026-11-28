@@ -34,9 +34,9 @@ _Avoid_: Project bootstrap, machine setup, installation
 
 **Project Initialization**:
 Idempotent, location-neutral reconciliation of one codebase's Project files
-(Booley Directory, Git integration, guidance links, core projections, Dashboard
-task), making it a **Project** without interpreting its design and without
-Docker, host credentials or **Sandbox Issuance** ([ADR
+(Booley Directory, Git integration, guidance links, core projections), making it
+a **Project** without interpreting its design and without Docker, host
+credentials or **Sandbox Issuance** ([ADR
 0085](adr/0085-run-project-initialization-anywhere.md)).
 _Avoid_: Project bootstrap, Project enrollment, Project Setup
 
@@ -94,9 +94,8 @@ A Measurement reports edits to them as protected-set changes.
 _Avoid_: frozen file, locked config, Scope
 
 **Session**:
-In the Session Registry, one agent client thread or process that calls Booley
-from a worktree, falling back to the worktree itself when the client cannot be
-told apart. It feeds the Dashboard and the shared-worktree warning.
+One agent client thread working in one checkout: a T3 Code thread, or a
+Claude or Codex conversation. A Job records the Session that started it.
 _Avoid_: connection, tab, MCP session, Sandbox session
 
 **Sandbox Attachment**:
@@ -177,7 +176,9 @@ A linked worktree's **Booley Directory** when the Booley Directory is a **Versio
 _Avoid_: paired Project checkout, paired Project repository, paired copy
 
 **Snapshot**:
-A linked worktree's **Booley Directory** when the Booley Directory is not versioned: a copy of its configuration taken when the worktree is created. Results, logs, and Common Booley State stay in the Main Booley Directory.
+A linked worktree's **Booley Directory** when the Booley Directory is not
+versioned: a copy of its configuration taken when the worktree is prepared.
+Results, logs, and Common Booley State stay in the Main Booley Directory.
 _Avoid_: clean snapshot, project copy
 
 **Versioned Booley Directory**:
@@ -341,11 +342,10 @@ _Avoid_: regex, marker, exit-code-only verdict
 ### Presentation
 
 **Booley Dashboard**:
-The terminal view, one per Sandbox, of agent sessions, Booley Flow Jobs,
-Targets, and health signals, from which a human can also launch Booley Flows as
-Standalone Jobs. Its **Session activity** is what a session's agent client last
-reported, never inferred from Booley calls or Jobs.
-_Avoid_: control room, console, monitor; session status, session state (for Session activity)
+The web page, one per worktree and served from inside the Sandbox, of that
+worktree's Booley Flow and Specialist Jobs, from which a human can also Run them
+as Standalone Jobs. It shows no sessions, Goals, or health signals.
+_Avoid_: control room, console, monitor
 
 ## Execution and evidence
 

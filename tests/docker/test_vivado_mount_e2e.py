@@ -93,7 +93,7 @@ def _issue_runtime(workspace: Path, vivado_root: Path) -> None:
 
     # The fixture enables the fpga Flow, so preview requests the registered Vivado.
     prepared = runtime_spec.preview(workspace, build)
-    runtime_spec.issue_prepared(workspace, prepared, reconcile_dashboard=False)
+    runtime_spec.issue_prepared(workspace, prepared)
 
 
 def _assert_runtime_boundary(docker: str, container: str) -> None:

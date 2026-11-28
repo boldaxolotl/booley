@@ -5,9 +5,8 @@ import pytest
 
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
 from booley.audit.doctor_waivers import DoctorWaiverError, load_doctor_waivers, warning
-from booley.harness import activity_hooks, doctor, web_isolation
+from booley.harness import doctor, web_isolation
 from booley.presentation import colors
-from booley.runtime import dashboard_extension
 from booley.runtime.runtime_context import RuntimeLocation
 from tests.harness.doctor_environment_support import patch_doctor_environment
 from tests.harness.doctor_run_support import write_project
@@ -205,28 +204,3 @@ def _run_inside_the_sandbox(monkeypatch, root, booley_dir) -> None:
     # The egress probe only runs in a marked Sandbox; keep these tests off real DNS.
     monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
     monkeypatch.setattr(web_isolation, "policy_error", lambda: None)
-
-
-@pytest.mark.parametrize("waived", [False, True])
-def test_doctor_waives_the_warnings_of_the_in_sandbox_checks(tmp_path, monkeypatch, waived):
-    """Doctor run inside the Sandbox tags both image warnings with waivable check IDs (#2123)."""
-    check_ids = ["sandbox.activity-hooks-unavailable", "sandbox.dashboard-extension-unavailable"]
-    booley_dir = write_project(tmp_path)
-    if waived:
-        _write(
-            booley_dir,
-            "version = 1\n"
-            + "".join(
-                f'[[waiver]]\ncheck = "{check_id}"\nreason = "Accepted for this fixture"\n'
-                "permanent = true\n"
-                for check_id in check_ids
-            ),
-        )
-    _run_inside_the_sandbox(monkeypatch, tmp_path, booley_dir)
-    monkeypatch.setattr(activity_hooks, "hooks_error", lambda: "hook missing")
-    monkeypatch.setattr(dashboard_extension, "installed_error", lambda: "extension missing")
-
-    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
-
-    severities = {f.check_id: f.severity for f in result.findings if f.check_id in check_ids}
-    assert severities == dict.fromkeys(check_ids, Severity.WAIVED if waived else Severity.WARN)

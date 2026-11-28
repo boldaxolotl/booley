@@ -17,6 +17,7 @@ from unittest.mock import Mock
 
 import pytest
 from tests import eda_grant_support
+from tests.conftest import symlink_or_skip
 from tests.devcontainer_spec_support import build_spec
 from tests.docker_host_support import fake_docker_host
 from tests.harness.session_docker_fake import serve_sandbox_docker
@@ -168,7 +169,7 @@ def test_issue_prepared_refuses_prospective_issuance_that_differs_from_current(
     )
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="Sandbox policy changed") as caught:
-        runtime_spec.issue_prepared(project, stale, reconcile_dashboard=False)
+        runtime_spec.issue_prepared(project, stale)
 
     assert "policy_revision" in str(caught.value)
 
@@ -253,9 +254,7 @@ def test_issue_prepared_revalidates_authority_and_persists_exact_preview(
 
     assert result is issuance
     assert events == ["validate authority", "validate policy", "prepare dependencies"]
-    persist.assert_called_once_with(
-        project, prepared, requirements=requirements, reconcile_dashboard=True
-    )
+    persist.assert_called_once_with(project, prepared, requirements=requirements)
 
 
 def test_issue_prepared_rejects_authority_drift_before_persisting(
@@ -561,6 +560,21 @@ def issued(issued_preview):
     return project, prepared.spec, path, stamp
 
 
+def test_issuance_refuses_a_symlinked_devcontainer_spec(issued_preview, tmp_path: Path) -> None:
+    project, prepared, path, _stamp = issued_preview
+    destination = tmp_path / "outside-devcontainer.json"
+    destination.write_bytes(b"{}\n")
+    path.unlink()
+    symlink_or_skip(path, destination)
+    planted_target = path.readlink()
+
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="symlinked"):
+        runtime_spec.issue_prepared(project, prepared)
+
+    assert destination.read_bytes() == b"{}\n"
+    assert path.readlink() == planted_target
+
+
 def test_issued_spec_seals_pinned_image_identity(issued) -> None:
     _project, spec, _path, stamp = issued
     assert spec["containerEnv"].get("BOOLEY_SANDBOX_IMAGE_ID") == stamp.image_id
@@ -669,7 +683,7 @@ def test_policy_switch_is_cured_by_reissuing_in_host_mode(issued) -> None:
     prepared = runtime_spec.preview(project, build)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="differs from the prepared"):
         runtime_spec.inspect_prepared(project, prepared)
-    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    runtime_spec.issue_prepared(project, prepared)
     assert runtime_spec.validate(project, json.loads(path.read_text(encoding="utf-8")), path)
 
 
@@ -1213,7 +1227,7 @@ def test_runtime_spec_rejects_non_mapping_container_environment(
     with pytest.raises(
         runtime_spec.RuntimeSpecError, match="environment sections must be objects"
     ):
-        runtime_spec.issue_prepared(project, stale, reconcile_dashboard=False)
+        runtime_spec.issue_prepared(project, stale)
 
 
 def test_host_eda_issuance_still_requires_authority(
@@ -1259,7 +1273,7 @@ def test_host_eda_issuance_still_requires_authority(
     with pytest.raises(runtime_spec.RuntimeSpecError, match="host EDA preview checked"):
         runtime_spec.preview(project, build)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="host EDA authority was checked"):
-        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+        runtime_spec.issue_prepared(project, prepared)
 
 
 def test_requested_license_requires_issued_profile_identity(
@@ -1301,7 +1315,7 @@ def test_active_image_vivado_cannot_omit_license_marker_to_bypass_authority(
     monkeypatch.setattr(authority, "resolve_for_issuance", required)
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="active Vivado authority was checked"):
-        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+        runtime_spec.issue_prepared(project, prepared)
     monkeypatch.setattr(
         authority,
         "resolve_for_inspection",
@@ -1316,7 +1330,7 @@ def _run_operation(
 ) -> runtime_spec.Issuance:
     """Run the issue-time or validate-time path over one issued, prepared spec."""
     if operation == "issue":
-        return runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+        return runtime_spec.issue_prepared(project, prepared)
     return runtime_spec.validate(project, prepared.spec, path)
 
 
@@ -1603,21 +1617,21 @@ def test_invalid_agent_app_does_not_invent_expected_name(issued) -> None:
 
 
 def test_missing_fixed_environment_uses_missing_marker(issued) -> None:
-    _project, spec, _path, _stamp = issued
+    project, spec, _path, _stamp = issued
     del spec["remoteEnv"]["HTTP_PROXY"]
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="missing fixed") as caught:
-        runtime_spec._validate_environment(spec, None, "proxy")
+        runtime_spec._validate_environment(spec, None, "proxy", project)
 
     assert "HTTP_PROXY present -> <missing>" in str(caught.value)
 
 
 def test_fixed_environment_drift_names_field_and_values(issued) -> None:
-    _project, spec, _path, _stamp = issued
+    project, spec, _path, _stamp = issued
     spec["remoteEnv"]["NO_PROXY"] = "example.test"
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="fixed Sandbox") as caught:
-        runtime_spec._validate_environment(spec, None, "proxy")
+        runtime_spec._validate_environment(spec, None, "proxy", project)
 
     assert "NO_PROXY localhost,127.0.0.1 -> example.test" in str(caught.value)
 
@@ -1715,6 +1729,11 @@ def test_run_args_validate_with_and_without_swap_limit():
             lambda spec: spec.__setitem__("workspaceMount", "source=/,target=/work,type=bind"),
             "workspace mount",
         ),
+        (
+            # Allowed only with T3 Code's state volume, which this app-less spec lacks.
+            lambda spec: spec["containerEnv"].__setitem__("BOOLEY_T3_BASE_DIR", "/work/t3"),
+            "unsupported container environment",
+        ),
     ],
 )
 def test_dangerous_full_spec_drift_is_rejected_before_issuance(
@@ -1730,7 +1749,7 @@ def test_dangerous_full_spec_drift_is_rejected_before_issuance(
     stub_keeper(monkeypatch)
     prepared = runtime_spec.preview(project, plain_builder(project))
     with pytest.raises(runtime_spec.RuntimeSpecError, match=match):
-        runtime_spec.issue_prepared(project, damaged(prepared, mutate), reconcile_dashboard=False)
+        runtime_spec.issue_prepared(project, damaged(prepared, mutate))
 
 
 def test_readonly_false_does_not_satisfy_protected_mount(
@@ -1750,9 +1769,7 @@ def test_readonly_false_does_not_satisfy_protected_mount(
         spec["mounts"][-1] = spec["mounts"][-1].replace("readonly", "readonly=false")
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="exact read-only"):
-        runtime_spec.issue_prepared(
-            project, damaged(prepared, make_writable), reconcile_dashboard=False
-        )
+        runtime_spec.issue_prepared(project, damaged(prepared, make_writable))
 
 
 def test_nested_definition_mount_is_final() -> None:
@@ -1902,7 +1919,7 @@ def test_unproxied_licensed_seal_joins_routed_and_private_networks(
     argv = docker_run_argv(spec, project, "session")
     headless_networks = {argv[index + 1] for index, item in enumerate(argv) if item == "--network"}
     assert spec_networks == headless_networks == expected_networks
-    assert runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    assert runtime_spec.issue_prepared(project, prepared)
 
 
 def test_issue_rejects_mutable_image_reference(
@@ -1924,7 +1941,7 @@ def test_issue_rejects_mutable_image_reference(
 
     stale = damaged(prepared, use_mutable_tag, image=dc.SANDBOX_IMAGE)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="image is mutable"):
-        runtime_spec.issue_prepared(project, stale, reconcile_dashboard=False)
+        runtime_spec.issue_prepared(project, stale)
 
 
 @pytest.mark.parametrize("source", ["/", "/home", "/tmp/evil,data"])
@@ -2287,9 +2304,7 @@ def test_issue_rejects_missing_project_data_workspace_bind(issued_preview) -> No
         spec["mounts"] = [m for m in spec["mounts"] if "target=/work/.booley," not in m]
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="workspace view must be pinned"):
-        runtime_spec.issue_prepared(
-            project, damaged(prepared, drop_workspace_view), reconcile_dashboard=False
-        )
+        runtime_spec.issue_prepared(project, damaged(prepared, drop_workspace_view))
 
 
 def test_issue_rejects_readonly_project_data_workspace_bind(issued_preview) -> None:
@@ -2302,9 +2317,7 @@ def test_issue_rejects_readonly_project_data_workspace_bind(issued_preview) -> N
         spec["mounts"][shadow] += ",readonly"
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="exact host-authorized bind"):
-        runtime_spec.issue_prepared(
-            project, damaged(prepared, make_workspace_view_readonly), reconcile_dashboard=False
-        )
+        runtime_spec.issue_prepared(project, damaged(prepared, make_workspace_view_readonly))
 
 
 def test_validator_bytes_are_bound_into_issuance(
@@ -2405,7 +2418,7 @@ def test_symlinked_booley_dir_entry_issues_the_real_directory_mounts(
     assert spec["mounts"] == real_directory_mounts
     expected_source = docker_mount_path(entry)
     assert f"source={expected_source},target=/work/.booley,type=bind" in spec["mounts"]
-    stamp = runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    stamp = runtime_spec.issue_prepared(project, prepared)
     path = dc.devcontainer_path(project)
     assert runtime_spec.validate(project, spec, path) == stamp
     assert stamp.project_data_source == str(entry)
@@ -2436,7 +2449,7 @@ def test_linked_entry_issuance_requires_the_host_pin(
     booley_dir_pin.write_pin(project, booley_dir_pin.current_target(entry))
     prepared = _fresh_preview(project)
     spec = prepared.spec
-    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    runtime_spec.issue_prepared(project, prepared)
     path = dc.devcontainer_path(project)
     runtime_spec.validate(project, spec, path)
 
@@ -2450,9 +2463,7 @@ def test_linked_entry_issuance_requires_the_host_pin(
     entry.symlink_to(ext_b, target_is_directory=True)
     assert_refused(lambda: runtime_spec.validate(project, spec, path))
     assert_refused(lambda: _fresh_preview(project))
-    assert_refused(
-        lambda: runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
-    )
+    assert_refused(lambda: runtime_spec.issue_prepared(project, prepared))
 
     entry.unlink()
     entry.symlink_to(os.path.relpath(ext_b, project), target_is_directory=True)
@@ -2635,7 +2646,7 @@ def test_compiler_cache_identity_is_fixed_and_old_specs_need_refresh(issued, sec
     # An old Sandbox authenticates against its own stamp; the environment
     # check must then name the actionable fix, not a generic key diff.
     with pytest.raises(runtime_spec.RuntimeSpecError, match="Compiler-cache root differs"):
-        runtime_spec._validate_environment(spec, None, "proxy")
+        runtime_spec._validate_environment(spec, None, "proxy", project)
 
 
 @pytest.mark.parametrize(
@@ -2660,9 +2671,7 @@ def test_canonical_alias_seal_keeps_shadow_and_rejects_alias_subtree_drift(
         drifted["mounts"].insert(1, f"source={expected_source},target={target},type=bind,readonly")
 
     with pytest.raises(runtime_spec.RuntimeSpecError, match="alias-subtree"):
-        runtime_spec.issue_prepared(
-            project, damaged(prepared, add_alias_subtree_mount), reconcile_dashboard=False
-        )
+        runtime_spec.issue_prepared(project, damaged(prepared, add_alias_subtree_mount))
 
 
 @pytest.mark.parametrize("alias_capable", [False, True], ids=["legacy", "canonical-alias"])
@@ -2717,9 +2726,7 @@ def test_canonical_alias_rejects_nonbind_mount_destination_synonyms(issued, monk
 
     stub_keeper(monkeypatch)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="alias-subtree"):
-        runtime_spec.issue_prepared(
-            project, damaged(prepared, add_tmpfs_alias_mount), reconcile_dashboard=False
-        )
+        runtime_spec.issue_prepared(project, damaged(prepared, add_tmpfs_alias_mount))
 
 
 def test_sealing_alias_probe_failure_is_a_runtime_spec_error(issued, monkeypatch):
@@ -2945,7 +2952,7 @@ def test_previously_issued_legacy_initialize_command_is_rejected(
     monkeypatch.setattr(runtime_spec, "_pin_initialize_command", old_issuer_pin)
     with pytest.raises(runtime_spec.RuntimeSpecError, match="no fixed host validation command"):
         prepared = runtime_spec.preview(project, plain_builder(project))
-        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+        runtime_spec.issue_prepared(project, prepared)
 
 
 def test_project_label_preserves_exact_full_digest_for_deleted_root():
@@ -3281,7 +3288,6 @@ def _refresh_source_mutator(project, tmp_path, monkeypatch):
             "swap": '[sandbox]\nmemory="8g"\n',
             "swap-old": '[sandbox]\nmemory="8g"\n',
             "masks": '[sandbox]\nmask_paths=["private"]\n',
-            "dashboard": "[sandbox]\ndashboard=false\n",
             "skills": "[sandbox]\nmount_host_skills=true\n",
         }
         old_booley["on"] = setting == "swap-old"
@@ -3324,7 +3330,6 @@ def _refresh_source_mutator(project, tmp_path, monkeypatch):
         "memory",
         "swap",
         "masks",
-        "dashboard",
         "timezone",
         "auth-bind",
         "config-seed",
@@ -3488,19 +3493,6 @@ def test_refresh_builder_uses_trusted_external_booley_directory(
         init_cmd._sandbox_spec_sources(
             ctx, init_cmd._NANGATE_PDK_NOT_REQUESTED, None, stamp.image_id
         )
-
-
-def test_refresh_dashboard_tasks_unchanged_until_verified_finalization(issued, monkeypatch):
-    from booley.harness.session_refresh import _RuntimeImages
-    from booley.runtime import dashboard_tasks
-
-    project, _spec, _path, stamp = issued
-    reconcile = Mock(side_effect=AssertionError("precommit dashboard mutation"))
-    monkeypatch.setattr(dashboard_tasks, "reconcile", reconcile)
-    adapter = _RuntimeImages()
-    adapter.prepare_spec(project, session_refresh.RefreshImage(stamp.image_id, None, None, True))
-    adapter.reissue(project)
-    reconcile.assert_not_called()
 
 
 @pytest.mark.parametrize("operation", ["add", "revoke"])
@@ -3817,6 +3809,94 @@ def _set_toml(project: Path, request, toml: str) -> None:
     request.addfinalizer(reset_cache)
 
 
+_CLAUDE_ONLY = '[agent]\nclis = ["claude"]\n'
+
+
+def test_reissue_after_a_clis_change_rewrites_the_t3_code_policy(issued, monkeypatch, request):
+    image_policy = (
+        b'{"limits": {"maxRuntimeMode": "approval",'
+        b' "providers": {"allowedDrivers": ["claudeAgent", "codex"]}}}'
+    )
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
+    prepared, _, _ = issue_built(project, fixed(spec), monkeypatch, image_policy)
+    policy_file = project.resolve() / ".devcontainer" / "t3code-policy.json"
+    mount = (
+        f"source={docker_mount_path(policy_file)},"
+        "target=/etc/t3code/policy.json,type=bind,readonly"
+    )
+    assert mount in prepared.spec["mounts"]
+    narrowed = policy_file.read_bytes()
+    limits = json.loads(narrowed)["limits"]
+    assert limits["providers"]["allowedDrivers"] == ["claudeAgent"]
+    assert limits["maxRuntimeMode"] == "approval"
+
+    def writable(tampered: dict) -> None:
+        tampered["mounts"][tampered["mounts"].index(mount)] = mount.removesuffix(",readonly")
+
+    stub_keeper(monkeypatch)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="exact read-only"):
+        runtime_spec.issue_prepared(project, damaged(prepared, writable))
+    assert policy_file.read_bytes() == narrowed
+
+    _, both, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_AND_CODEX)
+    reissued, _, _ = issue_built(project, fixed(both), monkeypatch, image_policy)
+    assert reissued.spec["image"] == prepared.spec["image"]
+    assert policy_file.read_bytes() == image_policy
+
+
+@pytest.mark.skipif(os.name == "nt", reason="creating a symlink needs a Windows privilege")
+def test_issuance_refuses_a_symlinked_t3_code_policy(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
+    link = project / ".devcontainer" / "t3code-policy.json"
+    link.symlink_to(project / "elsewhere.json")
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="refusing to write through symlinked"):
+        _issue_spec(project, spec, monkeypatch)
+    assert link.is_symlink()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="creating a symlink needs a Windows privilege")
+def test_issuance_refuses_a_symlinked_devcontainer_folder(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
+    writable = project / ".booley" / "control"
+    (project / ".devcontainer").rename(writable)
+    (project / ".devcontainer").symlink_to(writable, target_is_directory=True)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match="is a symlink"):
+        _issue_spec(project, spec, monkeypatch)
+    assert not (writable / "t3code-policy.json").exists()
+
+
+def test_interrupted_policy_copy_leaves_the_issued_spec_alone(issued, monkeypatch, request):
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
+    stub_keeper(monkeypatch)
+    prepared = runtime_spec.preview(project, fixed(spec))
+    answer = idk._run_docker
+
+    def interrupted(args: list[str], **kwargs: object):
+        if args[:2] == ["container", "cp"]:
+            raise KeyboardInterrupt
+        return answer(args, **kwargs)
+
+    monkeypatch.setattr("booley.runtime.host_docker._run_docker", interrupted)
+    before = dc.devcontainer_path(project).read_bytes()
+    with pytest.raises(KeyboardInterrupt):
+        runtime_spec.issue_prepared(project, prepared)
+    assert dc.devcontainer_path(project).read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    ("image_policy", "message"),
+    [(None, "has no T3 Code policy"), (b"not json", "limits.providers.allowedDrivers")],
+    ids=["missing", "unusable"],
+)
+def test_issuance_refuses_an_image_without_a_usable_t3_code_policy(
+    issued, monkeypatch, request, image_policy, message
+):
+    project, spec, _ = _multi_cli_project(issued, monkeypatch, request, _CLAUDE_ONLY)
+    with pytest.raises(runtime_spec.RuntimeSpecError, match=message):
+        issue_built(project, fixed(spec), monkeypatch, image_policy)
+    assert not (project / ".devcontainer" / "t3code-policy.json").exists()
+
+
 def test_sealing_accepts_seeds_for_every_listed_cli(issued, monkeypatch, request):
     project, spec, home = _multi_cli_project(
         issued, monkeypatch, request, '[agent]\nclis = ["claude"]\n'
@@ -3847,6 +3927,8 @@ _REFUSALS = {
     "app-outside-record": "Agent CLIs codex=subscription differ from",
     "app-outside-clis-empty-record": "Agent CLI codex is not in",
     "typeless-volume": "agent state is not scoped",
+    "t3-volume-other-project": "agent state is not scoped",
+    "t3-base-dir-other-project": "T3 Code base directory",
     "claude-config-bind": "credential seed violates",
     "malformed-record": "Agent CLI record is malformed",
     "gateway-record": "Sandbox identity has drifted",
@@ -3877,7 +3959,12 @@ def _damage_claude_config_bind(spec: dict, project: Path, home: Path) -> None:
     )
 
 
+def _damage_t3_base_dir(spec: dict, project: Path, home: Path) -> None:
+    spec["containerEnv"]["BOOLEY_T3_BASE_DIR"] = "/home/agent/.t3-other"
+
+
 _MOUNT_AND_APP_DAMAGE = {
+    "t3-base-dir-other-project": _damage_t3_base_dir,
     "app-outside-clis-empty-record": _damage_empty_record,
     "typeless-volume": _damage_typeless_volume,
     "claude-config-bind": _damage_claude_config_bind,
@@ -3915,6 +4002,9 @@ def _damage_spec(spec: dict, project: Path, home: Path, damage: str) -> None:
     elif damage == "stray-volume":
         stray = dc.state_volume_mount("codex", project_id).replace(".codex", "/stray")
         mounts.insert(1, stray)
+    elif damage == "t3-volume-other-project":
+        index = mounts.index(dc.t3_state_volume_mount(project_id))
+        mounts[index] = dc.t3_state_volume_mount("other")
     else:
         raise AssertionError(damage)
 
@@ -4156,12 +4246,12 @@ def test_reissue_keeps_former_mount_for_unannotated_records(
     former = str(tmp_path / "former-mount")
     _with_previous_mount(path, former)
 
-    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    runtime_spec.issue_prepared(project, prepared)
 
     source = runtime_spec.authorized_project_data_source(project)
     history = json.loads((source / ".runtime" / "sandbox-mounts.json").read_bytes())
     assert history == {"schema": 1, "mounts": [former]}
-    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    runtime_spec.issue_prepared(project, prepared)
     assert json.loads((source / ".runtime" / "sandbox-mounts.json").read_bytes()) == history
     monkeypatch.setattr(sandbox_layout, "BOOLEY_DIR_TARGET", str(source))
     jobs = tmp_path / "jobs"
@@ -4191,7 +4281,7 @@ def test_reissue_rebases_former_mount_records_onto_booley(
     project, prepared, path, _stamp = issued_preview
     _with_previous_mount(path, "/former-mount")
 
-    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    runtime_spec.issue_prepared(project, prepared)
 
     issued_spec = json.loads(path.read_text(encoding="utf-8"))
     assert issued_spec["remoteEnv"]["BOOLEY_DIR"] == "/booley"
@@ -4238,7 +4328,7 @@ def test_reissue_refuses_former_mount_overlapping_workspace(issued_preview) -> N
         with pytest.raises(
             runtime_spec.RuntimeSpecError, match=r"devcontainer\.json.*booley init"
         ):
-            runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+            runtime_spec.issue_prepared(project, prepared)
 
         assert path.read_bytes() == before
 
@@ -4253,7 +4343,7 @@ def test_reissue_fails_before_replacing_spec_when_history_is_unwritable(
     (source / ".runtime").write_bytes(b"not a directory")
 
     with pytest.raises(runtime_spec.RuntimeSpecError):
-        runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+        runtime_spec.issue_prepared(project, prepared)
 
     assert path.read_bytes() == before
 
@@ -4262,7 +4352,7 @@ def test_reissue_ignores_previous_spec_without_a_mount(issued_preview) -> None:
     project, prepared, path, _stamp = issued_preview
     path.write_bytes(b"not json")
 
-    runtime_spec.issue_prepared(project, prepared, reconcile_dashboard=False)
+    runtime_spec.issue_prepared(project, prepared)
 
     source = runtime_spec.authorized_project_data_source(project)
     assert not (source / ".runtime" / "sandbox-mounts.json").exists()

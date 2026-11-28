@@ -33,7 +33,7 @@ The Booley user guide. The first time, read **Get started** in order.
 <tr><td><a href="tests/">tests.toml</a></td><td>A sim Target's Tests, Test Variants, and seeds.</td></tr>
 <tr><td><a href="sandbox/">Sandbox</a></td><td>Configure the container Booley and its agents run in.</td></tr>
 <tr><td><a href="stealth/">Stealth Mode</a></td><td>Keep Booley out of your Git history.</td></tr>
-<tr><td><a href="worktrees/">Worktrees</a></td><td>Create, list, and remove the checkouts parallel sessions work in.</td></tr>
+<tr><td><a href="worktrees/">Worktrees</a></td><td>Prepare and remove the checkouts parallel sessions work in.</td></tr>
 <tr><td><a href="cli-reference/">CLI reference</a></td><td>Every command and where it runs.</td></tr>
 <tr><td><a href="supported-eda-tools/">Supported EDA tools</a></td><td>Which tools each Flow drives, and where they come from.</td></tr>
 <tr><th scope="rowgroup" rowspan="2">Help</th><td><a href="doctor/">Doctor</a></td><td>Check that Booley's setup and tools work.</td></tr>
