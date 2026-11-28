@@ -437,11 +437,14 @@ def test_check_returns_the_review_screen_lines(
 @pytest.mark.parametrize("reverse", [False, True])
 def test_unfinished_jobs_are_named_oldest_first_whatever_the_listing_order(world, reverse):
     _queued_world(world)
-    jobs = JobReader(world.booley, proc_root=world.proc).read().jobs
+    _job(world, "run-legacy", None, status="running", pid=7003)
+    jobs = JobReader(world.booley, main=world.main, proc_root=world.proc).read().jobs
     listed = tuple(sorted(jobs, key=lambda job: job.record.run_id, reverse=reverse))
     occupants = model.worktree_occupants(JobSnapshot(listed), world.wt)
+    in_main = model.worktree_occupants(JobSnapshot(listed), world.main)
 
     assert occupants.unfinished_jobs == ("run-r", "run-q")
+    assert in_main.unfinished_jobs == ("run-legacy",)
 
 
 @pytest.mark.parametrize(

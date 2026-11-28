@@ -342,7 +342,7 @@ def create_app(
     keep state between reads.
     """
     slots = job_slots.slots_dir(booley_dir)
-    reader = JobReader(booley_dir, slots_root=slots, proc_root=proc_root)
+    reader = JobReader(booley_dir, main=main, slots_root=slots, proc_root=proc_root)
     sampler = ResourceSampler(cgroup)
     titles = ThreadTitles()
     lock = threading.Lock()

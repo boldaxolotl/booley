@@ -19,8 +19,8 @@ def worktree_occupants(snapshot: JobSnapshot, worktree: Path) -> Occupants:
             snapshot.jobs, key=lambda row: (row.record.started_at, row.record.run_id)
         )
         if job.state not in FINISHED_JOB_STATES
-        and job.record.work_dir
-        and Path(job.record.work_dir).resolve() == here
+        and job.checkout
+        and Path(job.checkout).resolve() == here
     )
     return Occupants(unfinished)
 

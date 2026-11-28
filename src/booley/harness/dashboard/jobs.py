@@ -26,6 +26,8 @@ class JobView(JobObservation):
     """A neutral observation enriched for Dashboard display."""
 
     handle: str = ""
+    # The checkout whose Dashboard shows the Job; ``None`` when none does.
+    checkout: str | None = None
 
 
 @dataclass(frozen=True)
@@ -70,10 +72,12 @@ class JobReader:
         self,
         booley_dir: Path,
         *,
+        main: Path | None = None,
         slots_root: Path | None = None,
         proc_root: Path = Path("/proc"),
     ) -> None:
         self._booley_dir = booley_dir
+        self._main = main
         self._observer = JobObserver(
             booley_dir,
             slots_root=slots_root,
@@ -99,7 +103,9 @@ class JobReader:
         handles, diagnostics = HandleStore(self._booley_dir).snapshot()
         when = time.time() if now is None else now
         standalone = standalone_jobs_dir(self._booley_dir)
-        rows = tuple(_job_view(job, handles, when, standalone) for job in observed.jobs)
+        rows = tuple(
+            _job_view(job, handles, when, standalone, self._main) for job in observed.jobs
+        )
         return JobSnapshot(rows, (*observed.diagnostics, *diagnostics))
 
 
@@ -108,9 +114,15 @@ def _job_view(
     handles: dict[str, str],
     now: float,
     standalone: Path,
+    main: Path | None,
 ) -> JobView:
     record = job.record
     state = job.state
+    checkout = record.work_dir
+    if not checkout and main is not None and job.root != standalone:
+        # An MCP server can leave ``work_dir`` out (older ones did for a Job run in
+        # their cwd), and a Developer Agent's server cwd is the main checkout.
+        checkout = str(main)
     if job.root == standalone:
         # A Standalone Job has no supervisor: its dead process is a failed run.
         state = "failed" if state == "orphaned" else state
@@ -131,6 +143,7 @@ def _job_view(
         queue=job.queue,
         queue_position=job.queue_position,
         handle=handle,
+        checkout=checkout,
     )
 
 

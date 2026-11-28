@@ -175,7 +175,9 @@ class JobLifecycle:
 
     @staticmethod
     def _stamp_context(rec: jobrec.JobRecord, context: CallContext) -> None:
-        rec.work_dir = str(context.explicit_work_dir) if context.explicit_work_dir else None
+        # A deleted server cwd leaves nothing to record and must not stop the call.
+        with contextlib.suppress(FileNotFoundError):
+            rec.work_dir = str(context.work_dir)
         from booley.runtime.booley_dir import resolve_common_booley_dir
 
         try:

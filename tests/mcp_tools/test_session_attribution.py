@@ -91,13 +91,15 @@ async def test_validation_unknown_input_required_and_stdio_outcomes(monkeypatch)
     assert form.input_requests["answer"].params.message == "human form"
 
 
-def test_job_record_is_stamped_with_the_submitting_call():
+@pytest.mark.parametrize("explicit", [Path("/fixture"), None], ids=["explicit", "server-cwd"])
+def test_job_record_is_stamped_with_the_submitting_call(tmp_path, monkeypatch, explicit):
     from booley.mcp.call_context import CallContext
 
+    monkeypatch.chdir(tmp_path)
     rec = job_records.JobRecord("one", "sim", "2026-10-08T10:00:00Z", 60)
-    context = CallContext(Path("/fixture"), None, None, None, {})
-    server._JobManager._stamp_context(rec, context)
-    assert rec.work_dir == str(context.work_dir)
+    server._JobManager._stamp_context(rec, CallContext(explicit, None, None, None, {}))
+    assert rec.work_dir is not None
+    assert Path(rec.work_dir).resolve() == (explicit or tmp_path).resolve()
 
 
 _NEEDS_PROC = pytest.mark.skipif(
@@ -181,6 +183,7 @@ async def test_job_records_the_agent_client_and_thread(
     (rec,) = job_records.list_records(session_jobs_dir())
     assert (rec.client, rec.thread) == expected
     assert rec.owner == (owner or "mcp-test")
+    assert rec.work_dir is not None and Path(rec.work_dir).resolve() == tmp_path.resolve()
 
 
 @_NEEDS_PROC
@@ -247,10 +250,12 @@ async def _start_job(tmp_path, monkeypatch, client_name, thread_meta):
     )
     ctx = context()
     ctx.session.client_params.client_info.name = client_name
-    ctx.request = object()  # A transport request, whose peer the test names above.
+    # A transport request with no peer to route by; the thread's peer is the one named above.
+    ctx.request = SimpleNamespace(headers={}, scope={})
     meta = None if thread_meta is None else {"threadId": thread_meta}
-    # With ``work_dir`` the call needs no checkout lookup at the SDK boundary.
-    arguments = {"work_dir": str(tmp_path)}
+    # Codex names no workspace here, so only its call passes ``work_dir``; the others omit it
+    # and run in the server cwd.
+    arguments = {"work_dir": str(tmp_path)} if client_name.startswith("codex") else {}
     await server._call_application_tool(
         app, CallToolRequestParams(name="sim", arguments=arguments, _meta=meta), ctx
     )

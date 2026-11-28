@@ -327,16 +327,20 @@ def test_dashboard_serves_the_web_dashboard(world, monkeypatch, capsys):
     [
         ("wt", ["t_wt"], "booley/wt"),
         ("link", ["t_wt"], "booley/wt"),
-        ("main", ["t_main"], "main"),
+        ("main", ["t_main", "t_nowhere"], "main"),
         ("detached", [], None),
     ],
 )
 def test_snapshot_lists_only_the_named_worktrees_jobs(
     world, tmp_path, monkeypatch, name, targets, branch
 ):
-    for target, work_dir in (("t_wt", world.wt), ("t_main", world.main), ("t_other", world.other)):
+    for target, work_dir in (("t_wt", world.wt), ("t_other", world.other)):
         _job(world, f"run-{target}", work_dir, target=target)
-    _job(world, "run-nowhere", None, target="t_nowhere")
+    thread = "codex-thread-9c0d1e2f"
+    _job(world, "run-main", world.main, target="t_main", client="codex", thread=thread)
+    # Without `work_dir`: an older MCP record (listed under main) and a measure child's (in none).
+    _job(world, "run-nowhere", None, target="t_nowhere", ended="2026-10-08T09:00:00Z")
+    _job(world, "run-child", None, target="t_child", session=None)
     worktree = {"wt": world.wt, "main": world.main}.get(name, tmp_path / name)
     if name == "link":
         symlink_or_skip(worktree, world.wt, target_is_directory=True)
@@ -347,6 +351,8 @@ def test_snapshot_lists_only_the_named_worktrees_jobs(
         body = _snapshot(client, worktree)
 
     assert _targets(body["results"]["jobs"]) == targets
+    if name == "main":
+        assert body["results"]["jobs"][0]["owner"] == "codex \u00b7 9c0d1e2f"
     assert body["now"] == []
     assert body["header"]["worktree"] == str(worktree.resolve())
     assert body["header"]["branch"] == branch
