@@ -14,12 +14,14 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
+from booley.core import docker_cli
 from booley.core.boundary import (
     BoundaryError,
     is_str_list,
     require_dict,
     require_opt_str,
     require_str,
+    require_str_value,
 )
 from booley.core.differences import format_differences
 from booley.core.private_store import PrivateStore
@@ -2188,29 +2190,27 @@ class _DockerCli:
     def repo_digests(self, image: str) -> tuple[str, ...]:
         """Return normalized registry identities attached to a local image."""
         try:
-            result = run_captured_bounded(
-                ["docker", "image", "inspect", "-f", "{{json .RepoDigests}}", image], timeout=15
+            values = docker_cli.inspect_value(
+                _docker,
+                "image",
+                image,
+                timeout=15,
+                template="{{json .RepoDigests}}",
+                require=_repo_digest_values,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"could not inspect Docker RepoDigests: {exc}") from exc
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
+        except docker_cli.InspectError as exc:
+            if exc.result is None:
+                raise ImageLifecycleError(
+                    f"Docker returned invalid RepoDigests for {image!r}: {exc.__cause__}"
+                ) from exc
+            detail = _failure_detail(exc.result)
             if "no such image" in detail.lower():
                 return ()
             raise ImageLifecycleError(
-                f"could not inspect Docker RepoDigests on {image!r}: "
-                f"{detail or f'Docker exited {result.returncode}'}"
-            )
-        try:
-            values = json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
-            raise ImageLifecycleError(
-                f"Docker returned invalid RepoDigests JSON for {image!r}"
+                f"could not inspect Docker RepoDigests on {image!r}: {detail}"
             ) from exc
-        if values is None or values == []:
-            return ()
-        if not is_str_list(values):
-            raise ImageLifecycleError(f"Docker returned invalid RepoDigests for {image!r}")
         normalized = tuple(normalize_registry_digest(value) for value in values)
         if any(value is None for value in normalized):
             raise ImageLifecycleError(f"Docker returned malformed RepoDigests for {image!r}")
@@ -2238,10 +2238,8 @@ class _DockerCli:
                 f"could not inventory Docker image references: {exc}"
             ) from exc
         if result.returncode:
-            detail = (result.stderr or result.stdout).strip()
             raise ImageLifecycleError(
-                "could not inventory Docker image references: "
-                f"{detail or f'Docker exited {result.returncode}'}"
+                f"could not inventory Docker image references: {_failure_detail(result)}"
             )
         return _parse_image_references(result.stdout)
 
@@ -2253,10 +2251,8 @@ class _DockerCli:
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"could not inventory Docker containers: {exc}") from exc
         if result.returncode:
-            detail = (result.stderr or result.stdout).strip()
             raise ImageLifecycleError(
-                f"could not inventory Docker containers: "
-                f"{detail or f'Docker exited {result.returncode}'}"
+                f"could not inventory Docker containers: {_failure_detail(result)}"
             )
         return _inspect_container_image_ids(result.stdout.splitlines())
 
@@ -2268,7 +2264,9 @@ class _DockerCli:
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"could not retain image {source}: {exc}") from exc
         if result.returncode != 0:
-            raise ImageLifecycleError(f"could not retain image {source}: {result.stderr.strip()}")
+            raise ImageLifecycleError(
+                f"could not retain image {source}: {_failure_detail(result)}"
+            )
 
     def remove_tag(self, image: str) -> None:
         try:
@@ -2281,11 +2279,32 @@ class _DockerCli:
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"could not remove retained tag {image}: {exc}") from exc
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
             raise ImageLifecycleError(
-                f"could not remove retained tag {image}: "
-                f"{detail or f'Docker exited {result.returncode}'}"
+                f"could not remove retained tag {image}: {_failure_detail(result)}"
             )
+
+
+def _docker(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return run_captured_bounded(["docker", *args], timeout=timeout)
+
+
+def _failure_detail(result: subprocess.CompletedProcess[str]) -> str:
+    return docker_cli.failure_detail(result, f"Docker exited {result.returncode}")
+
+
+def _repo_digest_values(value: object, *, field: str) -> list[str]:
+    if value is None:  # Docker prints null for an image with no registry identity
+        return []
+    if not is_str_list(value):
+        raise BoundaryError(f"{field} must be a list of strings, got {value!r}")
+    return value
+
+
+def _local_image_id(value: object, *, field: str) -> str:
+    image_id = require_str_value(value, field=field)
+    if not is_local_image_id(image_id):
+        raise BoundaryError(f"{field} must be a local image ID, got {image_id!r}")
+    return image_id
 
 
 def _parse_image_references(output: str) -> tuple[ImageReference, ...]:
@@ -2323,21 +2342,23 @@ def _inspect_container_image_ids(container_ids: list[str]) -> frozenset[str]:
     image_ids = set()
     for container_id in container_ids:
         try:
-            result = run_captured_bounded(
-                ["docker", "container", "inspect", "--format", "{{.Image}}", container_id],
+            image_id = docker_cli.inspect_value(
+                _docker,
+                "container",
+                container_id,
                 timeout=15,
+                template="{{json .Image}}",
+                require=_local_image_id,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(
                 f"could not inspect Docker container {container_id}: {exc}"
             ) from exc
-        image_id = result.stdout.strip()
-        if result.returncode or not is_local_image_id(image_id):
-            detail = (result.stderr or result.stdout).strip()
+        except docker_cli.InspectError as exc:
+            detail = exc.__cause__ if exc.result is None else _failure_detail(exc.result)
             raise ImageLifecycleError(
-                f"could not inspect Docker container {container_id}: "
-                f"{detail or f'Docker exited {result.returncode}'}"
-            )
+                f"could not inspect Docker container {container_id}: {detail}"
+            ) from exc
         image_ids.add(image_id)
     return frozenset(image_ids)
 

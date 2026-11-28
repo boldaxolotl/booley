@@ -5,19 +5,26 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import re
 import subprocess
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Any, TypeVar
+
+from booley.core import docker_cli
+from booley.core.boundary import BoundaryError, is_str_list
+from booley.runtime.image_provenance import LABEL_RUNTIME_BASE_CONTRACT
 
 DEFAULT_MANIFEST = "src/booley/data/docker/stable-base-inputs.txt"
 # The base image installs only ``[project].dependencies`` from this file, so
 # only that export contributes to the contract (#2553).
 PROJECT_METADATA = "pyproject.toml"
-_CONTRACT_LABEL = "io.booley.runtime-base.contract"
+# These registry and image calls are unbounded (the CI job timeout bounds them),
+# so _docker ignores the timeout that docker_cli.Runner passes.
+_CI_TIMEOUT = 0
+_T = TypeVar("_T")
 _DIGEST_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 _IMAGE_INDEX_MEDIA_TYPES = {
     "application/vnd.oci.image.index.v1+json",
@@ -129,44 +136,38 @@ def _require_schema_v2(document: dict, purpose: str) -> None:
         raise ValueError(f"{purpose} requires schema version 2")
 
 
-def _remote_document(reference: str, field: str) -> dict:
-    inspected = subprocess.run(
-        [
-            "docker",
-            "buildx",
-            "imagetools",
-            "inspect",
-            reference,
-            "--format",
-            f"{{{{json .{field}}}}}",
-        ],
-        capture_output=True,
-        check=True,
-        text=True,
-    )
-    try:
-        document = json.loads(inspected.stdout)
-    except json.JSONDecodeError as error:
-        raise ValueError(f"invalid remote {field} response for {reference}") from error
-    if not isinstance(document, dict):
-        raise ValueError(f"invalid remote {field} response for {reference}")
-    return document
+def _docker(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(["docker", *args], capture_output=True, text=True, check=False)
 
 
-def _remote_raw_manifest(reference: str) -> dict:
-    inspected = subprocess.run(
-        ["docker", "buildx", "imagetools", "inspect", reference, "--raw"],
-        capture_output=True,
-        check=True,
-        text=True,
-    )
+def _checked(read: Callable[[], _T], invalid: str) -> _T:
+    """Run *read*, raising ``CalledProcessError`` or ``ValueError(invalid)`` on its failure."""
     try:
-        manifest = json.loads(inspected.stdout)
-    except json.JSONDecodeError as error:
-        raise ValueError(f"invalid remote raw manifest for {reference}") from error
-    if not isinstance(manifest, dict):
-        raise ValueError(f"invalid remote raw manifest for {reference}")
-    return manifest
+        return read()
+    except docker_cli.InspectError as error:
+        failed = error.result
+        if failed is None:
+            raise ValueError(invalid) from error
+        raise subprocess.CalledProcessError(
+            failed.returncode, failed.args, failed.stdout, failed.stderr
+        ) from error
+
+
+def _remote_document(reference: str, field: str) -> dict[str, Any]:
+    template = f"{{{{json .{field}}}}}"
+    return _checked(
+        lambda: docker_cli.inspect_registry_image(
+            _docker, reference, timeout=_CI_TIMEOUT, template=template
+        ),
+        f"invalid remote {field} response for {reference}",
+    )
+
+
+def _remote_raw_manifest(reference: str) -> dict[str, Any]:
+    return _checked(
+        lambda: docker_cli.inspect_registry_image(_docker, reference, timeout=_CI_TIMEOUT),
+        f"invalid remote raw manifest for {reference}",
+    )
 
 
 def _linux_amd64_descriptor(index: dict, reference: str) -> dict:
@@ -237,7 +238,9 @@ class RemoteImage:
 
 def resolve_image_remote(reference: str, expected_contract: str) -> str:
     """Resolve and validate a stable-base registry image without pulling its layers."""
-    image = resolve_labeled_image_remote(reference, {_CONTRACT_LABEL: expected_contract})
+    image = resolve_labeled_image_remote(
+        reference, {LABEL_RUNTIME_BASE_CONTRACT: expected_contract}
+    )
     return image.digest_reference
 
 
@@ -282,40 +285,45 @@ def resolve_labeled_image_remote(
     return RemoteImage(f"{repository}@{top_digest}", image_digest)
 
 
+def _digest_list(value: object, *, field: str) -> list[str]:
+    if not is_str_list(value) or not value:
+        raise BoundaryError(f"{field} must be a non-empty list of strings, got {value!r}")
+    return value
+
+
+def _pulled_repo_digests(reference: str) -> list[str]:
+    return _checked(
+        lambda: docker_cli.inspect_value(
+            _docker,
+            "image",
+            reference,
+            timeout=_CI_TIMEOUT,
+            template="{{ json .RepoDigests }}",
+            require=_digest_list,
+        ),
+        f"invalid Docker RepoDigests response for {reference}",
+    )
+
+
+def _pulled_contract_label(reference: str) -> str | None:
+    return _checked(
+        lambda: docker_cli.inspect_label(
+            _docker, "image", reference, LABEL_RUNTIME_BASE_CONTRACT, timeout=_CI_TIMEOUT
+        ),
+        f"invalid {LABEL_RUNTIME_BASE_CONTRACT} label response for {reference}",
+    )
+
+
 def resolve_image_pull(reference: str, expected_contract: str) -> str:
     """Resolve and validate an image by pulling it into the Docker daemon."""
     subprocess.run(["docker", "pull", reference], check=True)
-    inspected = subprocess.run(
-        ["docker", "image", "inspect", "--format", "{{ json .RepoDigests }}", reference],
-        capture_output=True,
-        check=True,
-        text=True,
-    )
-    digests = json.loads(inspected.stdout)
-    if (
-        not isinstance(digests, list)
-        or not digests
-        or not all(isinstance(value, str) for value in digests)
-    ):
-        raise ValueError(f"invalid Docker RepoDigests response for {reference}")
+    digests = _pulled_repo_digests(reference)
     repository = _repository(reference)
     digest_pattern = re.compile(rf"{re.escape(repository)}@sha256:[0-9a-f]{{64}}")
     immutable = next((value for value in digests if digest_pattern.fullmatch(value)), None)
     if immutable is None:
         raise ValueError(f"image did not resolve to an immutable digest: {reference}")
-    label = subprocess.run(
-        [
-            "docker",
-            "image",
-            "inspect",
-            "--format",
-            '{{ index .Config.Labels "io.booley.runtime-base.contract" }}',
-            immutable,
-        ],
-        capture_output=True,
-        check=True,
-        text=True,
-    ).stdout.strip()
+    label = _pulled_contract_label(immutable)
     if label != expected_contract:
         raise ValueError(
             f"stable-base contract mismatch: expected {expected_contract}, image has {label or '<none>'}"
