@@ -152,15 +152,34 @@ Then clone:
 
 ```sh
 qa$ git clone https://github.com/YosysHQ/picorv32 $QA_PROJECT
-qa$ git -C $QA_PROJECT checkout --detach a473fc8fca393771d83b0ffcf0b14db3393339d8
+qa$ git -C $QA_PROJECT switch -q -c qa/<short> a473fc8fca393771d83b0ffcf0b14db3393339d8
 qa$ git clone https://github.com/boldaxolotl/booley-prj-picorv32 $QA_PROJECT/.booley
 ```
+
+The pin sits on a local branch `qa/<short>` (never push it): on a detached
+checkout a New worktree thread offers `main`, the upstream tip, as its base,
+not the pin. Choose `qa/<short>` as the base of every New worktree thread.
 
 Turn on the Run form's Feature Flag for this clone only: add
 `enable = ["web-run-panel"]` under `[features]` in `.booley/booley.toml`, and
 commit it on a local branch `qa/<short>` (never push it). User `qa` has no Git
 identity, so give the commit one:
 `qa$ git -C $QA_PROJECT/.booley -c user.name=qa -c user.email=qa@qa-host.invalid commit -qam 'QA: enable web-run-panel'`.
+
+Until [#5907](https://github.com/boldaxolotl/booley/issues/5907) is fixed,
+T3 Code runs `git fetch origin` before it creates a New worktree, even from a
+local base, and the default egress proxy refuses GitHub, so the setup fails at
+"Fetch base branch". A run that starts a New worktree thread therefore adds
+`github.com`, where both `origin`s are, to `egress_allowlist` under
+`[sandbox]` in the QA Host's `/home/qa/.config/booley/config.toml` (create the
+file, or add the key to an existing `[sandbox]` table), then runs
+`qa$ booley bootstrap` before `booley init`. Step 10 takes it out again.
+
+```toml
+[sandbox]
+egress_allowlist = ["github.com"]
+```
+
 Then, in `$QA_PROJECT`:
 
 ```sh
@@ -227,15 +246,33 @@ moved to 127.0.0.1:<new>, ...`: `<new>` is the new `<port>`, and one outside
 ## 5. Dashboard and threads
 
 **Dashboard.** The Sandbox serves the Dashboard on Sandbox `127.0.0.1:8090`
-from the moment it starts, with T3 Code. Click **Booley Dashboard** in T3
-Code's top bar: the page opens in T3 Code's preview panel and lists the main
-checkout (`/work`) and each T3 Code worktree; pick one. With no T3 Code
-worktree it opens the main checkout. For another worktree, click the button
-again. For a path the picker does not list, load
-`http://127.0.0.1:8090/?worktree=<path>` in the panel. Never start or stop a
-Dashboard by hand: a second one finds the port taken, and `session down` stops
-this one with the Sandbox. The relay forwards only T3 Code's own port, so
-your tab can't load the Dashboard directly; it appears only inside the panel.
+from the moment it starts, with T3 Code. Open it with the **Booley
+Dashboard** Project script: open the thread details panel (header icon
+"Toggle thread details panel") and click **Booley Dashboard**. Each click
+opens another preview panel tab; it never reuses one. The new tab loads `/`:
+with T3 Code worktrees it lists the main checkout (`/work`) and each of them,
+so pick one; with none it opens `/work` directly. For another worktree, click
+the script again: its new tab lists them again. For a path the list does not
+show, load `http://127.0.0.1:8090/?worktree=<path>` in the panel. Never start
+or stop a Dashboard by hand: a second one finds the port taken, and
+`session down` stops this one with the Sandbox. The relay forwards only T3
+Code's own port, so your tab can't load the Dashboard directly; it appears
+only inside the panel.
+
+Until [#5906](https://github.com/boldaxolotl/booley/issues/5906) is fixed,
+the panel shows "Browser connection was refused." because T3 Code looks for
+its headless Chrome only in its own tools directory, and its download of one
+is blocked. Once per Project, after step 3's `session up`, link the image's
+browser there, then click **Reconnect** in the panel:
+
+```sh
+qa$ booley session enter -- sh -c 'v=$(chrome-headless-shell --version); d="$BOOLEY_T3_BASE_DIR/tools/chrome-headless-shell/linux64"; mkdir -p "$d" && ln -sfn /opt/chrome-headless-shell "$d/${v##* }"'
+```
+
+The link is on the Project's T3 state volume: it survives `session down` and
+`up`, and `projects forget --purge` removes it. A run confirmed that, with
+this link, the panel loads the Dashboard and a second click on the script
+lists the worktrees again.
 
 Worked when `qa$ booley session status` reports `Dashboard: running` and the
 preview panel shows the Dashboard page for the chosen worktree, refreshing
@@ -247,23 +284,40 @@ the prompt. For a child, start the thread in a new worktree, as
 [DEVELOPER-CHILD.md](../DEVELOPER-CHILD.md) says: T3 Code creates it under
 `t3-worktrees/` in the Booley Directory, names its branch, and runs
 `booley worktree prepare` before the first turn; if that fails, the thread
-does not start. Approve or reject the agent's permission requests in the
+does not start. A run confirmed this with the base `qa/<short>` and step 3's
+`github.com` egress; without that egress the setup fails at "Fetch base
+branch" ([#5907](https://github.com/boldaxolotl/booley/issues/5907)) and the
+thread does not start. Approve or reject the agent's permission requests in the
 thread.
 
 ## 6. Interaction rules
 
-- **Clicking:** click by role or text locator or by an `aria-ref` from
-  `preview_snapshot`, and check the result right after (the thread opened,
-  the dialog closed): a missed click fails silently. Screenshots come back
-  scaled (a 1440×900 viewport gives a 1280×800 image), so never click at
-  coordinates read off a screenshot.
+- **Clicking:** click T3 Code's own UI by role or text locator or by an
+  `aria-ref` from `preview_snapshot`, never at coordinates: screenshots come
+  back scaled (a 1440×900 viewport gives a 1280×800 image). Check the result
+  right after every click (the thread opened, the dialog closed): a missed
+  click fails silently.
+  - Exception, inside the preview panel only: it streams a remote browser,
+    so its links, buttons (Run, Review, Submit) and form fields can be
+    clicked only at x/y. Read the point off a fresh screenshot, scale it to
+    the viewport (×1.125 at 1440×900; see "Not yet verified"), and confirm
+    the click with a screenshot.
+  - A native `<select>` in the panel draws no list: click it to focus it,
+    press ArrowDown until the screenshot shows the choice, then Enter.
+  - The panel ignores the mouse wheel, so content below its fold, such as
+    the Run form's **Submit**, is reached only by enlarging the tab:
+    `preview_resize` your tab taller (`freeform`) until Submit shows, and
+    back to 1440×900 after.
 - **Reading:** T3 Code's UI is ordinary page text. Read it with
   `preview_evaluate` or `preview_snapshot`. The Dashboard inside the preview
-  panel may not be readable from your tab's DOM; then read it from the
-  screenshot and compare with its JSON (step 8).
+  panel is not readable from your tab's DOM: read it from screenshots and
+  compare with its snapshot JSON (step 8). T3 Code's terminal drawer is a
+  canvas, so its output is not page text either and `preview_wait_for` can't
+  see it: read terminal output from screenshots.
 - **Waiting:** wait for a known text with `preview_wait_for` (up to 60 s per
   call), never with a fixed sleep. An agent turn can take many minutes: wait
-  in a loop and look at the thread between waits.
+  in a loop and look at the thread between waits. To wait on terminal output,
+  take screenshots between waits instead.
 - **Hidden tab:** while your tab is not visible (`preview_status` reports
   `visible: false`) it renders no frames, and `preview_resize` fails with
   "desktop did not draw the page", as it does right after `preview_open`.
@@ -271,9 +325,10 @@ thread.
   forces a repaint.
 - **Snapshot timeouts:** `preview_snapshot` can fail or time out several
   times in a row while `preview_evaluate` still works. When it fails with
-  "not producing screenshot frames", `preview_navigate` your tab to `/` and
-  take the snapshot again; waiting does not help. Otherwise wait a minute and
-  retry, for up to five minutes. If it still fails, see step 9.
+  "not producing screenshot frames", call `preview_open` with your tab's
+  `tabId` (`open: true`), or `preview_resize` your tab to another size and
+  back, then take the snapshot again; waiting does not help. Otherwise wait a
+  minute and retry, for up to five minutes. If it still fails, see step 9.
 - **Files:** write them from the QA Host with
   `qa$ booley session enter -- sh -c '...'` (heredoc or Python), never by
   typing into an editor view.
@@ -333,7 +388,9 @@ gap in `log.md` the first time you meet it.
    Agent CLI state volumes and its images, so the next run at that path starts
    with none. Done when it ends with
    `No Docker resources left behind for this Project.` It keeps the relay's
-   port record.
+   port record. If step 3 added `github.com` to `egress_allowlist`, remove it
+   again and run `qa$ booley bootstrap`, so the next run starts with default
+   egress.
 4. `qa$ rm -rf $QA_PROJECT`, and remove any link files left in
    `/home/qa/scratch/` and `<run-dir>/scratch/`.
 5. Remove the candidate wheel, inside the QA Host
@@ -362,7 +419,6 @@ QA Host, the candidate revision, and the finding. Item 7 still runs.
 No run has confirmed these yet. The first run that reaches them records each
 in its `log.md`; fix this file where it is wrong:
 
-- T3 Code creates and prepares a thread's new worktree in the Sandbox.
-- The preview panel loads the Dashboard at Sandbox `127.0.0.1:8090`, and
-  whether its DOM is readable from your tab.
-- Clicking **Booley Dashboard** again brings back the worktree picker.
+- Clicks inside the preview panel land where a screenshot point scaled to
+  the viewport (×1.125 at 1440×900) says, rather than at the screenshot's
+  own coordinates.
