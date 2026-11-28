@@ -100,7 +100,7 @@ test = [
 # does not need it. Exact pin, held equal to base-python-requirements.txt by
 # tests/docker/test_sandbox_dockerfile.py.
 hdl-parser = [
-    "pyslang==12.1.0",
+    "pyslang==12.2.0",
 ]
 quality = [
     "pyright==1.1.414",
