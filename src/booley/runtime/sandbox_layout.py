@@ -32,6 +32,11 @@ T3_POLICY_TARGET = "/etc/t3code/policy.json"
 T3_BASE_DIR = "/home/agent/.t3"
 # containerEnv key of an issued Sandbox: the Project's own spelling of that directory.
 T3_BASE_DIR_ENV = "BOOLEY_T3_BASE_DIR"
+# The Sandbox Image's headless Chrome, and the one-line version records the image build
+# writes: that browser's, and the one T3 Code's preview panel looks for.
+HEADLESS_CHROME_DIR = "/opt/chrome-headless-shell"
+CHROME_VERSION_RECORD = f"{HEADLESS_CHROME_DIR}/VERSION"
+T3_BROWSER_VERSION_RECORD = "/opt/t3code/preview-browser-version"
 
 
 def t3_project_base_dir(project_id: str) -> str:

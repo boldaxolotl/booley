@@ -345,8 +345,11 @@ def test_t3_code_keeps_its_state_under_the_projects_base_dir(
     monkeypatch.setattr(reg, "T3_BASE_DIR", str(volume))  # a host test has no volume mount
     monkeypatch.setenv("BOOLEY_T3_BASE_DIR", str(alias))
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
-    t3 = _t3_code(monkeypatch)
+    t3 = _t3_code(monkeypatch, volume=volume)
+    browser = volume / "tools/chrome-headless-shell/linux64/1.2.3.4/chrome-headless-shell"
+    image_browser = (tmp_path / "sandbox-image/chrome/chrome-headless-shell").resolve()
     assert reg.ensure_t3_server(tmp_path) == "started"
+    assert browser.resolve() == image_browser
     assert t3.served[0][t3.served[0].index("--base-dir") + 1] == str(alias)
     record = (volume / "userdata" / "server-runtime.json").read_bytes()
 
@@ -364,9 +367,49 @@ def test_t3_code_keeps_its_state_under_the_projects_base_dir(
         assert f"T3 Code not started: cannot link {alias} to" in capsys.readouterr().err
         return
     assert status == "started" and t3.replaced_records == [record]  # found in the volume
+    assert browser.resolve() == image_browser
     reg.create_t3_pairing("http://127.0.0.1:1")
     commands = [*t3.served, *t3.added, *t3.renamed, *t3.paired]
     assert [cmd[cmd.index("--base-dir") + 1] for cmd in commands] == [str(alias)] * 6
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the preview browser is a symlink")
+@pytest.mark.parametrize(
+    ("case", "linked", "report"),
+    [
+        ("match", True, ""),
+        ("updated", True, ""),
+        ("mismatch", False, "expects headless Chrome 9.9.9.9, the Sandbox Image ships 1.2.3.4"),
+        ("downloaded", False, ""),
+        ("unrecorded", False, "T3 Code's preview browser not linked: "),
+    ],
+    ids=["match", "updated", "mismatch", "downloaded", "unrecorded"],
+)
+def test_t3_code_starts_with_the_images_preview_browser(
+    tmp_path, monkeypatch, capsys, case, linked, report
+):
+    volume = tmp_path / "t3-volume"
+    _t3_code(monkeypatch, volume=volume)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / ".booley"))
+    record = tmp_path / "sandbox-image/preview-browser-version"
+    entry = volume / "tools/chrome-headless-shell/linux64/1.2.3.4"
+    if case == "mismatch":
+        record.write_bytes(b"9.9.9.9\n")
+    elif case == "unrecorded":
+        record.unlink()
+    elif case == "updated":  # an older image's link, kept on the volume
+        entry.parent.mkdir(parents=True)
+        (entry.parent / "1.0.0.0").symlink_to(tmp_path / "sandbox-image/chrome")
+    elif case == "downloaded":  # T3 Code's own earlier download
+        entry.mkdir(parents=True)
+
+    assert reg.ensure_t3_server(tmp_path) == "started"
+
+    assert entry.is_symlink() == linked
+    assert entry.exists() == (linked or case == "downloaded")
+    err = capsys.readouterr().err
+    assert report in err
+    assert ("preview" in err) == bool(report)
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="the Sandbox's base directory is a symlink")

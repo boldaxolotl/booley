@@ -23,7 +23,8 @@ booley.harness.incontainer_register``, does two things on every container start:
 5. **Starts T3 Code and registers the Project with it** (``ensure_t3_server``)
    when an Agent CLI is allowed, on the same terms as the MCP server, and the
    web Dashboard that T3 Code's preview panel shows (``ensure_dashboard_server``).
-   T3 Code runs on the Project's own spelling of its base directory (``t3_base_dir``).
+   T3 Code runs on the Project's own spelling of its base directory (``t3_base_dir``);
+   before it starts, the image's headless Chrome is linked where T3 Code looks for it.
 
 Idempotent: a live server is left alone; an up-to-date registration is not
 rewritten. Stale stdio-form registrations from older Booley versions are
@@ -72,9 +73,12 @@ from booley.runtime.mcp_config import (
 from booley.runtime.pid import is_pid_alive
 from booley.runtime.runtime_context import in_hand_written_sandbox
 from booley.runtime.sandbox_layout import (
+    CHROME_VERSION_RECORD,
     DASHBOARD_PORT,
+    HEADLESS_CHROME_DIR,
     T3_BASE_DIR,
     T3_BASE_DIR_ENV,
+    T3_BROWSER_VERSION_RECORD,
     T3_POLICY_TARGET,
 )
 
@@ -97,6 +101,7 @@ _T3_IDENTITY_TIMEOUT_SECONDS = 1.0  # the whole descriptor exchange
 _T3_DESCRIPTOR_LIMIT = 1 << 20  # reply bytes
 T3_LOG_CAP_BYTES = 200_000_000  # decimal MB, so the cap also holds read as MiB
 _T3_LOG_NAME = re.compile(r"\.(?:log|ndjson)(?:\.\d+)?$")  # T3 Code's logs and rotations
+_T3_BROWSER_PLATFORM = "linux64"  # the image ships only linux-x64 T3 Code and Chrome
 T3_PORT_TAKEN = "port-taken"
 T3_PORT_TAKEN_MESSAGE = (
     f"127.0.0.1:{T3_PORT} in the Sandbox is held by another process; "
@@ -420,7 +425,8 @@ def ensure_t3_server(project_root: Path) -> str:
     ``"started"``, ``"unregistered"`` (serving, but the Project is not
     registered), ``"policy-rejected"`` (``t3 policy check`` did not accept the
     policy, so nothing is started), or ``"failed"``. Never raises, so MCP
-    registration still runs. T3 Code's logs are pruned just before it starts.
+    registration still runs. Just before T3 Code starts, its logs are pruned and the
+    image's headless Chrome is linked where it looks for its preview browser.
     """
     state = t3_state()
     if state == "running":
@@ -437,6 +443,7 @@ def ensure_t3_server(project_root: Path) -> str:
         print(f"T3 Code not started: cannot link {base} to {T3_BASE_DIR}: {exc}", file=sys.stderr)
         return "failed"
     prune_t3_logs(Path(base))
+    link_t3_preview_browser(Path(base))
     return _serve_t3(project_root, base)
 
 
@@ -464,6 +471,36 @@ def prune_t3_logs(base: Path) -> None:
             total -= size
     except OSError as exc:
         print(f"T3 Code logs not pruned: {exc}", file=sys.stderr)
+
+
+def preview_browser_mismatch(expected: str, shipped: str) -> str:
+    """What Sandbox start and Doctor say when the image's browser is not T3 Code's version."""
+    return (
+        "T3 Code's preview panel has no browser: T3 Code expects headless Chrome "
+        f"{expected}, the Sandbox Image ships {shipped}"
+    )
+
+
+def link_t3_preview_browser(base: Path) -> None:
+    """Link the image's headless Chrome where T3 Code looks for its preview browser.
+
+    T3 Code downloads one when it finds none there, which the egress rules block.
+    Versions that differ are reported and nothing is linked. An entry already there is
+    kept: an earlier start's link, or T3 Code's own download. An ``OSError`` is
+    reported, not raised.
+    """
+    try:
+        expected = Path(T3_BROWSER_VERSION_RECORD).read_text(encoding="utf-8").strip()
+        shipped = Path(CHROME_VERSION_RECORD).read_text(encoding="utf-8").strip()
+        if expected != shipped:
+            print(preview_browser_mismatch(expected, shipped), file=sys.stderr)
+            return
+        link = base / "tools" / "chrome-headless-shell" / _T3_BROWSER_PLATFORM / expected
+        if not os.path.lexists(link):
+            link.parent.mkdir(parents=True, exist_ok=True)
+            link.symlink_to(HEADLESS_CHROME_DIR, target_is_directory=True)
+    except OSError as exc:
+        print(f"T3 Code's preview browser not linked: {exc}", file=sys.stderr)
 
 
 def _serve_t3(project_root: Path, base: str) -> str:

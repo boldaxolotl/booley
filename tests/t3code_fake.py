@@ -147,7 +147,8 @@ def serve_t3_code(
     """Route `incontainer_setup`'s port and descriptor probes and `subprocess` to a `T3CodeFake`.
 
     With *foreign*, something other than T3 Code already answers on the port. *volume* stands
-    in for the T3 state volume: what T3 Code writes, what is read back, what Booley prunes.
+    in for the T3 state volume: what T3 Code writes, what is read back, what Booley prunes
+    and links.
     The two probes are the network boundary and `subprocess` the process boundary; the
     global `subprocess` module stays untouched.
     """
@@ -181,7 +182,39 @@ def serve_t3_code(
         TimeoutExpired=subprocess.TimeoutExpired,
     )
     monkeypatch.setattr(incontainer_setup, "subprocess", process)
+    _route_preview_browser(monkeypatch, fake)
     return fake
+
+
+def _route_preview_browser(monkeypatch: pytest.MonkeyPatch, fake: T3CodeFake) -> None:
+    """Stand in for the Sandbox Image's headless Chrome and version records beside the volume.
+
+    With no volume, or without POSIX symlinks, link nothing: a test run inside a Sandbox
+    must never write to that Sandbox's live T3 state volume.
+    """
+    # getattr and raising=False: the regression run applies this fake to a base without them.
+    link = getattr(incontainer_setup, "link_t3_preview_browser", None)
+    image = None
+    if fake.volume and os.name == "posix":
+        image = fake.volume.parent / "sandbox-image"
+        chrome, record = image / "chrome", image / "preview-browser-version"
+        chrome.mkdir(parents=True, exist_ok=True)
+        (chrome / "chrome-headless-shell").write_bytes(b"#!/bin/sh\n")
+        for path in (record, chrome / "VERSION"):
+            path.write_bytes(b"1.2.3.4\n")
+        for constant, target in (
+            ("HEADLESS_CHROME_DIR", chrome),
+            ("CHROME_VERSION_RECORD", chrome / "VERSION"),
+            ("T3_BROWSER_VERSION_RECORD", record),
+        ):
+            # boundary: the Sandbox Image's filesystem
+            monkeypatch.setattr(incontainer_setup, constant, str(target), raising=False)
+    monkeypatch.setattr(  # boundary: the Sandbox's T3 state volume
+        incontainer_setup,
+        "link_t3_preview_browser",
+        lambda base: image and link(fake.on_host(base)),
+        raising=False,
+    )
 
 
 def write_t3_runtime(base: Path, *, pid: int | None, port: int, environment_id: str) -> bytes:

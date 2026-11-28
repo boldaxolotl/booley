@@ -111,6 +111,8 @@ required_paths = [
   "/usr/local/libexec/booley/t3code-denied-tools.txt",
   "/usr/local/libexec/booley/t3code_tool_deny_hook.py",
   "/usr/local/share/booley/base-package-inventory.json",
+  "/opt/chrome-headless-shell/VERSION",
+  "/opt/t3code/preview-browser-version",
 ]
 absent_paths = [
   "/OpenROAD",
