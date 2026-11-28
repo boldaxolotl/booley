@@ -27,6 +27,7 @@ from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
 from booley.config.agent import RetiredAuthError
 from booley.config.eda import EdaConfig
+from booley.core import docker_cli
 from booley.core.boundary import require_dict
 from booley.core.host_shell import quote_arg
 from booley.eda.provisioning.licensing.flexnet_docker import (
@@ -554,7 +555,9 @@ def _list_issued_containers(
     docker_exe: str, issuance: runtime_spec.Issuance
 ) -> subprocess.CompletedProcess[str]:
     identity = next(
-        label for label in runtime_spec.labels(issuance) if label.startswith("booley.project-id=")
+        label
+        for label in runtime_spec.labels(issuance)
+        if label.startswith(f"{docker_cli.PROJECT_ID_LABEL}=")
     )
     return run_captured_bounded(
         [

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import ntpath
 import os
 import time
@@ -49,12 +48,12 @@ def _write_image(root: Path, image: str | None) -> None:
     (booley / "booley.toml").write_bytes(text.encode())
 
 
-def _inspect(root: Path, *, vscode: bool, running: bool) -> str:
+def _inspect(root: Path, *, vscode: bool, running: bool) -> dict:
     labels = {"booley.project-id": project_label_id(str(root.resolve()))}
     if vscode:
         labels["devcontainer.local_folder"] = str(root)
     state = {"Id": "abc", "State": {"Running": running}, "Config": {"Labels": labels}}
-    return json.dumps([state])
+    return state
 
 
 @pytest.fixture

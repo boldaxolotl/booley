@@ -30,6 +30,7 @@ from booley.config.gateway import (
     GATEWAY_URL_ENV,
 )
 from booley.config.host_config import HostConfigError, load_host_policy
+from booley.core import docker_cli
 from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.core.booley_dir_pin import BooleyDirPinError, require_pinned_entry
 from booley.core.boundary import (
@@ -54,6 +55,7 @@ from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPIL
 from booley.runtime.devcontainer import (
     BOOLEY_DIR_TARGET,
     EGRESS_NETWORK,
+    INTERACTIVE_ROLE_LABEL,
     UNPROXIED_NETWORK,
     devcontainer_path,
     render_devcontainer_json,
@@ -114,12 +116,16 @@ _FIXED_SEED_FRAGMENTS = frozenset(
         "chmod 600 /home/agent/.codex/auth.json) 2>/dev/null || true",
     }
 )
+_SPEC_DIGEST_LABEL = "booley.spec-digest"
+_EDA_POLICY_LABEL = "booley.eda-policy"
+_EDA_INSTALLATION_LABEL = "booley.eda-installation"
+_LICENSE_PROFILE_LABEL = "booley.license-profile"
 _FIXED_RUN_ARGS = (
     "--init",
     "--network",
     EGRESS_NETWORK,
     "--label",
-    "booley.role=interactive",
+    INTERACTIVE_ROLE_LABEL,
     "--cap-drop",
     "ALL",
     "--security-opt",
@@ -967,11 +973,11 @@ def authenticate(project_root: Path, spec: dict[str, Any], spec_path: Path) -> I
 def labels(issuance: Issuance) -> tuple[str, ...]:
     """Return exact resource labels for lifecycle, revoke, Doctor, and reaping."""
     values = {
-        "booley.project-id": project_label_id(issuance.project_root),
-        "booley.spec-digest": issuance.spec_sha256,
-        "booley.eda-policy": str(issuance.policy_revision),
-        "booley.eda-installation": issuance.installation or "none",
-        "booley.license-profile": issuance.license_profile or "none",
+        docker_cli.PROJECT_ID_LABEL: project_label_id(issuance.project_root),
+        _SPEC_DIGEST_LABEL: issuance.spec_sha256,
+        _EDA_POLICY_LABEL: str(issuance.policy_revision),
+        _EDA_INSTALLATION_LABEL: issuance.installation or "none",
+        _LICENSE_PROFILE_LABEL: issuance.license_profile or "none",
     }
     return tuple(f"{key}={value}" for key, value in values.items())
 
@@ -990,11 +996,11 @@ def labels_cover(issuance: Issuance, container_labels: Mapping[str, object]) -> 
 _ISSUANCE_LABEL_PREFIXES = tuple(
     f"{key}="
     for key in (
-        "booley.project-id",
-        "booley.spec-digest",
-        "booley.eda-policy",
-        "booley.eda-installation",
-        "booley.license-profile",
+        docker_cli.PROJECT_ID_LABEL,
+        _SPEC_DIGEST_LABEL,
+        _EDA_POLICY_LABEL,
+        _EDA_INSTALLATION_LABEL,
+        _LICENSE_PROFILE_LABEL,
     )
 )
 
