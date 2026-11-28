@@ -149,8 +149,10 @@ def test_job_slot_store_is_in_main(worktree, monkeypatch):
     assert job_slots.slots_dir() == root
     verifier = job_slots._default_inherited_execution_verifier
     # Only the Main Booley Directory's root is canonical; verification itself is stubbed.
-    monkeypatch.setattr(job_slots, "verify_inherited_execution_id", lambda *_a, **_kw: "verified")
-    assert verifier("anything", root, 1) == "verified"
+    monkeypatch.setattr(
+        job_slots, "verify_inherited_execution_id", lambda *_a, booley_dir, **_kw: booley_dir
+    )
+    assert verifier("anything", root, 1) == main
     assert verifier("anything", worktree[1] / ".booley/runtime/jobs/slots", 1) is None
 
 

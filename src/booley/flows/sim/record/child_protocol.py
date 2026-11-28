@@ -270,6 +270,7 @@ def recover_interrupted_attempts(
     project_data: Path,
     *,
     booley_dir: Path | None = None,
+    main_booley_dir: Path,
 ) -> None:
     """Make every interrupted lane terminal, then remove the attempts' owned run directories.
 
@@ -278,12 +279,14 @@ def recover_interrupted_attempts(
     run directory goes: a lane that cannot be proven terminal raises and leaves every
     run directory in place, since a live lane may still use one.
     """
-    registry = ChildExecutionRegistry.from_project_data(
-        manifest, project_data, booley_dir=booley_dir
-    )
-    for document in attempts.values():
-        if document["child_execution_id"] is not None:
-            registry.recover_lane(ExecutionId(cast(str, document["child_execution_id"])))
+    # Lanes are in main; releases before #5913 recorded them in the checkout's own directory.
+    for data, entry in dict.fromkeys(
+        ((main_booley_dir, main_booley_dir), (project_data, booley_dir))
+    ):
+        registry = ChildExecutionRegistry.from_project_data(manifest, data, booley_dir=entry)
+        for document in attempts.values():
+            if document["child_execution_id"] is not None:
+                registry.recover_lane(ExecutionId(cast(str, document["child_execution_id"])))
     for work_item_id, document in attempts.items():
         run = restore_run_directory_from_project_data(
             cast(Mapping[str, object], document["run_directory"]),

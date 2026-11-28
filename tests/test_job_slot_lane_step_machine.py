@@ -1483,6 +1483,7 @@ def test_resume_keeps_run_directories_of_an_unrecoverable_lane(
                 attempts,
                 machine.booley_real,
                 booley_dir=machine.booley_real,
+                main_booley_dir=tmp_path / "main",  # holds no lanes: they predate #5913
             )
     assert all(directory.exists() for directory in runs)
 

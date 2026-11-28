@@ -334,10 +334,10 @@ def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> list
     ``booley.toml``. The mirror lands at the baseline checkout's own Booley
     Directory (``[project].dir`` from its committed ``booley.toml``, else
     ``.booley``). Without stealth cores the baseline keeps no ``.booley/``
-    when it would resolve that same directory anyway (main checkout, or a host
-    worktree whose own directory is found by walk-up, which finds only a
-    ``.booley``); otherwise the directory is mirrored so the baseline does not
-    fall back to main's configuration.
+    when it would resolve that same directory anyway (the main checkout, where
+    walk-up finds only a ``.booley``); otherwise, as for a linked worktree
+    with its own directory, it is mirrored so the baseline does not fall back
+    to main's configuration.
     Without a Paired Checkout, the *live* content is the pragmatic choice;
     Paired Checkouts take the separate fork-point worktree path before this
     helper is called.
