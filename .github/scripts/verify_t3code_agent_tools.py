@@ -1,17 +1,20 @@
 """Check which T3 Code tools Claude and Codex threads get in the Sandbox image (#4782, #5511).
 
-CI runs this as the Sandbox user with no network inside ``bwave-smoke``. It starts ``t3 serve``
-and one Claude and one Codex thread against a loopback fake model API, so the installed
-``claude`` and ``codex`` read the image's managed policies. Each thread calls denied and kept
-T3 Code tools. The check fails when
+CI runs this as the Sandbox user with no network inside ``bwave-smoke``. It starts ``t3 serve``,
+one Claude thread and two Codex threads against a loopback fake model API, so the installed
+``claude`` and ``codex`` read the image's managed policies. The second Codex thread runs with
+``[features] hooks = false`` in the user's Codex config (#5788). Each thread calls denied and
+kept T3 Code tools. The check fails when
 
 - T3 Code offers a tool that is neither in the shared denied list nor in ``_KEPT``, or a listed
   name that T3 Code no longer offers (``compare_tool_lists``): T3 Code changed its tools, so
   classify them;
 - Claude's own tool list differs from ``_KEPT``;
 - Claude's denied call is not refused with "No such tool available", or its kept call fails;
-- Codex's denied call under ``t3-code`` is not blocked by the deny hook, its denied call under
-  ``t3-code-direct`` is not refused or that server is not offered, or its kept call fails.
+- in either Codex thread, its denied call under ``t3-code`` is not blocked by the deny hook,
+  its denied call under ``t3-code-direct`` is not refused or that server is not offered, or its
+  kept call fails;
+- the second Codex thread did not read the changed user config.
 
 Claude hides the tools it denies, so its list cannot show a denied tool that T3 Code stopped
 offering. The unfiltered list therefore comes from T3 Code's MCP server: a pass-through
@@ -56,6 +59,9 @@ _MODEL = "claude-haiku-5-5"
 # JavaScript of Codex's ``exec`` tool, and only ``t3-code-direct``'s tools directly.
 _CODEX_MODEL = "gpt-6.1-sol"
 _DIRECT_NAMESPACE = "mcp__t3_code_direct"
+# Set in the user config along with ``hooks = false``: a model request that carries it shows
+# that Codex read that config.
+_HOOKS_OFF_MARKER = "booley-probe-hooks-off"
 # At the pinned T3 Code version, in a top-level thread with linked environments on and a
 # project whose Git remote is a forge: every tool T3 Code offers, less the shared denials.
 _KEPT_NAMES = """
@@ -229,9 +235,10 @@ def _codex_calls() -> list[dict[str, Any]]:
     return [_codex_exec(_DENIED_CALL), {**direct, "arguments": "{}"}, _codex_exec(_KEPT_CALL)]
 
 
-def _judge_codex(model_api: FakeModelApi) -> tuple[list[str], list[str], dict[str, str]]:
-    """Return the MCP servers Codex offered directly, the problems and the call outputs."""
-    requests = model_api.responses_requests
+def _judge_codex(
+    requests: list[dict[str, Any]],
+) -> tuple[list[str], list[str], dict[str, str]]:
+    """Return one thread's directly offered MCP servers, its problems and its call outputs."""
     namespaces = sorted(
         {
             tool["name"]
@@ -260,6 +267,27 @@ def _judge_codex(model_api: FakeModelApi) -> tuple[list[str], list[str], dict[st
     return namespaces, problems, dict(zip(labels, texts, strict=True))
 
 
+def _judge_codex_cases(
+    cases: dict[str, list[dict[str, Any]]],
+) -> tuple[list[str], list[str], dict[str, dict[str, str]]]:
+    """Judge each Codex thread alone: the default config's namespaces, problems and outputs."""
+    judged = {case: _judge_codex(requests) for case, requests in cases.items()}
+    problems = [f"{case}: {problem}" for case, found in judged.items() for problem in found[1]]
+    # The request with the most call outputs is the thread's own turn.
+    turn = max(cases["codex_hooks_off"], key=lambda body: len(call_outputs(body)), default={})
+    if _HOOKS_OFF_MARKER not in json.dumps(turn):
+        problems.append("codex_hooks_off: the thread did not read the changed user config")
+    return judged["codex"][0], problems, {case: found[2] for case, found in judged.items()}
+
+
+def _turn_codex_hooks_off(config: Path) -> None:
+    """Turn hooks off in the user's Codex *config*."""
+    # The marker goes first so that it stays a root key.
+    marker = f'developer_instructions = "{_HOOKS_OFF_MARKER}"\n'
+    text = config.read_text(encoding="utf-8")
+    config.write_text(f"{marker}{text}[features]\nhooks = false\n", encoding="utf-8")
+
+
 def _start_thread(root: Path, provider: str, model: str) -> str:
     """Run one thread of *provider* to its end and return the reply ``t3`` prints."""
     thread = run_t3(
@@ -274,8 +302,8 @@ def _start_thread(root: Path, provider: str, model: str) -> str:
 
 def _run_threads(
     root: Path, model_api: FakeModelApi, capture: Path
-) -> tuple[frozenset[str], dict[str, str]]:
-    """Run a Claude and a Codex thread; return the tools T3 Code offers and the replies."""
+) -> tuple[frozenset[str], dict[str, str], dict[str, list[dict[str, Any]]]]:
+    """Run the threads; return T3 Code's tools, the replies and each Codex thread's requests."""
     bin_dir = root / "bin"
     bin_dir.mkdir()
     _write_claude_shim(bin_dir, capture)
@@ -299,7 +327,12 @@ def _run_threads(
         replies = {"claude": _start_thread(root, "claudeAgent", _MODEL)}
         offered = _offered_tools(capture)
         replies["codex"] = _start_thread(root, "codex", _CODEX_MODEL)
-        return offered, replies
+        default_count = len(model_api.responses_requests)
+        _turn_codex_hooks_off(root / "codex-home/config.toml")
+        replies["codex_hooks_off"] = _start_thread(root, "codex", _CODEX_MODEL)
+        requests = model_api.responses_requests
+        cases = {"codex": requests[:default_count], "codex_hooks_off": requests[default_count:]}
+        return offered, replies, cases
     finally:
         stop_server(server)
 
@@ -335,9 +368,9 @@ def main() -> int:
     ):
         root = Path(tmp)
         _prepare_project(root)
-        offered, replies = _run_threads(root, api, root / "mcp-servers.jsonl")
+        offered, replies, codex_cases = _run_threads(root, api, root / "mcp-servers.jsonl")
         view, claude_problems, results = _judge_claude(api)
-        namespaces, codex_problems, codex_outputs = _judge_codex(api)
+        namespaces, codex_problems, codex_outputs = _judge_codex_cases(codex_cases)
     problems = compare_tool_lists(offered, denied, _KEPT) + claude_problems + codex_problems
     if problems:
         fail(
@@ -351,7 +384,8 @@ def main() -> int:
         "claude_view": view,
         "calls": dict(zip((_DENIED_CALL, _KEPT_CALL), results, strict=True)),
         "codex_namespaces": namespaces,
-        "codex_calls": codex_outputs,
+        "codex_calls": codex_outputs["codex"],
+        "codex_hooks_off_calls": codex_outputs["codex_hooks_off"],
         "thread_replies": replies,
     }
     text = json.dumps(evidence, indent=2, sort_keys=True)
