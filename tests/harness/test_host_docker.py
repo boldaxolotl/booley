@@ -308,7 +308,7 @@ def test_run_docker_timeout_stops_or_abandons_the_tree(
             idk._run_docker(args, timeout=_DEADLINE_S, executable=python)
 
         assert not paths["done"].exists()
-        if mode == "live":
+        if mode != "escape":
             assert wait_until_heartbeat_stops(paths["heartbeat"]), "grandchild outlived the kill"
 
 

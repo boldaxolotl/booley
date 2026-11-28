@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import json
 import math
-import os
-import signal
 import subprocess
 import sys
 import time
@@ -15,6 +13,7 @@ import pytest
 from tests.git_support import git
 from tests.pipe_holding_tree import (
     PARENT_SCRIPT,
+    describe_heartbeat_tree,
     heartbeat_tree,
     start_deadline_after_tree_start,
     wait_for_tree_start,
@@ -156,9 +155,11 @@ def _hook_checkout(tmp_path: Path, body: str) -> Path:
     return root
 
 
-def _heartbeat_hook_checkout(tmp_path: Path, paths: dict[str, Path]) -> Path:
-    """A checkout whose hook is ``PARENT_SCRIPT``: it spawns a heartbeat grandchild and waits."""
-    argv = [str(paths["heartbeat"]), str(paths["stop"]), str(paths["done"]), "live-until-stop"]
+def _heartbeat_hook_checkout(
+    tmp_path: Path, paths: dict[str, Path], mode: str = "live-until-stop"
+) -> Path:
+    """A checkout whose hook is ``PARENT_SCRIPT`` in *mode*: it spawns a heartbeat grandchild."""
+    argv = [str(paths["heartbeat"]), str(paths["stop"]), str(paths["done"]), mode]
     body = f"import sys\nprint('started', flush=True)\nsys.argv[1:] = {argv!r}\n{PARENT_SCRIPT}"
     return _hook_checkout(tmp_path, body)
 
@@ -260,18 +261,10 @@ def test_logged_hook_failure_reports_rc_without_output_tail(tmp_path: Path) -> N
 
 
 def test_logged_hook_background_child_does_not_hold_success(tmp_path: Path) -> None:
-    """A detached child that keeps the log open must not delay a hook that already exited."""
-    child_pid_file = tmp_path / "child.pid"
-    root = _hook_checkout(
-        tmp_path,
-        "import pathlib, subprocess, sys\n"
-        "child = subprocess.Popen([sys.executable, '-c', "
-        f"'import time; time.sleep({2 * _BACKGROUND_CHILD_BOUND_S:g})'])\n"
-        f"pathlib.Path({str(child_pid_file)!r}).write_text(str(child.pid), encoding='utf-8')\n"
-        "print('parent done')\n",
-    )
-    started = time.monotonic()
-    try:
+    """A background child that keeps the log open neither delays a hook that exited nor dies."""
+    with heartbeat_tree(tmp_path) as paths:
+        root = _heartbeat_hook_checkout(tmp_path, paths, "exit")
+        started = time.monotonic()
         result = prepare_project(
             root,
             root,
@@ -281,29 +274,11 @@ def test_logged_hook_background_child_does_not_hold_success(tmp_path: Path) -> N
             log=tmp_path / "h.log",
         )
         elapsed = time.monotonic() - started
-    finally:
-        _stop_process(child_pid_file)
 
-    assert result.ok
-    assert elapsed < _BACKGROUND_CHILD_BOUND_S
-
-
-def _stop_process(pid_file: Path) -> None:
-    """Terminate the process whose PID the test's hook recorded, if it got that far."""
-    if not pid_file.exists():
-        return
-    pid = int(pid_file.read_text(encoding="utf-8"))
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except ProcessLookupError:
-        return
-    deadline = time.monotonic() + hang_guard_s()
-    while os.name != "nt" and time.monotonic() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return
-        time.sleep(0.05)
+        assert result.ok
+        assert elapsed < _BACKGROUND_CHILD_BOUND_S
+        wait_for_tree_start(paths)
+        assert "still alive" in describe_heartbeat_tree(paths), "the background child was stopped"
 
 
 def test_logged_hook_is_stopped_with_its_descendants_when_interrupted(
