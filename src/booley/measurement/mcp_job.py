@@ -16,9 +16,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
 from booley.runtime import job_records
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.session_paths import session_jobs_dir
 
 MEASURE_ENDPOINT = "measure"

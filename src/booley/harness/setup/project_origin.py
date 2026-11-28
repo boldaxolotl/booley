@@ -4,7 +4,7 @@ from pathlib import Path
 from stat import S_IMODE
 from typing import Literal
 
-from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.core.atomic_files import atomic_replace_bytes
 
 ProjectOrigin = Literal["scaffold", "port"]
 _PREFIX = "# booley-init-origin:"

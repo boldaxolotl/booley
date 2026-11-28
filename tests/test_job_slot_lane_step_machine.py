@@ -47,6 +47,7 @@ from hypothesis import settings
 from hypothesis import strategies as st
 from hypothesis.stateful import precondition, rule, run_state_machine_as_test
 
+from booley.core.atomic_files import atomic_write_json
 from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.sim.execution.contract import PreSimScopeStoppedError
@@ -1516,6 +1517,6 @@ def test_atomic_write_json_keeps_its_temporary_file_beside_the_named_directory(
     real.mkdir(parents=True)
     (tmp_path / "link").symlink_to(real, target_is_directory=True)
     target = tmp_path / "link" / ".." / "record.json"
-    execution_records.atomic_write_json(target, {"state": "waiting"})
+    atomic_write_json(target, {"state": "waiting"})
     assert read_json(target) == {"state": "waiting"}
     assert [path.name for path in tmp_path.rglob(".record.json.*")] == []

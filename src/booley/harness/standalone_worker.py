@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.config.settings import set_agent_settings, worktree_agent_settings
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
 from booley.harness.standalone_job import (
     RUN_ID_ENV,
@@ -33,7 +34,6 @@ from booley.harness.standalone_job import (
     standalone_transcript_dir,
 )
 from booley.runtime import detached_job, job_records
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.handles import register_job
 from booley.runtime.heartbeat import reaper_heartbeat
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339

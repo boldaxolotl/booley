@@ -7,7 +7,7 @@ import stat
 from enum import Enum
 from pathlib import Path
 
-from booley.runtime.atomic_files import (
+from booley.core.atomic_files import (
     WriteOnceConflictError,
     atomic_replace_bytes,
     atomic_write_once,

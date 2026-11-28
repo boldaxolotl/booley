@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from booley.core.atomic_files import WriteOnceConflictError, atomic_write_once
 from booley.core.boundary import require_dict
 from booley.measurement.run_document import (
     SCHEMA,
@@ -36,7 +37,6 @@ from booley.measurement.run_document import (
     tables_in_rules_order,
 )
 from booley.measurement.run_key import MeasurementKey
-from booley.runtime.atomic_files import WriteOnceConflictError, atomic_write_once
 from booley.runtime.timefmt import parse_timestamp
 
 REPORT_CAP_BYTES = 64 * 1024 * 1024

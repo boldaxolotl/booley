@@ -19,13 +19,13 @@ from pathlib import Path
 
 import pytest
 
+from booley.core.atomic_files import atomic_write_json
 from booley.core.sharing_retry import read_file_bytes, write_file_text
 from booley.runtime import booley_dir as runtime_booley_dir
 from booley.runtime import execution_records, job_slots
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     RUNTIME_EXECUTION_ENV,
-    atomic_write_json,
     execution_paths,
     read_json,
 )

@@ -11,10 +11,10 @@ from pathlib import Path
 import pytest
 from tests.sharing_error_support import hold_opens, no_retry_delay, sharing_error
 
+from booley.core.atomic_files import atomic_write_json
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
-    atomic_write_json,
     child_context_matches,
     execution_paths,
     gc_terminal_executions,

@@ -70,13 +70,13 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO, TypeVar
 
+from booley.core.atomic_files import Durability, atomic_write_text
 from booley.core.boundary import as_float
 from booley.runtime import file_lock, process_group, vaporview, vscode_server
 from booley.runtime.vaporview import find_manifests
@@ -196,29 +196,6 @@ def _manifest_is_complete(manifest: dict) -> bool:
         if isinstance(properties.get(key), dict)
     }
     return configured == set(_MACHINE_SCOPED_KEYS)
-
-
-def _atomic_write_text(path: Path, content: str) -> None:
-    """Replace *path* atomically while preserving its permission bits."""
-    mode = path.stat().st_mode
-    temporary: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w",
-            encoding="utf-8",
-            dir=path.parent,
-            prefix=f".{path.name}.booley-",
-            delete=False,
-        ) as handle:
-            handle.write(content)
-            handle.flush()
-            os.fsync(handle.fileno())
-            temporary = Path(handle.name)
-        temporary.chmod(mode)
-        temporary.replace(path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
 
 
 def _bundle_sha256(source: str) -> str:
@@ -414,9 +391,10 @@ def _patch_file(path: Path) -> _PatchResult:
         # a patched manifest never becomes visible beside an unpatched bundle.
         # Atomic replacements make interruption recoverable.
         if updated_bundle is not None:
-            _atomic_write_text(bundle, updated_bundle)
+            atomic_write_text(bundle, updated_bundle, keep_mode=True, durability=Durability.FILE)
         if manifest_changed:
-            _atomic_write_text(path, json.dumps(manifest, indent=2) + "\n")
+            text = json.dumps(manifest, indent=2) + "\n"
+            atomic_write_text(path, text, keep_mode=True, durability=Durability.FILE)
     except OSError as exc:
         return _PatchResult(False, detail=f"atomic replacement failed ({exc})")
 

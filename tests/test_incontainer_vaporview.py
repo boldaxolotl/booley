@@ -276,10 +276,10 @@ class TestPatchFile:
     def test_atomic_write_failure_is_reported(self, tmp_path, monkeypatch):
         manifest = _install_at(tmp_path / f"lramseyer.vaporview-{_VERSION}", _vanilla_manifest())
 
-        def fail_write(_path, _content):
+        def fail_write(_path, _content, **_options):
             raise OSError("simulated write failure")
 
-        monkeypatch.setattr(iv, "_atomic_write_text", fail_write)
+        monkeypatch.setattr(iv, "atomic_write_text", fail_write)
 
         result = iv._patch_file(manifest)
 

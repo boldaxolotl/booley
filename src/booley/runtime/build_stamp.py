@@ -13,8 +13,8 @@ every init-driven image reported a bare ``booley <version>`` and the prescribed
 "does the wheel match the commit?" freshness check was unanswerable exactly
 where it matters (F-3).
 
-Kept dependency-free (stdlib only, plus stdlib-only ``booley.runtime`` modules,
-no imports from the rest of the harness) so ``build.sh`` can call it with nothing
+Kept dependency-free (stdlib only, plus stdlib-only ``booley.runtime`` and
+``booley.core`` modules, no imports from the rest of the harness) so ``build.sh`` can call it with nothing
 but ``PYTHONPATH=src``. Every wheel build renders the packaged docs from their
 sources here, so no builder can pack a stale or missing copy.
 """

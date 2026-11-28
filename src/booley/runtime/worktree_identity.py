@@ -12,8 +12,8 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.atomic_files import WriteOnceConflictError, atomic_write_once
 from booley.core.boundary import BoundaryError, require_uuid4
-from booley.runtime.atomic_files import WriteOnceConflictError, atomic_write_once
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.project_repositories import GitDirectoryInspectionError, git_directories
 

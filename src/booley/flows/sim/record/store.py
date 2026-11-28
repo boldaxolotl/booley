@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar, cast
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.booley_dir_links import is_booley_dir_entry
 from booley.flows.artifact_durability import (
     discard_published_staging,
@@ -30,7 +31,6 @@ from booley.flows.sim.record_files import (
 )
 from booley.flows.sim.record_layout import RECORD_DIRECTORY, refuse_older_manifest_path
 from booley.flows.sim.record_reports import is_report_link
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.file_lock import nonblocking_file_lock
 
 from .codec import (

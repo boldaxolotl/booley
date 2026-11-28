@@ -15,7 +15,7 @@ AUDITED = (
     "runtime/_claude_transcript_md.py",
     "runtime/_codex_backend.py",
     "runtime/_codex_transcript_md.py",
-    "runtime/atomic_files.py",
+    "core/atomic_files.py",
     "runtime/booley_dir.py",
     "runtime/exception_diagnostics.py",
     "runtime/execution_records.py",

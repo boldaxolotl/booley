@@ -102,6 +102,13 @@ each step. Validate before mutation, publish complete state atomically, and make
 retries idempotent where the caller can repeat an operation. Never expose a
 partially written state as successful.
 
+Publish a file through `booley.core.atomic_files`
+(`src/booley/core/atomic_files.py`): `atomic_replace_bytes` or
+`atomic_write_text` (choose mode and durability), `atomic_write_once` (mode
+only), or `atomic_write_json` (owner-only, durable). Do not hand-roll a staged
+write and rename; `tests/architecture/test_atomic_write_ratchet.py` caps those
+that write and rename in one scope.
+
 ## Analyzability
 
 ### 11. Type-annotate public interfaces
