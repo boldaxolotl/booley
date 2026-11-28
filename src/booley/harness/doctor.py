@@ -1967,10 +1967,11 @@ def _check_runtime_location(
     """
     _warn = _warning_sink(_warn, "sandbox.runtime-marker")
 
+    from booley.core import sandbox_detection
     from booley.runtime import runtime_context
 
     if not runtime_context.inside_session_runtime():
-        if os.environ.get("BOOLEY_CONTAINER") == "0" and runtime_context.container_marker_file():
+        if os.environ.get("BOOLEY_CONTAINER") == "0" and sandbox_detection.container_marker_file():
             _pass(
                 warning(
                     "sandbox.runtime-marker",

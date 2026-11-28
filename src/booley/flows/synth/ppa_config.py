@@ -8,6 +8,7 @@ from typing import Any
 
 from booley.core.boundary import (
     BoundaryError,
+    as_positive_int,
     require_bool,
     require_dict,
     require_finite_number,
@@ -265,7 +266,7 @@ def _append_positive_int_config(
     if key not in cfg:
         return
     value = cfg[key]
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+    if as_positive_int(value, 0) == 0:
         raise BoundaryError(f"{field} must be a positive integer, got {value!r}")
     cmd.extend([f"--{key.replace('_', '-')}", str(value)])
 

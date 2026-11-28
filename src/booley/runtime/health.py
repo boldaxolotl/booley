@@ -26,6 +26,7 @@ from booley.audit import health as policy
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.audit.health import HealthSnapshot
 from booley.core.boundary import as_dict
+from booley.core.file_hash import file_sha256_or_none
 from booley.runtime import doctor_stamp
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import (
@@ -73,26 +74,13 @@ def transcript_path(booley_dir: Path) -> Path:
     return state_dir(booley_dir) / _TRANSCRIPT_NAME
 
 
-def _sha256_or_none(path: Path, *, retry_sharing: bool = False) -> str | None:
-    """Hash ``path``; ``retry_sharing`` rides out a concurrent atomic replace.
-
-    Only Booley-written, polled inputs retry: user-authored inputs stay a
-    single attempt because an error there just reports drift.
-    """
-    try:
-        raw = read_file_bytes(path) if retry_sharing else path.read_bytes()
-        return hashlib.sha256(raw).hexdigest()
-    except OSError:
-        return None
-
-
 def _path_identity(path: Path) -> str | None:
     """Fingerprint a generated link without erasing link-vs-copy drift."""
     try:
         if path.is_symlink():
             return f"symlink:{path.readlink()}"
         if path.is_file():
-            return f"file:{_sha256_or_none(path)}"
+            return f"file:{file_sha256_or_none(path)}"
     except OSError:
         return None
     return None
@@ -113,7 +101,7 @@ def _core_digest(project_root: Path, booley_dir: Path) -> str:
     digest = hashlib.sha256()
     for label, path in sorted(entries):
         digest.update(label.encode() + b"\0")
-        value = _sha256_or_none(path) or "unreadable"
+        value = file_sha256_or_none(path) or "unreadable"
         digest.update(value.encode() + b"\0")
     return digest.hexdigest()
 
@@ -130,14 +118,15 @@ def compute_fingerprint(booley_dir: Path, project_root: Path) -> dict[str, Any]:
 
     fingerprint: dict[str, Any] = doctor_stamp.compute_fingerprint(booley_dir, project_root)
     for name in ("tests.toml", "AGENTS.md"):
-        fingerprint[f"{name}_sha256"] = _sha256_or_none(booley_dir / name)
+        fingerprint[f"{name}_sha256"] = file_sha256_or_none(booley_dir / name)
     # Booley ignores configs.toml: Doctor only warns that the file exists.
     fingerprint["configs_toml_present"] = (booley_dir / "configs.toml").exists()
     for name in ("AGENTS.md", "CLAUDE.md"):
         fingerprint[f"root_{name}_identity"] = _path_identity(project_root / name)
     fingerprint["core_files_sha256"] = _core_digest(project_root, booley_dir)
     fingerprint["booley_version"] = booley.__version__
-    fingerprint["upgrade_review_sha256"] = _sha256_or_none(
+    # Only this input retries: Booley writes and polls it; elsewhere an error just reports drift.
+    fingerprint["upgrade_review_sha256"] = file_sha256_or_none(
         booley_dir / "runtime" / "upgrade_review.json", retry_sharing=True
     )
     return fingerprint

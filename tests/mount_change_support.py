@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.runtime import sandbox_layout
+from booley.core import sandbox_layout
 from tests.subprocess_budget import run_bounded_child
 
 

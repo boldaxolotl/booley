@@ -28,7 +28,7 @@ class FpgaArguments(BuiltinArguments):
     )
 
     @staticmethod
-    def add_args(parser: argparse.ArgumentParser) -> None:
+    def add_args(parser: argparse.ArgumentParser, features: frozenset[str]) -> None:  # noqa: ARG004 — implements BuiltinArguments.add_args
         parser.add_argument("--baseline", default=None, help="Baseline git ref for comparison")
         parser.add_argument(
             "--no-cache",

@@ -7,6 +7,7 @@ fakes the Runtime spec validator prefix seam.
 from __future__ import annotations
 
 import copy
+import json
 import os
 import subprocess
 from collections.abc import Callable
@@ -141,6 +142,8 @@ class HostDocker:
         verb = " ".join(args[:2])
         if verb == "image inspect":
             found, out = self.image is not None, self.image or ""
+            if "{{json .Id}}" in args:
+                out = json.dumps(out)
         elif args[0] == "run":  # the Sandbox Image's Booley Directory layout probe
             found, out = True, "directory"
         elif verb == "container inspect":

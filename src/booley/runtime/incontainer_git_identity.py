@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, as_str, require_dict
-from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
+from booley.core.sandbox_layout import BOOLEY_DIR_TARGET
 
 _DEFAULT_NAME = "Dev"
 _DEFAULT_EMAIL = "dev@localhost"

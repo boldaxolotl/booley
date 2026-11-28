@@ -42,6 +42,7 @@ from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInspection
+from tests.flows.sim.fault_point_support import inject_faults
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _build_execution,
@@ -408,9 +409,9 @@ def test_coverage_simulation_record_refuses_an_oversized_result_at_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # No coverage run produces a result above the real ceiling, so the limit is lowered in place.
-    schema, fields, _limit, reader = codec._DOCUMENT_SPECS[SimulationResult]
+    schema, fields, _limit = codec._DOCUMENT_SPECS[SimulationResult]
     # No coverage run produces a result above the real ceiling, so the limit is lowered in place.
-    monkeypatch.setitem(codec._DOCUMENT_SPECS, SimulationResult, (schema, fields, 64, reader))
+    monkeypatch.setitem(codec._DOCUMENT_SPECS, SimulationResult, (schema, fields, 64))
 
     with pytest.raises(SimulationRecordPublicationError) as caught:
         _run_coverage_simulation_record(tmp_path, NativeExecution())
@@ -641,8 +642,8 @@ def _start_crashed_cocotb_simulation_record(
         plan, root, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
     )
     crash = _CrashOnce("before:simulation_result")
-    with pytest.raises(_InjectedProcessDeath):
-        SimulationRecord(executor, publication_checkpoint=crash).run(request)
+    with inject_faults(crash), pytest.raises(_InjectedProcessDeath):
+        SimulationRecord(executor).run(request)
     return invocation, SimulationRecordStore(invocation / "targets/sim/record")
 
 

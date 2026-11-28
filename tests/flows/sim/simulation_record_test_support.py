@@ -885,11 +885,9 @@ def _executor(
     *,
     mutate_bundle: str = "",
     disclosures: dict[str, object] | None = None,
-    checkpoint=None,
     launched_bundles: list[Path] | None = None,
 ) -> OrdinaryHdlSerialExecutor:
     return OrdinaryHdlSerialExecutor(
-        publication_checkpoint=checkpoint,
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: _Execution(
             build_root,
@@ -1001,7 +999,7 @@ def _publish_request_hook(request, name="alpha", ordinal=1, status="passed", ret
 def _observe_pre_sim_reads(monkeypatch):
     from collections import Counter
 
-    from booley.flows.sim.record.pre_sim_evidence import PreSimFiringDecoder
+    from booley.flows.sim.record import store as store_module
 
     accesses, decodes, results = Counter(), Counter(), Counter()
 
@@ -1020,18 +1018,16 @@ def _observe_pre_sim_reads(monkeypatch):
             results[path] += 1
         return read_bytes(store, path, **kwargs)
 
-    decode = PreSimFiringDecoder.decode
+    decode = store_module.decode_pre_sim_firing
 
-    def count_decode(decoder, raw, item, attempt):
-        document = decode(decoder, raw, item, attempt)
+    def count_decode(raw):
+        document = decode(raw)
         decodes[(document["attempt_id"], document["ordinal"])] += 1
         return document
 
     monkeypatch.setattr(SimulationRecordStore, "_read", observe(count_results))
-    monkeypatch.setattr(
-        SimulationRecordStore, "_identity", observe(SimulationRecordStore._identity)
-    )
-    monkeypatch.setattr(PreSimFiringDecoder, "decode", count_decode)
+    # No public result exposes how many times a recorded firing is decoded.
+    monkeypatch.setattr(store_module, "decode_pre_sim_firing", count_decode)
     return accesses, decodes, results
 
 
@@ -1566,7 +1562,6 @@ def _run_coverage_simulation_record(
     *,
     runtime_input: bool = False,
     pre_sim_commands: tuple[str, ...] = (),
-    publication_checkpoint=None,
 ):
     plan, target = _coverage_simulation_record_plan(
         root, runtime_input=runtime_input, pre_sim_commands=pre_sim_commands
@@ -1586,7 +1581,6 @@ def _run_coverage_simulation_record(
     executor = CoverageAggregateExecutor(
         plans={target.handle.identity: target},
         execution_factory=execution_factory,
-        publication_checkpoint=publication_checkpoint,
     )
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)

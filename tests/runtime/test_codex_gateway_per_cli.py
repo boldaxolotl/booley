@@ -165,12 +165,12 @@ def test_issued_sandbox_routes_codex_through_gateway_and_never_claude(tmp_path, 
     toml_data = tomllib.loads((project / ".booley" / "booley.toml").read_text(encoding="utf-8"))
 
     # Resolve the spec's ``${localEnv:KEY}`` references the way VS Code does, then act as
-    # the Sandbox: inside a container, with the default CLI's policy as the hand-off.
+    # the Sandbox, with the default CLI's policy as the hand-off.
     host_env = {"BOOLEY_GATEWAY_URL": _GATEWAY_URL, "BOOLEY_GATEWAY_TOKEN": "SYNTHETIC_TOKEN"}
     for key, value in spec["remoteEnv"].items():
         monkeypatch.setenv(key, host_env.get(key, value) if "localEnv" in value else value)
-    # Only a container hides the gateway.
-    place(monkeypatch, RuntimeLocation.HOST, container_host=True)
+    # Only a Sandbox honors the gateway.
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     assert spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "subscription"
 
     settings = agent_config.settings_from_data(toml_data, lazy=True)

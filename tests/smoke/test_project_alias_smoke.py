@@ -10,9 +10,9 @@ import pytest
 from tests.smoke.test_verilator_coverage_collector_smoke import _write_generated_target
 from tests.time_budget import hang_guard_s
 
+from booley.core.sandbox_layout import canonical_project_alias_path
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
-from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 pytestmark = pytest.mark.skipif(
     os.environ.get("BOOLEY_ALIAS_IMAGE_SMOKE") != "1",

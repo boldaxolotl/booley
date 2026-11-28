@@ -54,6 +54,8 @@ from tests.harness.booley_dir_support import select_booley_dir
 from tests.harness.session_docker_fake import (
     SandboxDocker,
     attach_commands,
+    completed,
+    container_inspect_output,
     docker_runner,
     headless_session_entry,
     isolate_session_cli,
@@ -460,7 +462,7 @@ class TestPrepareLegacyContainer:
         state = _vscode_container(workspace, running=False, spec_digest="old")
         state["Config"]["Labels"]["booley.project-id"] = "other-project"
         sandbox_docker.containers["vanished"] = state
-        sandbox_docker.failing.add("vanished")
+        sandbox_docker.script(("container", "inspect", "vanished"), completed(1, stderr="denied"))
 
         assert sr.prepare(workspace) == "current-spec"
 
@@ -1378,12 +1380,27 @@ class TestUp:
 
         assert _mutations(up_docker) == []
 
-    def test_docker_run_failure_raises(self, workspace: Path, up_docker: SandboxDocker) -> None:
-        up_docker.failing.add("run")
+    @pytest.mark.parametrize(
+        ("reply", "detail"),
+        [
+            pytest.param(None, "run failed: container is running", id="stderr"),
+            pytest.param(("invalid mount config\n", ""), "invalid mount config", id="stdout-only"),
+            pytest.param(("", ""), "exit 125", id="no-output"),
+        ],
+    )
+    def test_docker_run_failure_raises(
+        self,
+        workspace: Path,
+        up_docker: SandboxDocker,
+        reply: tuple[str, str] | None,
+        detail: str,
+    ) -> None:
+        if reply is None:
+            up_docker.failing.add("run")
+        else:
+            up_docker.script(("run", "-d"), subprocess.CompletedProcess(["docker"], 125, *reply))
 
-        with pytest.raises(
-            sr.SessionError, match=r"docker run failed.*run failed: container is running"
-        ):
+        with pytest.raises(sr.SessionError, match=f"docker run failed: {detail}"):
             sr.up(workspace)
 
     def test_failing_hook_warns_but_leaves_container_up(
@@ -1578,7 +1595,7 @@ class TestContainerResumeChecks:
             id="mismatch",
         ),
         pytest.param("/c/Users/dev/project", None, False, False, id="read-only-view"),
-        pytest.param(None, None, True, False, id="unreadable-inspect"),
+        pytest.param(None, None, True, False, id="no-mounts"),
     ],
 )
 def test_booley_dir_pin_reads_docker_desktop_sources(
@@ -1590,7 +1607,6 @@ def test_booley_dir_pin_reads_docker_desktop_sources(
 ) -> None:
     # Docker Desktop reports these sources only on a Windows host, and `prepare` cannot run its
     # other host-path handling with IS_WINDOWS forced on a POSIX runner: drive the pin check.
-    # Its callers decode the inspect output first, so only this call reaches the undecodable case.
     monkeypatch.setattr(platform_paths, "IS_WINDOWS", True)
     workspace = SimpleNamespace(resolve=lambda: Path("C:/Users/dev/project"))
     mounts = [
@@ -1607,11 +1623,11 @@ def test_booley_dir_pin_reads_docker_desktop_sources(
             "RW": view_writable,
         },
     ]
-    raw = json.dumps([{"Mounts": mounts}]) if project_source else "not-json"
+    state = {"Mounts": mounts} if project_source else {}
 
     assert (
         sr._project_data_mount_root_is_pinned(
-            raw, workspace, Path("C:/Users/dev/project/.booley"), layout="legacy"
+            state, workspace, Path("C:/Users/dev/project/.booley"), layout="legacy"
         )
         is pinned
     )
@@ -2114,7 +2130,7 @@ class TestSessionsOnStaleImage:
         if case == "unbuilt-image":
             docker.images.clear()
         if case == "vanished-container":  # gone between `docker ps` and the inspect
-            docker.failing.add(ours)
+            docker.script(("container", "inspect", ours), completed(1, stderr="No such object"))
 
         assert sr.sessions_on_stale_image(workspace, self.IMAGE) == []
 
@@ -2542,13 +2558,9 @@ def _container_matches_swap(tmp_path, monkeypatch, memory_swap, swap_limit="{}")
     monkeypatch.setattr(sr, "_mounts_match_spec", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(
         sr,
-        "_docker_stdout",
-        lambda argv: (
-            swap_limit
-            if argv[1] == "info"
-            else json.dumps({})
-            if "--format" in argv
-            else json.dumps([state])
+        "_run",  # boundary: runs the Docker CLI
+        lambda argv, **_kwargs: completed(
+            stdout=swap_limit if argv[1] == "info" else container_inspect_output(state, argv[-1])
         ),
     )
     return sr.container_matches_issuance(
@@ -2750,7 +2762,7 @@ def test_project_sandbox_resolution_editor_status(workspace, monkeypatch):
                 f"{container_id}\teditor\t{workspace}\t{project_id(str(workspace))}\tinteractive"
             )
         elif argv[1:3] == ["container", "inspect"]:
-            output = json.dumps(state)
+            output = container_inspect_output(state, argv[-1])
         else:
             pytest.fail(f"unexpected mutation: {argv}")
         return subprocess.CompletedProcess(argv, 0, output, "")
@@ -2829,22 +2841,20 @@ def _project_resolution_transport(state):
                 rows.append("\t".join(fields))
             return subprocess.CompletedProcess(argv, 0, "\n".join(rows), "")
         if argv[1:3] == ["container", "inspect"]:
-            return subprocess.CompletedProcess(argv, 0, json.dumps(documents[argv[3]]), "")
+            doc = documents.get(argv[3]) or next(
+                (doc for doc in documents.values() if doc.get("Name") == "/" + argv[3]), None
+            )
+            if doc is None:
+                return subprocess.CompletedProcess(argv, 1, "", "No such container")
+            return subprocess.CompletedProcess(
+                argv, 0, container_inspect_output(doc, argv[-1]), ""
+            )
         pytest.fail(f"unexpected mutation: {argv}")
 
     def inspect(argv):
         calls.append(argv)
-        if argv[1] == "ps":
-            return "\n".join(doc["Name"].removeprefix("/") for doc in documents.values())
-        reference = argv[2]
-        doc = documents.get(reference) or next(
-            (doc for doc in documents.values() if doc.get("Name") == "/" + reference), None
-        )
-        if doc is None:
-            return None
-        if "--format" in argv and "index .Config.Labels" in argv[-1]:
-            return doc["Config"]["Labels"].get("devcontainer.local_folder")
-        return json.dumps(doc["Config"]["Labels"]) if "--format" in argv else json.dumps([doc])
+        assert argv[1] == "ps", argv
+        return "\n".join(doc["Name"].removeprefix("/") for doc in documents.values())
 
     return documents, calls, run, inspect
 
@@ -2930,18 +2940,18 @@ def test_project_sandbox_resolution_refuses_drift_before_attachment(
     elif change == "workdir":
         fixture.state["Config"]["WorkingDir"] = "/"
     else:
-        original = sr._docker_stdout
 
-        def replaced(argv):
-            result = original(argv)
-            if "--format" not in argv:
-                state = json.loads(result)[0]
+        def replaced(argv, **kwargs):
+            result = fixture.run(argv, **kwargs)
+            # The issuance check reads the labels, then the whole document: change only that one.
+            if argv[-1] == "{{json .}}" and fixture.calls[-2][-1] == "{{json .Config.Labels}}":
+                state = json.loads(result.stdout)
                 state["Id"] = "b" * 64 if change == "id" else state["Id"]
                 state["State"]["Running"] = change != "stopped"
-                return json.dumps([state])
+                result.stdout = json.dumps(state)
             return result
 
-        monkeypatch.setattr(sr, "_docker_stdout", replaced)
+        monkeypatch.setattr(sr, "_run", replaced)  # boundary: runs the Docker CLI
     attached = Mock()
     monkeypatch.setattr("booley.runtime.runtime_attachment.run_command", attached)
     with pytest.raises(sr.SessionError, match="current host issuance"):
@@ -3918,7 +3928,7 @@ def _refresh_image() -> RefreshImage:
     return RefreshImage(_REFRESH_IMAGE_ID, None, None, False)
 
 
-def _as_headless_sandbox(workspace: Path, fixture: SimpleNamespace, monkeypatch) -> None:
+def _as_headless_sandbox(workspace: Path, fixture: SimpleNamespace) -> None:
     """Turn the resolution fixture's VS Code container into the canonical headless Sandbox.
 
     The container's environment holds its own credential value for a spec key that
@@ -3934,23 +3944,13 @@ def _as_headless_sandbox(workspace: Path, fixture: SimpleNamespace, monkeypatch)
         "BOOLEY_DIR=/booley",
         f"{_CREDENTIAL_KEY}=container-held-secret",
     ]
-    # The shared resolution fixture serves its inspections through `_docker_stdout`, the
-    # module's Docker probe seam that no public entry takes; wrap it for the image-ID format.
-    inspect = sr._docker_stdout
-
-    def stdout(argv: list[str]) -> str | None:
-        if argv[-1] == "{{.Image}}":
-            return fixture.state["Image"]
-        return inspect(argv)
-
-    monkeypatch.setattr(sr, "_docker_stdout", stdout)
 
 
 def test_verified_headless_container_ignores_calling_shell_env(
     workspace, project_sandbox_resolution, monkeypatch
 ):
     fixture = project_sandbox_resolution
-    _as_headless_sandbox(workspace, fixture, monkeypatch)
+    _as_headless_sandbox(workspace, fixture)
     container_id = fixture.state["Id"]
 
     # A key the calling shell does not export is skipped: the container holds its own.
@@ -3978,7 +3978,7 @@ def test_verified_headless_container_requires_running_relay(
     from booley.eda.provisioning.licensing import flexnet_docker
 
     fixture = project_sandbox_resolution
-    _as_headless_sandbox(workspace, fixture, monkeypatch)
+    _as_headless_sandbox(workspace, fixture)
     fixture.issuance.license_profile = "site"
     # The running Sandbox carries the licensed issuance's labels.
     fixture.state["Config"]["Labels"].update(
@@ -4034,15 +4034,14 @@ def _prepare_refresh_start(wired, monkeypatch, *, licensed: bool):
     issuance = _test_issuance(workspace)
     issuance.image_id = _REFRESH_IMAGE_ID
     issuance.license_profile = "site" if licensed else None
-    started = json.dumps({**_headless_state(workspace), "Id": "new-id"})
+    started = {**_headless_state(workspace), "Image": _REFRESH_IMAGE_ID, "Id": "new-id"}
     events: list[str] = []
 
     def execute(argv, **_kwargs):
         if argv[:2] == ["docker", "run"]:
             events.append("docker run")
-        if argv[1:3] == ["container", "inspect"]:
-            return subprocess.CompletedProcess(argv, 0, started, "")
-        stdout = _REFRESH_IMAGE_ID if argv[-1] == "{{.Image}}" else ""
+        inspected = argv[1:3] == ["container", "inspect"]
+        stdout = container_inspect_output(started, argv[-1]) if inspected else ""
         return subprocess.CompletedProcess(argv, 0, stdout, "")
 
     run.side_effect = execute
@@ -4095,9 +4094,7 @@ def test_start_refreshed_sandbox_skips_stopped_vscode_cleanup(wired, monkeypatch
     # `wired` empties the strict Sandbox inventory that `session up` reads for this
     # cleanup; no public entry restores it, so serve the stale container through it.
     state = _vscode_container(fixture.workspace, running=False, spec_digest="older-spec")
-    monkeypatch.setattr(
-        sr, "_strict_all_sandbox_states", lambda _project: [(stale, json.dumps([state]))]
-    )
+    monkeypatch.setattr(sr, "_strict_all_sandbox_states", lambda _project: [(stale, state)])
 
     assert (
         sr.start_refreshed_sandbox(fixture.workspace, fixture.request, _refresh_image())

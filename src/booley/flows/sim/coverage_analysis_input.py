@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, cast
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_layout import BOOLEY_DIR_NAME
 from booley.core.boundary import BoundaryError, require_dict
+from booley.core.sandbox_layout import canonical_project_alias_path
 from booley.flows.sim.coverage_json import FrozenJson, freeze_coverage_mapping
 from booley.flows.sim.coverage_record import CoverageRecord
 from booley.flows.sim.coverage_record_store import (
@@ -38,7 +39,6 @@ from booley.flows.sim.record.codec import (
 from booley.flows.sim.record_layout import RECORD_DIRECTORY
 from booley.flows.sim.record_reports import report_link_ancestor, target_report_directory
 from booley.runtime.booley_dir import crossed_booley_dir_entry
-from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
     from booley.flows.sim.record import SimulationRecordWorkItemEvidence
@@ -160,7 +160,6 @@ def _reference_projection(
     manifest_artifact = resolve_artifact_reference(
         document.get("simulation_record_manifest"),
         bases={"origin_target": public_path.parent},
-        allowed_bases={"origin_target"},
         expected_kind="simulation_record_manifest",
         expected_owner=owner,
         maximum=MANIFEST_MAX_BYTES,
@@ -169,7 +168,6 @@ def _reference_projection(
     coverage_artifact = resolve_artifact_reference(
         document.get("coverage_record"),
         bases={"origin_target": public_path.parent},
-        allowed_bases={"origin_target"},
         expected_kind="coverage_record_reference",
         expected_owner=owner,
         maximum=MAX_REFERENCE_BYTES,

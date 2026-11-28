@@ -323,7 +323,7 @@ def test_job_record_paths_translate_only_under_former_mount(
 def test_malformed_mount_history_names_record_and_fix(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from booley.runtime import sandbox_layout
+    from booley.core import sandbox_layout
     from booley.runtime.mount_history import MOUNT_HISTORY, MountHistoryError
 
     monkeypatch.setattr(sandbox_layout, "BOOLEY_DIR_TARGET", str(tmp_path / "current"))

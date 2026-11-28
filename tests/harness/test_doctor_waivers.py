@@ -14,7 +14,7 @@ from booley.presentation import colors
 from booley.runtime import dashboard_extension
 from booley.runtime.runtime_context import RuntimeLocation
 from tests.harness.doctor_environment_support import patch_doctor_environment
-from tests.harness.test_doctor import _write_project
+from tests.harness.doctor_run_support import write_project
 from tests.sandbox_venue_fake import place
 
 
@@ -143,7 +143,7 @@ def test_reporter_dedupes_by_check_subject_and_key(capsys):
 
 
 def test_doctor_subject_waiver_keeps_the_sibling_warning(tmp_path, monkeypatch, capsys):
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     # Stealth requires both entries in the exclude file, so each subject yields its own finding.
     with (booley_dir / "booley.toml").open("a", encoding="utf-8", newline="\n") as stream:
         stream.write("\n[stealth]\nenabled = true\n")
@@ -179,7 +179,7 @@ permanent = true
 
 def test_doctor_waives_one_target_s_untagged_harness(tmp_path, monkeypatch):
     """A sim Target's untagged C++ harness is a waivable finding with the Target as subject."""
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     (tmp_path / "main.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
     (tmp_path / "cpp.core").write_text(
         "CAPI=2:\nname: ::cpp_harness:0\nfilesets:\n"
@@ -218,7 +218,7 @@ def _run_inside_the_sandbox(monkeypatch, root, booley_dir) -> None:
 def test_doctor_waives_the_warnings_of_the_in_sandbox_checks(tmp_path, monkeypatch, waived):
     """Doctor run inside the Sandbox tags both image warnings with waivable check IDs (#2123)."""
     check_ids = ["sandbox.activity-hooks-unavailable", "sandbox.dashboard-extension-unavailable"]
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     if waived:
         _write(
             booley_dir,

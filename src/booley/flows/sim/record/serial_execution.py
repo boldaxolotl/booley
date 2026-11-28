@@ -31,6 +31,7 @@ from booley.flows.artifact_durability import (
 )
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.job_resources import judged_commands_failing_on_error
+from booley.flows.sim import faults
 from booley.flows.sim.backends.cocotb_results import decode_results_payload, reconcile
 from booley.flows.sim.build import BuildOutcome
 from booley.flows.sim.build_session import project_compile_surface
@@ -229,11 +230,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         *,
         invoke: ProcessInvoker,
         execution_factory: Callable[[SimulationOptions], SimulationExecution] | None = None,
-        publication_checkpoint: Callable[[str], None] | None = None,
     ) -> None:
         self._invoke = invoke
         self._execution_factory = execution_factory
-        self._publication_checkpoint = publication_checkpoint or (lambda _boundary: None)
         self._shared_ready: dict[tuple[Path, str, int], _SharedReady] = {}
         self._shared_failure: dict[tuple[Path, str, int], _SharedFailure] = {}
         self._shared_locks: dict[tuple[Path, str, int], threading.Lock] = {}
@@ -244,9 +243,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
     def prepare_attempt(self, request: WorkExecutionRequest) -> None:
         """Publish the child-bound attempt before its slot waiter becomes visible."""
         attempt, run_directory = simulation_attempt(request)
-        self._publication_checkpoint("before:simulation_attempt")
+        faults.fault_point("before:simulation_attempt")
         request.store.publish_attempt(request.attempt_directory, attempt)
-        self._publication_checkpoint("after:simulation_attempt")
+        faults.fault_point("after:simulation_attempt")
         with self._prepared_attempts_gate:
             self._prepared_attempts[request.attempt_directory] = run_directory
 
@@ -405,6 +404,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             )
             return None
         assert recovered.bundle is not None and recovered.build_execution is not None
+        # Reuse authenticates the bundle in place before runtime inputs are copied
+        # from it (ADR 0064).
+        verify_bundle_in_place(recovered.bundle, recovered.result, recovered.directory)
         ready = _SharedReady(
             recovered.directory,
             recovered.result,
@@ -439,11 +441,11 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
     def _publish_build_attempt(
         self, request: WorkExecutionRequest, directory: Path, scope: BuildScope
     ) -> BundleBuildAttempt:
-        """Publish the build attempt of *scope* between its publication checkpoints."""
+        """Publish the build attempt of *scope* between its publication boundaries."""
         attempt = bundle_build_attempt(request, scope)
-        self._publication_checkpoint("before:build_attempt")
+        faults.fault_point("before:build_attempt")
         request.store.publish_build_attempt(directory, attempt)
-        self._publication_checkpoint("after:build_attempt")
+        faults.fault_point("after:build_attempt")
         return attempt
 
     def _compile_and_capture(
@@ -460,14 +462,14 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         execution_ref = _capture_build_execution(
             directory, cast(str, attempt.document["build_attempt_id"]), build_execution
         )
-        self._publication_checkpoint("before:bundle_evidence")
+        faults.fault_point("before:bundle_evidence")
         artifacts = capture_private_image(
             group.artifact_paths,
             group.build_root,
             directory,
             cast(tuple[Mapping[str, str], ...], workload["runtime_inputs"]),
         )
-        self._publication_checkpoint("after:bundle_evidence")
+        faults.fault_point("after:bundle_evidence")
         return _CapturedBuild(artifacts, execution_ref, build_execution)
 
     def _publish_ready(
@@ -479,13 +481,13 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         execution_ref: dict[str, object],
         started: float,
     ) -> tuple[BundleBuildResult, SimulatorBundle]:
-        """Publish the ready build result between its publication checkpoints."""
+        """Publish the ready build result between its publication boundaries."""
         elapsed = time.monotonic() - started
-        self._publication_checkpoint("before:build_result")
+        faults.fault_point("before:build_result")
         published = publish_ready_build_result(
             request, directory, attempt, artifacts, execution_ref, elapsed
         )
-        self._publication_checkpoint("after:build_result")
+        faults.fault_point("after:build_result")
         return published
 
     def _shared_build_failure(
@@ -500,7 +502,6 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             outcome,
             time.monotonic() - started,
             infrastructure=infrastructure,
-            checkpoint=self._publication_checkpoint,
         )
         failure = _fresh_shared_failure(directory, result, outcome)
         if not work_item_attempt_requeues(passed=False):
@@ -635,7 +636,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             resource_flags=frozen_resource_flags(request.manifest),
         )
         if pre_sim is not None:
-            publish_pre_sim_firing(request, pre_sim, checkpoint=self._publication_checkpoint)
+            publish_pre_sim_firing(request, pre_sim)
         if pre_sim is None or pre_sim.status == "passed":
             return None
         outcome = _hook_failure_outcome(handle.selector, names, pre_sim)
@@ -650,7 +651,6 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             outcome,
             elapsed,
             infrastructure=infrastructure,
-            checkpoint=self._publication_checkpoint,
         )
         return blocked_result(
             request,
@@ -679,7 +679,6 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             outcome,
             elapsed,
             infrastructure=infrastructure,
-            checkpoint=self._publication_checkpoint,
         )
         return blocked_result(
             request, build_directory, result, outcome, elapsed, infrastructure=infrastructure
@@ -712,7 +711,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         handle, names, options = ready.simulation
         workload, access, run_directory, started = ready.policy
         declarations = cast(tuple[dict[str, str], ...], workload["runtime_inputs"])
-        self._publication_checkpoint("before:runtime_inputs")
+        faults.fault_point("before:runtime_inputs")
         with materialize_simulation_record_runtime_inputs(
             bundle_root=build_directory,
             attempt_root=request.attempt_directory,
@@ -721,7 +720,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             owned_run_directory=run_directory.owned,
             booley_dir=resolve_checkout_booley_dir(request.project_root),
         ) as bindings:
-            self._publication_checkpoint("after:runtime_inputs")
+            faults.fault_point("after:runtime_inputs")
             failure = _immutable_hook_failure(
                 request,
                 build_directory,
@@ -735,7 +734,6 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
                 bindings,
                 access,
                 started,
-                self._publication_checkpoint,
             )
             if failure is not None:
                 return failure
@@ -748,7 +746,6 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
                 run_cwd,
                 bindings,
                 started,
-                self._publication_checkpoint,
             )
 
 
@@ -781,7 +778,6 @@ def _immutable_hook_failure(
     bindings,
     access,
     started,
-    checkpoint,
 ) -> SimulationResult | None:
     if access != "immutable":
         return None
@@ -798,7 +794,7 @@ def _immutable_hook_failure(
         resource_flags=frozen_resource_flags(request.manifest),
     )
     if pre_sim is not None:
-        publish_pre_sim_firing(request, pre_sim, checkpoint=checkpoint)
+        publish_pre_sim_firing(request, pre_sim)
     if project_compile_surface(group.compile_surface) != surface:
         raise SimulationRecordIntegrityError(
             "Project compile inputs changed during immutable Pre-Sim Commands"
@@ -984,7 +980,6 @@ def _setup_result(
     elapsed: float,
 ) -> SimulationResult:
     selection = cast(Mapping[str, object], request.work_item["selection"])
-    # The codec's _read_strings proves target.selector is a string.
     target = cast(Mapping[str, str], request.manifest.document["target"])
     fallback = "" if selection["kind"] == "unfiltered" else target["selector"]
     tests = tuple(
@@ -1229,9 +1224,8 @@ def publish_failed_build_result(
     elapsed: float,
     *,
     infrastructure: bool,
-    checkpoint: Callable[[str], None],
 ) -> BundleBuildResult:
-    checkpoint("before:build_result")
+    faults.fault_point("before:build_result")
     result = _failed_build_result(
         request,
         build_directory,
@@ -1241,7 +1235,7 @@ def publish_failed_build_result(
         infrastructure=infrastructure,
     )
     request.store.publish_build_result(build_directory, result)
-    checkpoint("after:build_result")
+    faults.fault_point("after:build_result")
     return result
 
 
@@ -1356,7 +1350,7 @@ def _blocked_shared_result(
         identities = names
     else:
         # The default selection's name is the Target selector; Test Run binding
-        # (discovered_test_run) maps it back to the unnamed invocation; the codec proves it a str.
+        # (discovered_test_run) maps it back to the unnamed invocation.
         identities = (cast(Mapping[str, str], request.manifest.document["target"])["selector"],)
     observations = []
     for index, identity in enumerate(identities):
@@ -1406,7 +1400,6 @@ def _launch_bundle(
     run_cwd: Path,
     bindings: tuple[RuntimeInputBinding, ...],
     started: float,
-    publication_checkpoint: Callable[[str], None],
 ) -> SimulationResult:
     """Launch the record's bundle in place, verifying it before launch and after exit."""
     pre_launch = verify_bundle_in_place(bundle, build_result, build_directory)
@@ -1425,7 +1418,6 @@ def _launch_bundle(
         outcome,
         bindings,
         started,
-        publication_checkpoint,
     )
 
 
@@ -1452,7 +1444,6 @@ def _bundle_result(
     outcome,
     bindings,
     started,
-    publication_checkpoint,
 ) -> SimulationResult:
     observations = (
         _infrastructure_observations(request, outcome)
@@ -1460,9 +1451,9 @@ def _bundle_result(
         else [observation_document(test) for test in outcome.tests]
     )
     state = settled_state(observations)
-    publication_checkpoint("before:execution_evidence")
+    faults.fault_point("before:execution_evidence")
     evidence = _capture_outcome_evidence(request, outcome)
-    publication_checkpoint("after:execution_evidence")
+    faults.fault_point("after:execution_evidence")
     return simulation_result(
         request,
         build_directory,

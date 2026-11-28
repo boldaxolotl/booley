@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import hashlib
 import logging
 import os
 import threading
@@ -18,6 +17,8 @@ from typing import Any
 
 import anyio
 
+from booley.config.feature_flags import readable_features
+from booley.core.file_hash import file_sha256
 from booley.mcp.application import McpApplication
 from booley.mcp.catalog import GATED_MCP_TOOLS
 from booley.mcp.catalog_worker import run_schema_worker
@@ -52,7 +53,7 @@ def custom_directory(directory: Path | None) -> Path | None:
 
 def _file_digest(path: Path) -> str:
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        return file_sha256(path)
     except FileNotFoundError:
         return "missing"
 
@@ -128,6 +129,7 @@ class LiveCatalog:
             item["name"]: item for item in endpoints if not item.get("is_custom")
         }
         self._custom_cache = [item for item in endpoints if item.get("is_custom")]
+        self._builtin_features = readable_features()
         self._custom_key = self._custom_fingerprint(self._candidates())
         self._failed: tuple[object, Exception] | None = None
         self._stable = {
@@ -204,6 +206,11 @@ class LiveCatalog:
             self._published, self._failed = fingerprint, None
 
     async def _discover(self, candidates: list[Any]) -> Definitions:
+        # A built-in schema depends on the Feature Flags it was built with.
+        features = readable_features()
+        if features != self._builtin_features:
+            self._builtin_cache.clear()
+            self._builtin_features = features
         builtins = [item for item in candidates if not Path(item.path).is_absolute()]
         missing = [item for item in builtins if item.name not in self._builtin_cache]
         definitions, errors = self._builtin_provider(missing)

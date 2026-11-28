@@ -531,7 +531,7 @@ def _unreadable(docker: FakeDocker, *template: str) -> None:
     docker.answer("image", "inspect", BASE, *template, code=1, stderr="daemon down")
 
 
-_ID = ("--format", "{{.Id}}")
+_ID = ("--format", "{{json .Id}}")
 
 
 _Hold = tuple[tuple[str, ...], Callable]  # the words of the held call, the edit
@@ -567,7 +567,7 @@ def _edit_during(docker: FakeDocker, hold: _Hold, step: Callable) -> InitContext
             1,
             ("build", BASE),
             lambda docker: docker.answer(
-                "image", "inspect", BASE, *_ID, stdout="sha256:" + "f" * 64
+                "image", "inspect", BASE, *_ID, stdout='"sha256:' + "f" * 64 + '"'
             ),
             "err",
             "runtime-base identity changed",

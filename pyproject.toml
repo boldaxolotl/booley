@@ -298,7 +298,8 @@ filterwarnings = [
     # an all-green coverage shard at shutdown. Booley never imports sqlite3
     # (tests/test_pytest_configuration.py enforces that), so only tool-owned
     # connections match. The "." stands for the ":" the filter syntax reserves.
-    "ignore:Exception ignored in. <sqlite3.Connection object:pytest.PytestUnraisableExceptionWarning",
+    # CPython 3.14 words it "while finalizing database connection".
+    "ignore:Exception ignored (in.|while finalizing database connection) <sqlite3.Connection object:pytest.PytestUnraisableExceptionWarning",
 ]
 
 # ---------------------------------------------------------------------------

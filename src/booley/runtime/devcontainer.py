@@ -30,7 +30,9 @@ from booley.config.agent import (
     wire_auth,
 )
 from booley.config.gateway import VISITOR_AUTH
+from booley.core import docker_cli
 from booley.core.project_identity import project_name_id
+from booley.core.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 from booley.runtime import auth_token
 from booley.runtime import vaporview as _vaporview
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
@@ -42,7 +44,6 @@ from booley.runtime.incontainer_git_identity import (
     load_git_identity,
 )
 from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
-from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
 
@@ -69,7 +70,7 @@ PROXY_URL = f"http://{PROXY_HOST}:{PROXY_PORT}"
 UNPROXIED_NETWORK = "booley-unproxied-v1"
 
 # Label the idle reaper (WS2) matches to find/own Sandboxes.
-INTERACTIVE_ROLE_LABEL = "booley.role=interactive"
+INTERACTIVE_ROLE_LABEL = f"{docker_cli.ROLE_LABEL}=interactive"
 
 # Process cap for the whole Sandbox (fork-bomb ceiling, not a tuning
 # knob). The container hosts the editor, agent clients, and concurrent EDA
