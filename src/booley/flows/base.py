@@ -49,6 +49,7 @@ from booley.runtime.endpoint_execution import (
     note_job_oom_kill,
 )
 from booley.runtime.filesystem_utils import make_directories
+from booley.runtime.process_group import own_process_group, release_process_group
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
@@ -159,6 +160,7 @@ def _start_local_process(cmd, cwd, env, scope):
             env=env,
             **_popen_kwargs_with_lease(),
         )
+        own_process_group(proc)
         if scope is not None:
             scope.processes.register(proc)
         return proc
@@ -378,16 +380,19 @@ class FlowMechanics:
         proc = _start_local_process(cmd, cwd, env, scope)
         if proc is None:
             return None
-        if observer is not None:
-            # Only a spawned tool counts as started in the progress record.
-            observer.begin_command()
-        monitor.start(proc.pid)
         try:
             if observer is not None:
-                return _observe_local_process(proc, observer, scope, start, timeout)
-            return _communicate_local_process(cmd, proc, scope, start, timeout)
+                # Only a spawned tool counts as started in the progress record.
+                observer.begin_command()
+            monitor.start(proc.pid)
+            try:
+                if observer is not None:
+                    return _observe_local_process(proc, observer, scope, start, timeout)
+                return _communicate_local_process(cmd, proc, scope, start, timeout)
+            finally:
+                monitor.finish(proc.reaped_peak_bytes)
         finally:
-            monitor.finish(proc.reaped_peak_bytes)
+            release_process_group(proc)
 
     def _resource_flags(self) -> tuple[str, ...]:
         """Instrumentation flags that key this Flow's resource history."""

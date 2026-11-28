@@ -162,15 +162,18 @@ def test_a_timed_out_tool_leaves_none_of_its_tree_running(
             )
 
         assert not paths["done"].exists(), "the run waited for the tool's child to end"
-        # taskkill /T cannot reach a child whose tool already exited: Windows has no group.
-        if not (mode == "exit" and os.name == "nt"):
-            assert wait_until_heartbeat_stops(paths["heartbeat"]), (
-                "the tool's child was left running"
-            )
+        assert wait_until_heartbeat_stops(paths["heartbeat"]), "the tool's child was left running"
 
 
+@pytest.mark.parametrize(
+    "mode",
+    [
+        pytest.param("live-until-stop", id="tool-running"),
+        pytest.param("exit", id="tool-exited"),
+    ],
+)
 def test_an_interrupted_tool_leaves_none_of_its_tree_running(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
 ) -> None:
     # This is the stdlib's ``Popen.communicate`` (outside Booley), the one place a real
     # Ctrl-C lands while the run waits on the tool's pipes.
@@ -182,6 +185,8 @@ def test_an_interrupted_tool_leaves_none_of_its_tree_running(
             return real_communicate(self, *args, **kwargs)  # type: ignore[arg-type]
         first_timeouts.append(kwargs.get("timeout"))
         wait_for_tree_start(paths)
+        if mode == "exit":  # the interrupt lands after the tool itself is gone
+            self.wait(timeout=hang_guard_s())
         with pytest.raises(subprocess.TimeoutExpired):
             real_communicate(self, timeout=0.05)
         raise KeyboardInterrupt
@@ -191,7 +196,7 @@ def test_an_interrupted_tool_leaves_none_of_its_tree_running(
 
         with pytest.raises(KeyboardInterrupt):
             run_tool(
-                parent_argv(tmp_path, sys.executable, paths, "live-until-stop"),
+                parent_argv(tmp_path, sys.executable, paths, mode),
                 flow="mutation",
                 label=_LABEL,
                 cwd=tmp_path,

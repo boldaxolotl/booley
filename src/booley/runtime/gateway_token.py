@@ -31,9 +31,10 @@ from booley.config.gateway import (
     gateway_settings_from_env,
 )
 from booley.runtime.process_group import (
-    capture_process_group,
     force_group_termination,
-    new_group_kwargs,
+    own_process_group,
+    owned_group_kwargs,
+    release_process_group,
 )
 
 logger = logging.getLogger(__name__)
@@ -91,8 +92,9 @@ def run_token_command(command: str, *, timeout_s: int = COMMAND_TIMEOUT_S) -> st
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            **new_group_kwargs(),
+            **owned_group_kwargs(),
         )
+        group = own_process_group(proc)
     except (OSError, ValueError) as exc:
         # Raised below, outside the handler: the OSError names the program and the
         # chained context must not carry it.
@@ -101,17 +103,19 @@ def run_token_command(command: str, *, timeout_s: int = COMMAND_TIMEOUT_S) -> st
         start_failure = None
     if start_failure is not None:
         raise start_failure
-    group = capture_process_group(proc)
     try:
-        stdout, stderr = proc.communicate(timeout=timeout_s)
-    except subprocess.TimeoutExpired:
-        # TimeoutExpired holds the argv and partial stdout; keep it out of the chain.
-        timed_out = True
-    else:
-        timed_out = False
-    if timed_out:
-        force_group_termination(proc, group)
-        raise _failure(f"timed out after {timeout_s} s", _stderr_after_kill(proc))
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            # TimeoutExpired holds the argv and partial stdout; keep it out of the chain.
+            timed_out = True
+        else:
+            timed_out = False
+        if timed_out:
+            force_group_termination(proc, group)
+            raise _failure(f"timed out after {timeout_s} s", _stderr_after_kill(proc))
+    finally:
+        release_process_group(proc)
     if proc.returncode != 0:
         raise _failure(f"exited {proc.returncode}", stderr)
     return _validated_token(stdout, stderr)

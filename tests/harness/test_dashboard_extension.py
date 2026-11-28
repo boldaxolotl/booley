@@ -15,8 +15,8 @@ from xml.etree import ElementTree
 
 import pytest
 
-from booley.runtime import dashboard_extension, devcontainer
-from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
+from booley.runtime import dashboard_extension, devcontainer, process_group
+from booley.runtime.platform_paths import kill_process_tree
 from tests.devcontainer_spec_support import build_spec
 from tests.time_budget import hang_guard_s, scaled
 
@@ -120,7 +120,7 @@ def run_bounded(command: list[str], *, bound_s: float, output_dir: Path) -> tupl
             stdin=subprocess.DEVNULL,
             stdout=stdout_file,
             stderr=stderr_file,
-            **popen_new_group_kwargs(),
+            **process_group.new_group_kwargs(),
         )
         timed_out = False
         try:
