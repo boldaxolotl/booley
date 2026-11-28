@@ -239,13 +239,11 @@ def test_published_project_gets_runtime_steps_instead_of_setup_skill(
     assert "Run the booley-setup skill" not in out
     assert "Step 2 (fpga)" not in out
     assert off.detail == "published"
-    # The post-setup hook is named only when the Project ships one.
-    assert "hooks/post-setup.sh" not in out
+    # Sandbox start runs a shipped post-setup hook, so no step asks the user to.
     hook = project / ".booley" / "hooks" / "post-setup.sh"
     hook.parent.mkdir()
     hook.write_bytes(b"#!/bin/sh\n")
-    advice = send_off().advice
-    assert "thread's terminal, run `bash .booley/hooks/post-setup.sh`" in advice
+    assert "hooks/post-setup" not in send_off().advice
 
 
 #: Files a change writes into a pristine published checkout (None deletes AGENTS.md).

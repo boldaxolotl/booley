@@ -1949,11 +1949,6 @@ def _print_published_advisory(ctx: InitContext) -> None:
     print()
     info("  * Run `booley session up` here on the host and open the pairing link it prints")
     info("  * In T3 Code, start a thread on the main checkout")
-    # Only some published Projects ship a post-setup hook; naming a script
-    # that is not there would send the user to a "No such file" error.
-    booley_dir = resolve_booley_dir(ctx.project_root)
-    if (booley_dir / "hooks" / "post-setup.sh").is_file():
-        info("  * In that thread's terminal, run `bash .booley/hooks/post-setup.sh`")
     info("  * Then run `booley doctor --deep` in that thread's terminal; use")
     info("    booley-heal if it reports warnings")
 

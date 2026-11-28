@@ -44,6 +44,7 @@ from booley.runtime.platform_paths import (
     run_captured_bounded,
     same_host_path,
 )
+from booley.runtime.project_prepare import find_post_setup_hook
 from booley.runtime.sandbox_apply import (
     REBUILD_CONTAINER,
     Attachment,
@@ -74,6 +75,7 @@ _HOOK_SHELL = ("bash", "-lc")
 
 # The in-Sandbox entry of the UI controls, followed by a verb.
 _T3_ENTRY = "python -m booley.harness.incontainer_t3 "
+_MAIN_CHECKOUT_SETUP = "python -m booley.harness.incontainer_post_setup"
 
 _LOCAL_ENV_RE = re.compile(r"\$\{localEnv:([^}:]+)\}")
 
@@ -821,11 +823,35 @@ def _create_or_resume_session(
     else:
         _start_session_container(request.name)
     env = None if request.ui else {incontainer_setup.NO_UI_ENV: "1"}
+    # Both lifecycle commands run the registrar, which launches the Automatic Doctor.
+    _run_main_checkout_setup(workspace, request, env, created=created, relay_created=relay_created)
     if created and request.spec.get("postCreateCommand"):
         _run_hook(request.name, str(request.spec["postCreateCommand"]), "postCreateCommand", env)
     if request.spec.get("postStartCommand"):
         _run_hook(request.name, str(request.spec["postStartCommand"]), "postStartCommand", env)
     return relay_created
+
+
+def _run_main_checkout_setup(
+    workspace: Path,
+    request: UpRequest,
+    env: Mapping[str, str] | None,
+    *,
+    created: bool,
+    relay_created: bool,
+) -> None:
+    """Run a shipped post-setup hook in the main checkout, its output on this terminal."""
+    if find_post_setup_hook(workspace) is None:
+        return
+    try:
+        result = _run(hook_argv(request.name, _MAIN_CHECKOUT_SETUP, env), capture=False)
+    except BaseException:
+        # The next `session up` reuses a running Sandbox without its lifecycle commands.
+        if created:
+            _remove_failed_candidate(request, remove_relay=relay_created)
+        raise
+    if result.returncode != 0:  # the step itself broke; a failed hook warns and exits 0
+        logger.warning("post-setup hook in the main checkout failed (exit %d)", result.returncode)
 
 
 def _run_up_transaction(
