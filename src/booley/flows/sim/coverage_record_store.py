@@ -18,10 +18,10 @@ from booley.core.boundary import (
     require_int,
     require_str,
 )
+from booley.core.sandbox_layout import canonical_project_alias_path
 from booley.runtime.booley_dir import crossed_booley_dir_entry
 from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.regular_file import open_regular_nofollow
-from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 from .coverage_json import (
     MANIFEST_JSON,

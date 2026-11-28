@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 
 from booley.harness import doctor, init_cmd
-from booley.runtime import runtime_context
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.sandbox_venue_fake import place
 
 
 @pytest.mark.parametrize("inside", [False, True], ids=["host", "sandbox"])
@@ -16,7 +17,7 @@ def test_expected_sandbox_spec_depends_on_the_venue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, inside: bool
 ) -> None:
     """On the host the drift check rebuilds through init's own builder; inside, it cannot."""
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: inside)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if inside else RuntimeLocation.HOST)
 
     # private: every whole run replaces `_expected_sandbox_spec` (`patch_doctor_environment`; the real
     # rebuild needs a Sandbox Image), so only this test checks which spec inspection compares.

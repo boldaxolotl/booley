@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from booley.runtime import runtime_context
+from booley.core import sandbox_detection
 from booley.runtime.runtime_context import RuntimeLocation
 
 _MOUNT_TABLES = Path(__file__).parent / "fixtures" / "mountinfo"
@@ -36,16 +36,13 @@ def _inputs(
 def point_mounts(monkeypatch: pytest.MonkeyPatch, location: RuntimeLocation) -> None:
     """Give the venue check the mount table of *location*; ``BOOLEY_CONTAINER`` stays."""
     table = _mount_table(location)
-    monkeypatch.setattr(runtime_context, "_MOUNTINFO", table)  # boundary: host/Sandbox mounts
+    monkeypatch.setattr(sandbox_detection, "_MOUNTINFO", table)  # boundary: host/Sandbox mounts
 
 
 def place(
     monkeypatch: pytest.MonkeyPatch, location: RuntimeLocation, *, container_host: bool = False
 ) -> None:
     """Run the test at *location*; ``container_host`` makes the host a container."""
-    from booley.config import agent
-    from booley.runtime import _codex_backend
-
     declared, table, marker = _inputs(location, container_host)
     if declared is None:
         monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
@@ -55,16 +52,11 @@ def place(
         point_mounts(monkeypatch, location)
     # The marker checks read /.dockerenv on the real filesystem.
     markers = (Path(__file__),) * marker
-    monkeypatch.setattr(runtime_context, "_CONTAINER_MARKER_FILES", markers)  # boundary: venue
-    monkeypatch.setattr(agent, "_inside_container", lambda: marker)  # boundary: venue
-    monkeypatch.setattr(_codex_backend, "_inside_container", lambda: marker)  # boundary: venue
+    monkeypatch.setattr(sandbox_detection, "_CONTAINER_MARKER_FILES", markers)  # boundary: venue
 
 
 def place_child(location: RuntimeLocation) -> None:
     """``place`` for a child Python process, which exits before anything needs undoing."""
-    from booley.config import agent
-    from booley.runtime import _codex_backend
-
     declared, table, marker = _inputs(location, container_host=False)
     if declared is None:
         os.environ.pop("BOOLEY_CONTAINER", None)
@@ -72,6 +64,5 @@ def place_child(location: RuntimeLocation) -> None:
         os.environ["BOOLEY_CONTAINER"] = declared
     # The same host/Sandbox boundary as ``place``: the mount table and marker checks.
     if table is not None:
-        runtime_context._MOUNTINFO = table
-    runtime_context._CONTAINER_MARKER_FILES = (Path(__file__),) * marker
-    agent._inside_container = _codex_backend._inside_container = lambda: marker
+        sandbox_detection._MOUNTINFO = table
+    sandbox_detection._CONTAINER_MARKER_FILES = (Path(__file__),) * marker

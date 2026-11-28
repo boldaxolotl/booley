@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from booley.core.boundary import BoundaryError, require_int, require_str_value
+from booley.core.sandbox_layout import canonical_project_alias_path
 from booley.flows.artifact_durability import durable_create
 from booley.flows.sim.coverage_json import content_digest, freeze_coverage_mapping
 from booley.flows.sim.coverage_record_store import (
@@ -29,7 +30,6 @@ from booley.flows.sim.record_layout import (
     refuse_older_nested_path,
 )
 from booley.runtime.booley_dir import crossed_booley_dir_entry
-from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
     from booley.flows.sim.record import SimulationRecordWorkItemEvidence
@@ -57,7 +57,7 @@ class CoverageRecordReference:
 
 @dataclass(frozen=True, slots=True)
 class ResolvedCoverageRecord:
-    """Authenticated nested Coverage Record selected by a public reference."""
+    """Nested Coverage Record selected by a public reference."""
 
     reference: CoverageRecordReference
     reference_path: Path
@@ -108,7 +108,7 @@ def publish_coverage_record_reference(
 
 
 def resolve_coverage_record_reference(path: Path) -> ResolvedCoverageRecord:
-    """Load the reference and authenticate only its selected nested Coverage Record."""
+    """Load the reference and only its selected nested Coverage Record."""
     try:
         absolute = canonical_project_alias_path(path.absolute())
     except ValueError as exc:
@@ -137,7 +137,7 @@ def _resolve_located(absolute: Path, raw: bytes) -> ResolvedCoverageRecord:
 
 
 def _resolve_coverage_record_reference_bytes(absolute: Path, raw: bytes) -> ResolvedCoverageRecord:
-    """Resolve one already-authenticated public reference byte sequence."""
+    """Resolve one public reference byte sequence."""
     reference = decode_coverage_record_reference(raw)
     document = reference.document
     nested = cast(Mapping[str, object], document["coverage_record"])
@@ -149,11 +149,6 @@ def _resolve_coverage_record_reference_bytes(absolute: Path, raw: bytes) -> Reso
         error=CoverageRecordReferenceError,
         booley_dir=crossed_booley_dir_entry(coverage_record_path),
     )
-    if (
-        len(coverage_record_raw) != nested["bytes"]
-        or content_digest(coverage_record_raw) != nested["sha256"]
-    ):
-        raise CoverageRecordReferenceError("nested Coverage Record bytes disagree with reference")
     loaded = load_coverage_record_bytes(coverage_record_path, coverage_record_raw)
     coverage_record = loaded.coverage_record
     target = cast(Mapping[str, str], document["target"])
@@ -184,59 +179,6 @@ def _resolve_coverage_record_reference_bytes(absolute: Path, raw: bytes) -> Reso
             "nested Coverage Record path disagrees with Simulation Attempt identity"
         )
     return ResolvedCoverageRecord(reference, absolute, coverage_record_path, loaded)
-
-
-def resolve_persisted_coverage_record_reference(
-    reports_root: Path, value: object
-) -> ResolvedCoverageRecord:
-    """Authenticate an acceptance-state pointer and its selected nested Coverage Record."""
-    try:
-        reports_root = canonical_project_alias_path(reports_root.absolute())
-    except ValueError as exc:
-        raise CoverageRecordReferenceError(str(exc)) from exc
-    persisted = _exact(
-        value,
-        {"path_base", "path", "bytes", "sha256", "nested_campaign_sha256"},
-        "persisted coverage_campaign_reference",
-    )
-    if persisted["path_base"] != "reports_root":
-        raise CoverageRecordReferenceError(
-            "persisted coverage_campaign_reference path_base is invalid"
-        )
-    relative = _relative_path(persisted["path"])
-    try:
-        expected_bytes = require_int(persisted["bytes"], field="coverage_campaign_reference.bytes")
-    except BoundaryError as exc:
-        raise CoverageRecordReferenceError(
-            "persisted coverage_campaign_reference bytes is invalid"
-        ) from exc
-    if expected_bytes < 1 or expected_bytes > MAX_REFERENCE_BYTES:
-        raise CoverageRecordReferenceError(
-            "persisted coverage_campaign_reference bytes is invalid"
-        )
-    _digest(persisted["sha256"], "coverage_campaign_reference.sha256")
-    _digest(
-        persisted["nested_campaign_sha256"],
-        "coverage_campaign_reference.nested_campaign_sha256",
-    )
-    public_path = _contained_relative(reports_root.absolute(), relative)
-    raw = read_bounded(
-        public_path,
-        limit=MAX_REFERENCE_BYTES,
-        error=CoverageRecordReferenceError,
-        booley_dir=crossed_booley_dir_entry(public_path),
-    )
-    if len(raw) != expected_bytes or content_digest(raw) != persisted["sha256"]:
-        raise CoverageRecordReferenceError(
-            "persisted Coverage Record reference bytes disagree with acceptance state"
-        )
-    resolved = _resolve_located(public_path, raw)
-    nested = cast(Mapping[str, object], resolved.reference.document["coverage_record"])
-    if nested["sha256"] != persisted["nested_campaign_sha256"]:
-        raise CoverageRecordReferenceError(
-            "persisted nested Coverage Record digest disagrees with public reference"
-        )
-    return resolved
 
 
 def build_coverage_record_reference(
@@ -484,5 +426,4 @@ __all__ = [
     "encode_coverage_record_reference",
     "publish_coverage_record_reference",
     "resolve_coverage_record_reference",
-    "resolve_persisted_coverage_record_reference",
 ]

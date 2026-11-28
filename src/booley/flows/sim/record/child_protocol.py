@@ -238,7 +238,6 @@ def _publish_or_verify(path: Path, raw: bytes, *, booley_dir: Path | None = None
             limit=_PROTOCOL_RECORD_LIMIT,
             error=SimulationRecordIntegrityError,
             booley_dir=booley_dir,
-            single_link=True,
         )
         if current != raw:
             raise SimulationRecordIntegrityError(
@@ -254,7 +253,6 @@ def _publish_or_verify(path: Path, raw: bytes, *, booley_dir: Path | None = None
                 limit=_PROTOCOL_RECORD_LIMIT,
                 error=SimulationRecordIntegrityError,
                 booley_dir=booley_dir,
-                single_link=True,
             )
             != raw
         ):

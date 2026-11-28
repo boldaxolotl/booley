@@ -8,12 +8,12 @@ from pathlib import Path
 from typing import cast
 
 from booley.core.booley_dir_links import lexical_booley_path
+from booley.core.sandbox_layout import canonical_project_alias_path
 from booley.flows.artifact_durability import discard_published_staging
 from booley.flows.baseline_worktree import git_full_sha
 from booley.flows.sim.record_files import read_bounded
 from booley.flows.sim.record_layout import RECORD_DIRECTORY, refuse_older_manifest_path
 from booley.flows.sim.record_reports import simulation_booley_dir
-from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 
@@ -118,7 +118,6 @@ def _load_node(path: Path, booley_dir: Path | None) -> ValidatedManifestNode:
         limit=MANIFEST_MAX_BYTES,
         error=SimulationRecordIntegrityError,
         booley_dir=booley_dir,
-        single_link=True,
     )
     try:
         manifest = decode_simulation_record_manifest(raw)

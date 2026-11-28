@@ -29,6 +29,7 @@ _Result = tuple[int, str, str]
 _which = shutil.which  # tests patch ``shutil.which``; the Windows launcher lookup must not
 _LABEL_FIELD = re.compile(r'\{\{\.Label "([^"]+)"\}\}')
 _LABEL_OF_IMAGE = re.compile(r'\{\{ ?index \.Config\.Labels "([^"]+)" ?\}\}')
+_JSON_LABEL_OF_IMAGE = re.compile(r'\{\{json \(index \.Config\.Labels "([^"]+)"\)\}\}')
 
 
 def _record(value: Any) -> _State:
@@ -86,7 +87,8 @@ def _container_document(name: str, record: _State) -> _State:
 def _container_answers(name: str, value: Any, _template: str | None) -> dict[str | None, str]:
     record = _record(value)
     document = json.dumps(_container_document(name, record))
-    return {"{{.Image}}": record["Image"], "{{json .}}": document}
+    image = record["Image"]
+    return {"{{.Image}}": image, "{{json .Image}}": json.dumps(image), "{{json .}}": document}
 
 
 def _image_answers(_key: str, value: Any, template: str | None) -> dict[str | None, str]:
@@ -98,12 +100,16 @@ def _image_answers(_key: str, value: Any, template: str | None) -> dict[str | No
         None: json.dumps([document]),
         "{{json .}}": json.dumps(document),
         "{{.Id}}": _id(value),
+        "{{json .Id}}": json.dumps(_id(value)),
         "{{len .RootFS.Layers}}": str(len(layers)),
         "{{json .RepoDigests}}": "[]",
     }
     label = _LABEL_OF_IMAGE.fullmatch(template or "")
     if label:
         answers[template] = config["Labels"].get(label.group(1), "<no value>")
+    label = _JSON_LABEL_OF_IMAGE.fullmatch(template or "")
+    if label:  # a raw map renders a missing key as ``null``
+        answers[template] = json.dumps(config["Labels"].get(label.group(1)))
     return answers
 
 

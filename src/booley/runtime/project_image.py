@@ -39,7 +39,7 @@ from booley.config.sandbox import (
     project_image_name,
     project_sandbox_image,
 )
-from booley.runtime import sandbox_layout
+from booley.core import docker_cli, sandbox_layout
 from booley.runtime.platform_paths import run_captured_bounded
 
 logger = logging.getLogger(__name__)
@@ -471,7 +471,8 @@ def project_data_alias_capable(image_id: str) -> bool:
         )
     if result.returncode or result.stdout.strip() not in {"canonical-alias", "directory"}:
         raise DockerImageError(
-            f"cannot prove Booley Directory layout of {image_id}: {result.stderr.strip()}"
+            f"cannot prove Booley Directory layout of {image_id}: "
+            f"{docker_cli.failure_detail(result)}"
         )
     return result.stdout.strip() == "canonical-alias"
 
@@ -498,7 +499,9 @@ def probe_docker_host_memory(image: str) -> HostMemory:
             timeout=30,
         )
         if result.returncode:
-            raise DockerImageError(result.stderr.strip() or f"exit status {result.returncode}")
+            raise DockerImageError(
+                docker_cli.failure_detail(result, f"exit status {result.returncode}")
+            )
         return parse_meminfo(result.stdout)
     except (OSError, subprocess.SubprocessError, ValueError, DockerImageError) as exc:
         raise DockerImageError(f"cannot read the Docker host's swap with {image}: {exc}") from exc
@@ -550,17 +553,21 @@ def layout_topology(project_root: Path) -> LayoutTopology | None:
 
 def inspect_layout_image(image: str, *, executable: str = "docker") -> dict:
     """Read bounded Docker configuration and immutable identity for a layout build."""
-    import json
 
+    def run(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        return run_captured_bounded([executable, *args], timeout=timeout)
+
+    failed = f"cannot inspect Booley Directory layout image {image}"
     try:
-        result = run_captured_bounded([executable, "image", "inspect", image], timeout=30)
-        result.check_returncode()
-        rows = json.loads(result.stdout)
-    except (OSError, subprocess.SubprocessError, ValueError) as exc:
-        raise RuntimeError(f"cannot inspect Booley Directory layout image {image}: {exc}") from exc
-    if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], dict):
-        raise RuntimeError(f"invalid Booley Directory layout image inspection: {image}")
-    return rows[0]
+        return docker_cli.inspect(run, "image", image, timeout=30)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"{failed}: {exc}") from exc
+    except docker_cli.InspectError as exc:
+        if exc.result is not None:
+            raise RuntimeError(f"{failed}: {docker_cli.failure_detail(exc.result)}") from exc
+        raise RuntimeError(
+            f"invalid Booley Directory layout image inspection: {image}: {exc.__cause__}"
+        ) from exc
 
 
 def layout_image_user(parent: dict) -> str:

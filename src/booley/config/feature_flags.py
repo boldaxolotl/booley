@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.booley_dir import resolve_booley_dir, resolve_checkout_booley_dir
+from booley.core.booley_layout import BooleyLayoutError
 from booley.core.boundary import BoundaryError, is_str_list, require_dict
 from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.core.config_paths import resolve_toml
@@ -35,6 +36,11 @@ class FeatureFlag:
 FEATURE_FLAGS: tuple[FeatureFlag, ...] = (
     FeatureFlag(
         "reviewed-commits", "booley review: Declared Reviews of a commit and its Review Runs", 3064
+    ),
+    FeatureFlag(
+        "sim-verbose-removal",
+        "booley flow sim and the sim MCP tool: remove the deprecated no-op --verbose",
+        5735,
     ),
 )
 
@@ -89,6 +95,19 @@ def enabled_features(project_root: Path | None = None) -> frozenset[str]:
     except FileNotFoundError:
         return frozenset()
     return parse_enabled_features(data)
+
+
+def readable_features(project_root: Path | None = None) -> frozenset[str]:
+    """``enabled_features``, or none when the configuration cannot be read.
+
+    For a surface built before or beside configuration validation, which
+    dispatch, Doctor, and server startup report.
+    """
+    try:
+        return enabled_features(project_root)
+    # FeatureConfigError and tomllib.TOMLDecodeError are ValueErrors; a pin error is a layout error.
+    except (BooleyLayoutError, OSError, ValueError):
+        return frozenset()
 
 
 def feature_enabled(name: str, enabled: frozenset[str] | None = None) -> bool:

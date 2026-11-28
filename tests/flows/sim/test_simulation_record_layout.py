@@ -19,11 +19,7 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim.coverage_analysis_input import read_coverage_record
-from booley.flows.sim.coverage_json import content_digest
-from booley.flows.sim.coverage_reference import (
-    CoverageRecordReferenceError,
-    resolve_persisted_coverage_record_reference,
-)
+from booley.flows.sim.coverage_reference import CoverageRecordReferenceError
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.record import collect_pre_sim_firings, read_durable_results
 from booley.flows.sim.record.codec import (
@@ -145,27 +141,12 @@ def test_resume_from_an_older_layout_manifest_is_refused_before_any_work(
 # --- AC3: Coverage analysis and waiver binding ---------------------------------------------
 
 
-@pytest.mark.parametrize("entry", ["analysis", "persisted_reference"])
-def test_coverage_entry_points_refuse_an_older_layout(reports: Path, entry: str) -> None:
+def test_coverage_entry_points_refuse_an_older_layout(reports: Path) -> None:
     invocation = copy_older_invocation("0.4.0", "coverage", reports)
     coverage_json = invocation / "targets" / "sim_0" / "coverage.json"
 
     with pytest.raises(ValueError) as excinfo:
-        if entry == "analysis":
-            read_coverage_record(coverage_json)
-        else:
-            # Waiver binding reads a persisted pointer to the public reference.
-            raw = coverage_json.read_bytes()
-            resolve_persisted_coverage_record_reference(
-                reports,
-                {
-                    "path_base": "reports_root",
-                    "path": "sim/1/targets/sim_0/coverage.json",
-                    "bytes": len(raw),
-                    "sha256": content_digest(raw),
-                    "nested_campaign_sha256": "sha256:" + "0" * 64,
-                },
-            )
+        read_coverage_record(coverage_json)
 
     # The 0.4.0 reference is refused by its schema before its nested path is read.
     _assert_refused(
@@ -174,10 +155,8 @@ def test_coverage_entry_points_refuse_an_older_layout(reports: Path, entry: str)
         invocation,
     )
     assert "fully pruned" not in str(excinfo.value)
-    # Neither entry point calls the refusal a corrupt reference.
+    # The refusal is not called a corrupt reference.
     assert not isinstance(excinfo.value, CoverageRecordReferenceError)
-    if entry == "persisted_reference":
-        _assert_unsupported_type(excinfo.value)
 
 
 # --- AC4: the old names are not aliases --------------------------------------------------

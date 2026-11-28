@@ -28,14 +28,16 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.live_progress import observe_stage
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.terminal_progress import TerminalProgress
-from booley.runtime import resource_history, runtime_context
+from booley.runtime import resource_history
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.supervised_execution import (
     SupervisedExecutionScope,
     supervised_execution_scope,
 )
 from booley.runtime.timefmt import rfc3339_from_datetime, utc_now_rfc3339
 from tests.flows.test_flow_base import EchoFlow, _flow_env
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s, scaled
 
@@ -97,7 +99,7 @@ class CommandFlow(EchoFlow):
 @pytest.fixture
 def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """``run(command)``: the command through the Flow's public endpoint."""
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setenv("BOOLEY_SLUG", "test")
 
     def run_command(command: list[str]) -> SubprocessResult:
@@ -1078,7 +1080,6 @@ def test_a_run_the_bundle_check_refuses_after_exit_records_a_failure(tmp_path, m
             tmp_path,
             (),
             0.0,
-            lambda _boundary: None,
         )
 
     (record,) = _history(tmp_path)

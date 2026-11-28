@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from booley.config.feature_flags import readable_features
 from booley.flows.cli_help import SurfaceHelp
 from booley.flows.cli_selection import CliInvocation
 from booley.flows.endpoint_cli import (
@@ -24,7 +25,11 @@ if TYPE_CHECKING:
 
 
 def build_parser(
-    flow: BuiltinFlow, *, human: bool = False, project: Path | None = None
+    flow: BuiltinFlow,
+    *,
+    human: bool = False,
+    project: Path | None = None,
+    features: frozenset[str] | None = None,
 ) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog=flow.name,
@@ -48,7 +53,7 @@ def build_parser(
         human=human,
     )
     flow.argument_adapter.add_common_args(parser, human=human)
-    flow.argument_adapter.add_args(parser)
+    flow.argument_adapter.add_args(parser, readable_features() if features is None else features)
     if human:
         from booley.flows.cli_arguments import add_human_options
         from booley.flows.cli_help import present_command, project_help, shared_help
@@ -70,7 +75,9 @@ def build_cli_parser(
 
     invocation = invocation or CliInvocation.of(flow)
     human = not invocation.transport
-    parser = build_parser(flow, human=human, project=invocation.project)
+    parser = build_parser(
+        flow, human=human, project=invocation.project, features=invocation.features
+    )
     add_quiet(parser, human=human)
     return parser
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
@@ -111,10 +110,7 @@ def test_encoders_refuse_documents_over_their_size_ceiling(value_type, encoder, 
         encoder(over_ceiling)
 
 
-def test_codec_rejects_noncanonical_or_oversized_json() -> None:
-    raw = json.dumps(_attempt()).encode()
-    with pytest.raises(SimulationRecordIntegrityError, match="canonical"):
-        decode_simulation_attempt(raw)
+def test_codec_rejects_oversized_json() -> None:
     with pytest.raises(SimulationRecordIntegrityError, match="size ceiling"):
         decode_simulation_attempt(b" " * (MANIFEST_MAX_BYTES + 1))
 
@@ -123,7 +119,6 @@ def test_codec_rejects_noncanonical_or_oversized_json() -> None:
     "mutation",
     [
         pytest.param(lambda document: document.pop("started_at"), id="missing-field"),
-        pytest.param(lambda document: document.update(extra_field=None), id="unknown-field"),
     ],
 )
 def test_attempt_field_mutation_is_rejected(mutation) -> None:

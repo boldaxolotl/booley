@@ -9,7 +9,9 @@ import pytest
 
 from booley.core.booley_dir import reset_cache
 from booley.harness import booley as cli
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.measurement.metrics_project_support import fill_listing, write_listing_project
+from tests.sandbox_venue_fake import place
 
 FALLBACK = "Run booley cheat --metrics in a Project to list its Targets' metrics."  # as rendered
 
@@ -19,7 +21,8 @@ def sandboxed_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run the real entry point as if inside a Sandbox, without an ambient Booley Directory."""
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     reset_cache()
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
+    monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")  # no proxy restoration into os.environ
     monkeypatch.setattr(cli, "_host_install_authority_error", lambda *_: None)
 
 

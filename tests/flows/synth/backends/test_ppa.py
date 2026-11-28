@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 
 import pytest
 
@@ -47,4 +48,16 @@ def test_target_fanout_is_unknown_with_or_without_profile_override(profile):
             {"advanced_settings_openroad": {"max_fanout": 50}},
             argparse.Namespace(ppa_profile=profile),
             synth_mode=SynthMode.PHYSICAL,
+        )
+
+
+@pytest.mark.parametrize("value", [True, 1.5, 0, -1])
+def test_abc_delay_must_be_a_positive_integer(value):
+    message = f"abc_delay_ps must be a positive integer, got {value!r}"
+    with pytest.raises(BoundaryError, match=re.escape(message)):
+        append_ppa_args(
+            [],
+            {"advanced_settings_yosys": {"abc_delay_ps": value}},
+            argparse.Namespace(ppa_profile=None),
+            synth_mode=SynthMode.LOGICAL,
         )

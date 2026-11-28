@@ -11,11 +11,13 @@ from pathlib import Path
 import pytest
 from tests.diagnostic_helpers import _isolate_runtime_files
 from tests.docker_cli_guard import route_bounded_captures_through_subprocess_run
+from tests.sandbox_venue_fake import place
 
 from booley.audit.diagnostic_results import Severity
 from booley.config.eda import EdaConfig
 from booley.eda.provisioning.policies import vivado
-from booley.runtime import inspection, runtime_context, sandbox_apply
+from booley.runtime import inspection, sandbox_apply
+from booley.runtime.runtime_context import RuntimeLocation
 
 
 def _runtime_files(monkeypatch, state):
@@ -74,7 +76,7 @@ def mounted_runtime(tmp_path, monkeypatch):
         "returncode": 0,
     }
     calls = []
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.delenv("XILINXD_LICENSE_FILE", raising=False)
     _isolate_runtime_files(monkeypatch)
     _runtime_files(monkeypatch, state)

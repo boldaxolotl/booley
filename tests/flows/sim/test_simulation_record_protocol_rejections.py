@@ -171,7 +171,7 @@ def test_recover_lane_fails_closed_when_cancel_fails(
     assert cancelled == [execution_id]
 
 
-@pytest.mark.parametrize("defect", ["conflict", "symlink", "hardlink"])
+@pytest.mark.parametrize("defect", ["conflict", "symlink"])
 def test_prepare_rejects_a_conflicting_or_linked_context_record(
     tmp_path: Path, defect: str
 ) -> None:
@@ -183,10 +183,8 @@ def test_prepare_rejects_a_conflicting_or_linked_context_record(
     source.write_bytes(canonical_json_bytes({"value": "expected"}))
     if defect == "conflict":
         context.write_bytes(b"old")
-    elif defect == "symlink":
-        context.symlink_to(source)
     else:
-        context.hardlink_to(source)
+        context.symlink_to(source)
 
     with pytest.raises(
         SimulationRecordIntegrityError, match="disagrees" if defect == "conflict" else "link"

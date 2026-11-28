@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.atomic_files import atomic_replace_bytes
+from booley.core.file_hash import file_sha256
 from booley.core.file_lock import acquire_file_lock
 from booley.core.process_identity import ProcessIdentity
 from booley.runtime.filesystem_utils import make_directories
@@ -100,14 +101,6 @@ def _publish(
         "entries": [entry.to_payload() for entry in entries],
     }
     atomic_replace_bytes(record, json.dumps(document).encode("utf-8"))
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(64 * 1024), b""):
-            digest.update(chunk)
-    return "sha256:" + digest.hexdigest()
 
 
 def leftover_message(relative: Path | str) -> str:
@@ -427,11 +420,13 @@ def _still_created(entry: _Entry, destination: Path, status: os.stat_result) -> 
     if (status.st_dev, status.st_ino) != entry.created:
         return False
     if entry.kind == "file":
-        return stat.S_ISREG(status.st_mode) and _sha256(destination) == entry.identity
+        return (
+            stat.S_ISREG(status.st_mode) and "sha256:" + file_sha256(destination) == entry.identity
+        )
     if entry.kind == "new-file":
         # Empty is what a kill between creation and content leaves.
         return stat.S_ISREG(status.st_mode) and (
-            status.st_size == 0 or _sha256(destination) == entry.identity
+            status.st_size == 0 or "sha256:" + file_sha256(destination) == entry.identity
         )
     if entry.kind == "pipe":
         return stat.S_ISFIFO(status.st_mode)
