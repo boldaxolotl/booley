@@ -1231,6 +1231,8 @@ class TestUp:
             ["docker", "exec", name, "bash", "-lc", command]
             for command in [*setup, *(spec[hook] for hook in hooks)]
         ]
+        # The hook's output and warning reach the `session up` terminal only uncaptured.
+        assert [call[-1] for call in up_docker.uncaptured if call[-1] in setup] == setup
         assert "superseded" not in caplog.text
 
     @pytest.mark.skipif(sys.platform == "win32", reason="the registrar runs in the Linux Sandbox")

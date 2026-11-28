@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -13,7 +14,7 @@ import pytest
 
 from booley.core.host_shell import quote_arg
 from booley.harness import booley as tlr
-from booley.harness import incontainer_post_setup, worktree_cmd
+from booley.harness import worktree_cmd
 from booley.runtime import runtime_context
 from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
 from tests.subprocess_budget import run_bounded_child
@@ -382,7 +383,12 @@ def test_main_checkout_hook_runs_and_a_failure_only_warns(
     body = "import sys\nsys.exit(3)\n" if outcome == "fails" else _HOOK_MARKER
     _write(data / "hooks/post-setup.py", body)
 
-    assert incontainer_post_setup.prepare_main_checkout(project) == 0
+    # What `session up` runs in the Sandbox: ``python -m`` this module in the checkout.
+    monkeypatch.chdir(project)
+    monkeypatch.delitem(sys.modules, "booley.harness.incontainer_post_setup", raising=False)
+    with pytest.raises(SystemExit) as stopped:
+        runpy.run_module("booley.harness.incontainer_post_setup", run_name="__main__")
+    assert stopped.value.code == 0
 
     log = data / "worktrees" / ".logs" / "main-checkout.log"
     if outcome == "fails":

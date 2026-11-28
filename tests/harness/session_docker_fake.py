@@ -134,7 +134,8 @@ class SandboxDocker:
     `docker image inspect` record; *networks* names the existing networks. `run`
     stores *created* (a copy) under the new name, or a minimal running state; `exec`
     answers *exec_reply*. *missing* makes every call raise like an absent CLI, and
-    *on_call* observes each argv before it is answered.
+    *on_call* observes each argv before it is answered. *uncaptured* lists the calls
+    whose output stays on the caller's terminal.
     """
 
     def __init__(self) -> None:
@@ -142,6 +143,7 @@ class SandboxDocker:
         self.networks: set[str] = set()
         self.images: dict[str, dict] = {}
         self.calls: list[list[str]] = []
+        self.uncaptured: list[list[str]] = []
         self.removed: list[str] = []
         self.rm_attempts: list[list[str]] = []
         self.failing: set[str] = set()
@@ -165,12 +167,14 @@ class SandboxDocker:
                 return name
         return None
 
-    def run(self, argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+    def run(self, argv: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
         if self.missing:
             raise FileNotFoundError("docker")
         if self.on_call is not None:
             self.on_call(argv)
         self.calls.append(argv)
+        if kwargs.get("capture") is False:
+            self.uncaptured.append(argv)
         for prefix, reply in self.scripted:
             if tuple(argv[1 : 1 + len(prefix)]) == prefix:
                 if isinstance(reply, Exception):

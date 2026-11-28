@@ -326,9 +326,10 @@ Git. `booley measure` runs the same hook in its checkout of the commit; see
 [Limits](METRIC-DRIVEN-DEVELOPMENT.md#limits).
 
 When `booley session up` starts the Sandbox, it also runs the hook in the main
-checkout, before the automatic Doctor. The output is shown and logged to
-`.booley/worktrees/.logs/main-checkout.log`. If the hook fails there, a warning
-names the hook and its log, and the Sandbox still starts.
+checkout, before Doctor's [automatic check](DOCTOR.md#automatic-checks). The
+output is shown and logged to `.booley/worktrees/.logs/main-checkout.log`. If
+the hook fails there, a warning names the hook and its log, and the Sandbox
+still starts.
 
 ### Git submodules (`[submodules]`)
 
