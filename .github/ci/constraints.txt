@@ -122,7 +122,7 @@ okonomiyaki==3.0.0
     # via simplesat
 opentelemetry-api==1.45.2
     # via mcp
-packaging==26.3
+packaging==26.4
     # via
     #   build
     #   pytest
@@ -186,7 +186,7 @@ pywin32==312 ; sys_platform == 'win32'
     # via
     #   booley-rtl (pyproject.toml)
     #   mcp
-pyyaml==6.0.3
+pyyaml==6.0.4
     # via
     #   booley-rtl (pyproject.toml)
     #   fusesoc
@@ -221,7 +221,7 @@ starlette==1.10.0
     #   sse-starlette
 tomli==2.5.0
     # via booley-rtl (pyproject.toml)
-tomlkit==0.15.2
+tomlkit==0.15.3
     # via booley-rtl (pyproject.toml)
 truststore==0.10.5 ; sys_platform != 'emscripten'
     # via
