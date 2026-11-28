@@ -3,22 +3,17 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from pathlib import Path
 
 import pytest
 
 from booley.flows.sim.record import codec
 from booley.flows.sim.record.codec import SimulationRecordIntegrityError
-from booley.flows.sim.record.store import SimulationRecordStore
 from tests.flows.sim.test_simulation_record_codec_golden import (
     _BUILD_READY,
     _simulation_result,
 )
-from tests.flows.sim.test_simulation_record_manifest_codec import (
-    _manifest,
-    _prerequisite_entry,
-)
+from tests.flows.sim.test_simulation_record_manifest_codec import _manifest
 from tests.flows.sim.test_simulation_record_model import _attempt
 
 
@@ -40,58 +35,6 @@ def test_encoder_and_path_type_guards() -> None:
         codec.encode_simulation_record_document(object())  # type: ignore[arg-type]
     with pytest.raises(SimulationRecordIntegrityError, match="1 KiB"):
         codec.validate_relative_path("x" * (codec.MAX_PATH_BYTES + 1))
-
-
-def _set_field(field: str, value: object) -> Callable[[dict[str, object]], None]:
-    """Return a mutation that replaces one top-level manifest field."""
-    return lambda document: document.__setitem__(field, value)
-
-
-def _set_variant_id(document: dict[str, object]) -> None:
-    document["build_variants"][0]["build_variant_id"] = "variant:bad"  # type: ignore[index]
-
-
-def _repeat_variants(document: dict[str, object]) -> None:
-    document["build_variants"] = document["build_variants"] * (codec.MAX_WORK_ITEMS + 1)  # type: ignore[operator]
-
-
-@pytest.mark.parametrize(
-    ("mutate", "message"),
-    [
-        (_set_field("planning_disclosures", [None] * (codec.MAX_LIST_ITEMS + 1)), "list exceeds"),
-        (
-            _set_field("planning_disclosures", ["x" * (codec.MAX_COMMAND_BYTES + 1)]),
-            "string exceeds resource ceiling",
-        ),
-        (_set_field("simulation_record_id", 1), "must be lowercase UUIDv4"),
-        (_set_field("simulation_record_id", "not-a-uuid"), "must be lowercase UUIDv4"),
-        (
-            _set_field("simulation_record_id", "550e8400-e29b-11d4-a716-446655440000"),
-            "must be lowercase UUIDv4",
-        ),
-        (_set_field("created_at", "not-a-date"), "must be canonical UTC RFC3339"),
-        (_set_field("created_at", "2026-09-21T10:00:00.1Z"), "must be canonical UTC RFC3339"),
-        (_set_variant_id, "build_variant_id is invalid"),
-        (_repeat_variants, "must be a list capped at 1000"),
-    ],
-    ids=[
-        "list-ceiling",
-        "string-ceiling",
-        "uuid-not-a-string",
-        "uuid-unparseable",
-        "uuid-version-1",
-        "timestamp-garbage",
-        "timestamp-fraction",
-        "variant-id",
-        "variant-count",
-    ],
-)
-def test_manifest_decoder_rejects_invalid_scalars_and_ceilings(mutate, message) -> None:
-    """The scalar, timestamp and resource guards run on the public manifest decode path."""
-    document = _manifest()
-    mutate(document)
-    with pytest.raises(SimulationRecordIntegrityError, match=message):
-        codec.decode_simulation_record_manifest(codec.canonical_json_bytes(document))
 
 
 def _fixture_document(name: str) -> dict[str, object]:
@@ -152,6 +95,10 @@ def _tamper_manifest(document: dict[str, object]) -> None:
     item["test_runs"][0]["fingerprint"] = "sha256:" + "3" * 64
     document["fingerprints"]["unexpected"] = "not-a-digest"  # type: ignore[index]
     document["fingerprints"]["workload_sha256"] = "sha256:" + "2" * 64  # type: ignore[index]
+    document["simulation_record_id"] = "not-a-uuid"
+    document["created_at"] = "yesterday"
+    document["target"]["selector"] = 7  # type: ignore[index]
+    document["extra_field"] = None
 
 
 @pytest.mark.parametrize(
@@ -182,8 +129,8 @@ def test_record_decoders_do_not_revalidate_nested_fields(decode, make_document, 
     """These records get only the boundary check; their consumers guard what they use (#1743)."""
     document = make_document()
     tamper(document)
-    raw = codec.canonical_json_bytes(document)
-    assert decode(raw).canonical_bytes() == raw
+    raw = json.dumps(document, indent=1).encode()  # not canonical
+    assert decode(raw).canonical_bytes() == codec.canonical_json_bytes(document)
 
 
 @pytest.mark.parametrize("error", ["truncated", "schema", "missing"])
@@ -198,49 +145,3 @@ def test_reader_rejects_corrupt_record(error):
     raw = b"{" if error == "truncated" else codec.canonical_json_bytes(document)
     with pytest.raises(SimulationRecordIntegrityError):
         codec.decode_simulation_record_manifest(raw)
-
-
-_DELETE = object()
-
-
-@pytest.mark.parametrize(
-    ("path", "replacement", "field"),
-    [
-        (("workload", "run_cwd", "configured"), _DELETE, r"run_cwd\.configured"),
-        (("workload", "run_cwd", "configured"), 7, r"run_cwd\.configured"),
-        (("target", "selector"), _DELETE, r"target\.selector"),
-        (("work_items", 0, "kind"), _DELETE, r"work_items\[0\]\.kind"),
-        (
-            ("prerequisites", 0, "manifest", "path"),
-            _DELETE,
-            r"prerequisites\[0\]\.manifest\.path",
-        ),
-    ],
-    ids=[
-        "workload-run-cwd",
-        "workload-run-cwd-wrong-type",
-        "target-selector",
-        "work-item-kind",
-        "prerequisite-manifest-path",
-    ],
-)
-def test_manifest_reader_rejects_a_missing_nested_field(
-    tmp_path, path, replacement, field
-) -> None:
-    document = _manifest()
-    document["prerequisites"] = [_prerequisite_entry()]
-    parent: object = document
-    for part in path[:-1]:
-        parent = parent[part]  # type: ignore[index]
-    if replacement is _DELETE:
-        del parent[path[-1]]  # type: ignore[attr-defined,arg-type]
-    else:
-        parent[path[-1]] = replacement  # type: ignore[index]
-    raw = codec.canonical_json_bytes(document)
-    with pytest.raises(SimulationRecordIntegrityError, match=field):
-        codec.decode_simulation_record_manifest(raw)
-    manifest = tmp_path / "record" / "manifest.json"
-    manifest.parent.mkdir()
-    manifest.write_bytes(raw)
-    with pytest.raises(SimulationRecordIntegrityError, match=field):
-        SimulationRecordStore(manifest.parent).load_manifest()

@@ -13,9 +13,8 @@ from booley.harness import doctor
 from booley.runtime import directory_migration_git
 from booley.runtime.worktree_evidence import tracked_booley_paths
 from tests.harness.doctor_host_support import serve_healthy_doctor_host
-from tests.harness.doctor_run_support import findings, run_doctor
+from tests.harness.doctor_run_support import findings, run_doctor, write_project
 from tests.harness.git_support import git_stdout as _git
-from tests.harness.test_doctor import _write_project
 
 
 def _repositories(
@@ -25,7 +24,7 @@ def _repositories(
     root = tmp_path / "project"
     root.mkdir()
     _git(root, "init", "-b", outer_branch)
-    booley_dir = _write_project(root)
+    booley_dir = write_project(root)
     if project_branch:
         _git(booley_dir, "init", "-b", project_branch)
     return root, booley_dir
@@ -346,7 +345,7 @@ def _relocated_linked_worktree(tmp_path: Path, *, versioned: bool) -> Path:
     root.mkdir()
     _git(root, "init", "-q")
     _identify(root)
-    booley_dir = _write_project(root)
+    booley_dir = write_project(root)
     state = booley_dir.rename(root / "state")
     (root / "booley.toml").write_text('[project]\ndir = "state"\n', encoding="utf-8")
     _git(root, "add", "booley.toml")

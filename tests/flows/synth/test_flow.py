@@ -883,8 +883,13 @@ def test_configure_argv_carries_the_recipe(synth_cli: SynthCli) -> None:
         pytest.param(
             'synth_mode = "physical"\n'
             '[flows.synth.advanced_settings_openroad]\nrepair_hold = "yes"\n',
-            "repair_hold",
+            r"advanced_settings_openroad\.repair_hold must be a boolean",
             id="non-bool-repair-hold",
+        ),
+        pytest.param(
+            'synth_mode = "physical"\n[flows.synth.advanced_settings_openroad]\nutilization_pct = 0\n',
+            r"advanced_settings_openroad\.utilization_pct must be greater than zero",
+            id="zero-utilization",
         ),
         pytest.param(
             '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\nabc_script = "+strash"\n',

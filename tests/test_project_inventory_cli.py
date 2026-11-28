@@ -32,18 +32,19 @@ from booley.runtime import (
     image_lifecycle,
     issuance_invalidation,
     project_image,
-    runtime_context,
     session_admission,
     session_issuance,
     session_runtime,
 )
 from booley.runtime import image_keepers as runtime_image_keepers
 from booley.runtime.lifecycle_lock import LifecycleLockError
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import Attachment
 from booley.runtime.session_issuance import keeper_image
 from tests import eda_grant_support
 from tests.devcontainer_spec_support import build_spec
 from tests.fake_docker_executable import FakeDocker, install_fake_docker
+from tests.sandbox_venue_fake import place
 from tests.session_issuance_support import fixed, install_trusted_validator
 from tests.time_budget import hang_guard_s
 
@@ -682,7 +683,7 @@ def test_forget_withdraws_a_real_issuance_until_it_is_reissued(
     # from VS Code, which reissues the stamp that no longer exists.
     # The attachment kind comes from `docker ps` labels, which the shared fake does not model,
     # so the editor-owned answer is stubbed at the Booley seam.
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE)
     assert session_runtime.sandbox_remedy(project) == (
         "on the host run `booley init`, then use Dev Containers: Rebuild Container"
@@ -701,7 +702,7 @@ def test_main_wires_the_keeper_service_into_forget_and_prune(
     monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
     # `main` refuses a host without a Booley install; the test host has none, and the install
     # check reads the host's real directories, which the shared fake does not cover.
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(host_install, "host_install_error", lambda _directory: None)
     project = _remember(tmp_path)
     own, orphan = keeper_image(project), keeper_image(tmp_path / "orphan")

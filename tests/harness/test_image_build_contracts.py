@@ -17,6 +17,7 @@ from booley.runtime import image_build_contracts as contracts
 from booley.runtime.build_stamp import BuildProfile, write_build_stamp
 from booley.runtime.packaged_docs import SHIPPED_DOCS, render_packaged_doc
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
+from tests.installed_wheel_support import install_package
 from tests.source_checkout_support import copy_source_checkout
 from tests.subprocess_budget import run_bounded_child
 
@@ -39,10 +40,18 @@ def _source_tree(root: Path) -> Path:
     return root
 
 
-def test_source_contracts_are_deterministic_and_independently_scoped(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "edited",
+    # Both installed Verible module names share the adapter source; its subclass change is
+    # hashed. Dockerfile-only edits do not independently imply this result.
+    ["crates/bwave/src/lib.rs", "src/booley/data/edalize/verible.py"],
+)
+def test_source_contracts_are_deterministic_and_independently_scoped(
+    tmp_path: Path, edited: str
+) -> None:
     root = _source_tree(tmp_path)
     initial = contracts.source_image_build_contracts(root)
-    (root / "crates" / "bwave" / "src" / "lib.rs").write_text("changed\n", encoding="utf-8")
+    (root / edited).write_text("changed\n", encoding="utf-8")
     changed = contracts.source_image_build_contracts(root)
 
     assert changed.runtime_base == initial.runtime_base
@@ -63,59 +72,31 @@ def test_source_contract_rejects_missing_and_symlinked_inputs(tmp_path: Path) ->
         contracts.standard_substrate_contract(root)
 
 
-@pytest.mark.parametrize(
-    "runtime,standard",
-    [
-        ("a" * 63, "b" * 64),
-        ("A" * 64, "b" * 64),
-        ("a" * 64, "computed"),
-        ("a" * 64, None),
-    ],
-)
-def test_embedded_contracts_reject_noncanonical_values(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    runtime: str,
-    standard: str | None,
-) -> None:
-    stamp = tmp_path / "_build_commit.py"
+def _contract_lines(runtime: str, standard: str | None) -> bytes:
     lines = [f"RUNTIME_BASE_CONTRACT = {runtime!r}"]
     if standard is not None:
         lines.append(f"STANDARD_SUBSTRATE_CONTRACT = {standard!r}")
-    stamp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    monkeypatch.setattr(contracts, "_embedded_stamp_path", lambda: stamp)
-
-    with pytest.raises(contracts.ImageBuildContractMetadataError):
-        contracts.embedded_image_build_contracts()
-
-
-def test_embedded_contracts_reject_dynamic_expressions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    stamp = tmp_path / "_build_commit.py"
-    stamp.write_text(
-        "RUNTIME_BASE_CONTRACT = 'a' * 64\nSTANDARD_SUBSTRATE_CONTRACT = 'b' * 64\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setattr(contracts, "_embedded_stamp_path", lambda: stamp)
-
-    with pytest.raises(contracts.ImageBuildContractMetadataError, match="invalid"):
-        contracts.embedded_image_build_contracts()
+    return ("\n".join(lines) + "\n").encode()
 
 
 @pytest.mark.parametrize(
     ("content", "message"),
     [
+        (_contract_lines("a" * 63, "b" * 64), None),
+        (_contract_lines("A" * 64, "b" * 64), None),
+        (_contract_lines("a" * 64, "computed"), None),
+        (_contract_lines("a" * 64, None), None),
+        (b"RUNTIME_BASE_CONTRACT = 'a' * 64\nSTANDARD_SUBSTRATE_CONTRACT = 'b' * 64\n", "invalid"),
         (b"RUNTIME_BASE_CONTRACT = (\n", "invalid"),
         (b"\xff\xfe", "lacks"),
     ],
+    ids=["short", "uppercase", "not-hex", "missing", "dynamic", "unparseable", "undecodable"],
 )
-def test_embedded_contracts_reject_unparseable_or_undecodable_stamp(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes, message: str
+def test_embedded_contracts_reject_invalid_stamps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes, message: str | None
 ) -> None:
-    stamp = tmp_path / "_build_commit.py"
-    stamp.write_bytes(content)
-    monkeypatch.setattr(contracts, "_embedded_stamp_path", lambda: stamp)
+    (tmp_path / "_build_commit.py").write_bytes(content)
+    install_package(monkeypatch, tmp_path)
 
     with pytest.raises(contracts.ImageBuildContractMetadataError, match=message):
         contracts.embedded_image_build_contracts()
@@ -266,6 +247,16 @@ def test_validator_names_shipped_docs_missing_from_the_wheel(
     assert "booley/data/refs/CHANGELOG.md" in str(raised.value)
 
 
+def _installed_environment(installed: Path) -> dict[str, str]:
+    """The environment of a child that imports Booley from *installed*, without coverage."""
+    environment = os.environ.copy()
+    for name in tuple(environment):
+        if name.startswith(("COV_CORE_", "COVERAGE_PROCESS_")) or name == "COVERAGE_FILE":
+            environment.pop(name)
+    environment.update({"PYTHONNOUSERSITE": "1", "PYTHONPATH": str(installed)})
+    return environment
+
+
 def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access(
     tmp_path: Path, official_build: tuple[Path, Path, Path]
 ) -> None:
@@ -285,20 +276,10 @@ def test_installed_wheel_plans_and_prepares_hybrid_graph_without_checkout_access
     )
     driver = tmp_path / "driver.py"
     driver.write_text(_INSTALLED_WHEEL_DRIVER, encoding="utf-8")
-    environment = os.environ.copy()
-    for name in tuple(environment):
-        if name.startswith(("COV_CORE_", "COVERAGE_PROCESS_")) or name == "COVERAGE_FILE":
-            environment.pop(name)
-    environment.update(
-        {
-            "PYTHONNOUSERSITE": "1",
-            "PYTHONPATH": str(installed),
-        }
-    )
     completed = run_bounded_child(
         [build_python, "-P", str(driver), str(project), str(SOURCE_ROOT)],
         cwd=tmp_path,
-        env=environment,
+        env=_installed_environment(installed),
         check=True,
     )
     observed = json.loads(completed.stdout)
@@ -322,11 +303,6 @@ def test_installed_wheel_acknowledges_upgrade_from_its_packaged_changelog(
     installed = tmp_path / "site-packages"
     with zipfile.ZipFile(wheel) as archive:
         archive.extractall(installed)
-    environment = os.environ.copy()
-    for name in tuple(environment):
-        if name.startswith(("COV_CORE_", "COVERAGE_PROCESS_")) or name == "COVERAGE_FILE":
-            environment.pop(name)
-    environment.update({"PYTHONNOUSERSITE": "1", "PYTHONPATH": str(installed)})
     completed = run_bounded_child(
         [
             sys.executable,
@@ -338,7 +314,7 @@ def test_installed_wheel_acknowledges_upgrade_from_its_packaged_changelog(
             str(SOURCE_ROOT),
         ],
         cwd=tmp_path,
-        env=environment,
+        env=_installed_environment(installed),
     )
 
     assert completed.stdout.strip() == "current", completed.stderr
@@ -445,15 +421,3 @@ print(json.dumps({
     "prepared": len(prepared.candidates),
 }))
 """
-
-
-def test_verible_node_source_change_invalidates_standard_substrate(tmp_path: Path) -> None:
-    root = _source_tree(tmp_path)
-    before = contracts.source_image_build_contracts(root)
-    # Both installed module names share this source; its subclass change is
-    # hashed. Dockerfile-only edits do not independently imply this result.
-    source = root / "src/booley/data/edalize/verible.py"
-    source.write_text("class Veriblelint(Verible): pass\n", encoding="utf-8")
-    after = contracts.source_image_build_contracts(root)
-    assert before.runtime_base == after.runtime_base
-    assert before.standard_substrate != after.standard_substrate

@@ -13,9 +13,11 @@ import pytest
 
 from booley.runtime import job_records
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.session_paths import project_job_roots, session_jobs_dir
 from booley.runtime.timefmt import rfc3339_from_epoch
 from tests.booley_checkouts_support import enter_worktree
+from tests.sandbox_venue_fake import place
 
 
 @pytest.fixture
@@ -64,7 +66,6 @@ def test_servers_of_different_checkouts_keep_separate_logs(worktree, monkeypatch
 
 @pytest.mark.parametrize("sandbox_like", [False, True], ids=["host", "sandbox"])
 def test_reviewer_writes_evidence_to_main_and_no_review_state(worktree, monkeypatch, sandbox_like):
-    from booley.runtime import runtime_context
     from booley.specialists.reviewer import ReviewerSpecialist
 
     main, tree = worktree
@@ -95,7 +96,8 @@ def test_reviewer_writes_evidence_to_main_and_no_review_state(worktree, monkeypa
         "--focus",
         "bugs",
     ]
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
+    monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")  # the Sandbox spec hand-off
     monkeypatch.setattr(
         ReviewerSpecialist,
         "_invoke_agent",

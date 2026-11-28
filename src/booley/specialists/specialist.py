@@ -70,7 +70,9 @@ class Specialist(McpTool):
     JOB_CLASS = job_slots.CLASS_MEMORY
 
     def _memory_admission_plan(
-        self, project: Path | None, requests: Sequence[JobRequest] | None
+        self,
+        project: Path | None,
+        requests: Sequence[JobRequest] | None,  # noqa: ARG002 — overrides EndpointState._memory_admission_plan
     ) -> MemoryAdmissionPlan:
         return measure_specialist_claim(project, self.name)
 

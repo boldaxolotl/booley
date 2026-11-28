@@ -936,7 +936,9 @@ class MutationFlow(BuiltinFlow[MutationRequest]):
     timeout_covers_whole_run: ClassVar[bool] = True
 
     def _memory_admission_plan(
-        self, project: Path | None, requests: Sequence[JobRequest] | None
+        self,
+        project: Path | None,  # noqa: ARG002 — overrides EndpointState._memory_admission_plan
+        requests: Sequence[JobRequest] | None,  # noqa: ARG002 — overrides EndpointState._memory_admission_plan
     ) -> MemoryAdmissionPlan:
         return measure_coordinator_claim()
 

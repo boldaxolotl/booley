@@ -14,17 +14,12 @@ from pathlib import Path
 
 import pytest
 from tests.fake_docker_executable import FakeDocker, install_fake_docker
-from tests.pipe_holding_tree import (
-    heartbeat_tree,
-    parent_argv,
-    start_deadline_after_tree_start,
-    wait_until_heartbeat_stops,
-)
 from tests.time_budget import scaled
 
 from booley.core import host_shell
 from booley.runtime import devcontainer as dc
 from booley.runtime import (
+    host_docker,
     platform_paths,
     sandbox_apply,
     session_admission,
@@ -296,6 +291,29 @@ def test_malformed_live_inspection_fails_closed(
 
     with pytest.raises(session_admission.AdmissionError, match="incomplete inspection"):
         session_admission.admit_start(project, target_name="headless")
+
+
+@pytest.mark.parametrize(
+    ("second", "message"),
+    [
+        ((1, "", "gone"), "cannot revalidate Sandbox editor-id: gone"),
+        ((0, "[]", ""), "cannot revalidate Sandbox editor-id identity"),
+    ],
+)
+def test_workspace_revalidation_reports_a_failed_second_inspection(
+    tmp_path: Path, docker: FakeDocker, second: tuple[int, str, str], message: str
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    document = _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")
+    labels = document["Config"]["Labels"]
+    row = f"editor-id\teditor\t{project}\t{labels['booley.project-id']}\tinteractive\n"
+    document["Mounts"] = [{"Type": "bind", "Source": str(project), "Destination": "/work"}]
+    docker.answer("ps", stdout=row)
+    docker.answer_in_turn("inspect", answers=[(0, json.dumps(document), ""), second])
+
+    with pytest.raises(session_admission.AdmissionError, match=message):
+        session_admission.running_project_sandboxes(project)
 
 
 def test_running_exact_target_is_idempotent_at_cap(
@@ -897,7 +915,9 @@ def test_vscode_inventory_inspects_a_renamed_known_container_again(
         "editor-id", "other-name", root, None, datetime.now(UTC), datetime.now(UTC), True, True
     )
 
-    (fresh,) = session_admission._vscode_inventory({root}, session_admission._run, known=(stale,))
+    (fresh,) = session_admission._vscode_inventory(
+        {root}, host_docker.relay_docker, known=(stale,)
+    )
 
     assert fresh is not stale
     assert fresh.name == "editor"
@@ -906,41 +926,6 @@ def test_vscode_inventory_inspects_a_renamed_known_container_again(
 # ---------------------------------------------------------------------------
 # Bounded commands (real processes, no Docker needed)
 # ---------------------------------------------------------------------------
-
-
-def test_default_runner_timeout_kills_the_tree_and_returns_promptly(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The default runner ends with ``TimeoutExpired`` soon and leaves no descendant running."""
-    with heartbeat_tree(tmp_path) as paths:
-        argv = parent_argv(tmp_path, sys.executable, paths, "live")
-        started = start_deadline_after_tree_start(monkeypatch, paths)
-        with pytest.raises(subprocess.TimeoutExpired):
-            session_admission._run(argv, timeout=scaled(2))
-        elapsed = time.monotonic() - started[0]
-        assert elapsed < scaled(25), f"_run hung {elapsed:.1f}s on a pipe held by a grandchild"
-        assert wait_until_heartbeat_stops(paths["heartbeat"]), (
-            "grandchild still running after the timeout"
-        )
-
-
-def test_default_runner_keeps_its_result_contract() -> None:
-    """Success returns text, a non-zero exit is returned, a missing program raises."""
-    ok = session_admission._run(
-        [sys.executable, "-c", "import sys; print('out'); print('err', file=sys.stderr)"]
-    )
-    assert (ok.returncode, ok.stdout.strip(), ok.stderr.strip()) == (0, "out", "err")
-    assert session_admission._run([sys.executable, "-c", "raise SystemExit(3)"]).returncode == 3
-    with pytest.raises(FileNotFoundError):
-        session_admission._run(["booley-no-such-program-3858"])
-
-
-def test_default_runner_decodes_utf8_output_whatever_the_locale() -> None:
-    """Admission reads child output as UTF-8, so non-ASCII Sandbox labels survive on Windows."""
-    text = "Zo\u00eb \u0141"
-    script = f"import sys; sys.stdout.buffer.write({text.encode()!r})"
-    result = session_admission._run([sys.executable, "-c", script])
-    assert result.stdout == text
 
 
 def _hung_docker(timeouts: list[float | None], hung: list[str]):
@@ -954,8 +939,8 @@ def _hung_docker(timeouts: list[float | None], hung: list[str]):
     the listing gave one.
     """
 
-    def run(argv: list[str], *, timeout: float | None = None, **_kwargs):
-        assert argv[:2] == ["docker", "ps"], argv
+    def run(args: list[str], timeout: int):
+        assert args[:1] == ["ps"], args
         timeouts.append(timeout)
         return session_runtime._run(hung, timeout=scaled(1) if timeout else None)
 

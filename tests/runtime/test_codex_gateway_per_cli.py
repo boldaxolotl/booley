@@ -13,6 +13,7 @@ from pathlib import Path
 import anyio
 import pytest
 from tests.claude_cli_fake import record_sdk_options
+from tests.sandbox_venue_fake import place
 
 from booley.config import agent as agent_config
 from booley.core.models import AgentCallParams
@@ -21,6 +22,7 @@ from booley.harness.setup.common import InitContext
 from booley.runtime import auth_token, session_issuance
 from booley.runtime import devcontainer as dc
 from booley.runtime._claude_backend import ClaudeSDKBackend
+from booley.runtime.runtime_context import RuntimeLocation
 
 _CLAUDE_CREDS_SEED = f"{dc.AGENT_HOME}/.claude-creds-seed.json"
 _GATEWAY_URL = "https://gw.example/v1"
@@ -164,12 +166,12 @@ def test_issued_sandbox_routes_codex_through_gateway_and_never_claude(tmp_path, 
     toml_data = tomllib.loads((project / ".booley" / "booley.toml").read_text(encoding="utf-8"))
 
     # Resolve the spec's ``${localEnv:KEY}`` references the way VS Code does, then act as
-    # the Sandbox: inside a container, with the default CLI's policy as the hand-off.
+    # the Sandbox, with the default CLI's policy as the hand-off.
     host_env = {"BOOLEY_GATEWAY_URL": _GATEWAY_URL, "BOOLEY_GATEWAY_TOKEN": "SYNTHETIC_TOKEN"}
     for key, value in spec["remoteEnv"].items():
         monkeypatch.setenv(key, host_env.get(key, value) if "localEnv" in value else value)
-    # The container marker is the host/Sandbox boundary: only a Sandbox hides the gateway.
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+    # Only a Sandbox honors the gateway.
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     assert spec["remoteEnv"]["BOOLEY_PRIMARY_AUTH"] == "subscription"
 
     settings = agent_config.settings_from_data(toml_data, lazy=True)

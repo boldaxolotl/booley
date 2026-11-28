@@ -721,6 +721,31 @@ def test_declined_key_clears_the_previous_verilator_identity(
 
 
 @posix_only
+@pytest.mark.parametrize(
+    "hidden",
+    ["src/.a-hidden.v", "src/run.log", "src/.booley-runtime-inputs/m.v"],
+    ids=["dot-file", "run-log", "runtime-inputs"],
+)
+def test_isolated_reuse_declines_source_named_like_a_booley_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hidden: str
+) -> None:
+    """In an ``ignore_native_cores`` Project a file the input snapshot skips declines reuse."""
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
+    )
+    session = SimulationBuildSession(_handle(tmp_path), wait_s=60)
+    with session:
+        prepared, inputs = _keyed_generation(tmp_path, monkeypatch, session)
+        # Control: without the hidden file the generation keys.
+        assert session.reusable_key(prepared, inputs, hooks=False) is not None
+        path = prepared.work_root / hidden
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("module m; endmodule\n", encoding="utf-8")
+        assert session.reusable_key(prepared, inputs, hooks=False) is None
+
+
+@posix_only
 def test_generated_makefile_reading_unkeyed_environment_downgrades(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

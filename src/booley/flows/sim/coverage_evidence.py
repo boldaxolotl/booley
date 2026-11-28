@@ -234,7 +234,7 @@ class CoverageEvidenceSession:
                 )
         except BoundaryError as exc:
             raise CoverageEvidenceError(f"Malformed evidence query: {exc}") from exc
-        return self._deliver(view, request, result)
+        return self._deliver(view, result)
 
     def analysis_scope(self) -> dict[str, object]:
         """Describe exactly how much Coverage Record evidence was delivered."""
@@ -410,9 +410,7 @@ class CoverageEvidenceSession:
             "text": "".join(lines[first - 1 : last]),
         }
 
-    def _deliver(
-        self, view: str, request: Mapping[str, object], result: dict[str, object]
-    ) -> dict[str, object]:
+    def _deliver(self, view: str, result: dict[str, object]) -> dict[str, object]:
         presented, references = self._present_result(view, result)
         encoded = _encoded_size(presented)
         if encoded > MAX_RESPONSE_BYTES and view == "overview":

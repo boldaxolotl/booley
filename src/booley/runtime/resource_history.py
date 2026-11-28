@@ -17,9 +17,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, NamedTuple
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.boundary import as_dict
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
-from booley.runtime.atomic_files import atomic_replace_bytes, keep_unreadable
+from booley.runtime.filesystem_utils import keep_unreadable
 from booley.runtime.timefmt import format_duration, parse_timestamp
 
 logger = logging.getLogger(__name__)

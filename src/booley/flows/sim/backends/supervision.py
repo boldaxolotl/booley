@@ -32,6 +32,7 @@ from booley.flows.sim.run_guard import (
 )
 from booley.flows.sim.trace_session import TraceSession
 from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
+from booley.runtime.process_group import own_process_group, release_process_group
 
 # ``subprocess`` reports a child's death by signal N as ``returncode == -N``;
 # POSIX only (a Windows child never has a negative signal status).
@@ -224,6 +225,21 @@ def _run(launch: SimulatorLaunch) -> tuple[deque[str], subprocess.Popen[str], Ru
         **popen_new_group_kwargs(),
         **child_death_kwargs(),
     )
+    own_process_group(proc)
+    try:
+        lines, termination = _supervise(launch, proc, disk_baseline, cpu_started)
+    finally:
+        release_process_group(proc)
+    return lines, proc, termination
+
+
+def _supervise(
+    launch: SimulatorLaunch,
+    proc: subprocess.Popen[str],
+    disk_baseline: tuple[int, float],
+    cpu_started: ChildCpuSnapshot | None,
+) -> tuple[deque[str], RunTermination]:
+    """Drain the spawned simulator under its guards and classify how it ended."""
     supervise_child(proc)
     if launch.trace is not None and launch.conversion is not None:
         launch.trace.start_monitor(launch.conversion, proc)
@@ -248,4 +264,4 @@ def _run(launch: SimulatorLaunch) -> tuple[deque[str], subprocess.Popen[str], Ru
         from booley.flows.job_resources import report_descendant_kill
 
         report_descendant_kill()
-    return supervisor.lines, proc, termination
+    return supervisor.lines, termination

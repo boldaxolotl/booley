@@ -55,11 +55,12 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.atomic_files import atomic_write_json
+from booley.core.file_hash import file_sha256
 from booley.flows.synth.backends import pipeline
 from booley.flows.synth.backends.openroad import sdc_grammar
 from booley.flows.synth.backends.openroad import timing as openroad_timing
 from booley.runtime.build_metadata import current_build_metadata
-from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.filesystem_utils import make_directories
 
 logger = logging.getLogger(__name__)
@@ -258,8 +259,8 @@ def _openroad_identity() -> str | None:
             return None
         version = _run([found, "-version"])
         libraries = _ldd_paths(_run(["ldd", str(binary)]))
-        lines = [str(binary), version, _sha256(binary)]
-        lines += [f"{path} {_sha256(path)}" for path in libraries]
+        lines = [str(binary), version, file_sha256(binary)]
+        lines += [f"{path} {file_sha256(path)}" for path in libraries]
     except (OSError, subprocess.SubprocessError) as exc:
         logger.info("OpenROAD reuse declined: cannot identify OpenROAD: %s", exc)
         return None
@@ -286,14 +287,6 @@ def _ldd_paths(output: str) -> list[Path]:
     return paths
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for block in iter(lambda: stream.read(1 << 20), b""):
-            digest.update(block)
-    return digest.hexdigest()
-
-
 def _image_identity() -> str | None:
     """Sandbox image build values plus the package inventory; ``None`` outside a Sandbox."""
     built_at = os.environ.get("BOOLEY_IMAGE_BUILT_AT", "")
@@ -301,7 +294,7 @@ def _image_identity() -> str | None:
         logger.info("OpenROAD reuse declined: no identifiable Sandbox image")
         return None
     status = Path("/var/lib/dpkg/status")
-    packages = _sha256(status) if status.is_file() else "absent"
+    packages = file_sha256(status) if status.is_file() else "absent"
     values = [f"{name}={os.environ.get(name, '')}" for name in _IMAGE_ENV]
     return "\n".join([*values, f"dpkg={packages}"])
 

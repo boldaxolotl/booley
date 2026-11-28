@@ -8,16 +8,15 @@ cannot accidentally erase a pending range while refreshing Doctor evidence.
 from __future__ import annotations
 
 import json
-import os
-import threading
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from pathlib import Path
 from typing import IO, Any
 
+from booley.core.atomic_files import Durability, atomic_write_text
 from booley.core.boundary import (
     BoundaryError,
     as_str,
@@ -28,7 +27,7 @@ from booley.core.boundary import (
 from booley.runtime import doctor_stamp
 from booley.runtime.changelog import ChangelogError, StableVersion, parse_releases
 from booley.runtime.file_lock import LockContentionError, acquire_file_lock, release_file_lock
-from booley.runtime.filesystem_utils import read_file_bytes, replace_file
+from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.paths import changelog_path
 from booley.runtime.timefmt import parse_timestamp, utc_now_rfc3339
 
@@ -196,14 +195,11 @@ def _doctor_bootstrap_version(booley_dir: Path) -> StableVersion | None:
         return None
 
 
-def _atomic_write(path: Path, state: ReviewState) -> None:
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+def _store_state(path: Path, state: ReviewState) -> None:
+    text = json.dumps(state.payload(), indent=2) + "\n"
     try:
-        temporary.write_text(json.dumps(state.payload(), indent=2) + "\n", encoding="utf-8")
-        replace_file(temporary, path)
+        atomic_write_text(path, text, mode=None, durability=Durability.NONE)
     except OSError as exc:
-        with suppress(OSError):
-            temporary.unlink(missing_ok=True)
         raise ReviewStorageError(f"cannot write {path}: {exc}") from exc
 
 
@@ -316,7 +312,7 @@ def observe(
                     str(running),
                     state.first_seen_at or _first_seen_at(now),
                 )
-            _atomic_write(path, state)
+            _store_state(path, state)
             return _status(booley_dir, running, state)
     except CorruptReviewStateError as exc:
         return _diagnostic_status(booley_dir, running_value, ReviewCondition.CORRUPT, str(exc))
@@ -364,7 +360,7 @@ def acknowledge(
                     f"packaged changelog has no release entry for {expected}"
                 )
             acknowledged = ReviewState(str(expected))
-            _atomic_write(state_path(booley_dir), acknowledged)
+            _store_state(state_path(booley_dir), acknowledged)
             return _status(booley_dir, running, acknowledged)
     except CorruptReviewStateError as exc:
         raise AcknowledgmentError(f"upgrade review state is corrupt: {exc}") from exc

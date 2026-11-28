@@ -76,6 +76,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.config.flow_enablement import flow_enabled
+from booley.core import sandbox_layout
 from booley.core.booley_layout import validate_environment
 from booley.core.boundary import as_dict, as_float
 from booley.flows.metric_declarations import FlowMetricValues, MetricsUnavailable
@@ -93,12 +94,14 @@ from booley.measurement.environment import (
 )
 from booley.measurement.flow_metrics import report_metric_values
 from booley.measurement.live_paths import LiveRoot, input_findings, resolved_findings
-from booley.runtime import booley_dir, job_records, runtime_context, sandbox_layout
+from booley.runtime import booley_dir, job_records, runtime_context
 from booley.runtime.handles import register_job
 from booley.runtime.process_group import (
     capture_process_group,
     force_group_termination,
-    new_group_kwargs,
+    own_process_group,
+    owned_group_kwargs,
+    release_process_group,
 )
 from booley.runtime.project_discovery import discover_project_root, has_git_worktree_marker
 from booley.runtime.project_prepare import find_post_setup_hook, prepare_project
@@ -408,15 +411,17 @@ def _launch(
     ]
     log_path.parent.mkdir(parents=True, exist_ok=True)
     with log_path.open("ab") as log:
-        return subprocess.Popen(
+        process = subprocess.Popen(
             command,
             cwd=checkout,
             env=environment,
             stdin=subprocess.DEVNULL,
             stdout=log,
             stderr=log,
-            **new_group_kwargs(),
+            **owned_group_kwargs(),
         )
+        own_process_group(process)  # released when the child settles
+    return process
 
 
 def _run_preflight_child(
@@ -437,8 +442,9 @@ def _run_preflight_child(
                 stdin=subprocess.DEVNULL,
                 stdout=log,
                 stderr=subprocess.STDOUT,
-                **new_group_kwargs(),
+                **owned_group_kwargs(),
             )
+            own_process_group(process)
     except OSError as exc:
         raise CheckoutFlowError(
             f"the preflight of Target {target} could not start: {exc}"
@@ -453,6 +459,8 @@ def _run_preflight_child(
     except BaseException:  # a caller's Ctrl-C: never leave the preflight running
         _kill(process)
         raise
+    finally:
+        release_process_group(process)
     if process.returncode != 0:
         tail = "\n".join(
             log_path.read_text(encoding="utf-8", errors="replace").splitlines()[
@@ -800,6 +808,7 @@ class CheckoutFlowChild:
 
     def settle(self) -> CheckoutFlowResult:
         """Settle the Job record, build the result and remove the scratch; idempotent."""
+        release_process_group(self.process)
         if self._result is None:
             final = _settle_record(
                 self.record, self.jobs_root, self.process.returncode, timed_out=self.timed_out

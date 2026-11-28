@@ -14,10 +14,12 @@ from booley.core.models import AgentCallParams
 from booley.harness import auth_cmd, doctor
 from booley.runtime import auth_token
 from booley.runtime._claude_backend import ClaudeSDKBackend
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.claude_cli_fake import record_sdk_options
 from tests.codex_cli_fake import codex_report, install_fake_codex, write_codex_login
 from tests.gateway_command_support import write_token_command
 from tests.harness.agent_auth_support import credential_findings, install_agent_clis, pin_venue
+from tests.sandbox_venue_fake import place, point_mounts
 
 _URL = "https://gateway.example/v1"
 _TOKEN = "SYNTHETIC_GATEWAY_TOKEN"
@@ -286,9 +288,6 @@ def test_auth_status_in_claude_session_notes_hidden_gateway(claude_session, monk
 def _deep_probe_failure(project, monkeypatch):
     """Run the developer probe with a provider call that fails on the gateway configuration."""
     from booley.harness import developer_probe
-    from booley.runtime import runtime_context
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
 
     def fail(_root):
         raise developer_probe.ProbeError(
@@ -393,6 +392,38 @@ def test_auth_status_in_handwritten_sandbox_reports_declared_gateway(
     assert "agents run on the gateway at" in output
     assert "claude: auth policy 'subscription'" in output
     assert "applies inside a Sandbox only" not in output
+
+
+@pytest.mark.parametrize("in_sandbox", [False, True], ids=["container-host", "unmarked-sandbox"])
+def test_auth_readers_follow_the_sandbox_classification(
+    gateway_env, monkeypatch, capsys, in_sandbox
+):
+    """A marked container that is a Booley host, and a declared Sandbox without a marker."""
+    place(monkeypatch, RuntimeLocation.HOST, container_host=not in_sandbox)
+    if in_sandbox:
+        point_mounts(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
+        monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+    for name in ("BOOLEY_PRIMARY_AUTH", "BOOLEY_AGENT_APP"):
+        monkeypatch.delenv(name, raising=False)
+
+    # No provider is named anywhere: an error in a Sandbox, the default on a host.
+    if in_sandbox:
+        with pytest.raises(agent_config.BackendConfigError, match="provider unresolved"):
+            agent_config.settings_from_data({}, lazy=True)
+    else:
+        assert agent_config.settings_from_data({}, lazy=True).default_cli == "claude"
+
+    _write_toml(
+        gateway_env,
+        '[agent]\ndefault = "codex"\nclis = ["claude", "codex"]\n[agent.auth]\ncodex = "gateway"\n',
+    )
+    _code, captured = _auth_status(gateway_env, capsys, app=None)
+    output = captured.out + captured.err
+    assert ("agents run on the gateway at" in output) is in_sandbox
+    assert ("applies inside a Sandbox only" in output) is not in_sandbox
+
+    monkeypatch.setenv("BOOLEY_AGENT_CLIS", _RECORD)
+    assert agent_config.issued_codex_gateway() is in_sandbox
 
 
 @pytest.mark.parametrize("gateway_set", [True, False], ids=["values-set", "none-set"])

@@ -11,8 +11,10 @@ from booley.audit.doctor_waivers import (
 )
 from booley.harness import doctor, web_isolation
 from booley.presentation import colors
-from booley.runtime import runtime_context
-from tests.harness.test_doctor import _patch_environment, _write_project
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.harness.doctor_environment_support import patch_doctor_environment
+from tests.harness.doctor_run_support import write_project
+from tests.sandbox_venue_fake import place
 
 
 def _write(tmp_path, body: str) -> None:
@@ -140,7 +142,7 @@ def test_reporter_dedupes_by_check_subject_and_key(capsys):
 
 
 def test_doctor_subject_waiver_keeps_the_sibling_warning(tmp_path, monkeypatch, capsys):
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     # Stealth requires both entries in the exclude file, so each subject yields its own finding.
     with (booley_dir / "booley.toml").open("a", encoding="utf-8", newline="\n") as stream:
         stream.write("\n[stealth]\nenabled = true\n")
@@ -156,7 +158,7 @@ reason = "The project hides .booley another way."
 permanent = true
 """,
     )
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
     result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
 
@@ -176,7 +178,7 @@ permanent = true
 
 def test_doctor_waives_one_target_s_untagged_harness(tmp_path, monkeypatch):
     """A sim Target's untagged C++ harness is a waivable finding with the Target as subject."""
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     (tmp_path / "main.cpp").write_text("int main() { return 0; }\n", encoding="utf-8")
     (tmp_path / "cpp.core").write_text(
         "CAPI=2:\nname: ::cpp_harness:0\nfilesets:\n"
@@ -192,7 +194,7 @@ def test_doctor_waives_one_target_s_untagged_harness(tmp_path, monkeypatch):
         'version = 1\n[[waiver]]\ncheck = "sim.harness-untagged"\nsubject = "sim_cpp"\n'
         'reason = "Accepted for this fixture"\npermanent = true\n',
     )
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
     result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
 
@@ -204,8 +206,8 @@ def test_doctor_waives_one_target_s_untagged_harness(tmp_path, monkeypatch):
 
 def _run_inside_the_sandbox(monkeypatch, root, booley_dir) -> None:
     """Make Doctor run as inside the Sandbox, with healthy web isolation."""
-    _patch_environment(monkeypatch, root, booley_dir)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    patch_doctor_environment(monkeypatch, root, booley_dir)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     # The egress probe only runs in a marked Sandbox; keep these tests off real DNS.
     monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
     monkeypatch.setattr(web_isolation, "policy_error", lambda: None)

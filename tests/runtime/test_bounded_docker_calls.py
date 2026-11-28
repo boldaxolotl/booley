@@ -86,7 +86,7 @@ def _sites() -> list[_Site]:
         _Site(
             "booley_dir_migration docker inspect",
             booley_dir_migration,
-            ["docker", "inspect"],
+            ["docker", "container", "inspect"],
             30,
             lambda _root: booley_dir_migration._running_sandboxes(),
             "not json",
@@ -168,7 +168,7 @@ def _sites() -> list[_Site]:
             ["docker", "container", "inspect"],
             15,
             lambda _root: image_lifecycle._inspect_container_image_ids(["c1"]),
-            _IMAGE_ID,
+            f'"{_IMAGE_ID}"',
             {"ok": f"returned:frozenset({{'{_IMAGE_ID}'}})"} | _same("ImageLifecycleError"),
         ),
         # Private drive: runtime inspection queries sessions and images around this list, so the public route cannot show this call alone.
@@ -206,7 +206,7 @@ def _sites() -> list[_Site]:
             ["docker", "image", "inspect"],
             30,
             lambda _root: project_image.inspect_layout_image("img"),
-            '[{"Id": "x"}]',
+            '{"Id": "x"}',
             {"ok": "returned:{'Id': 'x'}"} | _same("RuntimeError"),
         ),
         # Private drive: layout verification inspects and probes the image around this run, so the public route cannot show this call alone.

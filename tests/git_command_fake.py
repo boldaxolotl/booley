@@ -1,8 +1,9 @@
 """A fake of the command boundary for code that runs Git through ``subprocess.run``.
 
-Real Git runs for every command no rule answers; fixtures that build repositories call
-``REAL_RUN``, which never passes through the rules. ``commands`` and ``options`` record each
-call's argument list and keyword arguments (``stdin``, ``timeout``, ``env``, ``input``).
+Real Git runs for every command no rule answers, unless ``others`` is set to answer it;
+fixtures that build repositories call ``REAL_RUN``, which never passes through the rules.
+``commands`` and ``options`` record each call's argument list and keyword arguments
+(``stdin``, ``timeout``, ``env``, ``input``).
 """
 
 from __future__ import annotations
@@ -35,12 +36,13 @@ class _Rule:
 
 
 class GitCommandFake:
-    """Stand-in for ``subprocess.run``: real Git, except for the commands a rule answers."""
+    """Stand-in for ``subprocess.run``: rules answer commands, ``others`` or real Git the rest."""
 
     def __init__(self) -> None:
         self.commands: list[list[str]] = []  # every command run while installed
         self.options: list[dict[str, Any]] = []  # keyword arguments of each command
         self._rules: list[_Rule] = []
+        self.others: Callable[..., Any] | None = None  # answers non-Git and unanswered commands
 
     @classmethod
     def install(cls, monkeypatch: pytest.MonkeyPatch) -> GitCommandFake:
@@ -82,10 +84,13 @@ class GitCommandFake:
         return [(c, o) for c, o in zip(self.commands, self.options, strict=True) if word in c]
 
     def run(self, command: Sequence[str], *args: Any, **kwargs: Any) -> Any:
-        self.commands.append(list(command))
+        argv = [str(part) for part in command]
+        self.commands.append(argv)
         self.options.append(dict(kwargs))
+        if self.others is not None and argv[:1] != ["git"]:
+            return self.others(command, *args, **kwargs)
         for rule in self._rules:
-            if not rule.fires_for(command):
+            if not rule.fires_for(argv):
                 continue
             if rule.before is not None:
                 rule.before()
@@ -95,7 +100,7 @@ class GitCommandFake:
                 return _completed(command, kwargs, *rule.answer)
             if rule.edit is not None:
                 return rule.edit(REAL_RUN(command, *args, **kwargs), kwargs)
-        return REAL_RUN(command, *args, **kwargs)
+        return (self.others or REAL_RUN)(command, *args, **kwargs)
 
 
 def with_stdout(result: Any, stdout: bytes) -> subprocess.CompletedProcess[Any]:

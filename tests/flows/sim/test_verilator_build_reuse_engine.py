@@ -441,6 +441,30 @@ def test_corrupt_retained_generation_forces_fresh_build(
     assert "STALE" not in recorder.launches[1]
 
 
+@pytest.mark.parametrize("record", ["pointer", "manifest", "escaping-pointer"])
+def test_unreadable_retained_record_is_missing_provenance_and_rebuilds(
+    verilator_env: Path, record: str
+) -> None:
+    recorder = _Recorder(verilator_env)
+    _assert_passed(_run(verilator_env, recorder))
+    slot = simulation_build_slot(_select(verilator_env))
+    pointer_path = slot / "current.json"
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    build_root = slot / "g" / pointer["generation"] / pointer["build_root"]
+    if record == "pointer":
+        pointer_path.write_text("{not json", encoding="utf-8")
+    elif record == "manifest":
+        (build_root / ".booley-build-manifest.json").write_text("{not json", encoding="utf-8")
+    else:
+        pointer["build_root"] = "../outside"
+        pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+    second = _run(verilator_env, recorder)
+    _assert_passed(second)
+    assert recorder.builds == 2
+    assert second.builds[0].ran is True
+    assert second.builds[0].cache_decision.startswith("missing provenance;")
+
+
 def test_object_without_dependency_record_is_never_reused(
     verilator_env: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

@@ -163,11 +163,12 @@ def _report_status(app: str | None = None, project_root: Path | None = None) -> 
 
 def _report_policy(apps: tuple[str, ...], policy: str, *, label: str | None) -> int:
     """Report *apps* under *policy*; the number of them with a usable credential."""
-    from booley.config.agent import _inside_container, gateway_handoff_active
+    from booley.config.agent import gateway_handoff_active
+    from booley.core.sandbox_detection import inside_session_runtime
 
     # A declared gateway policy is honored inside any Sandbox (hand-written specs
     # included), as the runtime and Doctor do; only outside one does it read as `subscription`.
-    handoff = gateway_handoff_active() or (policy == GATEWAY_AUTH and _inside_container())
+    handoff = gateway_handoff_active() or (policy == GATEWAY_AUTH and inside_session_runtime())
     covered = apps[0] if len(apps) == 1 else None
     if handoff and _gateway_covers(covered):
         return int(_report_gateway_status(covered, label) == 0)

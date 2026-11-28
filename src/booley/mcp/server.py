@@ -59,10 +59,11 @@ if TYPE_CHECKING:
     from booley.flows.invocation import BudgetPlan
 
 from booley import __version__
-from booley.config.feature_flags import FeatureConfigError, enabled_features
+from booley.config.feature_flags import FeatureConfigError, enabled_features, readable_features
 from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.booley_layout import JOB_LOGS_DIR_NAME, BooleyLayoutError
 from booley.core.boundary import BoundaryError, require_finite_number
+from booley.core.sandbox_layout import canonical_project_alias_path
 from booley.mcp import (
     call_context,
     catalog,
@@ -126,7 +127,6 @@ from booley.runtime.mcp_config import (
     http_port,
 )
 from booley.runtime.owned_scratch import sweep_stale_scratch
-from booley.runtime.sandbox_layout import canonical_project_alias_path
 from booley.runtime.session_paths import logs_runtime_dir
 from booley.runtime.timefmt import format_human_datetime
 
@@ -188,13 +188,9 @@ _HTTP_HOST = "127.0.0.1"
 
 
 def _exposure() -> catalog.Exposure:
-    try:
-        features = enabled_features()
-    except (BooleyLayoutError, OSError, ValueError):
-        # Unreadable configuration keeps every gate closed; the catalog refresh and
-        # startup report the problem, and poll and cancel stay usable meanwhile.
-        features = frozenset()
-    return replace(catalog.Exposure.from_mapping(os.environ), features=features)
+    # Unreadable configuration keeps every gate closed; the catalog refresh and
+    # startup report the problem, and poll and cancel stay usable meanwhile.
+    return replace(catalog.Exposure.from_mapping(os.environ), features=readable_features())
 
 
 def _validate_features() -> None:
@@ -1745,7 +1741,6 @@ async def _dispatch_command_job(
     argv: list[str],
     arguments: dict[str, Any],
     jobs: _JobManager,
-    request_context: McpRequestContext | None,
     caller: Caller | None,
 ) -> McpToolContent:
     """Submit ``booley measure`` or ``booley review`` as a Job; hand its ``run_id`` back at once.
@@ -1791,7 +1786,6 @@ async def _dispatch_command_or_cancel(
     name: str,
     arguments: dict[str, Any],
     jobs: _JobManager,
-    request_context: McpRequestContext | None,
     caller: Caller | None,
 ) -> McpToolContent | None:
     """Route a command Job tool and ``booley_cancel``; ``None`` when the tool is hidden."""
@@ -1805,9 +1799,7 @@ async def _dispatch_command_or_cancel(
     endpoint, argv_of, visible = _COMMAND_TOOLS[name]
     if not visible(exposure):
         return None
-    return await _dispatch_command_job(
-        endpoint, argv_of(arguments), arguments, jobs, request_context, caller
-    )
+    return await _dispatch_command_job(endpoint, argv_of(arguments), arguments, jobs, caller)
 
 
 async def _dispatch_special_mcp_tool(
@@ -1850,7 +1842,7 @@ async def _dispatch_special_mcp_tool(
     if name == catalog.POLL_MCP_TOOL_NAME and catalog.utilities_visible(_exposure()):
         return await _dispatch_poll(arguments, jobs, caller)
     if name in _COMMAND_TOOLS or name == catalog._CANCEL_MCP_TOOL_NAME:
-        return await _dispatch_command_or_cancel(name, arguments, jobs, request_context, caller)
+        return await _dispatch_command_or_cancel(name, arguments, jobs, caller)
     if name == catalog._SLEEP_MCP_TOOL_NAME and _exposure().debug:
         return await _dispatch_sleep(arguments)
     return None

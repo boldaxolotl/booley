@@ -7,10 +7,11 @@ import tomllib
 from pathlib import Path
 
 import booley
+from booley.core import sandbox_layout
 from booley.core.models import AgentCallParams
+from booley.core.sandbox_layout import BOOLEY_DIR_TARGET
 from booley.harness import web_isolation
-from booley.runtime import _claude_backend, _codex_backend, mcp_config, sandbox_layout
-from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
+from booley.runtime import _claude_backend, _codex_backend, mcp_config
 
 
 def _docker_data() -> Path:

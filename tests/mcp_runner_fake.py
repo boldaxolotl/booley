@@ -23,17 +23,29 @@ class RunnerCall:
 
 
 def install(
-    monkeypatch: pytest.MonkeyPatch, answer: Any = (0, "ok", "", False)
+    monkeypatch: pytest.MonkeyPatch,
+    answer: Any = (0, "ok", "", False),
+    *,
+    pid: int | None = None,
+    started: asyncio.Event | None = None,
+    gate: asyncio.Event | None = None,
 ) -> list[RunnerCall]:
     """Replace the server's child-process runner; record each call; answer it.
 
-    *answer* is a result tuple, an exception to raise, or an async callable
-    ``(cmd, **kwargs) -> tuple`` (a gated child, a child that writes a report).
+    Each given step runs in order: report *pid* through ``on_spawn``, set *started*,
+    wait for *gate*. Then *answer*: a result tuple, an exception to raise, or an async
+    callable ``(cmd, **kwargs) -> tuple`` (a child that writes a report, routes by command).
     """
     calls: list[RunnerCall] = []
 
     async def run(cmd: list[str], **kwargs: Any) -> tuple[int, str, str, bool]:
         calls.append(RunnerCall(list(cmd), kwargs))
+        if pid is not None:
+            kwargs["on_spawn"](pid)
+        if started is not None:
+            started.set()
+        if gate is not None:
+            await gate.wait()
         if isinstance(answer, BaseException):
             raise answer
         if callable(answer):

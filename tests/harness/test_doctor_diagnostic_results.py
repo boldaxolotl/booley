@@ -29,11 +29,9 @@ from tests.docker_cli_guard import (
     route_bounded_captures_through_subprocess_run,
     route_docker_helper_through_subprocess_run,
 )
+from tests.harness.doctor_environment_support import patch_doctor_environment
 from tests.harness.doctor_host_support import answer_doctor_commands, hide_container_cli
-from tests.harness.test_doctor import (
-    _patch_environment,
-    _write_project,
-)
+from tests.harness.doctor_run_support import run_doctor, write_project
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -71,7 +69,7 @@ def _use_real_host_checks(monkeypatch, root, booley_dir, bootstrap_result):
     # keep the stub for every later test in the process.
     importlib.import_module("booley.harness.init_cmd")
     inspect_host = host_diagnostics.inspect_host
-    calls = _patch_environment(monkeypatch, root, booley_dir)
+    calls = patch_doctor_environment(monkeypatch, root, booley_dir)
     monkeypatch.setattr(host_diagnostics, "inspect_host", inspect_host)
     monkeypatch.setattr(host_diagnostics, "load_host_installation", _canonical_host_installation)
     monkeypatch.setattr(
@@ -114,7 +112,7 @@ def _run_host_doctor(
     monkeypatch, root, *, egress: str, sandboxes: dict[str, dict], listing_fails: bool = False
 ):
     """Run the real Doctor reporter on the host with a fixture Sandbox inventory."""
-    booley_dir = _write_project(root)
+    booley_dir = write_project(root)
     bootstrap = host_diagnostics.bootstrap
     result = bootstrap.BootstrapResult(
         host_diagnostics.Intent.CHECK,
@@ -140,7 +138,7 @@ def _run_host_doctor(
 
     monkeypatch.setattr(subprocess, "run", run)
     route_bounded_captures_through_subprocess_run(monkeypatch)
-    return doctor.run_doctor_result(argparse.Namespace(deep=False), root), inventory_calls
+    return run_doctor(root, record_clean=True), inventory_calls
 
 
 @pytest.mark.parametrize("egress", ["proxy", "unproxied"])
@@ -272,7 +270,7 @@ def test_host_doctor_fails_when_sandbox_inventory_is_unreadable(tmp_path, monkey
 def test_pending_bootstrap_completes_with_waivable_warning_and_correct_health(
     waived, tmp_path, monkeypatch
 ):
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     bootstrap = host_diagnostics.bootstrap
     _use_real_host_checks(
         monkeypatch,
@@ -300,7 +298,7 @@ def test_pending_bootstrap_completes_with_waivable_warning_and_correct_health(
             'subject = "skills"\nreason = "Reviewed temporary gap"\npermanent = true\n'
         )
     (booley_dir / "doctor-waivers.toml").write_text(waivers)
-    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
+    result = run_doctor(tmp_path, record_clean=True)
     finding = next(f for f in result.findings if f.check_id == "host.bootstrap-pending")
     assert (finding.severity, finding.subject) == ("waived" if waived else "warn", "skills")
     assert result.exit_code == 0
@@ -322,15 +320,15 @@ _OBSERVATIONS = [
 
 @pytest.mark.parametrize("valid", [False, True])
 def test_project_observations_keep_the_existing_order(tmp_path, monkeypatch, valid):
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     (booley_dir / "AGENTS.md").write_text("# Project guidance\n")
     with (booley_dir / "booley.toml").open("a", encoding="utf-8", newline="\n") as stream:
         stream.write("\n[stealth]\nenabled = true\n")
     if not valid:
         (booley_dir / "booley.toml").unlink()
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
-    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
+    result = run_doctor(tmp_path, record_clean=True)
 
     first_rows = {}
     for name, matches in _OBSERVATIONS:
@@ -367,19 +365,19 @@ def _project_files(root: Path) -> dict[str, bytes]:
 
 @pytest.mark.parametrize("deep", [False, True])
 def test_manual_and_automatic_doctor_agree_and_write_no_project_file(tmp_path, monkeypatch, deep):
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     (booley_dir / "AGENTS.md").write_text("# Project guidance\n")
     with (booley_dir / "booley.toml").open("a") as stream:
         stream.write("\n[stealth]\nenabled = true\n")
     (booley_dir / "cores").mkdir()
     (booley_dir / "cores" / "hidden.core").write_text("CAPI=2:\nname: ::hidden:0\n")
     run_bounded_child(["git", "init", "-q", str(tmp_path)], check=True)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     before = _project_files(tmp_path)
 
     automatic = auto_doctor.run_if_due(tmp_path, trigger="test")
     assert _project_files(tmp_path) == before
-    manual = doctor.run_doctor_result(argparse.Namespace(deep=deep), tmp_path)
+    manual = run_doctor(tmp_path, deep=deep, record_clean=True)
     assert _project_files(tmp_path) == before
 
     assert automatic is not None
@@ -437,7 +435,7 @@ def test_doctor_reports_cocotb_targets(tmp_path, monkeypatch, cocotb):
     in an untagged fileset and its module is not on disk. Without a cocotb Target Doctor
     neither checks the container for cocotb nor reports a cocotb row.
     """
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     if cocotb:
         (tmp_path / "demo.core").write_text(_COCOTB_CORE, encoding="utf-8", newline="\n")
         (tmp_path / "tb" / "test_a.py").write_text(
@@ -453,9 +451,9 @@ def test_doctor_reports_cocotb_targets(tmp_path, monkeypatch, cocotb):
             encoding="utf-8",
             newline="\n",
         )
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
 
-    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
+    result = run_doctor(tmp_path, record_clean=True)
 
     rows = [
         (f.severity, f.message, f.fix, f.check_id, f.subject)
@@ -509,7 +507,7 @@ _CORE_TREE_SECTION_HEADER = "FuseSoC .core checks"
 
 def _core_tree_project(root: Path) -> Path:
     """A Project whose ``.core`` tree trips every moved rule once."""
-    booley_dir = _write_project(root)
+    booley_dir = write_project(root)
     # Owned (a Doctor-selected sim Target) and schema-invalid: one schema FAIL.
     (root / "design.core").write_text(
         "CAPI=2:\n"
@@ -627,10 +625,8 @@ def test_core_tree_section_output_is_pinned(tmp_path, monkeypatch, capsys):
     moved to their owner and are unchanged by the move.
     """
     booley_dir = _core_tree_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
-    result = doctor.run_doctor_result(
-        argparse.Namespace(deep=False, verbose=True, concise=False), tmp_path
-    )
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
+    result = run_doctor(tmp_path, verbose=True, record_clean=True)
     section = _core_tree_section(capsys.readouterr().out, tmp_path)
     assert section == _CORE_TREE_SECTION.rstrip("\n")
     assert result.exit_code == 1
@@ -644,7 +640,7 @@ def _core_hygiene_project(root: Path) -> Path:
     ``firmware/firmware.hex`` sits next to its ``hello.c`` source.
     """
     run_bounded_child(["git", "init", "-q"], cwd=root, check=True)
-    booley_dir = _write_project(root)
+    booley_dir = write_project(root)
     core = root / "unit.core"
     text = core.read_text(encoding="utf-8")
     text = text.replace(
@@ -720,7 +716,7 @@ def test_core_repository_hygiene_section_output_is_pinned(
     real_run = subprocess.run
     real_bounded = platform_paths.run_captured_bounded
     booley_dir = _core_hygiene_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     owner = importlib.import_module("booley.runtime.core_repository_hygiene")
     monkeypatch.setattr(
         owner,
@@ -730,9 +726,7 @@ def test_core_repository_hygiene_section_output_is_pinned(
     monkeypatch.setattr(
         owner, "platform_paths", SimpleNamespace(run_captured_bounded=real_bounded)
     )
-    result = doctor.run_doctor_result(
-        argparse.Namespace(deep=False, verbose=True, concise=False), tmp_path
-    )
+    result = run_doctor(tmp_path, verbose=True, record_clean=True)
     section = _core_tree_section(capsys.readouterr().out, tmp_path)
     assert section == _CORE_HYGIENE_SECTION.rstrip("\n")
     assert result.exit_code == 0
@@ -746,7 +740,7 @@ def test_core_audit_stops_when_targets_cannot_be_enumerated(tmp_path, monkeypatc
     `_run_core_audit` is called directly so both cases share one stop assertion on its
     recorder; the no-core case alone could run through ``run_doctor_result``.
     """
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     project = doctor.ProjectAudit(
         project_root=tmp_path,
         booley_dir=booley_dir,
@@ -795,8 +789,8 @@ def test_core_resolution_deep_output_is_pinned(tmp_path, monkeypatch, capsys):
     owner; only the failing Target's fix changed (it names the ``.core``). The
     excerpt is shown without ``--verbose``.
     """
-    booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    booley_dir = write_project(tmp_path)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     err = "Parse error. Ignoring file /work/unit.core:\nfilesets.tb.depend must be array\nsecond line"
 
     def sandbox_resolves_all_but_sim_fast(argv, _env):
@@ -812,7 +806,7 @@ def test_core_resolution_deep_output_is_pinned(tmp_path, monkeypatch, capsys):
 
     answer_doctor_commands(monkeypatch, sandbox_resolves_all_but_sim_fast)
 
-    result = doctor.run_doctor_result(argparse.Namespace(deep=True), tmp_path)
+    result = run_doctor(tmp_path, deep=True, record_clean=True)
 
     lines = colors.strip_ansi(capsys.readouterr().out).splitlines()
     start = lines.index(_CORE_RESOLUTION_BLOCK[0])
@@ -873,12 +867,12 @@ def test_flow_runtime_rows_render_unchanged(tmp_path, monkeypatch, capsys, scena
     row and its dry-run row, and the exit code follows the severity.
     """
     flow, exit_code, rows = _RUNTIME_ROWS[scenario]
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     if flow == "fpga":
         (tmp_path / "design.core").write_text(_FPGA_CORE, encoding="utf-8", newline="\n")
         with (booley_dir / "booley.toml").open("a", encoding="utf-8", newline="\n") as stream:
             stream.write("\n[flows.fpga]\n")
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     if scenario == "binary missing":
         answer_doctor_commands(
             monkeypatch,
@@ -900,7 +894,7 @@ def test_flow_runtime_rows_render_unchanged(tmp_path, monkeypatch, capsys, scena
             ),
         )
 
-    result = doctor.run_doctor_result(argparse.Namespace(deep=False), tmp_path)
+    result = run_doctor(tmp_path, record_clean=True)
 
     lines = colors.strip_ansi(capsys.readouterr().out).splitlines()
     start = lines.index(f"  ✓  {flow} executes in the Sandbox")

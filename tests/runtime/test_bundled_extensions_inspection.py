@@ -22,10 +22,12 @@ from pathlib import Path
 import pytest
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.harness import test_session_runtime as resolution_fixtures
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 from booley.audit.diagnostic_results import Severity
-from booley.runtime import bundled_extensions, devcontainer, runtime_context, session_runtime
+from booley.runtime import bundled_extensions, devcontainer, session_runtime
+from booley.runtime.runtime_context import RuntimeLocation
 
 project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
 workspace = resolution_fixtures.workspace
@@ -146,7 +148,7 @@ def sandbox(monkeypatch) -> _Sandbox:
 
 def _host(monkeypatch, *, container: str | None = _CONTAINER, inside: bool = False) -> None:
     """Place the caller on the host (or inside the Sandbox) with a resolved container."""
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: inside)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if inside else RuntimeLocation.HOST)
 
     def resolve(_root):
         if isinstance(container, Exception):
@@ -454,7 +456,7 @@ def test_project_sandbox_resolution(
         fixture.documents.clear()
     elif inventory == "unknown":
         fixture.state["Config"]["Labels"].pop("booley.project-id")
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     sandbox.replies["host"] = _Reply(3)
 
     findings = _inspect_all(workspace)

@@ -387,33 +387,27 @@ def test_fpga_part_adds_xdc_and_enables_the_fpga_flow() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_gather_rejects_invalid_name(tmp_path: Path, monkeypatch, capsys) -> None:
-    ctx = _ctx(tmp_path, monkeypatch)
+def test_gather_rejects_invalid_name(capsys) -> None:
     for bad in ("My_IP", "9lives", "has-dash", ""):
-        assert gather_scaffold_choices(_args(scaffold=bad), ctx) is None
+        assert gather_scaffold_choices(_args(scaffold=bad)) is None
     capsys.readouterr()
 
 
 @pytest.mark.parametrize("unsupported", ["xcelium", "vcs"])
-def test_gather_rejects_unsupported_commercial_simulators(
-    tmp_path: Path, monkeypatch, capsys, unsupported: str
-) -> None:
-    ctx = _ctx(tmp_path, monkeypatch)
+def test_gather_rejects_unsupported_commercial_simulators(capsys, unsupported: str) -> None:
     args = _args(sim_eda_tool=unsupported)
-    assert gather_scaffold_choices(args, ctx) is None
+    assert gather_scaffold_choices(args) is None
     assert "future roadmap" in capsys.readouterr().out
 
 
-def test_gather_reports_defaults_without_prompting(tmp_path: Path, monkeypatch, capsys) -> None:
-    """Init asks no design question, even on a TTY: each default is reported instead."""
-    ctx = _ctx(tmp_path, monkeypatch)
-    ctx.interactive = True
+def test_gather_reports_defaults_without_prompting(monkeypatch, capsys) -> None:
+    """Init asks no design question: each default is reported instead."""
 
     def no_prompt(*_args, **_kwargs):
         raise AssertionError("scaffold prompted for a design choice")
 
     monkeypatch.setattr("builtins.input", no_prompt)
-    choices = gather_scaffold_choices(_args(), ctx)
+    choices = gather_scaffold_choices(_args())
     assert choices == ScaffoldChoices(
         name="my_ip",
         sim_eda_tool="verilator",
@@ -437,19 +431,17 @@ def test_gather_reports_defaults_without_prompting(tmp_path: Path, monkeypatch, 
         assert line in out
 
 
-def test_gather_no_style_lint_opts_out(tmp_path: Path, monkeypatch, capsys) -> None:
-    choices = gather_scaffold_choices(_args(style_lint=False), _ctx(tmp_path, monkeypatch))
+def test_gather_no_style_lint_opts_out(capsys) -> None:
+    choices = gather_scaffold_choices(_args(style_lint=False))
     assert choices is not None
     assert choices.style_lint is False
     assert "Style lint:" not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize("flag", [True, False])
-def test_gather_rejects_style_lint_flag_with_verible(
-    tmp_path: Path, monkeypatch, capsys, flag: bool
-) -> None:
+def test_gather_rejects_style_lint_flag_with_verible(capsys, flag: bool) -> None:
     args = _args(lint_eda_tool="verible", style_lint=flag)
-    assert gather_scaffold_choices(args, _ctx(tmp_path, monkeypatch)) is None
+    assert gather_scaffold_choices(args) is None
     assert "--lint-eda-tool verible" in capsys.readouterr().out
 
 
@@ -721,7 +713,7 @@ def test_scaffold_variants_have_no_doctor_warnings_and_enabled_header(
         synth_mode=synth_mode,
         fpga_part="xc7a35tcpg236-1" if fpga else None,
     )
-    resolved = gather_scaffold_choices(args, _ctx(tmp_path, monkeypatch))
+    resolved = gather_scaffold_choices(args)
     assert resolved is not None
     assert resolved.style_lint is (linter == "verilator")
     ctx = _ctx(tmp_path, monkeypatch)
@@ -750,7 +742,7 @@ def test_scaffold_trace_main_isolation(tmp_path, monkeypatch, category):
 
 
 # Synthesis intent must survive the scaffold boundary and delivered reporting.
-def test_scaffold_synth_mode_cli_contract(tmp_path, monkeypatch):
+def test_scaffold_synth_mode_cli_contract():
     # Private: `main()` builds this parser and then runs the whole init; nothing public
     # returns the parser `booley init` parses with.
     from booley.harness.booley import _build_parser
@@ -758,12 +750,11 @@ def test_scaffold_synth_mode_cli_contract(tmp_path, monkeypatch):
     parser = _build_parser()
     init = parser._subparsers._group_actions[0].choices["init"]
     assert "--synth-mode" in init.format_help(), "scaffold synthesis mode flag is missing"
-    ctx = _ctx(tmp_path, monkeypatch)
     for mode in ("logical", "physical"):
         args = parser.parse_args(["init", "--scaffold", "my_ip", "--synth-mode", mode])
-        assert gather_scaffold_choices(args, ctx).synth_mode == mode
+        assert gather_scaffold_choices(args).synth_mode == mode
     assert (
-        gather_scaffold_choices(parser.parse_args(["init", "--scaffold", "my_ip"]), ctx).synth_mode
+        gather_scaffold_choices(parser.parse_args(["init", "--scaffold", "my_ip"])).synth_mode
         == "physical"
     )
     with pytest.raises(SystemExit):
@@ -773,7 +764,7 @@ def test_scaffold_synth_mode_cli_contract(tmp_path, monkeypatch):
 def test_scaffold_logical_synthesis_has_no_sdc(tmp_path, monkeypatch):
     ctx = _ctx(tmp_path, monkeypatch)
     args = _args(synth_mode="logical", fpga_part="xc7a200tfbg484-1")
-    choices = gather_scaffold_choices(args, ctx)
+    choices = gather_scaffold_choices(args)
     assert getattr(choices, "synth_mode", None) == "logical", "logical scaffold mode was dropped"
     assert step_scaffold(ctx, args)
     core = read_core(tmp_path / "my_ip.core")
@@ -788,15 +779,14 @@ def test_scaffold_logical_synthesis_has_no_sdc(tmp_path, monkeypatch):
     assert resolved.eda_tool == "yosys"
 
 
-def test_scaffold_physical_default_and_disabled_synthesis(tmp_path, monkeypatch):
-    ctx = _ctx(tmp_path, monkeypatch)
+def test_scaffold_physical_default_and_disabled_synthesis():
     for mode in (None, "physical"):
-        files = scaffold_files(gather_scaffold_choices(_args(synth_mode=mode), ctx))
+        files = scaffold_files(gather_scaffold_choices(_args(synth_mode=mode)))
         core = _core(files)
         assert core["targets"]["synth_my_ip"]["flow_options"]["synth_mode"] == "physical"
         assert "constraints" in core["targets"]["synth_my_ip"]["filesets"]
         assert "constraints/my_ip.sdc" in files
-    files = scaffold_files(gather_scaffold_choices(_args(asic=False), ctx))
+    files = scaffold_files(gather_scaffold_choices(_args(asic=False)))
     assert "synth_my_ip" not in _core(files)["targets"]
     assert "constraints" not in _core(files)["filesets"]
     assert "constraints/my_ip.sdc" not in files
@@ -808,7 +798,7 @@ def test_scaffold_rejects_explicit_mode_with_no_asic(tmp_path, monkeypatch, caps
     before = {p.relative_to(tmp_path): p.read_bytes() for p in tmp_path.rglob("*") if p.is_file()}
     for mode in ("logical", "physical"):
         args = _args(asic=False, synth_mode=mode)
-        assert gather_scaffold_choices(args, ctx) is None, (
+        assert gather_scaffold_choices(args) is None, (
             "explicit synthesis mode with no ASIC was accepted"
         )
         assert not step_scaffold(ctx, args)

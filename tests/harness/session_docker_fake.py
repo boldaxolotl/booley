@@ -30,7 +30,6 @@ from booley.runtime import (
     host_docker,
     incontainer_setup,
     runtime_attachment,
-    session_admission,
     session_runtime,
     worktree_mount_repair,
 )
@@ -68,6 +67,22 @@ def headless_session_entry(name: str, root: Path, *, running: bool = True) -> di
         "NetworkSettings": {"Networks": {}},
         "Mounts": [{"Type": "bind", "Destination": "/work", "Source": canonical}],
     }
+
+
+def container_inspect_output(state: dict[str, Any], template: str | None) -> str:
+    """Render what `docker container inspect <name> [--format template]` prints for *state*."""
+    if template is None:
+        return json.dumps([state])
+    if template == "{{.State.Running}}":
+        return "true" if state["State"]["Running"] else "false"
+    if template == "{{json .Image}}":
+        return json.dumps(state.get("Image", ""))
+    if ".Config.Labels" not in template:
+        return json.dumps(state)
+    labels = state.get("Config", {}).get("Labels", {})
+    if template.startswith("{{json (index "):
+        return json.dumps(labels.get(template.split('"')[1]))
+    return json.dumps(labels)
 
 
 class SessionDockerFake:
@@ -226,7 +241,9 @@ class SandboxDocker:
         record = self.images.get(args[1])
         if args[0] != "inspect" or record is None:
             return subprocess.CompletedProcess(argv, 1, "", f"No such image: {args[-1]}")
-        out = record["Id"] if "--format" in args else json.dumps([record])
+        template = args[args.index("--format") + 1] if "--format" in args else None
+        documents = {None: [record], "{{json .}}": record, "{{json .Id}}": record["Id"]}
+        out = json.dumps(documents[template]) if template in documents else record["Id"]
         return subprocess.CompletedProcess(argv, 0, out, "")
 
     def _network(self, argv: list[str], args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -266,15 +283,8 @@ class SandboxDocker:
         if name is None:
             return subprocess.CompletedProcess(argv, 1, "", "No such container")
         state = self.containers[name]
-        if "{{.State.Running}}" in args and isinstance(state, dict):
-            return subprocess.CompletedProcess(
-                argv, 0, "true" if state["State"]["Running"] else "false", ""
-            )
-        out = (
-            state
-            if isinstance(state, str)
-            else json.dumps(state if "--format" in args else [state])
-        )
+        template = args[args.index("--format") + 1] if "--format" in args else None
+        out = state if isinstance(state, str) else container_inspect_output(state, template)
         return subprocess.CompletedProcess(argv, 0, out, "")
 
     def _run(self, argv: list[str], args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -474,6 +484,13 @@ def isolate_session_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)
 
 
+def docker_runner(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+) -> Callable[[list[str], int], subprocess.CompletedProcess[str]]:
+    """Serve admission's ``docker_cli.Runner`` from a full-argv Session fake."""
+    return lambda args, timeout: run(["docker", *args], timeout=timeout)
+
+
 def route_session_commands(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -489,9 +506,8 @@ def route_session_commands(
     no running Job); returns the `(argv, kwargs)` of each probe call.
     """
     isolate_session_cli(monkeypatch, tmp_path)
-    # `_run` is each module's one Docker CLI runner and no public entry takes a runner.
+    # `_run` is the Session's one Docker CLI runner and no public entry takes a runner.
     monkeypatch.setattr(session_runtime, "_run", run)
-    monkeypatch.setattr(session_admission, "_run", run)
     monkeypatch.setattr(host_docker, "container_exists", lambda name: name in existing)
     monkeypatch.setattr(host_docker, "network_exists", lambda _name: False)
     return serve_standalone_probe(monkeypatch, probe)

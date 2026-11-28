@@ -106,7 +106,7 @@ def baseline_worktree(
         )
         _materialize_baseline_submodules(project_root, wt_dir, ref)
         dangling = (
-            _mirror_booley_directory(project_root, wt_dir, ref) if paired_baseline is None else []
+            _mirror_booley_directory(project_root, wt_dir) if paired_baseline is None else []
         )
         copy_root_fusesoc_ignore(project_root, wt_dir)
         _run_post_setup(wt_dir, ref)
@@ -316,7 +316,7 @@ def _remove_paired_project_baseline(project_root: Path, baseline: Path) -> None:
         )
 
 
-def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> list[Path]:
+def _mirror_booley_directory(project_root: Path, wt_dir: Path) -> list[Path]:
     """Mirror the checkout's own Booley Directory's authored files into the worktree.
 
     ``.booley/`` is git-excluded, so a fresh ``git worktree add`` checkout

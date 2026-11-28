@@ -18,8 +18,8 @@ from booley.core.booley_dir import (
 from booley.core.booley_dir_pin import BooleyDirPinError
 from booley.core.booley_layout import BooleyLayoutError
 from booley.core.checkout_role import SourceCheckoutProjectError, require_project_checkout
+from booley.core.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 from booley.runtime.booley_dir import contains
-from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 
 
 class ProjectRootDiscoveryError(RuntimeError):

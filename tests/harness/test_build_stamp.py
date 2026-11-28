@@ -15,10 +15,9 @@ import os
 import posixpath
 import re
 import shutil
-import subprocess
 import sys
 import tarfile
-import types
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -30,18 +29,12 @@ from booley.harness.setup import docker_image as init_docker_image
 from booley.harness.setup.common import InitContext
 from booley.runtime import build_stamp as build_stamp_module
 from booley.runtime.build_stamp import (
-    _MAX_CONTEXT_BYTES,
-    _MAX_CONTEXT_MEMBERS,
     STAMP_RELPATH,
     BuildProfile,
-    _extract_development_context,
-    _validate_context_members,
-    _write_development_context,
     development_context_path,
     embedded_development_context_path,
     embedded_official_release,
     extracted_development_context,
-    iter_payload_files,
     resolve_build_commit,
     resolve_payload_fingerprint,
     resolve_source_updated_at,
@@ -52,12 +45,15 @@ from booley.runtime.build_stamp import (
     write_build_stamp,
 )
 from booley.runtime.packaged_docs import PACKAGED_DOCS_RELATIVE_DIR, SHIPPED_DOCS
+from tests.installed_wheel_support import install_package
 from tests.source_checkout_support import copy_source_checkout
 from tests.subprocess_budget import run_bounded_child
+from tests.wheel_build_fake import WheelBuild, install_wheel_build
 
 BUILD_SH = Path(__file__).resolve().parents[2] / "src" / "booley" / "data" / "docker" / "build.sh"
 SOURCE_ROOT = Path(__file__).resolve().parents[2]
 WHEEL_NAME = "booley_rtl-0.2.3-py3-none-any.whl"
+BUILT_WHEEL = "booley_rtl-0.0.0-py3-none-any.whl"  # what the wheel build fake writes
 CHANGELOG_SOURCE = "CHANGELOG.md"
 PACKAGED_CHANGELOG = "src/booley/data/refs/CHANGELOG.md"
 
@@ -71,6 +67,12 @@ def _write_wheel(root: Path, name: str = WHEEL_NAME) -> Path:
             "booley/_build_commit.py", stamp.read_text() if stamp.is_file() else "COMMIT = ''\n"
         )
     return wheel
+
+
+def _stamp_values(repo: Path) -> dict[str, object]:
+    namespace: dict[str, object] = {}
+    exec(compile(stamp_path(repo).read_text(encoding="utf-8"), "stamp.py", "exec"), namespace)
+    return namespace
 
 
 def _git(root: Path, *args: str) -> None:
@@ -160,53 +162,41 @@ def test_rendered_docs_are_untracked_and_ignored() -> None:
 
 
 class TestResolveBuildCommit:
-    def test_reports_short_head(self, repo: Path):
-        head = subprocess.run(
-            ["git", "-C", str(repo), "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
+    def test_reports_head_commit_and_its_time(self, repo: Path):
+        def head(*args: str) -> str:
+            return run_bounded_child(["git", "-C", str(repo), *args], check=True).stdout.strip()
 
-        assert resolve_build_commit(repo) == head
-
-    def test_dirty_tree_is_marked(self, repo: Path):
-        (repo / "README").write_text("changed\n", encoding="utf-8")
-
-        assert resolve_build_commit(repo).endswith("+dirty")
+        assert resolve_build_commit(repo) == head("rev-parse", "--short", "HEAD")
+        assert resolve_source_updated_at(repo) == head("log", "-1", "--format=%cI", "HEAD")
 
     def test_non_git_tree_yields_empty(self, tmp_path: Path):
         """A source tarball is not a failure — there is simply no commit."""
         assert resolve_build_commit(tmp_path) == ""
 
-    def test_reports_head_update_time(self, repo: Path):
-        assert (
-            resolve_source_updated_at(repo)
-            == subprocess.run(
-                ["git", "-C", str(repo), "log", "-1", "--format=%cI", "HEAD"],
-                capture_output=True,
-                text=True,
-                check=True,
-            ).stdout.strip()
-        )
-
 
 class TestWriteBuildStamp:
-    def test_writes_an_importable_module(self, repo: Path):
-        commit = write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
-        text = stamp_path(repo).read_text(encoding="utf-8")
+    @pytest.mark.parametrize(
+        ("profile", "official"),
+        [(BuildProfile.RUNTIME_IMAGE, False), (BuildProfile.OFFICIAL_RELEASE, True)],
+    )
+    def test_writes_an_importable_module(self, repo: Path, profile: BuildProfile, official: bool):
+        context = development_context_path(repo)
+        context.parent.mkdir(parents=True, exist_ok=True)
+        context.write_bytes(b"stale")
+
+        commit = write_build_stamp(repo, profile=profile)
+        namespace = _stamp_values(repo)
 
         assert stamp_path(repo) == repo / STAMP_RELPATH
-        namespace: dict = {}
-        exec(compile(text, "_build_commit.py", "exec"), namespace)
         assert namespace["COMMIT"] == commit != ""
-        assert namespace["COMMIT_TIME"].endswith("Z")
+        assert str(namespace["COMMIT_TIME"]).endswith("Z")
         assert namespace["PAYLOAD_FINGERPRINT"] == resolve_payload_fingerprint(repo)
         assert namespace["WHEEL_SOURCE_FINGERPRINT"] == resolve_wheel_source_fingerprint(repo)
-        assert len(namespace["RUNTIME_BASE_CONTRACT"]) == 64
-        assert len(namespace["STANDARD_SUBSTRATE_CONTRACT"]) == 64
-        assert namespace["OFFICIAL_RELEASE"] is False
+        assert len(str(namespace["RUNTIME_BASE_CONTRACT"])) == 64
+        assert len(str(namespace["STANDARD_SUBSTRATE_CONTRACT"])) == 64
+        assert namespace["OFFICIAL_RELEASE"] is official
         assert namespace["DEVELOPMENT_CONTEXT_SHA256"] == ""
+        assert not context.exists()
 
     def test_renders_every_shipped_doc_and_removes_orphans(self, repo: Path):
         shutil.rmtree(repo / PACKAGED_DOCS_RELATIVE_DIR, ignore_errors=True)
@@ -238,8 +228,9 @@ class TestWriteBuildStamp:
         assert not stamp_path(repo).exists()
         assert not development_context_path(repo).exists()
 
-    def test_build_leaves_checkout_clean(self, repo: Path):
-        """After a build the checkout has no untracked or modified files (#3658).
+    @pytest.mark.parametrize("fail", [False, True])
+    def test_runtime_stamp_leaves_checkout_clean(self, repo: Path, fail: bool):
+        """After a build, failed or not, no stamp stays and the checkout is clean (#3658).
 
         The rendered copies are Git-ignored build output, so a clean tree that holds only
         committed sources, with the repository's real ``.gitignore``, stays clean.
@@ -248,11 +239,23 @@ class TestWriteBuildStamp:
         _git(repo, "add", ".gitignore")
         _git(repo, "commit", "-m", "ignore build output")
 
-        with runtime_image_build_stamp(repo) as commit:
-            assert (repo / PACKAGED_DOCS_RELATIVE_DIR / "CONFIG.md").is_file()
-            assert (repo / PACKAGED_CHANGELOG).is_file()
-            assert commit != "" and not commit.endswith("+dirty")
+        def build() -> None:
+            with runtime_image_build_stamp(repo) as commit:
+                assert (repo / PACKAGED_DOCS_RELATIVE_DIR / "CONFIG.md").is_file()
+                assert (repo / PACKAGED_CHANGELOG).is_file()
+                assert commit != "" and not commit.endswith("+dirty")
+                assert _stamp_values(repo)["DEVELOPMENT_CONTEXT_SHA256"] == ""
+                assert _stamp_values(repo)["OFFICIAL_RELEASE"] is False
+                if fail:
+                    raise RuntimeError("build blew up")
 
+        if fail:
+            with pytest.raises(RuntimeError):
+                build()
+        else:
+            build()
+        assert not stamp_path(repo).exists()
+        assert not development_context_path(repo).exists()
         status = run_bounded_child(
             ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
             check=True,
@@ -348,6 +351,7 @@ class TestWriteBuildStamp:
         assert resolve_wheel_source_fingerprint(root) == (
             "dcc42754de17f9855cdfec8e85ec40ddc5e29b59cf680d6ae86dafcd124a6167"
         )
+        assert resolve_wheel_source_fingerprint(tmp_path / "empty") is None
 
     @staticmethod
     def _commit_at(repo: Path, committed_at: str) -> None:
@@ -366,50 +370,12 @@ class TestWriteBuildStamp:
             },
         )
 
-    @staticmethod
-    def _stamp_values(repo: Path) -> dict:
-        namespace: dict = {}
-        exec(compile(stamp_path(repo).read_text(encoding="utf-8"), "stamp.py", "exec"), namespace)
-        return namespace
-
     def test_stamps_commit_time_in_utc_across_day_boundary(self, repo: Path):
         # 23:30 at UTC-7 is 06:30 the next day in UTC.
         self._commit_at(repo, "2026-10-26T23:30:00-07:00")
         write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
 
-        assert self._stamp_values(repo).get("COMMIT_TIME") == "2026-10-27T06:30:00Z"
-
-    def test_wheel_version_reads_commit_date_from_stamp(self, repo: Path, monkeypatch):
-        import booley
-        from booley import __version__
-        from booley.harness import booley as cli
-        from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
-
-        self._commit_at(repo, "2026-10-26T12:00:00+00:00")
-        commit = write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
-        stamp = types.ModuleType("booley._build_commit")
-        stamp.__dict__.update(self._stamp_values(repo))
-        monkeypatch.setattr(booley, "_build_commit", stamp, raising=False)
-        monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
-        monkeypatch.setattr(
-            booley,
-            "version_attribution",
-            VersionAttribution(
-                version="4.5.6",
-                origin=VersionOrigin.DISTRIBUTION,
-                distribution_name="booley-rtl",
-            ),
-        )
-        monkeypatch.setattr(
-            VersionAttribution,
-            "source_git_metadata",
-            lambda _self: pytest.fail("wheel attribution must not inspect Git"),
-        )
-        monkeypatch.setattr(
-            subprocess, "run", lambda *a, **k: pytest.fail("wheel must not run subprocesses")
-        )
-
-        assert cli._version_string() == f"booley {__version__} ({commit}, 2026-10-26)"
+        assert _stamp_values(repo).get("COMMIT_TIME") == "2026-10-27T06:30:00Z"
 
     def test_release_readers_accept_stamp_with_commit_time(self, repo: Path, monkeypatch):
         from booley.runtime import image_build_contracts
@@ -417,10 +383,8 @@ class TestWriteBuildStamp:
         self._commit_at(repo, "2026-10-26T12:00:00+00:00")
         commit = write_build_stamp(repo, profile=BuildProfile.OFFICIAL_RELEASE)
         wheel = _write_wheel(repo)
-        values = self._stamp_values(repo)
-        monkeypatch.setattr(
-            image_build_contracts, "_embedded_stamp_path", lambda: stamp_path(repo)
-        )
+        values = _stamp_values(repo)
+        install_package(monkeypatch, repo / "src" / "booley")
 
         assert values.get("COMMIT_TIME") == "2026-10-26T12:00:00Z"
         assert build_stamp_module.wheel_embedded_commit(wheel) == commit
@@ -429,51 +393,28 @@ class TestWriteBuildStamp:
         assert contracts.runtime_base == values["RUNTIME_BASE_CONTRACT"]
         assert contracts.standard_substrate == values["STANDARD_SUBSTRATE_CONTRACT"]
 
-    def test_reads_wheel_source_identity_without_importing_wheel(self, tmp_path: Path):
-        wheel = tmp_path / WHEEL_NAME
-        with zipfile.ZipFile(wheel, "w") as archive:
-            archive.writestr(
-                "booley/_build_commit.py",
-                f'WHEEL_SOURCE_FINGERPRINT = "{"a" * 64}"\n',
-            )
-
-        assert wheel_embedded_source_fingerprint(wheel) == "a" * 64
-
-    def test_wheel_source_fingerprint_skips_missing_generated_and_excluded_inputs(
-        self, tmp_path: Path
-    ):
-        root = tmp_path / "empty"
-        root.mkdir()
-        assert resolve_wheel_source_fingerprint(root) is None
-        source = root / "src" / "booley"
-        source.mkdir(parents=True)
-        (source / "real.py").write_text("value = 1\n", encoding="utf-8")
-        (source / "__pycache__").mkdir()
-        (source / "__pycache__" / "cached.pyc").write_bytes(b"cached")
-        (source / "_build_commit.py").write_text("COMMIT = 'generated'\n", encoding="utf-8")
-        (root / "pyproject.toml").write_text("[project]\n", encoding="utf-8")
-        (root / "VERSION").write_text("0.2.6\n", encoding="utf-8")
-        assert resolve_wheel_source_fingerprint(root)
-
     @pytest.mark.parametrize(
-        "body",
+        ("reader", "body"),
         [
-            "not a zip",
-            "__invalid__ = True\n",
-            "WHEEL_SOURCE_FINGERPRINT = 'short'\n",
-            "WHEEL_SOURCE_FINGERPRINT = 1\n",
-            "WHEEL_SOURCE_FINGERPRINT = 'a' * 64\n",
+            (wheel_embedded_source_fingerprint, "not a zip"),
+            (wheel_embedded_source_fingerprint, "__invalid__ = True\n"),
+            (wheel_embedded_source_fingerprint, "WHEEL_SOURCE_FINGERPRINT = 'short'\n"),
+            (wheel_embedded_source_fingerprint, "WHEEL_SOURCE_FINGERPRINT = 1\n"),
+            (wheel_embedded_source_fingerprint, "WHEEL_SOURCE_FINGERPRINT = 'a' * 64\n"),
+            (build_stamp_module.wheel_embedded_commit, "COMMIT = (\n"),
+            (build_stamp_module.wheel_embedded_commit, "COMMIT = 3\n"),
+            (build_stamp_module.wheel_embedded_commit, "OTHER = 'x'\n"),
         ],
     )
-    def test_rejects_invalid_wheel_source_provenance(self, tmp_path: Path, body: str):
+    def test_wheel_readers_reject_invalid_provenance(self, tmp_path: Path, reader, body: str):
         wheel = tmp_path / "invalid.whl"
         if body == "not a zip":
             wheel.write_bytes(body.encode())
         else:
             with zipfile.ZipFile(wheel, "w") as archive:
                 archive.writestr("booley/_build_commit.py", body)
-        with pytest.raises(ValueError):
-            wheel_embedded_source_fingerprint(wheel)
+        with pytest.raises(ValueError, match="wheel build"):
+            reader(wheel)
 
     def test_stamp_constants_reads_literals_and_first_assignment_wins(self):
         source = "A = 'one'\nA = 'two'\nB, C = 1, 2\nD = 3\nE: int = 4\n"
@@ -482,38 +423,6 @@ class TestWriteBuildStamp:
             "A": "one",
             "D": 3,
         }
-
-    @pytest.mark.parametrize("source", ["A = (\n", "A = 'a' * 64\n"])
-    def test_stamp_constants_rejects_unparseable_or_non_literal_source(self, source: str):
-        with pytest.raises(ValueError):
-            build_stamp_module.stamp_constants(source, {"A"})
-
-    @pytest.mark.parametrize("body", ["COMMIT = (\n", "COMMIT = 3\n", "OTHER = 'x'\n"])
-    def test_rejects_invalid_wheel_commit(self, tmp_path: Path, body: str):
-        wheel = tmp_path / "invalid.whl"
-        with zipfile.ZipFile(wheel, "w") as archive:
-            archive.writestr("booley/_build_commit.py", body)
-
-        with pytest.raises(ValueError, match="wheel build"):
-            build_stamp_module.wheel_embedded_commit(wheel)
-
-    def test_embedded_wheel_source_fingerprint_fails_closed(self, monkeypatch):
-        monkeypatch.setitem(sys.modules, "booley._build_commit", types.ModuleType("stamp"))
-        assert build_stamp_module.embedded_wheel_source_fingerprint() is None
-
-    def test_marks_an_official_release_build_explicitly(self, repo: Path):
-        context = development_context_path(repo)
-        context.parent.mkdir(parents=True, exist_ok=True)
-        context.write_bytes(b"stale")
-        write_build_stamp(repo, profile=BuildProfile.OFFICIAL_RELEASE)
-        text = stamp_path(repo).read_text(encoding="utf-8")
-
-        namespace: dict = {}
-        exec(compile(text, "_build_commit.py", "exec"), namespace)
-
-        assert namespace["OFFICIAL_RELEASE"] is True
-        assert namespace["DEVELOPMENT_CONTEXT_SHA256"] == ""
-        assert not context.exists()
 
     @pytest.mark.parametrize("value", [1, "official-release", None])
     def test_rejects_invalid_build_profiles(self, repo: Path, value: object):
@@ -527,58 +436,28 @@ class TestWriteBuildStamp:
         (repo / "src" / "booley" / "payload.py").write_text("VALUE = 2\n", encoding="utf-8")
 
         assert resolve_payload_fingerprint(repo) != before
-        assert resolve_build_commit(repo).removesuffix("+dirty") == head
-
-    @pytest.mark.parametrize("fail", [False, True])
-    def test_context_manager_always_removes_the_stamp(self, repo: Path, fail: bool):
-        """Leaving it behind makes the checkout claim a commit it doesn't have."""
-
-        def build():
-            with runtime_image_build_stamp(repo):
-                namespace = {}
-                exec(stamp_path(repo).read_text(), namespace)
-                assert namespace["DEVELOPMENT_CONTEXT_SHA256"] == ""
-                assert namespace["OFFICIAL_RELEASE"] is False
-                if fail:
-                    raise RuntimeError("build blew up")
-
-        if fail:
-            with pytest.raises(RuntimeError):
-                build()
-        else:
-            build()
-        assert not stamp_path(repo).exists()
-        assert not development_context_path(repo).exists()
+        dirty = resolve_build_commit(repo)
+        assert dirty.endswith("+dirty")
+        assert dirty.removesuffix("+dirty") == head
 
 
-class TestEmbeddedOfficialRelease:
-    def test_missing_marker_is_development(self, monkeypatch):
-        monkeypatch.delitem(sys.modules, "booley._build_commit", raising=False)
+@pytest.mark.parametrize(
+    "stamp",
+    [None, "OFFICIAL_RELEASE = 'true'\n", "OFFICIAL_RELEASE = 1\n", "OFFICIAL_RELEASE = True\n"],
+)
+def test_embedded_stamp_readers_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, stamp: str | None
+) -> None:
+    if stamp is not None:
+        (tmp_path / "_build_commit.py").write_bytes(stamp.encode())
+    install_package(monkeypatch, tmp_path)
 
-        assert embedded_official_release() is False
-
-    @pytest.mark.parametrize("value", ["true", 1, None, object()])
-    def test_malformed_values_fail_closed(self, monkeypatch, value: object):
-        stamp = types.ModuleType("booley._build_commit")
-        stamp.OFFICIAL_RELEASE = value
-        monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
-
-        assert embedded_official_release() is False
-
-    def test_literal_true_is_official(self, monkeypatch):
-        stamp = types.ModuleType("booley._build_commit")
-        stamp.OFFICIAL_RELEASE = True
-        monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
-
-        assert embedded_official_release() is True
+    assert embedded_official_release() is (stamp == "OFFICIAL_RELEASE = True\n")
+    assert build_stamp_module.embedded_wheel_source_fingerprint() is None
 
 
 class TestDevelopmentBuildContext:
     def test_public_stamp_and_extraction_round_trip(self, tmp_path: Path, monkeypatch):
-        package_root = tmp_path / "site-packages" / "booley"
-        package_root.joinpath("runtime").mkdir(parents=True)
-        stamp_file = package_root / "_build_commit.py"
-        context_file = package_root / "data" / "development-build-context.tar.gz"
         # A copy, not the live checkout: the render step writes into its root.
         root = tmp_path / "checkout"
         copy_source_checkout(
@@ -587,134 +466,89 @@ class TestDevelopmentBuildContext:
             "src/booley",
             "crates/bwave",
             ".github/scripts",
+            # private: the context's file list has no public name, and a full copy costs more
             *build_stamp_module._DEVELOPMENT_CONTEXT_FILES,
         )
-
-        with monkeypatch.context() as build_patch:
-            build_patch.setattr(build_stamp_module, "stamp_path", lambda _root: stamp_file)
-            build_patch.setattr(
-                build_stamp_module,
-                "development_context_path",
-                lambda _root: context_file,
-            )
-            write_build_stamp(root)
-
-        namespace: dict[str, object] = {}
-        exec(stamp_file.read_text(encoding="utf-8"), namespace)
-        embedded = types.ModuleType("booley._build_commit")
-        embedded.DEVELOPMENT_CONTEXT_SHA256 = namespace["DEVELOPMENT_CONTEXT_SHA256"]
-        embedded.PAYLOAD_FINGERPRINT = namespace["PAYLOAD_FINGERPRINT"]
-        monkeypatch.setitem(sys.modules, "booley._build_commit", embedded)
-        monkeypatch.setattr(
-            build_stamp_module,
-            "__file__",
-            str(package_root / "runtime" / "build_stamp.py"),
+        write_build_stamp(root)
+        values = _stamp_values(root)
+        os.utime(root / "pyproject.toml", (978_307_200, 978_307_200))
+        write_build_stamp(root)
+        assert (
+            _stamp_values(root)["DEVELOPMENT_CONTEXT_SHA256"]
+            == (values["DEVELOPMENT_CONTEXT_SHA256"])
         )
+        install_package(monkeypatch, root / "src" / "booley")
 
-        assert embedded_development_context_path() == context_file
+        assert embedded_development_context_path() == development_context_path(root).resolve()
         with extracted_development_context() as extracted:
-            assert resolve_payload_fingerprint(extracted) == namespace["PAYLOAD_FINGERPRINT"]
-            assert stamp_path(extracted).is_file()
-            assert development_context_path(extracted).is_file()
+            assert resolve_payload_fingerprint(extracted) == values["PAYLOAD_FINGERPRINT"]
+            assert stamp_path(extracted).read_bytes() == stamp_path(root).read_bytes()
+            assert (
+                development_context_path(extracted).read_bytes()
+                == development_context_path(root).read_bytes()
+            )
             assert (extracted / PACKAGED_CHANGELOG).read_bytes() == (
                 root / CHANGELOG_SOURCE
             ).read_bytes()
             for source in SHIPPED_DOCS:
                 assert (extracted / source).read_bytes() == (root / source).read_bytes()
                 assert _copy_path(extracted, source).read_bytes() == _rendered(root, source)
-
-    def test_archive_is_deterministic_and_reconstructs_the_payload(self, tmp_path: Path):
-        first = tmp_path / "first.tar.gz"
-        second = tmp_path / "second.tar.gz"
-
-        digest = _write_development_context(SOURCE_ROOT, first)
-        assert _write_development_context(SOURCE_ROOT, second) == digest
-        assert first.read_bytes() == second.read_bytes()
-
-        stamp = tmp_path / "_build_commit.py"
-        stamp.write_text("COMMIT = 'test'\n", encoding="utf-8")
-        extracted = tmp_path / "extracted"
-        _extract_development_context(
-            first,
-            extracted,
-            expected_sha256=digest,
-            expected_payload_fingerprint=resolve_payload_fingerprint(SOURCE_ROOT) or "",
-            stamp_source=stamp,
-        )
-
-        assert resolve_payload_fingerprint(extracted) == resolve_payload_fingerprint(SOURCE_ROOT)
-        assert stamp_path(extracted).read_text(encoding="utf-8") == "COMMIT = 'test'\n"
-        assert development_context_path(extracted).read_bytes() == first.read_bytes()
-        ctx = InitContext()
-        docker_dir = extracted / "src" / "booley" / "data" / "docker"
-        assert init_docker_image._local_build_inputs(ctx, docker_dir) is not None
-
-    def test_archive_includes_bwave_build_inputs(self, tmp_path: Path):
-        archive_path = tmp_path / "context.tar.gz"
-        _write_development_context(SOURCE_ROOT, archive_path)
-
-        with tarfile.open(archive_path, mode="r:gz") as archive:
-            names = {member.name for member in archive.getmembers()}
-
-        assert {
-            "crates/bwave/benches/micro.rs",
-            "crates/bwave/benches/throughput.rs",
-            "crates/bwave/docs/public/intro.md",
-            "crates/bwave/docs/skills/bwave.md",
-            "crates/bwave/schema/bwave.json",
-        } <= names
-
-    def test_hash_mismatch_writes_nothing(self, tmp_path: Path):
-        archive = tmp_path / "context.tar.gz"
-        _write_development_context(SOURCE_ROOT, archive)
-        destination = tmp_path / "extracted"
-
-        with pytest.raises(ValueError, match="hash does not match"):
-            _extract_development_context(
-                archive,
-                destination,
-                expected_sha256="0" * 64,
-                expected_payload_fingerprint=resolve_payload_fingerprint(SOURCE_ROOT) or "",
-                stamp_source=tmp_path / "missing-stamp.py",
-            )
-
-        assert not destination.exists()
+            for bwave_input in (
+                "benches/micro.rs",
+                "benches/throughput.rs",
+                "docs/public/intro.md",
+                "docs/skills/bwave.md",
+                "schema/bwave.json",
+            ):
+                assert (extracted / "crates" / "bwave" / bwave_input).is_file(), bwave_input
 
     @pytest.mark.parametrize(
-        "member",
-        [
-            tarfile.TarInfo("../escape"),
-            tarfile.TarInfo("/absolute"),
-            tarfile.TarInfo("back\\slash"),
-            tarfile.TarInfo("directory/"),
-        ],
+        "members",
+        [["../escape"], ["/absolute"], ["back\\slash"], ["directory/"], ["same", "same"]],
+        ids=["parent", "absolute", "backslash", "directory", "duplicate"],
     )
-    def test_rejects_unsafe_archive_members(self, member: tarfile.TarInfo):
-        member.type = tarfile.DIRTYPE if member.name.endswith("/") else tarfile.REGTYPE
+    def test_extraction_rejects_a_tampered_context(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, members: list[str]
+    ):
+        package = tmp_path / "pkg"
+        archive_path = package / "data" / "development-build-context.tar.gz"
+        archive_path.parent.mkdir(parents=True)
+        _write_archive(archive_path, members)
+        digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        (package / "_build_commit.py").write_bytes(
+            f"DEVELOPMENT_CONTEXT_SHA256 = '{digest}'\n"
+            f"PAYLOAD_FINGERPRINT = '{'a' * 64}'\n".encode()
+        )
+        install_package(monkeypatch, package)
+        temporary = tmp_path / "tmp"
+        temporary.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(temporary))
 
-        with pytest.raises(ValueError, match="unsafe"):
-            _validate_context_members([member])
+        with pytest.raises(ValueError, match="unsafe"), extracted_development_context():
+            pytest.fail("a tampered context must not be extracted")
 
-    def test_rejects_duplicate_archive_members(self):
-        with pytest.raises(ValueError, match="unsafe"):
-            _validate_context_members([tarfile.TarInfo("same"), tarfile.TarInfo("same")])
+        assert list(temporary.iterdir()) == []
 
-    def test_rejects_unsafe_member_before_writing_any_file(self, tmp_path: Path):
-        archive_path = tmp_path / "unsafe.tar.gz"
-        with tarfile.open(archive_path, "w:gz") as archive:
-            for name in ("safe", "../escape"):
-                info = tarfile.TarInfo(name)
-                info.size = 1
-                archive.addfile(info, io.BytesIO(b"x"))
+    @pytest.mark.parametrize(
+        ("members", "sha", "message"),
+        [(["safe"], "0" * 64, "hash does not match"), (["safe", "../escape"], None, "unsafe")],
+        ids=["hash", "unsafe-member"],
+    )
+    def test_rejects_a_bad_context_before_writing_any_file(
+        self, tmp_path: Path, members: list[str], sha: str | None, message: str
+    ):
+        archive_path = tmp_path / "bad.tar.gz"
+        _write_archive(archive_path, members)
         stamp = tmp_path / "stamp.py"
         stamp.write_text("COMMIT = 'test'\n", encoding="utf-8")
         destination = tmp_path / "destination"
 
-        with pytest.raises(ValueError, match="unsafe"):
-            _extract_development_context(
+        with pytest.raises(ValueError, match=message):
+            # private: public extraction deletes its folder on failure, hiding an early write
+            build_stamp_module._extract_development_context(
                 archive_path,
                 destination,
-                expected_sha256=hashlib.sha256(archive_path.read_bytes()).hexdigest(),
+                expected_sha256=sha or hashlib.sha256(archive_path.read_bytes()).hexdigest(),
                 expected_payload_fingerprint="0" * 64,
                 stamp_source=stamp,
             )
@@ -723,134 +557,102 @@ class TestDevelopmentBuildContext:
         assert not (tmp_path / "escape").exists()
 
     def test_rejects_member_count_and_total_size_bounds(self):
-        members = [tarfile.TarInfo(f"file-{index}") for index in range(_MAX_CONTEXT_MEMBERS + 1)]
+        # private: the public extraction reaches these bounds only through a
+        # 5,001-member or 64 MiB archive
+        members = [
+            tarfile.TarInfo(f"file-{index}")
+            for index in range(build_stamp_module._MAX_CONTEXT_MEMBERS + 1)  # private: as above
+        ]
         with pytest.raises(ValueError, match="too many members"):
-            _validate_context_members(members)
+            build_stamp_module._validate_context_members(members)  # private: as above
 
         oversized = tarfile.TarInfo("oversized")
-        oversized.size = _MAX_CONTEXT_BYTES + 1
+        oversized.size = build_stamp_module._MAX_CONTEXT_BYTES + 1  # private: as above
         with pytest.raises(ValueError, match="too large"):
-            _validate_context_members([oversized])
+            build_stamp_module._validate_context_members([oversized])  # private: as above
+
+
+def _write_archive(path: Path, members: list[str]) -> None:
+    """Write a ``tar.gz`` of one-byte files; a name ending in ``/`` is a directory."""
+    with tarfile.open(path, "w:gz") as archive:
+        for name in members:
+            info = tarfile.TarInfo(name)
+            if name.endswith("/"):
+                info.type = tarfile.DIRTYPE
+                archive.addfile(info)
+            else:
+                info.size = 1
+                archive.addfile(info, io.BytesIO(b"x"))
+
+
+@pytest.fixture
+def wheel_build(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> WheelBuild:
+    return install_wheel_build(tmp_path / "wheel-fake", monkeypatch)
+
+
+def _build_wheel(ctx: InitContext, repo: Path, *, preserve_stamp: bool = False) -> bool:
+    # private: no public function reaches the wheel step without a whole local Sandbox Image
+    # build (tests/harness/setup/test_docker_image.py)
+    return init_docker_image._docker_build_wheel(ctx, repo, preserve_stamp=preserve_stamp)
 
 
 class TestInitStampsItsWheel:
-    def test_wheel_build_runs_with_the_stamp_in_place(self, repo: Path, monkeypatch):
+    def test_wheel_packs_the_stamp_and_rendered_docs_then_removes_the_stamp(
+        self, repo: Path, wheel_build: WheelBuild
+    ):
         """The F-3 regression: init's `python -m build` must see the stamp."""
-        real_run = subprocess.run
-        seen: list[bool] = []
-
-        def _fake_run(cmd, **kwargs):
-            # git still has to run for real — the stamp's content comes from it.
-            if cmd[0] == "git":
-                return real_run(cmd, **kwargs)
-            seen.append(
-                stamp_path(repo).is_file()
-                and all(_copy_path(repo, source).is_file() for source in SHIPPED_DOCS)
-            )
-            _write_wheel(repo)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-
-        assert init_docker_image._docker_build_wheel(InitContext(), repo) is True
-        assert seen == [True]
-        assert not stamp_path(repo).exists()
-
-    def test_verified_stamp_is_preserved_for_embedded_context(self, repo: Path, monkeypatch):
-        stamp_path(repo).write_text("COMMIT = 'embedded'\n", encoding="utf-8")
-        seen: list[str] = []
-
-        def _fake_run(cmd, **kwargs):
-            seen.append(stamp_path(repo).read_text(encoding="utf-8"))
-            _write_wheel(repo)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-
-        assert init_docker_image._docker_build_wheel(InitContext(), repo, preserve_stamp=True)
-        assert seen == ["COMMIT = 'embedded'\n"]
-        assert stamp_path(repo).is_file()
-
-    @pytest.mark.parametrize("body", ["COMMIT = (\n", "COMMIT = 'a' + 'b'\n"])
-    def test_unparseable_verified_stamp_fails_the_wheel_build(self, repo: Path, body: str):
-        stamp_path(repo).write_text(body, encoding="utf-8")
-        ctx = InitContext()
-
-        assert not init_docker_image._docker_build_wheel(ctx, repo, preserve_stamp=True)
-        assert ctx.results[-1].detail == "wheel build failed"
-
-    def test_verified_stamp_is_required_for_embedded_context(self, repo: Path):
-        ctx = InitContext()
-
-        assert not init_docker_image._docker_build_wheel(ctx, repo, preserve_stamp=True)
-        assert ctx.results[-1].detail == "wheel build failed"
-
-    def test_wheel_build_removes_stale_staging_tree(self, repo: Path, monkeypatch):
         stale_module = repo / "build" / "lib" / "booley" / "tools" / "legacy.py"
         stale_module.parent.mkdir(parents=True)
         stale_module.write_text("stale = True\n", encoding="utf-8")
-        real_run = subprocess.run
+        _write_wheel(repo, "booley_rtl-0.1.0-py3-none-any.whl")
 
-        def _fake_run(cmd, **kwargs):
-            if cmd[0] == "git":
-                return real_run(cmd, **kwargs)
-            assert not stale_module.exists()
-            _write_wheel(repo)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
+        assert _build_wheel(InitContext(), repo) is True
 
-        monkeypatch.setattr(subprocess, "run", _fake_run)
+        wheels = list((repo / "dist").glob("booley_rtl-*.whl"))
+        assert [path.name for path in wheels] == [BUILT_WHEEL]
+        with zipfile.ZipFile(wheels[0]) as archive:
+            packed = set(archive.namelist())
+        assert "booley/_build_commit.py" in packed
+        assert {f"booley/data/docs/{posixpath.basename(doc)}" for doc in SHIPPED_DOCS} <= packed
+        assert "booley/tools/legacy.py" not in packed
+        assert not stamp_path(repo).exists()
 
-        assert init_docker_image._docker_build_wheel(InitContext(), repo) is True
+    def test_verified_stamp_is_packed_and_kept(self, repo: Path, wheel_build: WheelBuild):
+        stamp_path(repo).write_bytes(b"COMMIT = 'embedded'\n")
 
-    def test_wheel_build_replaces_older_distribution_wheels(self, repo: Path, monkeypatch):
-        old_wheel = _write_wheel(repo, "booley_rtl-0.1.0-py3-none-any.whl")
-        real_run = subprocess.run
+        assert _build_wheel(InitContext(), repo, preserve_stamp=True) is True
 
-        def _fake_run(cmd, **kwargs):
-            if cmd[0] == "git":
-                return real_run(cmd, **kwargs)
-            assert not old_wheel.exists()
-            _write_wheel(repo)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
-
-        assert init_docker_image._docker_build_wheel(InitContext(), repo) is True
-        assert [path.name for path in (repo / "dist").glob("booley_rtl-*.whl")] == [WHEEL_NAME]
+        assert stamp_path(repo).read_bytes() == b"COMMIT = 'embedded'\n"
 
     @pytest.mark.parametrize(
-        "outputs",
-        [[], [WHEEL_NAME, "booley_rtl-0.2.4-py3-none-any.whl"]],
-        ids=["missing", "multiple"],
+        ("stamp", "preserve", "reply"),
+        [
+            ("COMMIT = (\n", True, {}),
+            ("COMMIT = 'a' + 'b'\n", True, {}),
+            (None, True, {}),
+            (None, False, {"code": 1, "stderr": "No module named build"}),
+            (None, False, {"wheels": ()}),
+            (None, False, {"wheels": (BUILT_WHEEL, WHEEL_NAME)}),
+        ],
+        ids=["unparseable", "non-literal", "no-stamp", "build-fails", "no-wheel", "two-wheels"],
     )
-    def test_wheel_build_requires_exactly_one_output(
-        self, repo: Path, monkeypatch, outputs: list[str]
+    def test_wheel_build_failure_is_reported(
+        self,
+        repo: Path,
+        wheel_build: WheelBuild,
+        stamp: str | None,
+        preserve: bool,
+        reply: dict[str, object],
     ):
-        real_run = subprocess.run
-
-        def _fake_run(cmd, **kwargs):
-            if cmd[0] == "git":
-                return real_run(cmd, **kwargs)
-            for name in outputs:
-                _write_wheel(repo, name)
-            return subprocess.CompletedProcess(cmd, 0, "", "")
-
-        monkeypatch.setattr(subprocess, "run", _fake_run)
+        if stamp is not None:
+            stamp_path(repo).write_bytes(stamp.encode())
+        wheel_build.answer(**{"code": 0, **reply})  # type: ignore[arg-type]
         ctx = InitContext()
 
-        assert init_docker_image._docker_build_wheel(ctx, repo) is False
-        assert ctx.results[-1].status == "err"
+        assert _build_wheel(ctx, repo, preserve_stamp=preserve) is False
 
-    def test_failed_wheel_build_still_cleans_up_and_reports(self, repo: Path, monkeypatch):
-        def _boom(cmd, **kwargs):
-            raise subprocess.CalledProcessError(1, cmd, stderr="No module named build")
-
-        monkeypatch.setattr(subprocess, "run", _boom)
-        ctx = InitContext()
-
-        assert init_docker_image._docker_build_wheel(ctx, repo) is False
-        assert not stamp_path(repo).exists()
-        assert ctx.results[-1].status == "err"
+        assert (ctx.results[-1].status, ctx.results[-1].detail) == ("err", "wheel build failed")
+        assert stamp_path(repo).exists() is (stamp is not None)
 
     def test_build_sh_delegates_instead_of_hand_rolling_git(self):
         """The duplicate rule in bash is what drifted from init in the first place."""
@@ -868,34 +670,14 @@ class TestInitStampsItsWheel:
         assert text.index(cleanup) < text.index(build)
 
 
-class TestStampIsNotFingerprinted:
-    def test_stamp_never_reaches_the_image_fingerprint(self, repo: Path):
-        """build.sh and init drop the stamp at different points, so hashing it
-        would make their fingerprints disagree — every init after a build.sh
-        build would call the image stale and rebuild it for 20 minutes."""
-        root = repo
-        (root / "src" / "booley" / "real.py").write_text("x = 1\n", encoding="utf-8")
-
-        before = init_docker_image._image_build_fingerprint(root)
-        write_build_stamp(root, profile=BuildProfile.RUNTIME_IMAGE)
-
-        assert init_docker_image._image_build_fingerprint(root) == before
-        assert STAMP_RELPATH not in [
-            p.relative_to(root).as_posix() for p in iter_payload_files(root)
-        ]
-        assert development_context_path(root).relative_to(root).as_posix() not in [
-            p.relative_to(root).as_posix() for p in iter_payload_files(root)
-        ]
-
-
 @pytest.mark.parametrize("official", [False, None])
 def test_runtime_image_stamp_has_actionable_recovery(repo, monkeypatch, official):
     write_build_stamp(repo, profile=BuildProfile.RUNTIME_IMAGE)
-    stamp = types.ModuleType("booley._build_commit")
-    exec(stamp_path(repo).read_text(), stamp.__dict__)
     if official is None:
-        del stamp.OFFICIAL_RELEASE
-    monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
+        lines = stamp_path(repo).read_text(encoding="utf-8").splitlines()
+        kept = [line for line in lines if not line.startswith("OFFICIAL_RELEASE")]
+        stamp_path(repo).write_bytes("\n".join(kept).encode())
+    install_package(monkeypatch, repo / "src" / "booley")
     with pytest.raises(ValueError) as caught, extracted_development_context():
         pytest.fail("runtime-image wheel cannot supply development context")
     message = str(caught.value)
@@ -909,12 +691,15 @@ def test_runtime_image_stamp_has_actionable_recovery(repo, monkeypatch, official
 
 
 @pytest.mark.parametrize("context_hash,official", [("", True), ("bad", False), (None, False)])
-def test_invalid_or_official_context_has_no_runtime_recovery(monkeypatch, context_hash, official):
-    stamp = types.ModuleType("booley._build_commit")
-    stamp.DEVELOPMENT_CONTEXT_SHA256 = context_hash
-    stamp.PAYLOAD_FINGERPRINT = "a" * 64
-    stamp.OFFICIAL_RELEASE = official
-    monkeypatch.setitem(sys.modules, "booley._build_commit", stamp)
+def test_invalid_or_official_context_has_no_runtime_recovery(
+    tmp_path, monkeypatch, context_hash, official
+):
+    (tmp_path / "_build_commit.py").write_bytes(
+        f"DEVELOPMENT_CONTEXT_SHA256 = {context_hash!r}\n"
+        f"PAYLOAD_FINGERPRINT = '{'a' * 64}'\n"
+        f"OFFICIAL_RELEASE = {official}\n".encode()
+    )
+    install_package(monkeypatch, tmp_path)
     with (
         pytest.raises(ValueError, match="invalid build-context provenance"),
         extracted_development_context(),

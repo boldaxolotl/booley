@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.core.atomic_files import atomic_write_json
 from booley.presentation.colors import strip_ansi
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
@@ -20,7 +21,6 @@ from booley.runtime.endpoint_execution import (
     EndpointOutcome,
     normalize_completion_error,
 )
-from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -482,15 +482,20 @@ def _publish_console_verdict(endpoint: EndpointState, result: EndpointOutcome) -
 
 
 def removed_root(endpoint: EndpointState) -> str | None:
-    """Name the checkout or Booley Directory that vanished since the run started."""
+    """Name the checkout or Booley Directory that vanished since the run started.
+
+    The first one found stays named: a directory recreated at its path is not the run's.
+    """
     if endpoint._run_roots is None:
         return None
-    checkout, booley_dir = endpoint._run_roots
-    if not checkout.is_dir():
-        return f"checkout {checkout}"
-    if booley_dir is not None and not booley_dir.is_dir():
-        return f"Booley Directory {booley_dir}"
-    return None
+    root = endpoint._removed_run_root
+    if root is None:
+        root = next((r for r in endpoint._run_roots if r is not None and not r.is_dir()), None)
+        if root is None:
+            return None
+        endpoint._removed_run_root = root
+    kind = "checkout" if root == endpoint._run_roots[0] else "Booley Directory"
+    return f"{kind} {root}"
 
 
 def report_root_removed(endpoint: EndpointState) -> bool:
@@ -500,7 +505,9 @@ def report_root_removed(endpoint: EndpointState) -> bool:
         return False
     report_dir = Path(report_dir).absolute()
     return any(
-        root is not None and not root.is_dir() and report_dir.is_relative_to(root)
+        root is not None
+        and (root == endpoint._removed_run_root or not root.is_dir())
+        and report_dir.is_relative_to(root)
         for root in endpoint._run_roots
     )
 

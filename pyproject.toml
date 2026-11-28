@@ -185,6 +185,7 @@ select = [
     "PL",   # pylint subset
     "RUF",  # ruff-specific
     "BLE",  # flake8-blind-except — broad `except` must be deliberate (use `# noqa: BLE001 — reason`)
+    "ARG",  # flake8-unused-arguments
 ]
 ignore = [
     "PLC0415",  # import not at top-level — deliberate lazy-import pattern
@@ -241,6 +242,11 @@ known-first-party = ["booley"]
 #             node written in upstream Edalize idiom (mutable TOOL_OPTIONS
 #             class attr, one linear setup(), list concatenation) so the
 #             upstream PR ships the file byte-identical (ADR 0033).
+#   ARG (test code) — pytest fixtures requested for their side effects and stub
+#             signatures that mirror a replaced interface; unused arguments in
+#             tests are out of scope (#5837).
+"tests/**" = ["ARG"]
+"crates/bwave/tests/**" = ["ARG"]
 "src/booley/flows/sim/trace_session.py" = ["PLR0915"]
 "src/booley/data/edalize/verible.py" = ["RUF012", "PLR0912", "RUF005"]
 "src/booley/mcp/base.py" = ["B027"]

@@ -105,7 +105,6 @@ def test_view_reads_an_ordinary_hdl_plan_unchanged(tmp_path: Path) -> None:
     assert view.required_suite_names == ("reset", "count")
     assert view.eda_tool_kind == "icarus"
     assert view.origin_invocation_id == 1
-    assert view.prerequisites == ()
     assert view.simulation_record_id == plan.manifest.document["simulation_record_id"]
 
 

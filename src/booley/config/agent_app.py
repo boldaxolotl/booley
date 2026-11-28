@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.config import agent
+from booley.core.sandbox_detection import inside_session_runtime
 
 AGENT_APP_ENV = "BOOLEY_AGENT_APP"
 AUTO_APP = "auto"
@@ -63,7 +64,7 @@ def auto_requested() -> bool:
     """Whether ``BOOLEY_AGENT_APP`` is ``auto``; refuses ``auto`` outside a Sandbox."""
     if (os.environ.get(AGENT_APP_ENV) or "").strip() != AUTO_APP:
         return False
-    if not agent._inside_container():
+    if not inside_session_runtime():
         raise AgentAppError(
             f"{AGENT_APP_ENV}=auto is honored only inside a Sandbox (for example a "
             "Codespace); set it to claude, codex or none"

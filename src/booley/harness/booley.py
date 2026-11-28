@@ -33,7 +33,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.config.agent import AGENT_CLIS
-from booley.config.feature_flags import FeatureConfigError, enabled_features, feature_enabled
+from booley.config.feature_flags import (
+    FeatureConfigError,
+    enabled_features,
+    feature_enabled,
+    readable_features,
+)
 from booley.config.retired import RetiredConfigError, refuse_retired_config
 from booley.core.egress_modes import EGRESS_MODES
 from booley.feedback import cli as feedback_cli
@@ -212,9 +217,9 @@ class _RootHelpAction(argparse.Action):
     def __call__(
         self,
         parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: Any,
-        option_string: str | None = None,
+        namespace: argparse.Namespace,  # noqa: ARG002 — argparse.Action.__call__ signature
+        values: Any,  # noqa: ARG002 — argparse.Action.__call__ signature
+        option_string: str | None = None,  # noqa: ARG002 — argparse.Action.__call__ signature
     ) -> None:
         self._root_parser.print_help()
         parser.exit()
@@ -352,9 +357,9 @@ class _PrintVersion(argparse.Action):
     def __call__(
         self,
         parser: argparse.ArgumentParser,
-        namespace: argparse.Namespace,
-        values: Any,
-        option_string: str | None = None,
+        namespace: argparse.Namespace,  # noqa: ARG002 — argparse.Action.__call__ signature
+        values: Any,  # noqa: ARG002 — argparse.Action.__call__ signature
+        option_string: str | None = None,  # noqa: ARG002 — argparse.Action.__call__ signature
     ) -> None:
         sys.stdout.write(_version_string() + "\n")
         parser.exit()
@@ -451,7 +456,9 @@ def _outer_endpoint_selection(args: argparse.Namespace) -> bool:
     return hasattr(args, "_cli_selection") and not getattr(args, "_cli_tail_selection", False)
 
 
-def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
+def _invoke_endpoint(
+    endpoint, argv, args, *, features: frozenset[str] | None = None, **kwargs
+) -> int:
     from booley.flows.cli_selection import CliInvocation
     from booley.harness.endpoint_help import supports_shared_cli
 
@@ -465,7 +472,7 @@ def _invoke_endpoint(endpoint, argv, args, **kwargs) -> int:
             file=sys.stderr,
         )
         return 2
-    endpoint._cli_invocation = CliInvocation(project=selected)
+    endpoint._cli_invocation = CliInvocation(project=selected, features=features)
     return endpoint.main(argv, **kwargs)
 
 
@@ -551,7 +558,7 @@ def _build_parser(features: frozenset[str] = frozenset()) -> argparse.ArgumentPa
 
 
 def _add_dashboard_subparser(sub: argparse._SubParsersAction) -> None:
-    from booley.runtime.sandbox_layout import DASHBOARD_PORT
+    from booley.core.sandbox_layout import DASHBOARD_PORT
 
     dashboard = sub.add_parser(
         "dashboard",
@@ -1097,8 +1104,8 @@ def _add_utility_subparsers(sub) -> None:
 
 
 def _cmd_dashboard(args: argparse.Namespace, project_root: Path) -> int:
+    from booley.core.sandbox_layout import DASHBOARD_PORT
     from booley.harness.dashboard.web import serve
-    from booley.runtime.sandbox_layout import DASHBOARD_PORT
 
     return serve(project_root, args.port or DASHBOARD_PORT)
 
@@ -1213,25 +1220,12 @@ def _argv_command_index(argv: list[str], globals_parser: argparse.ArgumentParser
     return None
 
 
-def _parse_features() -> frozenset[str]:
-    """The ambient Project's enabled flags, or none when they cannot be read.
-
-    The parser exists before a Project is selected, so this only decides what help
-    shows and which command words parse; dispatch validates the selected Project.
-    """
-    from booley.core.booley_layout import BooleyLayoutError
-
-    try:
-        return enabled_features()
-    # FeatureConfigError and tomllib.TOMLDecodeError are ValueErrors; a pin error is a layout error.
-    except (BooleyLayoutError, OSError, ValueError):
-        return frozenset()
-
-
 def _parse_cli() -> argparse.Namespace:
     """Parse CLI args with subcommands."""
     _force_utf8()
-    parser = _build_parser(_parse_features())
+    # No Project is selected yet: the ambient flags decide only what help shows and
+    # which command words parse; dispatch validates the selected Project.
+    parser = _build_parser(readable_features())
     argv = sys.argv[1:]
     command_index = _argv_command_index(argv, _global_options_parser())
     command = None if command_index is None else argv[command_index]
@@ -1662,7 +1656,7 @@ def _cmd_shell(args: argparse.Namespace, project_root: Path) -> int:
     # (e.g. an agent capturing output) fails with "the input device is not a TTY".
     tty = is_interactive and sys.stdin.isatty() and sys.stdout.isatty()
 
-    runner = DockerRunner(docker_cfg, project_root, label="shell")
+    runner = DockerRunner(docker_cfg, project_root)
     argv = runner.ephemeral_argv(payload, tty=tty)
     try:
         return subprocess.run(argv, check=False).returncode
@@ -1790,7 +1784,12 @@ def _quiet_keyboard_interrupt(
     return hook
 
 
-def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: bool) -> int:
+def _endpoint_argv(args: argparse.Namespace) -> list[str]:
+    argv = list(getattr(args, "endpoint_args", []) or [])
+    return argv[1:] if argv and argv[0] == "--" else argv
+
+
+def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path) -> int:
     """Dispatch a Flow or Specialist through its execution adapter.
 
     A shell run is a Standalone Job: it gets a Job record and a ``job.log`` copy of its output.
@@ -1808,9 +1807,8 @@ def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: boo
     if endpoint_cls is None:
         print(f"ERROR: could not load endpoint {info.name!r} from {info.path}.", file=sys.stderr)
         return 2
-    argv = list(getattr(args, "endpoint_args", []) or [])
-    if argv and argv[0] == "--":
-        argv = argv[1:]
+    argv = _endpoint_argv(args)
+    features = readable_features(project_root)
     # Prepared before the endpoint exists: it reads BOOLEY_RUN_ID as its invocation identity.
     job = StandaloneJob.prepare(
         project_root,
@@ -1824,7 +1822,8 @@ def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: boo
             from booley.harness.endpoint_help import supports_shared_cli, try_render_help
 
             if supports_shared_cli(endpoint):
-                try_render_help(endpoint, argv, getattr(args, "_cli_endpoint_project", None))
+                selected = getattr(args, "_cli_endpoint_project", None)
+                try_render_help(endpoint, argv, selected, features)
             elif not runtime_context.inside_session_runtime():
                 print(
                     "ERROR: host help requires the shared CLI; inspect this custom command inside the Sandbox.",
@@ -1838,9 +1837,9 @@ def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: boo
             _enforce_runtime_location(args.command)
             runtime_context.ensure_proxy_env()
         if job is None:
-            return _invoke_endpoint(endpoint, argv, args)
+            return _invoke_endpoint(endpoint, argv, args, features=features)
         try:
-            return job.run(lambda: _invoke_endpoint(endpoint, argv, args))
+            return job.run(lambda: _invoke_endpoint(endpoint, argv, args, features=features))
         except KeyboardInterrupt:
             # The Job runner records a started run as cancelled with exit 130 (when it can).
             print("interrupted; run cancelled", file=sys.stderr)
@@ -1853,9 +1852,7 @@ def _dispatch_endpoint(args, info: McpToolInfo, project_root: Path, *, flow: boo
 def _cmd_flow(args: argparse.Namespace, project_root: Path) -> int:
     """Run a deterministic Flow through its existing entry point."""
     info = _select_endpoint(args, _discover_project_mcp_tools(project_root), "flow")
-    return (
-        info if isinstance(info, int) else _dispatch_endpoint(args, info, project_root, flow=True)
-    )
+    return info if isinstance(info, int) else _dispatch_endpoint(args, info, project_root)
 
 
 def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
@@ -1875,9 +1872,7 @@ def _cmd_specialist(args: argparse.Namespace, project_root: Path) -> int:
         flow_config=flows,
     )
     info = _select_endpoint(args, endpoints, "specialist")
-    return (
-        info if isinstance(info, int) else _dispatch_endpoint(args, info, project_root, flow=False)
-    )
+    return info if isinstance(info, int) else _dispatch_endpoint(args, info, project_root)
 
 
 def _target_detail_payload(

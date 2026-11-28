@@ -120,7 +120,7 @@ def test_acquire_reuses_current_base_without_docker_changes(fake, current) -> No
     docker = fake(images={owner.REFERENCE: current})
 
     assert owner.acquire(ROOT) == current["Id"]
-    assert docker.calls == [["image", "inspect", owner.REFERENCE]]
+    assert docker.calls == [["image", "inspect", owner.REFERENCE, "--format", "{{json .}}"]]
 
 
 @pytest.mark.parametrize("plan", ["no plan", "plan with base", "plan without base"])
@@ -173,12 +173,18 @@ def test_upgrade_failure_keeps_base_and_cleans_up(fake, current, failure) -> Non
     assert "image is in use" in caught.value.__notes__[0]
 
 
-def test_upgrade_cleanup_failure_after_success_is_reported(fake, current) -> None:
-    docker = fake({"image rm": (1, "image is in use")}, images=_stale(current))
+@pytest.mark.parametrize(
+    ("reply", "detail"),
+    [((1, "image is in use"), "image is in use"), ((1, "", ""), "exit 1")],
+    ids=["reason", "no-output"],
+)
+def test_upgrade_cleanup_failure_after_success_is_reported(fake, current, reply, detail) -> None:
+    docker = fake({"image rm": reply}, images=_stale(current))
 
-    with pytest.raises(RuntimeError, match="Bootstrap migration cleanup failed"):
+    with pytest.raises(RuntimeError, match="Bootstrap migration cleanup failed") as caught:
         owner.acquire(ROOT)
 
+    assert f":candidate: {detail}" in str(caught.value)
     assert docker.images[owner.REFERENCE]["Id"] != current["Id"]  # REFERENCE already moved
 
 
@@ -240,13 +246,13 @@ def test_acquire_preserves_inspect_failure_before_build(fake, detail) -> None:
         "not JSON",
         "[]",
         "{}",
-        "[null]",
+        "null",
         '[{"Id": "base"}, {"Id": "other"}]',
-        '[{"Config": {}, "RootFS": {"Layers": []}}]',
-        '[{"Id": "base", "Config": {"Labels": []}, "RootFS": {"Layers": []}}]',
-        '[{"Id": "base", "Config": {"Labels": {"role": 42}}, "RootFS": {"Layers": []}}]',
-        '[{"Id": "base", "Config": {}, "RootFS": null}]',
-        '[{"Id": "base", "Config": {}, "RootFS": {"Layers": [42]}}]',
+        '{"Config": {}, "RootFS": {"Layers": []}}',
+        '{"Id": "base", "Config": {"Labels": []}, "RootFS": {"Layers": []}}',
+        '{"Id": "base", "Config": {"Labels": {"role": 42}}, "RootFS": {"Layers": []}}',
+        '{"Id": "base", "Config": {}, "RootFS": null}',
+        '{"Id": "base", "Config": {}, "RootFS": {"Layers": [42]}}',
     ],
 )
 def test_acquire_controls_malformed_inspect_metadata_before_build(fake, body) -> None:

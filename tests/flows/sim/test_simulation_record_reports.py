@@ -29,9 +29,9 @@ from booley.flows.test_runs import build_test_run
 from booley.mcp.job_results import _read_report_json
 from booley.runtime.file_lock import LockContentionError
 from tests.conftest import symlink_or_skip
+from tests.flows.sim.fault_point_support import inject_faults
 from tests.flows.sim.simulation_record_test_support import (
     _recorded_simulation_record,
-    prerequisite_documents,
 )
 from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.fusesoc_test_support import symlinked_booley_dir
@@ -228,15 +228,13 @@ def test_large_persisted_count_mapping_survives_actual_readers(tmp_path, monkeyp
 
 def _resume_hook_simulation_record(tmp_path, monkeypatch, interrupted, *, external=False):
     from booley.flows.sim.record.coordinator import (
-        ResumeSimulationRecordRunRequest,
+        NewSimulationRecordRunRequest,
         SimulationRecord,
         SimulationRecordPolicy,
     )
     from booley.flows.sim.record.model import create_simulation_record_plan
-    from booley.flows.sim.record.planning import manifest_digest
-    from booley.flows.sim.record.resume import ValidatedManifestNode, ValidatedResumeManifest
     from booley.flows.sim.record.store import SimulationRecordStore
-    from tests.flows.sim.simulation_record_test_support import _admission, _executor, _handle
+    from tests.flows.sim.simulation_record_test_support import _admission, _executor
     from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
 
     origin, original = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
@@ -244,21 +242,19 @@ def _resume_hook_simulation_record(tmp_path, monkeypatch, interrupted, *, extern
     if interrupted:
         (original.pre_sim_firings[0].path.parents[3] / "result.json").unlink()
     manifest = store.load_manifest()
-    node = ValidatedManifestNode(original.manifest_path, manifest, manifest_digest(manifest))
     project = tmp_path / "project"
-    validated = ValidatedResumeManifest(node, (), (_handle(project),))
     invocation = tmp_path / "external/reports/1" if external else origin.parent / "2"
     invocation.mkdir(parents=True)
     counters = {"compile": 0, "durable_reuse": 0, "launch": 0}
     resumed = SimulationRecord(_executor(tmp_path / "build", counters)).run(
-        ResumeSimulationRecordRunRequest(
-            validated,
+        NewSimulationRecordRunRequest(
             create_simulation_record_plan(manifest),
             project,
             origin.parent,
             SimulationRecordPolicy(),
-            invocation,
-            _admission(),
+            record_directory=store.root,
+            invocation_directory=invocation,
+            admission=_admission(),
         )
     )
     return original, resumed, counters, invocation
@@ -301,7 +297,7 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
     # Private seam: the hook reference is built at publication for a destination directory the
     # public run cannot choose, so the test builds it for a numbered and an external
     # destination.
-    from booley.flows.sim.record import ArtifactReferenceError, resolve_report_artifact_reference
+    from booley.flows.sim.record import ArtifactReferenceError, resolve_artifact_reference
     from booley.flows.sim.record_presentation import (
         _pre_sim_projection,
         _simulation_record_hook_inputs,
@@ -319,31 +315,29 @@ def test_hook_reference_resolves_from_numbered_report_and_requires_external_cont
         "expected_owner": owner,
         "maximum": 16 * 1024 * 1024,
     }
-    resolved = resolve_report_artifact_reference(invocation / "report.json", reference, **options)
+    bases = {"report_invocation": invocation, "reports_root": invocation.parent.parent}
+    resolved = resolve_artifact_reference(reference, bases=bases, **options)
     assert resolved.path == outcome.pre_sim_firings[0].path
     destination = tmp_path / "external/reports/2"
     external = _pre_sim_projection(
         *_simulation_record_hook_inputs([outcome], destination), destination
     )[0]["pre_sim_runs"][0]["reference"]
     assert external["path_base"] == "external_origin_target"
-    with pytest.raises(ArtifactReferenceError):
-        resolve_report_artifact_reference(destination / "report.json", external, **options)
-    resolved = resolve_report_artifact_reference(
-        destination / "report.json",
-        external,
-        external_origin_target=outcome.manifest_path.parent.parent,
-        **options,
-    )
+    bases = {"report_invocation": destination, "reports_root": destination.parent.parent}
+    with pytest.raises(ArtifactReferenceError, match="base is unavailable"):
+        resolve_artifact_reference(external, bases=bases, **options)
+    bases["external_origin_target"] = outcome.manifest_path.parent.parent
+    resolved = resolve_artifact_reference(external, bases=bases, **options)
     assert resolved.path == outcome.pre_sim_firings[0].path
 
 
 def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counters):
     # Private seam: the resume needs a typed execution without destination admission or origin
     # locking, so the test replaces `_simulation_record_policy`,
-    # `_lock_simulation_record_resume_origin`, `_resume_simulation_record_plan` and the
-    # ordinary executor.
+    # `_lock_simulation_record_resume_origin`, the ordinary planning (real planning cannot
+    # reproduce this synthetic manifest) and the ordinary executor.
 
-    from booley.flows.sim import flow_resume
+    from booley.flows.sim import flow as sim_flow
     from booley.flows.sim.flow import PreparedSimulationEndpoint
     from booley.flows.sim.record.coordinator import SimulationRecordPolicy
     from booley.flows.sim.record.model import create_simulation_record_plan
@@ -354,7 +348,7 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
 
     manifest = SimulationRecordStore(original.manifest_path.parent).load_manifest()
     node = ValidatedManifestNode(original.manifest_path, manifest, manifest_digest(manifest))
-    validated = ValidatedResumeManifest(node, (), (_handle(tmp_path / "project"),))
+    validated = ValidatedResumeManifest(node, (_handle(tmp_path / "project"),))
     invocation.mkdir(parents=True, exist_ok=True)
     flow = SimulateFlow()
     flow._reserved_invocation_dir = invocation
@@ -369,15 +363,17 @@ def _production_resume_flow(tmp_path, monkeypatch, original, invocation, counter
     monkeypatch.setattr(flow, "reserve_invocation_dir", lambda: invocation)
     # Destination admission and origin locking are outside this typed execution test.
     monkeypatch.setattr(flow, "_lock_simulation_record_resume_origin", lambda *args: None)
+    planning = sim_flow.OrdinarySimulationRecordPlanning((SimpleNamespace(selector="sim"),), {})
+    monkeypatch.setattr(flow, "_plan_ordinary_simulation_records", lambda *args: planning)
     monkeypatch.setattr(
         flow,
-        "_resume_simulation_record_plan",
+        "_ordinary_simulation_record_plan",
         lambda *args, **kwargs: create_simulation_record_plan(manifest),
     )
-    build = flow_resume.OrdinaryHdlSerialExecutor
+    build = sim_flow.OrdinaryHdlSerialExecutor
     # Each flow keeps its own counters: the executor is chosen by the flow that builds it.
     monkeypatch.setattr(
-        "booley.flows.sim.flow_resume.OrdinaryHdlSerialExecutor",
+        "booley.flows.sim.flow.OrdinaryHdlSerialExecutor",
         lambda *, invoke: (
             _executor(invocation / "build", counters)
             if invoke.__self__ is flow
@@ -419,15 +415,15 @@ def test_production_resume_corruption_uses_simulation_record_integrity_outcome(
 
 def _serialize_resume_waiter(monkeypatch, flow, waiting, completed):
     # Private seam: the concurrency test must block the waiter before store admission, and
-    # `_run_validated_resume_simulation_record` is the only point before it.
-    run = flow._run_validated_resume_simulation_record
+    # `_publish_and_run_simulation_record_requests` is the only point before it.
+    run = flow._publish_and_run_simulation_record_requests
 
     def wait_for_owner(*args, **kwargs):
         waiting.set()
         assert completed.wait(hang_guard_s())
         return run(*args, **kwargs)
 
-    monkeypatch.setattr(flow, "_run_validated_resume_simulation_record", wait_for_owner)
+    monkeypatch.setattr(flow, "_publish_and_run_simulation_record_requests", wait_for_owner)
 
 
 def test_concurrent_production_resume_waiter_does_not_claim_owner_firing(tmp_path, monkeypatch):
@@ -547,8 +543,8 @@ def test_actual_publication_observer_checkpoint_and_exception_semantics(tmp_path
             raise RuntimeError("checkpoint failure")
 
     request, evidence = _observed_hook_request(tmp_path, observer)
-    with pytest.raises(RuntimeError, match="failure"):
-        publish_pre_sim_firing(request, evidence, checkpoint=checkpoint)
+    with inject_faults(checkpoint), pytest.raises(RuntimeError, match="failure"):
+        publish_pre_sim_firing(request, evidence)
     sidecars = tuple((request.attempt_directory / "pre-sim").glob("*.json"))
     assert len(events) == len(sidecars) == int(stop != "before")
     if sidecars:
@@ -560,8 +556,9 @@ def test_actual_publication_observer_checkpoint_and_exception_semantics(tmp_path
 def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
     # Private seam: the observer that records each Pre-Sim firing a published run saw is
     # `_record_pre_sim_firing`; only the Flow's own observer proves its authority.
-    from booley.flows.sim.record.model import create_simulation_record_plan
-    from booley.flows.sim.record.store import SimulationRecordStore
+    from dataclasses import replace
+
+    from booley.flows.sim.record import collect_pre_sim_firings
     from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
     from tests.flows.sim.test_simulation_record_dependency import _add_observed_cycles
 
@@ -585,19 +582,16 @@ def _current_observed_hook_dag(tmp_path, monkeypatch, flow):
         invocation_directory=invocation,
         observer=flow._record_pre_sim_firing,
     )
-    manifest = SimulationRecordStore(baseline.manifest_path.parent).load_manifest()
-    prerequisites = prerequisite_documents(
-        create_simulation_record_plan(manifest), baseline.manifest_path.relative_to(invocation)
-    )
     _, candidate = _successful_pre_sim_record(
         candidate_root,
         monkeypatch,
         "immutable",
-        transform=lambda document: document.update(prerequisites=prerequisites),
         invocation_directory=invocation,
         observer=flow._record_pre_sim_firing,
     )
-    return candidate
+    # One outcome that holds both roles' firings, which the endpoint retains on a scan error.
+    firings = collect_pre_sim_firings(candidate.manifest_path, baseline.manifest_path)
+    return replace(candidate, pre_sim_firings=firings)
 
 
 @pytest.fixture
@@ -831,33 +825,6 @@ def test_resume_count_budget_uses_only_actual_current_hook_keys(
     assert result.report_text.count("pre_run_commands") == int(interrupted)
 
 
-def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
-    tmp_path, monkeypatch
-):
-    from booley.flows.sim.record import SimulationRecordIntegrityError
-    from tests.conftest import require_symlinks
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
-
-    require_symlinks(tmp_path)
-    _invocation, simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
-    firing = simulation_record.pre_sim_firings[0]
-    directory = firing.path.parent.parent
-    copy = tmp_path / "copied-attempt"
-    sidecar_bytes = firing.path.read_bytes()
-    # An attempt directory holds no executable: the record keeps one, read-only,
-    # in its shared bundle.
-    assert not list(directory.rglob("simv"))
-    executables = list(directory.parents[3].rglob("simv"))
-    assert len(executables) == 1, "successful Simulation Record must retain one real executable"
-    assert not executables[0].stat().st_mode & 0o222
-    directory.rename(copy)
-    assert (copy / "pre-sim/0001.json").read_bytes() == sidecar_bytes
-    symlink_or_skip(directory, copy, target_is_directory=True)
-    assert firing.path.read_bytes() == sidecar_bytes
-    with pytest.raises(SimulationRecordIntegrityError):
-        collect_pre_sim_firings(prior=(firing,))
-
-
 @pytest.mark.parametrize("defect", ["root", "descendant", "lock", "target_link"])
 def test_alias_keeps_user_report_links_strict(flow_project, project_alias, defect):
 
@@ -932,72 +899,6 @@ def test_projection_rejects_corrupt_record(tmp_path, error):
         del document["complete"]
     with pytest.raises(ValueError):
         decode_simulation_projection(document, coverage_expected=False)
-
-
-def _two_firing_store(tmp_path):
-    """Run a coverage Simulation Record whose one attempt holds two failed Pre-Sim firings."""
-    from booley.flows.sim.execution.contract import PreSimEvidence
-    from booley.flows.sim.verilator_coverage import SimulationRunResult
-    from tests.flows.sim.simulation_record_test_support import _run_coverage_simulation_record
-    from tests.flows.sim.test_coverage_transaction import NativeExecution
-
-    class Hooks(NativeExecution):
-        def run(self, request):
-            evidence = PreSimEvidence(
-                ("prepare-vectors",),
-                (request.test.name,),
-                "failed",
-                0.2,
-                "vector generator rejected input",
-                returncode=1,
-            )
-            return SimulationRunResult("elab_error", evidence.detail, evidence)
-
-    outcome, store = _run_coverage_simulation_record(
-        tmp_path, Hooks(), pre_sim_commands=("prepare-vectors",)
-    )
-    firings = collect_pre_sim_firings(store.manifest_path)
-    assert len(firings) == 2 and outcome.complete
-    return firings
-
-
-def test_prior_firing_reauthentication_reads_each_attempt_once(tmp_path, monkeypatch):
-    """A re-read returns only the prior firings it was given, decoding each sidecar once."""
-    from tests.flows.sim.simulation_record_test_support import _observe_pre_sim_reads
-
-    firings = _two_firing_store(tmp_path)
-    first, second = firings
-    assert first.path.parent == second.path.parent
-    fresh = collect_pre_sim_firings(prior=(first,))
-    assert [(f.key, f.path, f.terminal) for f in fresh] == [(first.key, first.path, False)]
-
-    accesses, decodes, _results = _observe_pre_sim_reads(monkeypatch)
-    collect_pre_sim_firings(prior=firings)
-    assert decodes == {(f.key[2], f.key[3]): 1 for f in firings}, (
-        "each sidecar must be decoded once"
-    )
-    assert accesses == {f.path: 1 for f in firings}, "each sidecar must have one byte access"
-
-
-def test_shared_collection_bound_counts_distinct_prerequisite_references(
-    observed_hook_flow, monkeypatch
-):
-    # Private seam: `_PRE_SIM_DAG_BOUND` is 4,096 roots, not buildable in a unit test, so the
-    # test lowers it.
-    from booley.flows.sim.record import SimulationRecordIntegrityError, store
-
-    _flow, candidate = observed_hook_flow
-    invocation = candidate.manifest_path.parents[3]
-    # Three roots reach one baseline reference: only distinct references count.
-    monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 1)
-    roots = (
-        *sorted((invocation / "targets").glob("*/record/manifest.json")),
-        candidate.manifest_path,
-    )
-    assert len(collect_pre_sim_firings(*roots)) == 2
-    monkeypatch.setattr(store, "_PRE_SIM_DAG_BOUND", 0)
-    with pytest.raises(SimulationRecordIntegrityError, match="exceeds DAG bound"):
-        collect_pre_sim_firings(*roots)
 
 
 @pytest.mark.parametrize("linked", ["entry", "below", "above"])

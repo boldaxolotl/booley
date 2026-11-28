@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from booley.config.project_config import (
     lookup_target_section,
 )
+from booley.core.atomic_files import Durability, atomic_write_text
 from booley.core.build_paths import work_root_for
 from booley.flows.eda_failures import find_missing_executable, new_attempt_token
 from booley.flows.job_resources import judged_commands_failing_on_error, resolved_source_bytes
@@ -48,7 +49,7 @@ from booley.runtime.endpoint_execution import (
     EndpointOutcome,
     normalize_completion_error,
 )
-from booley.runtime.filesystem_utils import make_directories, replace_file
+from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 from booley.runtime.timefmt import utc_now_rfc3339
 from booley.targets.catalog import TargetCatalog
@@ -119,14 +120,6 @@ class ElabOnlyTargetResult:
     )
     log_path: str = ""
     project_paths: ProjectSourcePaths = field(default_factory=ProjectSourcePaths)
-
-
-def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Replace *path* atomically so a poll never observes partial JSON."""
-    make_directories(path.parent)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    replace_file(tmp, path)
 
 
 class ElabOnlyMixin:
@@ -255,7 +248,7 @@ class ElabOnlyMixin:
                     lifecycle.complete()
                     return result
                 exit_code, standalone = self._run_optional_standalone(targets, results)
-                result = self._elab_only_result(targets, results, exit_code, standalone)
+                result = self._elab_only_result(results, exit_code, standalone)
                 lifecycle.complete()
                 return result
         except ProgressPublicationError as exc:
@@ -499,7 +492,6 @@ class ElabOnlyMixin:
 
     def _elab_only_result(
         self,
-        targets: list[str],
         results: list[ElabOnlyTargetResult],
         exit_code: int,
         standalone: _StandaloneOutcome | None,
@@ -726,7 +718,9 @@ class ElabOnlyMixin:
         invocation_dir = self.reserve_invocation_dir()
         assert invocation_dir is not None
         path = target_report_directory(invocation_dir, result.target) / "simulation.json"
-        _atomic_write_json(path, report)
+        atomic_write_text(
+            path, json.dumps(report, indent=2), mode=None, durability=Durability.NONE
+        )
 
     def _write_elab_only_progress(
         self,

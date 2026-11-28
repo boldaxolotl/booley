@@ -21,7 +21,9 @@ from booley.harness import booley as cli
 from booley.mcp.base import McpTool
 from booley.mcp.flow_adapter import flow_schema
 from booley.mcp.registry import discover_mcp_tools
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.specialists.reviewer import ReviewerSpecialist
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -189,7 +191,7 @@ def test_detached_endpoint_inventory():
     ],
 )
 def test_project_positions(projects, argv, monkeypatch):
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     args = command(argv)
     assert cli._resolve_cli_selection(args) == projects[1]
 

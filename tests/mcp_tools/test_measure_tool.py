@@ -28,6 +28,7 @@ from booley.mcp.server import _JobManager
 from booley.measurement.metrics_file import TableRules
 from booley.runtime import job_records as jobrec
 from booley.runtime.session_paths import session_jobs_dir
+from tests import mcp_runner_fake
 from tests.harness.test_measure_cli import (  # noqa: F401  (the autouse fixture)
     COMMAND,
     TWO_LINT_TABLES,
@@ -93,15 +94,7 @@ def test_measure_returns_its_run_id_at_once(
     monkeypatch.setattr(mcp_server, "_validate_work_dir", lambda _value: None)
     monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)  # must not apply
     started, release = asyncio.Event(), asyncio.Event()
-    submitted: list[tuple[list[str], int, dict[str, Any]]] = []
-
-    async def process(cmd, *, timeout, on_spawn=None, **kwargs):
-        submitted.append((cmd, timeout, kwargs))
-        started.set()
-        await release.wait()
-        return 0, "", "", False
-
-    monkeypatch.setattr(mcp_server, "_run_subprocess", process)
+    calls = mcp_runner_fake.install(monkeypatch, (0, "", "", False), started=started, gate=release)
     arguments = {
         "revision": "--validate",  # a revision is never read as an option
         "base": "main",
@@ -132,8 +125,8 @@ def test_measure_returns_its_run_id_at_once(
     text = _all_text(result)
     assert at_once and "RUNNING" in text
     run_id = _run_id_from(text)
-    ((cmd, timeout, kwargs),) = submitted
-    assert cmd == [
+    (call,) = calls
+    assert call.cmd == [
         sys.executable,
         "-m",
         "booley.harness.booley",
@@ -148,8 +141,8 @@ def test_measure_returns_its_run_id_at_once(
         "--",
         "--validate",
     ]
-    assert timeout == COMMAND_JOB_TIMEOUT_S
-    assert kwargs["stop_grace"] == endpoint_process.MEASURE_STOP_GRACE_SECONDS
+    assert call.kwargs["timeout"] == COMMAND_JOB_TIMEOUT_S
+    assert call.kwargs["stop_grace"] == endpoint_process.MEASURE_STOP_GRACE_SECONDS
     record = jobrec.read_record(run_id, session_jobs_dir())
     assert record is not None and record.endpoint == "measure"
     assert record.owner == _caller().owner
@@ -163,14 +156,7 @@ def test_a_second_measure_never_attaches_to_a_live_one(
     monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
     monkeypatch.setattr(mcp_server, "_validate_work_dir", lambda _value: None)
     release = asyncio.Event()
-    spawned: list[list[str]] = []
-
-    async def process(cmd, *, timeout, on_spawn=None, **kwargs):
-        spawned.append(cmd)
-        await release.wait()
-        return 0, "", "", False
-
-    monkeypatch.setattr(mcp_server, "_run_subprocess", process)
+    calls = mcp_runner_fake.install(monkeypatch, (0, "", "", False), gate=release)
 
     async def scenario() -> list[str]:
         jobs = _JobManager(_FakeLifetime())
@@ -190,7 +176,7 @@ def test_a_second_measure_never_attaches_to_a_live_one(
     first, second = asyncio.run(scenario())
 
     assert _run_id_from(first) != _run_id_from(second)
-    assert "attached" not in second.lower() and len(spawned) == 2
+    assert "attached" not in second.lower() and len(calls) == 2
 
 
 def test_the_measure_job_records_the_calling_agent(
@@ -199,11 +185,7 @@ def test_the_measure_job_records_the_calling_agent(
     """#5310: the Dashboard files the Job under the agent that called, not as Standalone."""
     monkeypatch.setenv("BOOLEY_MCP_DEVELOPER_AGENT", "1")
     monkeypatch.setattr(mcp_server, "_validate_work_dir", lambda _value: None)
-
-    async def process(cmd, *, timeout, on_spawn=None, **kwargs):
-        return 0, "", "", False
-
-    monkeypatch.setattr(mcp_server, "_run_subprocess", process)
+    mcp_runner_fake.install(monkeypatch, (0, "", "", False))
     name = measure_tool().MEASURE_TOOL_NAME
     agent = AgentThread("codex", "t1")
 

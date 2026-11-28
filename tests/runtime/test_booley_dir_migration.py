@@ -431,7 +431,7 @@ def test_docker_inventory_refuses_before_any_write(tmp_path, docker, fault, mess
         }
         document = labelled if fault == "project-label" else fault
         docker.script(("ps",), completed(stdout="live\n"))
-        docker.script(("inspect",), completed(stdout=json.dumps([document])))
+        docker.script(("container", "inspect"), completed(stdout=json.dumps(document)))
     before = _snapshot(tmp_path)
     with pytest.raises(BooleyLayoutError, match=message):
         inspect_migration(tmp_path)

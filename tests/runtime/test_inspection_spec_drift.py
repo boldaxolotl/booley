@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from tests.docker_host_support import fake_docker_host
+from tests.sandbox_venue_fake import place
 from tests.session_issuance_support import install_trusted_validator, stub_keeper
 
 from booley.audit.diagnostic_results import DiagnosticFinding, Findings
@@ -26,12 +27,12 @@ from booley.runtime import (
     auth_token,
     inspection,
     project_image,
-    runtime_context,
     sandbox_apply,
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
+from booley.runtime.runtime_context import RuntimeLocation
 
 _IMAGE_A = "sha256:" + "a" * 64
 _IMAGE_B = "sha256:" + "b" * 64
@@ -67,7 +68,7 @@ def project(
         login.write_text(json.dumps(body), encoding="utf-8")
     validator = install_trusted_validator(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", str(validator.parent))
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     stub_keeper(monkeypatch)
     # No Docker: the image's Booley Directory layout probe reports the plain directory form.
     monkeypatch.setattr(project_image, "project_data_alias_capable", lambda _image_id: False)
@@ -524,15 +525,14 @@ def test_retired_auth_skips_the_drift_check_with_a_note(
 
 @pytest.mark.parametrize("case", ["auto", "claude-spec", "missing-spec"])
 def test_hand_written_spec_is_not_compared(
-    project: Path, monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest, case: str
+    project: Path, monkeypatch: pytest.MonkeyPatch, case: str
 ) -> None:
     spec = _seed(project, dc.APP_CLAUDE)
     spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "auto" if case == "auto" else "claude"
     spec["name"] = "drifted"
     _write(project, spec)
     if case != "auto":
-        request.getfixturevalue("hand_written_sandbox")
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+        place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     if case == "missing-spec":
         dc.devcontainer_path(project).unlink()
 
@@ -549,9 +549,9 @@ def test_hand_written_spec_is_not_compared(
 
 
 def test_hand_written_sandbox_unparseable_spec_names_no_init_rerun(
-    project: Path, monkeypatch: pytest.MonkeyPatch, hand_written_sandbox: None
+    project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     dc.devcontainer_path(project).parent.mkdir(parents=True, exist_ok=True)
     dc.devcontainer_path(project).write_bytes(b"{")
 
@@ -567,12 +567,10 @@ def test_hand_written_sandbox_unparseable_spec_names_no_init_rerun(
 def test_inconclusive_image_comparison_names_host_doctor_only_off_a_hand_written_sandbox(
     project: Path,
     monkeypatch: pytest.MonkeyPatch,
-    request: pytest.FixtureRequest,
     hand_written: bool,
 ) -> None:
     if hand_written:
-        request.getfixturevalue("hand_written_sandbox")
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+        place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     monkeypatch.setattr(
         inspection.idk,
         "compare_issued_image",
@@ -591,12 +589,12 @@ def test_inconclusive_image_comparison_names_host_doctor_only_off_a_hand_written
 
 
 def test_hand_written_sandbox_keeps_compatibility_checks(
-    project: Path, monkeypatch: pytest.MonkeyPatch, hand_written_sandbox: None
+    project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     spec = _seed(project, dc.APP_CLAUDE)
     spec["remoteEnv"]["BOOLEY_AGENT_APP"] = "auto"
     _write(project, spec)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
 
     findings = _inspect(project, monkeypatch, expected_spec=None, declared_provider=dc.APP_CODEX)
 

@@ -23,8 +23,10 @@ from booley.runtime.booley_dir import (
     resolve_checkout_booley_dir,
     resolve_common_booley_dir,
 )
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.sandbox_venue_fake import place
 
 
 @pytest.fixture(autouse=True)
@@ -51,7 +53,7 @@ def _codes(status):
 def _observe_in(tmp_path, monkeypatch):
     """Observe currency the way an in-Sandbox Doctor does, with the matching image."""
     monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _: tmp_path)
-    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setenv(IMAGE_ENV, IMAGE)
     return doctor.observe_deep_status(tmp_path)
 
@@ -262,7 +264,7 @@ def _stub_orchestration(tmp_path, monkeypatch):
     monkeypatch.setattr(doctor, "_run_flow_and_core_phase", lambda *_args: None)
     # Observe currency as an in-Sandbox Doctor does, with the matching image.
     monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _: booley_dir)
-    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setenv(IMAGE_ENV, IMAGE)
     return booley_dir
 
@@ -340,7 +342,7 @@ def test_storage_failure_does_not_claim_new_current_evidence(tmp_path, monkeypat
     before = path.read_bytes() if saved else None
     previous = deep.load_deep_record(tmp_path)
     monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _: tmp_path)
-    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setenv(IMAGE_ENV, IMAGE)
     publication = Mock(side_effect=OSError("publication failed"))
     monkeypatch.setattr(Path, "replace", publication)
@@ -430,7 +432,7 @@ def test_host_currency_uses_sandbox_execution_version(
     success = _record(version="validated")
     deep.record_deep_attempt(tmp_path, success)
     monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _: tmp_path)
-    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(booley, "__version__", host_version)
     probe = subprocess.CompletedProcess([], 0, f"{IMAGE}\n{sandbox_version or ''}\n", "")
     run = Mock(return_value=probe)
@@ -456,7 +458,7 @@ SELECTED = SimpleNamespace(container_id="selected")
     ids=["selected", "malformed", "unreadable", "absent", "ambiguous"],
 )
 def test_host_identity_reads_selected_sandbox(tmp_path, monkeypatch, selected, stdout, identity):
-    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     resolve = Mock(side_effect=[selected])
     monkeypatch.setattr(doctor.session_runtime, "resolve_running_sandbox", resolve)
     run = Mock(return_value=subprocess.CompletedProcess([], 0, stdout, ""))
@@ -469,7 +471,7 @@ def test_inside_currency_uses_live_package_version(tmp_path, monkeypatch):
     success = _record(version="validated")
     deep.record_deep_attempt(tmp_path, success)
     monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _: tmp_path)
-    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setattr(booley, "__version__", "upgraded")
     monkeypatch.setenv(IMAGE_ENV, IMAGE)
     assert _codes(doctor.observe_deep_status(tmp_path)) == ["version-changed"]
@@ -478,7 +480,7 @@ def test_inside_currency_uses_live_package_version(tmp_path, monkeypatch):
 def test_inside_identity_comes_from_issued_image_variable(tmp_path, monkeypatch):
     deep.record_deep_attempt(tmp_path, _record())
     monkeypatch.setattr(doctor, "resolve_common_booley_dir", lambda _: tmp_path)
-    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setenv(IMAGE_ENV, IMAGE)
     assert doctor.observe_deep_status(tmp_path).current
     monkeypatch.setenv(IMAGE_ENV, "latest")
@@ -574,7 +576,7 @@ def test_clean_run_from_worktree_is_current_in_main(tmp_path, monkeypatch, layou
     monkeypatch.setattr(
         doctor, "_run_deep_phase", lambda *_args: deep.DeepAttemptSummary((), (), IMAGE)
     )
-    monkeypatch.setattr(doctor.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setenv(IMAGE_ENV, IMAGE)
     for runner, reader in ((worktree, main), (main, worktree)):
         monkeypatch.setattr(
