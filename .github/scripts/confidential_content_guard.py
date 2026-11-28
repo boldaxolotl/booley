@@ -320,7 +320,7 @@ def _config_bytes(repo: Path) -> bytes:
         raise GuardError(str(exc)) from exc
 
 
-def _string_list(value: object, field: str) -> list[str]:
+def _string_list(value: object) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
@@ -335,12 +335,12 @@ def _config_lists(document: dict) -> tuple[list[str], list[str], list[str]]:
     for name, section in document.items():
         if not isinstance(section, dict):
             continue
-        terms.extend(_string_list(section.get("words"), f"{name}.words"))
-        terms.extend(_string_list(section.get("banned_words"), f"{name}.banned_words"))
+        terms.extend(_string_list(section.get("words")))
+        terms.extend(_string_list(section.get("banned_words")))
         if name in {"guard", "stealth"}:
-            authors.extend(_string_list(section.get("allowed_authors"), f"{name}.allowed_authors"))
-            ignored.extend(_string_list(section.get("ignored_paths"), f"{name}.ignored_paths"))
-    terms.extend(_string_list(document.get("banned_words"), "banned_words"))
+            authors.extend(_string_list(section.get("allowed_authors")))
+            ignored.extend(_string_list(section.get("ignored_paths")))
+    terms.extend(_string_list(document.get("banned_words")))
     return terms, authors, ignored
 
 

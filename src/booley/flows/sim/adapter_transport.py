@@ -495,7 +495,6 @@ def publish_native_adapter_result(
             identity,
             _native_adapter_result(
                 identity,
-                output,
                 returncode,
                 assessment,
                 failure_kind=failure_kind,
@@ -564,7 +563,6 @@ def first_native_failure(output: str, default: str = "") -> str:
 
 def _native_adapter_result(
     identity: AdapterTransportIdentity,
-    output: str,
     returncode: int,
     assessment: NativeVerdictAssessment,
     *,

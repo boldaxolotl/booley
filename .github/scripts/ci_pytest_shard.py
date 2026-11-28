@@ -39,7 +39,7 @@ def pytest_configure(config: pytest.Config) -> None:
         _EXECUTION_FINISHED_AT = None
 
 
-def pytest_sessionstart(session: pytest.Session) -> None:
+def pytest_sessionstart() -> None:
     global _SESSION_STARTED_AT
     _SESSION_STARTED_AT = time.perf_counter()
 

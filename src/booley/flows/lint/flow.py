@@ -736,7 +736,7 @@ class LintFlow(BuiltinFlow[LintRequest]):
         """Not used вЂ” LintFlow overrides _run() for multi-config logic."""
         return []
 
-    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
+    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:  # noqa: ARG002 — overrides Flow._interpret_result
         """Not used вЂ” LintFlow overrides _run()."""
         return EndpointOutcome()
 

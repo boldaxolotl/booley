@@ -456,8 +456,7 @@ define along with it.
 ## Elaboration checks
 
 `--mode elab-only` compiles, elaborates and links the simulator without running
-any tests: a fast "does it still build?" check. A later full run can reuse the
-build.
+any tests: a fast "does it still build?" check.
 
 `--mode elab-only-standalone` also elaborates each reusable RTL module on its
 own. This catches a module that compiles only thanks to a define or include
@@ -616,19 +615,10 @@ available.
 
 ## Build reuse
 
-A repeat run skips the build when nothing that goes into it has changed:
-sources, cores, toolchain, flags and environment. Each Target's result says
-why a build was or wasn't reused.
-
-<details markdown>
-<summary>With Icarus</summary>
-
-Booley reuses an Icarus build only for a run without `--trace`, on a Target
-built from one local `.core` with no dependency cores, generators, VPI
-modules or `user` files, whose sources are plain Verilog or SystemVerilog
-files without `` `include ``. Any other Icarus build is rebuilt on every run.
-
-</details>
+A repeat Verilator run skips the build when nothing that goes into it has
+changed: sources, cores, toolchain, flags and environment. Icarus builds
+again on every run. Each Target's result says why a build was or wasn't
+reused.
 
 <details markdown>
 <summary>With a cocotb testbench</summary>

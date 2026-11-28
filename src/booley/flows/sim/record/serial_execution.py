@@ -428,7 +428,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             handle, names, work_item_test_runs(request.work_item)
         ) as group:
             _authenticate_planning_disclosure(request, group)
-            captured = self._compile_and_capture(request, directory, attempt, group, workload)
+            captured = self._compile_and_capture(directory, attempt, group, workload)
             if captured is None:
                 return self._shared_build_failure(request, key, directory, attempt, group, started)
         result, bundle = self._publish_ready(
@@ -450,7 +450,6 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
 
     def _compile_and_capture(
         self,
-        request: WorkExecutionRequest,
         directory: Path,
         attempt: BundleBuildAttempt,
         group: _OrdinaryGroup,
@@ -572,7 +571,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             if failure is not None:
                 return failure
         captured = self._compile_and_capture(
-            request, build_directory, build_attempt, group, inputs.workload
+            build_directory, build_attempt, group, inputs.workload
         )
         if captured is None:
             return self._compile_failure(request, build_directory, build_attempt, group, started)

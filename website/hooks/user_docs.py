@@ -160,7 +160,7 @@ def on_files(files, config):
     return files
 
 
-def on_serve(server, config, builder):
+def on_serve(server, config, builder):  # noqa: ARG001 — MkDocs passes hook arguments by keyword
     server.watch(str(USER_DOCS_DIR))
     for doc in docs_links.CONTRIBUTOR_DOCS:
         server.watch(str(REPO / doc.path))
@@ -168,7 +168,7 @@ def on_serve(server, config, builder):
     return server
 
 
-def on_env(env, config, files):
+def on_env(env, config, files):  # noqa: ARG001 — MkDocs passes hook arguments by keyword
     """Expose the docs reading order to the templates."""
     env.globals["user_docs"] = [
         {
@@ -183,7 +183,7 @@ def on_env(env, config, files):
     return env
 
 
-def on_page_markdown(markdown, page, config, files):
+def on_page_markdown(markdown, page, config, files):  # noqa: ARG001 — MkDocs passes hook arguments by keyword
     """Give docs pages their template, source link, and site-ready links."""
     src_uri = page.file.src_uri
     if not src_uri.startswith("docs/"):
@@ -197,7 +197,7 @@ def on_page_markdown(markdown, page, config, files):
     return rewrite_links(markdown, PurePosixPath(doc.directory))
 
 
-def on_page_content(content, page, config, files):
+def on_page_content(content, page, config, files):  # noqa: ARG001 — MkDocs passes hook arguments by keyword
     """Check heading IDs match GitHub's, and let wide tables scroll."""
     if page.meta.get("doc_source"):
         _check_github_anchors(page.toc, page.file.src_uri)
