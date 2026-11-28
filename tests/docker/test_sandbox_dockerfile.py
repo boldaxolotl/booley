@@ -425,6 +425,7 @@ def test_headless_chrome_install_verifies_its_pin(tmp_path: Path, case: str) -> 
     assert browser.exists() == (case == "good")
     if case == "good":
         assert (root / "usr/local/bin/chrome-headless-shell").resolve() == browser.resolve()
+        assert (browser.parent / "VERSION").read_text() == f"{version}\n"
 
 
 # Files that may name a CLI version besides the manifest: its lockfile, provenance
@@ -521,6 +522,7 @@ case "$1" in
   --version) echo "t3 v9.9.9";;
   policy) test -z "$T3_REFUSE" || exit 77;;
 esac
+# VERSION = "1.2.3.4"
 """
 _SANDBOX_PATHS = re.compile(r"(?<![\w.:-])(?=/(?:tmp/|opt/|usr/local/|etc/t3code))")
 
@@ -584,6 +586,7 @@ def test_t3code_install_verifies_the_manifest_pin(tmp_path: Path, case: str) -> 
         url = (tmp_path / "url").read_text().strip()
         assert url.endswith("/v9.9.9/t3-9.9.9-linux-x64.tar.gz")
         assert f"1 policy check {policy_file}" in (tmp_path / "t3.log").read_text().splitlines()
+        assert (root / "opt/t3code/preview-browser-version").read_text() == "1.2.3.4\n"
 
 
 def test_openroad_uses_verified_oci_artifact() -> None:

@@ -26,20 +26,24 @@ def pinned_version() -> str:
     return require_str(require_dict(document.get("t3code"), field="t3code"), "version")
 
 
+def _capture(command: list[str]) -> tuple[str, str]:
+    """Run *command*: its stripped stdout, and why it failed (``""`` when it did not)."""
+    try:
+        result = platform_paths.run_captured_bounded(command, timeout=_VERSION_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return "", f"could not run: {exc}"
+    if not result.returncode:
+        return result.stdout.strip(), ""
+    # The last stderr line says why: no such file, or Docker could not run the image.
+    why = result.stderr.strip().splitlines()[-1:]
+    return result.stdout.strip(), ": ".join([f"exited {result.returncode}", *why])
+
+
 def inspect_install(command: list[str], remedy: Callable[[], str]) -> DiagnosticReport:
     """Run *command* (``t3 --version``, however it is reached) and compare it with the pin."""
     findings = Findings()
     version = pinned_version()
-    reported = failure = ""
-    try:
-        result = platform_paths.run_captured_bounded(command, timeout=_VERSION_TIMEOUT_S)
-        reported = result.stdout.strip()
-        if result.returncode:
-            # The last stderr line says why: no `t3`, or Docker could not run the image.
-            why = result.stderr.strip().splitlines()[-1:]
-            failure = ": ".join([f"exited {result.returncode}", *why])
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        failure = f"could not run: {exc}"
+    reported, failure = _capture(command)
     if failure:
         findings.fail(
             f"T3 Code {version} installed check failed: t3 --version {failure}",
@@ -52,6 +56,25 @@ def inspect_install(command: list[str], remedy: Callable[[], str]) -> Diagnostic
             f"T3 Code {version} is not installed: t3 --version reported {reported or 'nothing'}",
             f"recreate the Sandbox: {remedy()}",
         )
+    return findings.report()
+
+
+def inspect_preview_browser(command: list[str], remedy: Callable[[], str]) -> DiagnosticReport:
+    """Run *command*, which prints T3 Code's browser version, then the image's, and compare."""
+    findings = Findings()
+    reported, failure = _capture(command)
+    versions = reported.splitlines()
+    if not failure and len(versions) != 2:
+        failure = f"printed {len(versions)} lines, not two versions"
+    fix = f"recreate the Sandbox: {remedy()}"
+    if failure:
+        findings.fail(f"T3 Code's preview browser check failed: {failure}", fix)
+    elif versions[0] == versions[1]:
+        findings.pass_(
+            f"T3 Code's preview browser is the Sandbox Image's headless Chrome {versions[0]}"
+        )
+    else:
+        findings.fail(incontainer_setup.preview_browser_mismatch(*versions), fix)
     return findings.report()
 
 

@@ -334,9 +334,11 @@ RUN echo ">>> Bundling Live Preview ${LIVE_PREVIEW_VERSION} VSIX..." \
 
 # Headless Chrome for T3 Code's preview panel: every Sandbox
 # Image carries it. Chrome for Testing's headless shell at the version T3
-# Code pins (apps/server/src/preview/PreviewBrowser.ts), so T3 Code can use
-# it without a download the egress rules block. --version loads every
-# shared library, so a missing one fails the build.
+# Code pins (apps/server/src/preview/PreviewBrowser.ts). Sandbox start links
+# it into T3 Code's tools directory when the VERSION record written here
+# matches T3 Code's, so T3 Code attempts no download, which the egress rules
+# block (#5906). --version loads every shared library, so a missing one fails
+# the build.
 # The T3 Code release in agent-clis-package.json pins this version; hold
 # 157.0.8103.78 and move the hold in .github/renovate.json with each bump.
 # renovate: datasource=custom.chrome-for-testing depName=chrome-headless-shell versioning=regex:^(?<major>\d+)\.(?<minor>\d+)\.(?<patch>\d+)\.(?<build>\d+)$
@@ -355,7 +357,8 @@ RUN echo ">>> Installing chrome-headless-shell ${CHROME_HEADLESS_SHELL_VERSION}.
     && mv /tmp/chrome-headless-shell/chrome-headless-shell-linux64 /opt/chrome-headless-shell \
     && ln -s /opt/chrome-headless-shell/chrome-headless-shell /usr/local/bin/chrome-headless-shell \
     && rm -rf /tmp/chrome-headless-shell.zip /tmp/chrome-headless-shell \
-    && test "$(chrome-headless-shell --version)" = "Google Chrome for Testing ${CHROME_HEADLESS_SHELL_VERSION}"
+    && test "$(chrome-headless-shell --version)" = "Google Chrome for Testing ${CHROME_HEADLESS_SHELL_VERSION}" \
+    && printf '%s\n' "${CHROME_HEADLESS_SHELL_VERSION}" > /opt/chrome-headless-shell/VERSION
 
 # Node.js 24 LTS + agent CLIs. Download exact publisher artifacts and verify
 # them before execution; neither a mutable setup script nor semver ranges are
@@ -401,6 +404,8 @@ RUN agent_cli_pin() { python3 -I -c 'import json, sys; print(json.load(open(sys.
 # version and sha256. The launcher gives every way of starting T3 Code, and so
 # its child processes, NODE_USE_ENV_PROXY=1 (Node's fetch ignores HTTPS_PROXY
 # without it); an image-level ENV would reach every other Node program too.
+# T3 Code names no preview browser version in its CLI, so the build reads it
+# from the executable; a release that holds none or several fails here.
 RUN t3code_pin() { python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["t3code"][sys.argv[2]])' /opt/agent-clis/package.json "$1"; } \
     && T3CODE_VERSION="$(t3code_pin version)" \
     && T3CODE_SHA256="$(t3code_pin sha256)" \
@@ -415,7 +420,10 @@ RUN t3code_pin() { python3 -I -c 'import json, sys; print(json.load(open(sys.arg
     && printf '%s\n' '#!/bin/sh' 'export NODE_USE_ENV_PROXY=1' 'exec /opt/t3code/t3 "$@"' \
         > /usr/local/bin/t3 \
     && chmod 0755 /usr/local/bin/t3 \
-    && test "$(t3 --version)" = "t3 v${T3CODE_VERSION}"
+    && test "$(t3 --version)" = "t3 v${T3CODE_VERSION}" \
+    && LC_ALL=C grep -aoE 'VERSION = "[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+"' /opt/t3code/t3 \
+        | cut -d'"' -f2 | sort -u > /opt/t3code/preview-browser-version \
+    && test "$(wc -l < /opt/t3code/preview-browser-version)" -eq 1
 
 # The container's network namespace is not the whole agent boundary: both
 # clients can expose provider-hosted web MCP tools whose requests never originate

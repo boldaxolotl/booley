@@ -262,6 +262,14 @@ def _t3_pin() -> str:
     return json.loads(manifest.read_text(encoding="utf-8"))["t3code"]["version"]
 
 
+# T3 Code's preview browser version record, then the Sandbox Image browser's.
+_BROWSER_RECORDS = [
+    "cat",
+    "/opt/t3code/preview-browser-version",
+    "/opt/chrome-headless-shell/VERSION",
+]
+
+
 def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixture
     monkeypatch,
     root: Path,
@@ -381,6 +389,8 @@ def _patch_environment(  # noqa: PLR0915 - one exhaustive external-command fixtu
         if cmd[-2:] == ["t3", "--version"]:
             # The Sandbox Image the fake stands for is built from the packaged manifest.
             return subprocess.CompletedProcess(cmd, 0, stdout=f"t3 v{_t3_pin()}\n", stderr="")
+        if cmd[-3:] == _BROWSER_RECORDS:
+            return subprocess.CompletedProcess(cmd, 0, stdout="1.2.3.4\n1.2.3.4\n", stderr="")
         if cmd[1:3] == ["image", "ls"]:
             # No issued Sandbox Image keepers; the strict listing rejects stray output.
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
@@ -6454,6 +6464,57 @@ def test_nonstealth_doctor_reports_selectively_ignored_config(tmp_path, monkeypa
     (fix,) = _fixes(result, ".booley/booley.toml (1 path(s))")
     assert "edit the reported" in fix
     assert excludes.read_text() == "# local policy\n.booley/booley.toml\n"
+
+
+@pytest.mark.parametrize(
+    ("inside", "records", "message"),
+    [
+        (
+            False,
+            (0, "1.2.3.4\n1.2.3.4\n"),
+            "browser is the Sandbox Image's headless Chrome 1.2.3.4",
+        ),
+        (True, (0, "9.9.9.9\n1.2.3.4\n"), "Chrome 9.9.9.9, the Sandbox Image ships 1.2.3.4"),
+        (True, (1, "1.2.3.4\n"), "browser check failed: exited 1: cat: no such file"),
+        (False, (0, "1.2.3.4\n"), "browser check failed: printed 1 lines, not two versions"),
+    ],
+    ids=["host-match", "inside-mismatch", "inside-unrecorded", "host-short"],
+)
+def test_doctor_checks_the_preview_browser_version(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    inside: bool,
+    records: tuple[int, str],
+    message: str,
+) -> None:
+    _runtime_setup(tmp_path, monkeypatch, inside=inside)
+    if inside:
+        _prepare_row(monkeypatch, "inside-marker")
+    asked: list[list[str]] = []
+
+    def cat_records(cmd: list[str]) -> bool:
+        if cmd[-3:] != _BROWSER_RECORDS:
+            return False
+        asked.append(cmd)
+        return True
+
+    _answer_command(
+        monkeypatch,
+        cat_records,
+        returncode=records[0],
+        stdout=records[1],
+        stderr="cat: no such file\n",
+    )
+
+    result = _doctor_run(tmp_path)
+
+    (finding,) = [f for f in result.findings if f.message.startswith("T3 Code's preview")]
+    assert message in finding.message
+    passed = message.startswith("browser is")
+    assert str(finding.severity) == ("pass" if passed else "fail")
+    assert passed or finding.fix.startswith("recreate the Sandbox: ")
+    (argv,) = asked
+    assert argv == _BROWSER_RECORDS if inside else argv[1:3] == ["run", "--rm"]
 
 
 @pytest.mark.parametrize(

@@ -160,6 +160,7 @@ from booley.runtime.platform_paths import run_captured_bounded
 from booley.runtime.project_gitignore import missing_gitignore_patterns
 from booley.runtime.resource_history import DOCTOR_RUN_ENV
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS, Attachment
+from booley.runtime.sandbox_layout import CHROME_VERSION_RECORD, T3_BROWSER_VERSION_RECORD
 from booley.runtime.session_issuance import SANDBOX_IMAGE_ID_ENV
 from booley.runtime.timefmt import format_clock, format_duration, format_human_datetime
 from booley.runtime.worktree_evidence import untracked_common_paths
@@ -1442,11 +1443,13 @@ def _run_runtime_phase(
 def _run_t3_code_checks(
     project: ProjectAudit | None, docker_exe: str | None, image: str, reporter: _Reporter
 ) -> None:
-    """Check the pinned T3 Code install, its server and the host relay."""
+    """Check the pinned T3 Code install, its preview browser, its server and the host relay."""
     _section("T3 Code checks")
     remedy = functools.partial(_image_stale_remedy, project)
+    records = ["cat", T3_BROWSER_VERSION_RECORD, CHROME_VERSION_RECORD]
     if runtime_context.inside_session_runtime():
         reporter.diagnostics(t3_inspection.inspect_install(["t3", "--version"], remedy))
+        reporter.diagnostics(t3_inspection.inspect_preview_browser(records, remedy))
         reporter.diagnostics(t3_inspection.inspect_ui_in_sandbox())
     elif project is None:
         reporter.skip_("T3 Code checks skipped - project config invalid")
@@ -1456,6 +1459,8 @@ def _run_t3_code_checks(
         if _docker_image_exists_by_name(image):
             command = [docker_exe, "run", "--rm", image, "t3", "--version"]
             reporter.diagnostics(t3_inspection.inspect_install(command, remedy))
+            command = [docker_exe, "run", "--rm", image, *records]
+            reporter.diagnostics(t3_inspection.inspect_preview_browser(command, remedy))
         else:
             reporter.skip_("T3 Code version check skipped - Sandbox Image missing")
         reporter.diagnostics(t3_inspection.inspect_ui(project.project_root))

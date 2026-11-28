@@ -1,4 +1,5 @@
-"""Sandbox e2e: the image's headless Chrome renders a local page as the Sandbox user (#3875).
+"""Sandbox e2e: the image's headless Chrome renders a local page as the Sandbox user (#3875),
+and is the browser T3 Code's preview panel finds (#5906).
 
 Runs under the real session flags (``--cap-drop ALL``, ``no-new-privileges``),
 with the network off. Skips when Docker, the image, or the browser is missing,
@@ -15,6 +16,8 @@ import pytest
 from tests.docker.isolation.container_names import next_ci_container_name
 from tests.subprocess_budget import run_bounded_child
 
+from booley.core.resources import package_data_dir
+from booley.runtime import dockerfile_syntax
 from booley.runtime.devcontainer import EGRESS_NETWORK
 from booley.runtime.session_issuance import _FIXED_RUN_ARGS
 
@@ -29,7 +32,18 @@ printf '%s' '<p id="m">static</p><script>document.getElementById("m").textConten
 """
 
 
-def test_sandbox_user_renders_a_local_page_headless() -> None:
+# Link as Sandbox start does, then look where T3 Code looks: tools/<browser>/<platform>/<version>.
+_PREVIEW_SCRIPT = """set -eu
+base="$(mktemp -d)"
+python3 -c 'import sys, pathlib; from booley.runtime.incontainer_setup import link_t3_preview_browser as link; link(pathlib.Path(sys.argv[1]))' "$base"
+version="$(cat /opt/t3code/preview-browser-version)"
+echo "$version"
+readlink -e "$base/tools/chrome-headless-shell/linux64/$version/chrome-headless-shell"
+"""
+
+
+def _image_command() -> list[str]:
+    """``docker run`` of the image with the Sandbox's flags; skips without it or its browser."""
     docker = shutil.which("docker")
     if docker is None:
         pytest.skip("docker not available")
@@ -42,8 +56,23 @@ def test_sandbox_user_renders_a_local_page_headless() -> None:
     probe = run_bounded_child([*command(), "test", "-x", _CHROME])
     if probe.returncode != 0:
         pytest.skip(f"{_IMAGE} is missing or predates headless Chrome; rebuild it")
+    return command()
 
-    run = run_bounded_child([*command(), "bash", "-c", _SCRIPT])
+
+def test_sandbox_user_renders_a_local_page_headless() -> None:
+    run = run_bounded_child([*_image_command(), "bash", "-c", _SCRIPT])
 
     assert run.returncode == 0, run.stderr
     assert '<p id="m">rendered</p>' in run.stdout
+
+
+def test_t3_code_finds_the_images_browser_where_it_looks() -> None:
+    run = run_bounded_child([*_image_command(), "bash", "-c", _PREVIEW_SCRIPT])
+
+    assert run.returncode == 0, run.stderr
+    dockerfile = package_data_dir() / "docker" / "Dockerfile.base"
+    pin = dockerfile_syntax.argument_default(
+        dockerfile.read_text(encoding="utf-8"), "CHROME_HEADLESS_SHELL_VERSION"
+    )
+    version, found = run.stdout.split()
+    assert (version, found) == (pin, _CHROME)
