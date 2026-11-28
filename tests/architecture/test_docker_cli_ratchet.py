@@ -60,8 +60,10 @@ def _is_fallback(node: ast.AST) -> bool:
 def _is_label(node: ast.AST) -> bool:
     if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
         return False
-    text = node.value.removeprefix("label=")
-    return any(text == label or text.startswith(f"{label}=") for label in _LABELS)
+    text = node.value.removeprefix("--").removeprefix("label=")
+    return any(
+        text == label or text.startswith(f"{label}=") or f'"{label}"' in text for label in _LABELS
+    )
 
 
 def _sites(source: str) -> Iterator[tuple[str, int]]:
@@ -110,6 +112,8 @@ _IMPORT = "from booley.core import docker_cli\n"
         ('x = "booley.role"\n', "label", 1),
         ('x = f"booley.project={n}"\n', "label", 1),
         ('["--filter", "label=booley.project-id=p"]\n', "label", 1),
+        ('["--label=booley.project=p"]\n', "label", 1),
+        ("x = '{{index .Config.Labels \"booley.role\"}}'\n", "label", 1),
         ('x = "booley.projects.cli"\n', "label", 0),
     ],
     ids=[
@@ -122,6 +126,8 @@ _IMPORT = "from booley.core import docker_cli\n"
         "label",
         "label-fstring",
         "label-filter",
+        "label-flag",
+        "label-template",
         "other-name",
     ],
 )

@@ -714,6 +714,11 @@ _FAILURES = {
         "cannot read the active Docker endpoint",
         answers=(_answer("context", "inspect", stderr="no context"),),
     ),
+    "endpoint-malformed": _Failure(
+        "reaper",
+        "cannot read the active Docker endpoint: invalid inspection of context",
+        answers=(_answer("context", "inspect", code=0, stdout="unix:///s\n"),),
+    ),
     "reaper-reaches-other-daemon": _Failure(
         "reaper",
         "daemon-b",
