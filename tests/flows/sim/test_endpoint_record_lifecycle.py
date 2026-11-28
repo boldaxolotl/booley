@@ -1172,11 +1172,6 @@ def _ordinary_public_hook_fixture(tmp_path, monkeypatch):
     (project / ".booley/tests.toml").write_text('[sim_a]\ntests = ["a", "b"]\n')
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("PATH", f"{tmp_path / 'bin'}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setattr(
-        # Private seams: the fake-EDA tool identity and execution have no public Project fixture.
-        "booley.flows.sim.build_session._icarus_tool_identity",
-        lambda: "test-tool-closure",
-    )
     flow = SimulateFlow()
     # Publication tests must allow for Git for Windows shell startup under CI load.
     execution = SimulationExecution(

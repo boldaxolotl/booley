@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import os
 import signal
 import subprocess
@@ -11,7 +10,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import cast
 
 import pytest
 
@@ -32,7 +31,7 @@ from booley.fusesoc import selftest_overlay
 from booley.fusesoc.core_projection import isolated_core_path
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
-from tests.flows.sim.test_build_reuse import _core_behind_linked_booley_dir, _handle
+from tests.flows.sim.test_build_reuse import _handle
 from tests.flows.sim.test_coverage_invocation import project
 from tests.time_budget import hang_guard_s, scaled
 
@@ -199,13 +198,13 @@ def test_elf_dependency_scan_declines_missing_library(
     assert build_reuse.elf_dependencies(binary) is None
     binary.write_bytes(b"\x7fELF")
     monkeypatch.setattr(
-        build_session.subprocess,
+        build_reuse.subprocess,
         "run",
         lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="lib => not found"),
     )
     assert build_reuse.elf_dependencies(binary) is None
     monkeypatch.setattr(
-        build_session.subprocess,
+        build_reuse.subprocess,
         "run",
         lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout="lib => /tmp/lib.so"),
     )
@@ -422,193 +421,3 @@ def test_generation_snapshot_keeps_reserved_names_the_input_snapshot_ignores(
         ".booley-runtime-inputs/",
         ".booley-runtime-inputs/fw.hex",
     }
-
-
-_ICARUS_MAKEFILE = "all:\n\t$(EDALIZE_LAUNCHER) iverilog top.sv\n\t$(EDALIZE_LAUNCHER) vvp demo\n"
-_ICARUS_CORE = "CAPI=2:\nname: a:b:demo:1\n"
-_STOCK_SOURCE = ("systemVerilogSource", "src/demo/top.sv")
-_STOCK_SCRIPT = "\nsrc/demo/top.sv\n"  # a blank line is tolerated
-
-
-@pytest.fixture
-def icarus_install(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A fake Icarus prefix on ``PATH`` with no recipe-rewriting Make variables (POSIX only)."""
-    if os.name == "nt":
-        pytest.skip("Icarus build reuse keys only on POSIX (icarus_reuse_posix_only)")
-    prefix = tmp_path / "install"
-    (prefix / "lib" / "ivl").mkdir(parents=True)
-    (prefix / "bin").mkdir()
-    for name in ("iverilog", "vvp", "make", "sh"):
-        (prefix / "bin" / name).write_text(f"#!/bin/sh\n# {name}\n", encoding="utf-8")
-        (prefix / "bin" / name).chmod(0o755)
-    (prefix / "lib" / "ivl" / "module.vpi").write_bytes(b"module")
-    monkeypatch.setenv("PATH", str(prefix / "bin"))
-    for name in ("EDALIZE_LAUNCHER", "MAKEFLAGS", "MFLAGS"):
-        monkeypatch.delenv(name, raising=False)
-    return prefix
-
-
-def _write_icarus_recipe(
-    work: Path,
-    scripts: tuple[str, ...] = (_STOCK_SCRIPT,),
-    makefile: str = _ICARUS_MAKEFILE,
-) -> None:
-    for index, text in enumerate(scripts):
-        (work / f"demo{index}.scr").write_text(text, encoding="utf-8")
-    (work / "Makefile").write_text(makefile, encoding="utf-8")
-
-
-def _icarus_generation(
-    tmp_path: Path,
-    *,
-    core_text: str = _ICARUS_CORE,
-    edam: object = None,
-    core_outside: bool = False,
-    files: tuple[tuple[str, str], ...] = (_STOCK_SOURCE,),
-    staged_text: str = "module top; endmodule",
-    source_text: str | None = None,
-    scripts: tuple[str, ...] = (_STOCK_SCRIPT,),
-    makefile: str = _ICARUS_MAKEFILE,
-    cocotb_module: str = "",
-    variant: str = "",
-) -> tuple[SimulationBuildSession, SimpleNamespace]:
-    """A session and the prepared build of one stock Icarus generation, tweaked by overrides."""
-    project = tmp_path / "project"
-    work = project / "work"
-    (work / "src" / "demo").mkdir(parents=True)
-    core = (tmp_path / "outside.core") if core_outside else project / "demo.core"
-    core.write_text(core_text, encoding="utf-8")
-    (project / "top.sv").write_text(
-        staged_text if source_text is None else source_text, encoding="utf-8"
-    )
-    staged = work / "src" / "demo" / "top.sv"
-    staged.write_text(staged_text, encoding="utf-8")
-    document = (
-        {"cores": {"one": {"core_file": os.path.relpath(core, work)}}} if edam is None else edam
-    )
-    edam_path = work / "demo.eda.yml"
-    edam_path.write_text(json.dumps(document), encoding="utf-8")
-    _write_icarus_recipe(work, scripts, makefile)
-    items = tuple(
-        SimpleNamespace(file_type=file_type, name=name, absolute=lambda _root: staged.resolve())
-        for file_type, name in files
-    )
-    prepared = SimpleNamespace(
-        eda_tool="icarus",
-        target_identity="target",
-        environment={},
-        resolved=SimpleNamespace(cocotb_module=cocotb_module, files=items, edam_path=edam_path),
-        build_root=work,
-        work_root=work,
-    )
-    return SimulationBuildSession(_handle(project), variant, wait_s=60), prepared
-
-
-def _key(session: SimulationBuildSession, prepared: SimpleNamespace) -> str | None:
-    return session.reusable_key(
-        cast(Any, prepared), snapshot_build_inputs(cast(Any, prepared)), hooks=False
-    )
-
-
-@pytest.mark.usefixtures("icarus_install")
-@pytest.mark.parametrize("case", ["plain", "project_core", "stealth_core"])
-def test_stock_icarus_generation_keys(tmp_path: Path, case: str) -> None:
-    """A stock generation keys, also when its core sits behind a linked Booley Directory (#2191)."""
-    if case == "plain":
-        session, prepared = _icarus_generation(tmp_path)
-    else:
-        project, edam, _core = _core_behind_linked_booley_dir(tmp_path, case)
-        (edam.parent / "top.sv").write_text("module top; endmodule", encoding="utf-8")
-        _write_icarus_recipe(edam.parent, ("top.sv\n",))
-        session = SimulationBuildSession(_handle(project), wait_s=60)
-        prepared = SimpleNamespace(
-            eda_tool="icarus",
-            target_identity="target",
-            environment={},
-            resolved=SimpleNamespace(cocotb_module="", files=(), edam_path=edam),
-            build_root=edam.parent,
-            work_root=edam.parent,
-        )
-
-    key = _key(session, prepared)
-
-    assert key is not None
-    assert _key(session, prepared) == key
-
-
-_DECLINED_GENERATIONS: dict[str, dict[str, Any]] = {
-    "include": {"source_text": "x", "staged_text": '`include "dependency.svh"'},
-    "non-hdl-type": {"files": (("vhdlSource", "src/demo/top.sv"),)},
-    "user-file": {"files": (("user", "src/demo/top.sv"),)},
-    "path-outside-src": {"files": (("systemVerilogSource", "outside.sv"),)},
-    "no-script": {"scripts": ()},
-    "two-scripts": {"scripts": (_STOCK_SCRIPT, _STOCK_SCRIPT)},
-    "include-dir-line": {"scripts": ("-I/tmp\n",)},
-    "script-escapes-work": {"scripts": ("../outside.sv\n",)},
-    "makefile-without-launcher": {"makefile": "all:\n\tiverilog top.sv\n"},
-    "edam-invalid": {"edam": "invalid"},
-    "edam-hooks": {
-        "edam": {"hooks": ["dynamic"], "cores": {"one": {"core_file": "../demo.core"}}}
-    },
-    "edam-no-cores": {"edam": {"cores": {}}},
-    "edam-dependencies": {
-        "edam": {"cores": {"one": {"dependencies": ["other"], "core_file": "../demo.core"}}}
-    },
-    "core-outside-project": {"core_outside": True},
-    "core-invalid": {"core_text": "invalid\n"},
-    "core-generators": {"core_text": _ICARUS_CORE + "generators: {gen: {}}\n"},
-    "core-targets-invalid": {"core_text": _ICARUS_CORE + "targets: invalid\n"},
-    "core-target-hooks": {"core_text": _ICARUS_CORE + "targets: {sim: {hooks: [hook]}}\n"},
-    "cocotb": {"cocotb_module": "tb"},
-    "variant": {"variant": "trace"},
-    "make-variable": {"environment": {"MAKEFLAGS": "-j2"}},
-}
-
-
-@pytest.mark.usefixtures("icarus_install")
-@pytest.mark.parametrize("overrides", _DECLINED_GENERATIONS.values(), ids=_DECLINED_GENERATIONS)
-def test_icarus_reuse_declines_unprovable_generations(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, overrides: dict[str, Any]
-) -> None:
-    assert _key(*_icarus_generation(tmp_path / "control")) is not None
-    # An include must also sit in the Project original, or the staging check fires first.
-    if "staged_text" in overrides:
-        overrides = {**overrides, "source_text": overrides["staged_text"]}
-    for name, value in overrides.get("environment", {}).items():
-        monkeypatch.setenv(name, value)
-    overrides = {k: v for k, v in overrides.items() if k != "environment"}
-
-    assert _key(*_icarus_generation(tmp_path / "declined", **overrides)) is None
-
-
-@pytest.mark.usefixtures("icarus_install")
-def test_icarus_reuse_refuses_staging_that_changed(tmp_path: Path) -> None:
-    session, prepared = _icarus_generation(tmp_path, source_text="module top; endmodule")
-    (tmp_path / "project" / "top.sv").write_text("module edited; endmodule", encoding="utf-8")
-
-    with pytest.raises(SimulationBuildSlotError, match="changed during"):
-        _key(session, prepared)
-
-
-def test_icarus_key_follows_the_tool_install(
-    tmp_path: Path, icarus_install: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    library = tmp_path / "libdependency.so"
-    library.write_bytes(b"dependency")
-    iverilog = icarus_install / "bin" / "iverilog"
-    iverilog.write_bytes(b"\x7fELFtool")
-    monkeypatch.setattr(
-        build_reuse, "elf_dependencies", lambda path: (library,) if path == iverilog else ()
-    )
-    session, prepared = _icarus_generation(tmp_path)
-    first = _key(session, prepared)
-    assert first is not None
-
-    (icarus_install / "lib" / "ivl" / "module.vpi").write_bytes(b"new module")
-    assert _key(session, prepared) not in (None, first)
-
-    library.unlink()
-    assert _key(session, prepared) is None
-    library.write_bytes(b"dependency")
-    (icarus_install / "bin" / "vvp").unlink()
-    assert _key(session, prepared) is None
