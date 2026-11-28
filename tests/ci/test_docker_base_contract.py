@@ -569,6 +569,15 @@ def test_remote_registry_failure_keeps_the_docker_error(tmp_path: Path, monkeypa
     assert (caught.value.returncode, caught.value.stderr.strip()) == (1, detail)
 
 
+def test_image_resolution_names_a_missing_contract_label(tmp_path: Path, monkeypatch) -> None:
+    digests = f'["ghcr.io/acme/base@sha256:{"a" * 64}"]'
+    replies = {"pull": (0, ""), "image inspect": (0, "null"), "inspect .RepoDigests": (0, digests)}
+    install_fake_docker(tmp_path, monkeypatch, replies)
+
+    with pytest.raises(ValueError, match="image has <none>"):
+        docker_base_contract.resolve_image_pull("ghcr.io/acme/base:main", "contract")
+
+
 def test_image_resolution_rejects_malformed_digest_inventory(monkeypatch) -> None:
     def fake_run(command, **_kwargs):
         if command[:2] == ["docker", "pull"]:
