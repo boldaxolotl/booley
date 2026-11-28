@@ -152,9 +152,8 @@ class EndpointState(ABC):
         targets = target.split(",") if isinstance(target, str) else target
         self.set_report_targets([item.strip() for item in targets if item.strip()])
 
-    def refresh_report_detail(self, result: EndpointOutcome) -> None:
+    def refresh_report_detail(self, result: EndpointOutcome) -> None:  # noqa: B027 — optional hook with a no-op default
         """Refresh derived report detail before it is written; most endpoints have none."""
-        return
 
     def transcript_path(self) -> Path | None:
         """Path of this invocation's agent transcript, or ``None`` when it keeps none."""
@@ -194,7 +193,7 @@ class EndpointState(ABC):
             raise RuntimeError("execution input has not been prepared")
         return self._args
 
-    def set_criterion(
+    def set_criterion(  # noqa: B027 — optional hook with a no-op default
         self,
         key: str,
         met: bool,
@@ -203,7 +202,6 @@ class EndpointState(ABC):
         source_target: str | None = None,
     ) -> None:
         """Accept a Criterion verdict from a Project endpoint and record nothing."""
-        return
 
     def emit_progress(self, line: str) -> None:
         return endpoint_reporting.emit_progress(self, line)
@@ -283,7 +281,7 @@ class EndpointState(ABC):
     ) -> AbstractContextManager[endpoint_admission.AdmissionContext | None]:
         return endpoint_admission.admission(self, prepared, requeued=requeued)
 
-    def may_requeue_after_oom(self, prepared: PreparedExecution, admission: object | None) -> bool:
+    def may_requeue_after_oom(self, prepared: PreparedExecution, admission: object | None) -> bool:  # noqa: ARG002 — implements ExecutableEndpoint.may_requeue_after_oom
         """Whether an own OOM kill of this admitted Job's first attempt requeues it (ADR 0087).
 
         Only a Flow Job holding its own Memory Reservation: not a dry run, not a

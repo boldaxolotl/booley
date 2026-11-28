@@ -255,7 +255,7 @@ class ElabOnlyMixin:
                     lifecycle.complete()
                     return result
                 exit_code, standalone = self._run_optional_standalone(targets, results)
-                result = self._elab_only_result(targets, results, exit_code, standalone)
+                result = self._elab_only_result(results, exit_code, standalone)
                 lifecycle.complete()
                 return result
         except ProgressPublicationError as exc:
@@ -499,7 +499,6 @@ class ElabOnlyMixin:
 
     def _elab_only_result(
         self,
-        targets: list[str],
         results: list[ElabOnlyTargetResult],
         exit_code: int,
         standalone: _StandaloneOutcome | None,

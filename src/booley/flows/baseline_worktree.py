@@ -105,7 +105,7 @@ def baseline_worktree(
         )
         _materialize_baseline_submodules(project_root, wt_dir, ref)
         dangling = (
-            _mirror_booley_directory(project_root, wt_dir, ref) if paired_baseline is None else []
+            _mirror_booley_directory(project_root, wt_dir) if paired_baseline is None else []
         )
         _copy_root_quarantine_marker(project_root, wt_dir)
         _run_post_setup(wt_dir, ref)
@@ -322,7 +322,7 @@ def _copy_root_quarantine_marker(project_root: Path, wt_dir: Path) -> None:
         shutil.copy2(marker, wt_dir / marker.name)
 
 
-def _mirror_booley_directory(project_root: Path, wt_dir: Path, ref: str) -> list[Path]:
+def _mirror_booley_directory(project_root: Path, wt_dir: Path) -> list[Path]:
     """Mirror the checkout's own Booley Directory's authored files into the worktree.
 
     ``.booley/`` is git-excluded, so a fresh ``git worktree add`` checkout

@@ -43,7 +43,7 @@ class OrdinaryRunInvocation(PreparedInvocation):
     # What the run asks of the Memory Budget; ``None`` is unknown (the Job runs alone).
     requests: tuple[JobRequest, ...] | None = None
 
-    def run(self, admission: object | None) -> EndpointOutcome:
+    def run(self, admission: object | None) -> EndpointOutcome:  # noqa: ARG002 — implements PreparedInvocation.run
         return self.run_endpoint()
 
     def job_requests(self) -> tuple[JobRequest, ...] | None:
@@ -58,7 +58,7 @@ class TargetSelectionInvocation(PreparedInvocation):
     selection: PreparedTargetSelection | None
     run_endpoint: Callable[[], EndpointOutcome]
 
-    def run(self, admission: object | None) -> EndpointOutcome:
+    def run(self, admission: object | None) -> EndpointOutcome:  # noqa: ARG002 — implements PreparedInvocation.run
         return self.run_endpoint()
 
     def _selected_handles(self) -> tuple[TargetHandle, ...]:

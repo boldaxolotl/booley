@@ -574,7 +574,6 @@ class TraceSession:
             stall_count += 1
             stalled_for = stall_timeout * stall_count
             self._log_stall_window(
-                bwave_proc.store_path,
                 size,
                 stalled_for,
                 stall_count,
@@ -596,7 +595,6 @@ class TraceSession:
 
     def _log_stall_window(
         self,
-        bpath,
         sz,
         stalled_for,
         stall_count,

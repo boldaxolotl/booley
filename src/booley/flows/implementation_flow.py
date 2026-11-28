@@ -96,7 +96,7 @@ class ImplementationFlow(BuiltinFlow[RequestT], Generic[RequestT, MetricsT]):
         """Not used: _run drives the Targets."""
         return []
 
-    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:
+    def _interpret_result(self, result: SubprocessResult) -> EndpointOutcome:  # noqa: ARG002 — overrides Flow._interpret_result
         """Not used: _run interprets each Target."""
         return EndpointOutcome()
 

@@ -1849,7 +1849,6 @@ def _test_outcomes(
         cycle_status, cycles = _cycle_observation(output, name, attempt.cycle_sentinels)
         results.append(
             _test_outcome(
-                handle,
                 attempt,
                 process,
                 build,
@@ -1887,7 +1886,6 @@ def _adapter_verdict(adapter: AdapterResult | None) -> SimulationVerdict:
 
 
 def _test_outcome(
-    handle: TargetHandle,
     attempt: _Attempt,
     process: SubprocessResult,
     build: BuildOutcome,

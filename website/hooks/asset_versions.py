@@ -24,7 +24,7 @@ def asset_versions(docs_dir: Path, paths: list[str]) -> dict[str, str]:
     }
 
 
-def on_env(env, config, files):
+def on_env(env, config, files):  # noqa: ARG001 — MkDocs passes hook arguments by keyword
     """Expose ``asset_versions`` to the templates."""
     env.globals["asset_versions"] = asset_versions(
         Path(config["docs_dir"]), [str(path) for path in config["extra_css"]]
