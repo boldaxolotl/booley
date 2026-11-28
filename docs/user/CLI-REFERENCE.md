@@ -71,8 +71,9 @@ booley measure --validate         # check .booley/metrics.toml; measures nothing
   a linked worktree with that worktree's Jobs only: the unfinished Jobs, the
   newest 50 finished Jobs with a `report_url` for each report, and the
   Sandbox's CPU, memory, disk and Job admission figures. A Job started from an
-  agent's thread has an `owner` that is the thread's T3 Code title, else the
-  agent and a short thread id; a Standalone Job's is `you`. A missing,
+  agent's thread has an `owner`. For Claude it is the thread's T3 Code title,
+  else the agent and a short thread id. For Codex it is the agent and the time
+  the Job was submitted. A Standalone Job's `owner` is `you`. A missing,
   relative or unknown `worktree` gets a JSON error (status 400 or 404) and no
   Jobs.
 

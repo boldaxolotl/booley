@@ -1,7 +1,8 @@
 """One worktree's Jobs, resources and admission as plain JSON values.
 
 HTTP-free: ``web`` routes requests and calls ``read_snapshot``.
-Sizes are bytes and durations are seconds; timestamps are the stored RFC 3339 strings.
+Sizes are bytes and durations are seconds; timestamps are the stored RFC 3339 strings,
+but an ``owner`` label may format a Job's start time for display.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.handles import job_prefix
 from booley.runtime.memory_budget import compute_memory_budget
 from booley.runtime.pid import DEAD_PROCESS_STATES, observe_process
-from booley.runtime.timefmt import parse_timestamp
+from booley.runtime.timefmt import format_human_datetime_safe, parse_timestamp
 
 # The newest finished Jobs listed under Results.
 MAX_RESULTS = 50
@@ -176,14 +177,20 @@ def job_label(handle: str, endpoint: str) -> str:
 
 
 def _owner(job: JobView, titles: Mapping[str, str]) -> str:
-    """The title of the thread that started the Job, else its client and a short thread id.
+    """The title of the thread that started the Job, else what a user can match to the thread.
 
+    A Claude thread id is T3 Code's own and appears in the thread's link. T3 Code does not
+    show a Codex thread id, so a Codex Job names its start time instead (#5934).
     A Job without a recorded thread is its client when one is recorded, else ``you``.
     """
     record = job.record
-    if record.thread:
-        return titles.get(record.thread) or f"{record.client} · {record.thread[-8:]}"
-    return record.client or "you"
+    if not record.thread:
+        return record.client or "you"
+    if title := titles.get(record.thread):
+        return title
+    if record.client == "claude":
+        return f"claude · {record.thread[-8:]}"
+    return f"{record.client} · started {format_human_datetime_safe(record.started_at)}"
 
 
 def _started(job: JobView) -> float:

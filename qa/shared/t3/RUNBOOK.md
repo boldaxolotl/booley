@@ -350,8 +350,8 @@ one refresh before calling a mismatch.
 | GUI surface | Oracle |
 |---|---|
 | T3 Code project list, threads and their checkouts | `booley session enter -- git -C /work worktree list`, and what you started |
-| Dashboard Now and Results lists | `booley session enter -- curl -s 'http://127.0.0.1:8090/api/snapshot?worktree=<path>'` for what the page should render; the Job records for the data: `booley session enter -- sh -c 'for f in /work/.booley/{,logs/,logs/*/,job_logs/*/}.runtime/jobs/*.json; do jq -c "{run_id,endpoint,status,exit_code,owner,work_dir}" "$f"; done 2>/dev/null'`, plus `ps -eo pid,etime,args` for running ones |
-| Job owner | The thread's T3 Code title, else the agent and a short thread id; `you` for a Standalone Job (CLI-REFERENCE, `booley dashboard`) |
+| Dashboard Now and Results lists | `booley session enter -- curl -s 'http://127.0.0.1:8090/api/snapshot?worktree=<path>'` for what the page should render; the Job records for the data: `booley session enter -- sh -c 'for f in /work/.booley/{,logs/,logs/*/,job_logs/*/}.runtime/jobs/*.json; do jq -c "{run_id,endpoint,status,exit_code,client,thread,started_at,work_dir}" "$f"; done 2>/dev/null'`, plus `ps -eo pid,etime,args` for running ones |
+| Job owner | Claude: the thread's T3 Code title, else `claude · <short thread id>`. Codex: `codex · started <time>`, where `<time>` is the record's `started_at` in the user's timezone. `you` for a Standalone Job (CLI-REFERENCE, `booley dashboard`) |
 | Dashboard resource figures | The snapshot JSON; roughly, `nproc`, `cat /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max` and `df -h /work` |
 | Run form choices and review screen | `booley targets`, `booley specialist <name> --help`, the `[agent]` settings; the shown command run in the Sandbox, whose Job record must match the form's |
 | A `measure` Job and the report it links | The run's own document by run ID (the Job record carries `run_id`): `find /work/.booley/measurements -name '<run_id>.json'` read with `jq .`, and its commit against `git -C <worktree> rev-parse HEAD`. Never run `booley measure` as an oracle on a commit that is not Measured: it starts a measurement |
