@@ -284,11 +284,11 @@ the prompt. For a child, start the thread in a new worktree, as
 [DEVELOPER-CHILD.md](../DEVELOPER-CHILD.md) says: T3 Code creates it under
 `t3-worktrees/` in the Booley Directory, names its branch, and runs
 `booley worktree prepare` before the first turn; if that fails, the thread
-does not start. A run confirmed this with the base `qa/<short>` and step 3's
-`github.com` egress; without that egress the setup fails at "Fetch base
-branch" ([#5907](https://github.com/boldaxolotl/booley/issues/5907)) and the
-thread does not start. Approve or reject the agent's permission requests in the
-thread.
+does not start. A run confirmed that T3 Code creates and prepares the worktree
+once its fetch works. Until
+[#5907](https://github.com/boldaxolotl/booley/issues/5907) is fixed, that
+needs step 3's `github.com` egress. Approve or reject the agent's permission
+requests in the thread.
 
 ## 6. Interaction rules
 
@@ -299,9 +299,9 @@ thread.
   click fails silently.
   - Exception, inside the preview panel only: it streams a remote browser,
     so its links, buttons (Run, Review, Submit) and form fields can be
-    clicked only at x/y. Read the point off a fresh screenshot, scale it to
-    the viewport (×1.125 at 1440×900; see "Not yet verified"), and confirm
-    the click with a screenshot.
+    clicked only at x/y. Read the point off a fresh screenshot, scale it by
+    viewport width ÷ screenshot width (×1.125 at 1440×900; see "Not yet
+    verified"), and confirm the click with a screenshot.
   - A native `<select>` in the panel draws no list: click it to focus it,
     press ArrowDown until the screenshot shows the choice, then Enter.
   - The panel ignores the mouse wheel, so content below its fold, such as
@@ -312,12 +312,13 @@ thread.
   `preview_evaluate` or `preview_snapshot`. The Dashboard inside the preview
   panel is not readable from your tab's DOM: read it from screenshots and
   compare with its snapshot JSON (step 8). T3 Code's terminal drawer is a
-  canvas, so its output is not page text either and `preview_wait_for` can't
-  see it: read terminal output from screenshots.
+  canvas, so its output is not page text either: read terminal output from
+  screenshots.
 - **Waiting:** wait for a known text with `preview_wait_for` (up to 60 s per
   call), never with a fixed sleep. An agent turn can take many minutes: wait
-  in a loop and look at the thread between waits. To wait on terminal output,
-  take screenshots between waits instead.
+  in a loop and look at the thread between waits. `preview_wait_for` sees
+  neither terminal output nor the Dashboard panel: for those, take
+  screenshots until the text shows.
 - **Hidden tab:** while your tab is not visible (`preview_status` reports
   `visible: false`) it renders no frames, and `preview_resize` fails with
   "desktop did not draw the page", as it does right after `preview_open`.
