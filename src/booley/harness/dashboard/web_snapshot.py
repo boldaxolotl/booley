@@ -1,7 +1,8 @@
 """One worktree's Jobs, resources and admission as plain JSON values.
 
 HTTP-free: ``web`` routes requests and calls ``read_snapshot``.
-Sizes are bytes and durations are seconds; timestamps are the stored RFC 3339 strings.
+Sizes are bytes and durations are seconds; timestamps are the stored RFC 3339 strings,
+but an ``owner`` label may format a Job's start time for display.
 """
 
 from __future__ import annotations

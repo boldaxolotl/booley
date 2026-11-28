@@ -45,11 +45,11 @@ worktree.
   worktree, Sandbox resources and Job slots.
 - **Owner is a thread.** A Job records the agent client and thread id that
   started it: T3's thread id for Claude, read from the caller's environment,
-  and Codex's own thread id for Codex. The owner shows the T3 thread's name
-  when Booley can resolve it, otherwise the client and a short thread id for
-  Claude, the client and the Job's start time for Codex, whose thread id T3
-  does not show, or that a human started it from Run. T3 offers no supported
-  way to map a Codex thread id to its T3 thread.
+  and Codex's own thread id for Codex. For Claude the owner shows the T3
+  thread's name when Booley can resolve it, otherwise the client and a short
+  thread id. For Codex it shows the client and the time the Job was submitted:
+  T3 does not show a Codex thread id and offers no supported way to map one to
+  its T3 thread. The owner of a Job that a human started from Run says so.
 - **Result links per Flow.** Every result card links its report. Each Flow
   declares any further links (logs, coverage, netlists) it wants on the card.
   Waveform opening is out of scope until waveform viewing has a home in T3
