@@ -175,16 +175,19 @@ def _health_inspects(docker: FakeDocker) -> list[list[str]]:
     [
         ("licenses.example", "host", 2100, 2101),
         ("10.0.0.1", "192.0.2.4", 2100, 2101),
-        ("10.0.0.1", "host", True, 2101),
-        ("10.0.0.1", "host", 2100.0, 2101),
-        ("10.0.0.1", "host", 0, 2101),
-        ("10.0.0.1", "host", 2100, 65536),
         ("10.0.0.1", "host", 2100, 2100),
     ],
 )
 def test_profile_revalidates_every_authority_field(args: tuple[object, ...]) -> None:
     with pytest.raises(RelayConfigError):
         RelayProfile(*args)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("ports", [(True, 2101), (2100.0, 2101), (0, 2101), (2100, 65536)])
+def test_profile_rejects_invalid_ports(ports: tuple[object, object]) -> None:
+    message = "FlexNet ports must be integers from 1 through 65535"
+    with pytest.raises(RelayConfigError, match=message):
+        RelayProfile("10.0.0.1", "host", *ports)  # type: ignore[arg-type]
 
 
 def test_names_are_deterministic_and_do_not_leak_identity() -> None:
