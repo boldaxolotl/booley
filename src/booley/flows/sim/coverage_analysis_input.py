@@ -160,7 +160,6 @@ def _reference_projection(
     manifest_artifact = resolve_artifact_reference(
         document.get("simulation_record_manifest"),
         bases={"origin_target": public_path.parent},
-        allowed_bases={"origin_target"},
         expected_kind="simulation_record_manifest",
         expected_owner=owner,
         maximum=MANIFEST_MAX_BYTES,
@@ -169,7 +168,6 @@ def _reference_projection(
     coverage_artifact = resolve_artifact_reference(
         document.get("coverage_record"),
         bases={"origin_target": public_path.parent},
-        allowed_bases={"origin_target"},
         expected_kind="coverage_record_reference",
         expected_owner=owner,
         maximum=MAX_REFERENCE_BYTES,

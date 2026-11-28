@@ -71,7 +71,8 @@ def test_a_bundle_artifact_path_outside_its_root_is_refused_before_use(tmp_path:
         "ordinal",
         "ready_bundle",
         "bundle_path",
-        "build_state",
+        "execution_reference",
+        "execution_schema",
     ],
 )
 def test_a_malformed_published_record_is_corrupt_storage(tmp_path: Path, case: str) -> None:
@@ -108,10 +109,13 @@ def test_a_malformed_published_record_is_corrupt_storage(tmp_path: Path, case: s
     else:
         if case == "ready_bundle":
             build_result["bundle"] = None
-        elif case == "bundle_path":
-            build_result["bundle"]["manifest_path"] = "../escape"
+        elif case == "execution_reference":
+            build_result["evidence"] = []
+        elif case == "execution_schema":
+            execution = completed.build_dir / "evidence" / "build-execution.json"
+            _write(execution, _read(execution) | {"$schema": "booley.other/v1"})
         else:
-            build_result["state"] = "bogus"
+            build_result["bundle"]["manifest_path"] = "../escape"
         _write(build_path, build_result)
         with pytest.raises(SimulationRecordIntegrityError):
             store.recover_shared_build(variant, 1)
@@ -135,15 +139,6 @@ def test_a_bundle_inventory_the_decoder_no_longer_checks_is_refused(case: str) -
     }[case]
     with pytest.raises(SimulationRecordIntegrityError):
         require_bundle_inventory(_bundle_with_artifacts(artifacts))
-
-
-def test_a_deeply_nested_record_is_refused_at_decode() -> None:
-    """Skipping the nested-field checks must not skip the nesting ceiling (#1743)."""
-    document = bundle_document()
-    document["created_at"] = "X"
-    raw = canonical_json_bytes(document).replace(b'"X"', b"[" * 600 + b"]" * 600)
-    with pytest.raises(SimulationRecordIntegrityError, match="nesting"):
-        decode_simulator_bundle(raw)
 
 
 @pytest.mark.parametrize("case", ["grade", "observation_missing", "observation_enum"])

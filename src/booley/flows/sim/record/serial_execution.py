@@ -404,6 +404,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             )
             return None
         assert recovered.bundle is not None and recovered.build_execution is not None
+        # Reuse authenticates the bundle in place before runtime inputs are copied
+        # from it (ADR 0064).
+        verify_bundle_in_place(recovered.bundle, recovered.result, recovered.directory)
         ready = _SharedReady(
             recovered.directory,
             recovered.result,
@@ -978,7 +981,6 @@ def _setup_result(
     elapsed: float,
 ) -> SimulationResult:
     selection = cast(Mapping[str, object], request.work_item["selection"])
-    # The codec's _read_strings proves target.selector is a string.
     target = cast(Mapping[str, str], request.manifest.document["target"])
     fallback = "" if selection["kind"] == "unfiltered" else target["selector"]
     tests = tuple(
@@ -1349,7 +1351,7 @@ def _blocked_shared_result(
         identities = names
     else:
         # The default selection's name is the Target selector; Test Run binding
-        # (discovered_test_run) maps it back to the unnamed invocation; the codec proves it a str.
+        # (discovered_test_run) maps it back to the unnamed invocation.
         identities = (cast(Mapping[str, str], request.manifest.document["target"])["selector"],)
     observations = []
     for index, identity in enumerate(identities):
