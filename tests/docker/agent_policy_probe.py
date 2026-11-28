@@ -335,6 +335,34 @@ def _assert_codex_policy(root: Path) -> dict[str, str]:
     return {case: _run_codex_case(case, root, args) for case, args in cases.items()}
 
 
+def _assert_codex_hooks_pinned(root: Path) -> dict[str, str]:
+    """No user layer turns off Codex's hooks, which run the managed deny hook (#5788)."""
+    off = "[features]\nhooks = false\n"
+    project = root / "codex-hooks-repo"
+    (project / ".codex").mkdir(parents=True)
+    (project / ".codex" / "config.toml").write_text(off, encoding="utf-8")
+    _run(["git", "init", "-q"], cwd=project)
+    # Each case: the user config and the command line arguments.
+    cases: dict[str, tuple[str, list[str]]] = {
+        "user": (off, []),
+        "legacy_alias": ("[features]\ncodex_hooks = false\n", []),
+        "project": (f'[projects."{project}"]\ntrust_level = "trusted"\n', []),
+        "cli_config": ("", ["-c", "features.hooks=false"]),
+        "cli_disable": ("", ["--disable", "hooks"]),
+    }
+    states: dict[str, str] = {}
+    for case, (config, args) in cases.items():
+        codex_home = root / f"codex-hooks-{case}" / ".codex"
+        codex_home.mkdir(parents=True)
+        (codex_home / "config.toml").write_text(config, encoding="utf-8")
+        env = {**os.environ, "HOME": str(codex_home.parent), "CODEX_HOME": str(codex_home)}
+        listed = _run(["codex", *args, "features", "list"], cwd=project, env=env).stdout
+        (state,) = [line.split()[-1] for line in listed.splitlines() if line.startswith("hooks ")]
+        assert state == "true", f"Codex {case} turned hooks off: {listed}"
+        states[case] = state
+    return states
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--evidence", type=Path)
@@ -353,6 +381,7 @@ def main() -> None:
             "sdk_cli": _assert_sdk_uses_system_claude(),
             "booley_configuration": _assert_booley_configuration(root),
             "codex_policy": _assert_codex_policy(root),
+            "codex_hooks": _assert_codex_hooks_pinned(root),
             "claude_tools": _assert_claude_policy(root),
         }
         _assert_diagnostics()

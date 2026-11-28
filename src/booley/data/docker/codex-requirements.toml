@@ -17,3 +17,8 @@ matcher = "^mcp__t3_code(_direct)?(_[0-9a-f]{12})?__"
 type = "command"
 command = "/usr/bin/python3 -I -S /usr/local/libexec/booley/t3code_tool_deny_hook.py"
 timeout = 3
+
+# A user's config, profile, project config, -c or --disable could otherwise turn
+# hooks off and with them the deny hook above.
+[features]
+hooks = true

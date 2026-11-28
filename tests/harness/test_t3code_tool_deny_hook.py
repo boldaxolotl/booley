@@ -58,7 +58,7 @@ def test_hook_blocks_listed_t3code_tools(
         assert capsys.readouterr().err == ""
 
 
-def test_codex_policy_sends_both_t3code_servers_to_the_hook() -> None:
+def test_codex_policy_runs_the_hook_on_both_t3code_servers() -> None:
     policy = tomllib.loads((DATA / "codex-requirements.toml").read_text(encoding="utf-8"))
     (group,) = [
         group
@@ -66,6 +66,9 @@ def test_codex_policy_sends_both_t3code_servers_to_the_hook() -> None:
         if any(SCRIPT.name in handler["command"] for handler in group["hooks"])
     ]
     matcher = re.compile(group["matcher"])
+
+    # Without the pin, a user's Codex config could turn hooks off (#5788).
+    assert policy["features"] == {"hooks": True}
 
     for prefix in PREFIXES:
         assert all(matcher.search(prefix + name) for name in _denied())
