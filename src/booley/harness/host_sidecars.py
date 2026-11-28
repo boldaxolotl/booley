@@ -206,9 +206,7 @@ def reconcile_sidecars(
 
 
 def inspect_sidecars(
-    policy: SandboxHostPolicy | None,
-    *,
-    booley_root: Path | None = None,
+    policy: SandboxHostPolicy | None, *, booley_root: Path | None = None
 ) -> SidecarResult:
     """Inspect every independent sidecar resource for Bootstrap CLI only."""
     docker = _docker_adapter()
@@ -266,9 +264,7 @@ def _reconcile_unproxied(
 
 
 def _inspect_unproxied(
-    policy: SandboxHostPolicy,
-    booley_root: Path | None,
-    docker: _DockerPort,
+    policy: SandboxHostPolicy, booley_root: Path | None, docker: _DockerPort
 ) -> SidecarResult:
     """Inspect every unproxied-mode sidecar row for check-only Bootstrap."""
     findings = _inspect_images(booley_root, _UNPROXIED, docker)
@@ -346,10 +342,7 @@ def _require_no_egress_blockers(network: _NetworkState, docker: _DockerPort) -> 
     active = _active_sessions(docker)
     parked = _parked_refresh_predecessors(docker)
     if active or parked:
-        summaries = (
-            _active_session_summary(active),
-            _parked_predecessor_summary(parked),
-        )
+        summaries = (_active_session_summary(active), _parked_predecessor_summary(parked))
         described = ", ".join(summary for summary in summaries if summary)
         raise SidecarError(
             f"cannot remove unused {legacy.PROXY_CONTAINER} and {legacy.EGRESS_NETWORK} "
@@ -507,10 +500,7 @@ def _reaper_finding(
         return SidecarFinding("reaper", SidecarState.ERROR, str(exc))
 
 
-def _inspect_bootstrap_container(
-    spec: _ContainerSpec,
-    docker: _DockerPort,
-) -> SidecarFinding:
+def _inspect_bootstrap_container(spec: _ContainerSpec, docker: _DockerPort) -> SidecarFinding:
     try:
         state = _inspect_container(spec.name, docker)
         _verify_container_ownership(spec.name, spec.role, state)
@@ -528,9 +518,7 @@ def _inspect_bootstrap_container(
         if current and state.running and network_ready:
             return SidecarFinding(spec.resource, SidecarState.CURRENT, f"{spec.name} is current")
         return SidecarFinding(
-            spec.resource,
-            SidecarState.PENDING,
-            _container_pending_detail(spec, state, image[0]),
+            spec.resource, SidecarState.PENDING, _container_pending_detail(spec, state, image[0])
         )
     except SidecarError as exc:
         return SidecarFinding(spec.resource, SidecarState.ERROR, str(exc))
@@ -572,9 +560,7 @@ def _inspect_bootstrap_network(docker: _DockerPort) -> SidecarFinding:
 
 
 def _reconcile_containers(
-    policy: SandboxHostPolicy,
-    intent: Intent,
-    docker: _DockerPort,
+    policy: SandboxHostPolicy, intent: Intent, docker: _DockerPort
 ) -> tuple[SidecarFinding, ...]:
     """Reconcile the proxy/reaper container suffix after images and network."""
     proxy = _reconcile_container(_proxy_spec(policy), intent, docker)
@@ -726,10 +712,7 @@ def _reconcile_image(
         return SidecarFinding(spec.resource, SidecarState.ERROR, str(exc))
 
 
-def _verify_image_ownership(
-    spec: _ImageSpec,
-    current: tuple[str, dict[str, str]] | None,
-) -> None:
+def _verify_image_ownership(spec: _ImageSpec, current: tuple[str, dict[str, str]] | None) -> None:
     """Reject a fixed-name image unless all Booley provenance fields are present."""
     if current is None:
         return
@@ -878,8 +861,7 @@ def _inspect_network(docker: _DockerPort) -> _NetworkState:
             document.get("Options"), field=f"network {legacy.EGRESS_NETWORK}.Options"
         )
         containers = require_dict(
-            document.get("Containers"),
-            field=f"network {legacy.EGRESS_NETWORK}.Containers",
+            document.get("Containers"), field=f"network {legacy.EGRESS_NETWORK}.Containers"
         )
         attached_names = _network_container_names(containers)
     except BoundaryError as exc:
@@ -902,9 +884,7 @@ def _network_container_names(containers: dict[Any, Any]) -> tuple[str, ...]:
 
 
 def _reconcile_container(
-    spec: _ContainerSpec,
-    intent: Intent,
-    docker: _DockerPort,
+    spec: _ContainerSpec, intent: Intent, docker: _DockerPort
 ) -> SidecarFinding:
     try:
         state = _inspect_container(spec.name, docker)
@@ -953,9 +933,7 @@ def _container_matches(state: _ContainerState, image_id: str, fingerprint: str) 
 
 
 def _container_pending_detail(
-    spec: _ContainerSpec,
-    state: _ContainerState,
-    image_identity: str,
+    spec: _ContainerSpec, state: _ContainerState, image_identity: str
 ) -> str:
     expected = {
         "exists": True,
@@ -976,11 +954,7 @@ def _container_pending_detail(
 
 
 def _apply_container(
-    name: str,
-    state: _ContainerState,
-    current: bool,
-    run_args: list[str],
-    docker: _DockerPort,
+    name: str, state: _ContainerState, current: bool, run_args: list[str], docker: _DockerPort
 ) -> None:
     if not state.exists:
         _run_container(name, run_args, docker)
@@ -1042,14 +1016,7 @@ def _inspect_container(name: str, docker: _DockerPort) -> _ContainerState:
         project_root = _project_root_from_inspection(document, labels, name)
     except BoundaryError as exc:
         raise SidecarError(f"Docker returned incomplete inspection for container {name}") from exc
-    return _ContainerState(
-        True,
-        image_id,
-        running,
-        labels,
-        frozenset(attached),
-        project_root,
-    )
+    return _ContainerState(True, image_id, running, labels, frozenset(attached), project_root)
 
 
 def _project_root_from_inspection(

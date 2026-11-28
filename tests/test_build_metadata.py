@@ -17,9 +17,7 @@ def _installed_distribution(monkeypatch):
         booley,
         "version_attribution",
         VersionAttribution(
-            version=__version__,
-            origin=VersionOrigin.DISTRIBUTION,
-            distribution_name="booley-rtl",
+            version=__version__, origin=VersionOrigin.DISTRIBUTION, distribution_name="booley-rtl"
         ),
     )
 
@@ -90,11 +88,7 @@ def test_source_without_git_does_not_borrow_wheel_or_image_revision(tmp_path, mo
     monkeypatch.setattr(
         booley,
         "version_attribution",
-        VersionAttribution(
-            version="9.9.9",
-            origin=VersionOrigin.SOURCE,
-            source_root=tmp_path,
-        ),
+        VersionAttribution(version="9.9.9", origin=VersionOrigin.SOURCE, source_root=tmp_path),
     )
     monkeypatch.setattr(booley, "__version__", "9.9.9")
     _bake_wheel_revision(monkeypatch, "wheel123")

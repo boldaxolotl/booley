@@ -4,11 +4,7 @@ from datetime import date
 import pytest
 
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Severity
-from booley.audit.doctor_waivers import (
-    DoctorWaiverError,
-    load_doctor_waivers,
-    warning,
-)
+from booley.audit.doctor_waivers import DoctorWaiverError, load_doctor_waivers, warning
 from booley.harness import activity_hooks, doctor, web_isolation
 from booley.presentation import colors
 from booley.runtime import dashboard_extension
@@ -82,10 +78,7 @@ expires = 2026-08-03
             'version = 1\n[[waiver]]\ncheck = "Bad ID"\nreason = "x"\npermanent = true\n',
             "lowercase",
         ),
-        (
-            'version = 1\n[[waiver]]\ncheck = "sim.trace"\nreason = "x"\n',
-            "exactly one",
-        ),
+        ('version = 1\n[[waiver]]\ncheck = "sim.trace"\nreason = "x"\n', "exactly one"),
         (
             'version = 1\n[[waiver]]\ncheck = "sim.trace"\nreason = "x"\n'
             "expires = 2027-01-01\npermanent = true\n",

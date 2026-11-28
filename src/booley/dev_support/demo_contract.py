@@ -23,13 +23,7 @@ from booley.runtime.project_prepare import prepare_project
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import FuseSocError
 
-__all__ = [
-    "DemoContract",
-    "DemoContractError",
-    "GeneratedInput",
-    "load_contract",
-    "validate_demo",
-]
+__all__ = ["DemoContract", "DemoContractError", "GeneratedInput", "load_contract", "validate_demo"]
 
 
 def _target_inputs(catalog: TargetCatalog, target: str) -> tuple[Any, ...]:
@@ -37,26 +31,14 @@ def _target_inputs(catalog: TargetCatalog, target: str) -> tuple[Any, ...]:
     return catalog.inspect(catalog.select(target)).inputs
 
 
-def _resolve_catalog_target(
-    catalog: TargetCatalog,
-    target: str,
-    build_root: Path,
-) -> Any:
+def _resolve_catalog_target(catalog: TargetCatalog, target: str, build_root: Path) -> Any:
     """Resolve one already-selected demo Target."""
-    return fusesoc_registry.resolve_target_handle(
-        catalog.select(target),
-        build_root=build_root,
-    )
+    return fusesoc_registry.resolve_target_handle(catalog.select(target), build_root=build_root)
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        capture_output=True,
-        text=True,
-        timeout=60,
-        check=check,
+        ["git", *args], cwd=repo, capture_output=True, text=True, timeout=60, check=check
     )
 
 
@@ -67,12 +49,7 @@ def _require_checkout_ref(repository: Path, expected: str, label: str) -> None:
 
 
 def _status(repository: Path) -> str:
-    return _git(
-        repository,
-        "status",
-        "--porcelain",
-        "--untracked-files=all",
-    ).stdout.strip()
+    return _git(repository, "status", "--porcelain", "--untracked-files=all").stdout.strip()
 
 
 def _prepare_demo_project(root: Path) -> list[str]:
@@ -90,9 +67,7 @@ def _validate_targets(root: Path, targets: tuple[str, ...]) -> list[str]:
         for index, target in enumerate(targets):
             try:
                 resolved = _resolve_catalog_target(
-                    catalog,
-                    target,
-                    Path(build_root) / f"target-{index}",
+                    catalog, target, Path(build_root) / f"target-{index}"
                 )
                 if not resolved.toplevel:
                     errors.append(f"required Target {target!r} resolves without a toplevel")
@@ -102,8 +77,7 @@ def _validate_targets(root: Path, targets: tuple[str, ...]) -> list[str]:
 
 
 def _validate_generated_inputs(
-    root: Path,
-    generated_inputs: tuple[GeneratedInput, ...],
+    root: Path, generated_inputs: tuple[GeneratedInput, ...]
 ) -> tuple[list[str], dict[str, str]]:
     errors: list[str] = []
     digests: dict[str, str] = {}
@@ -115,10 +89,7 @@ def _validate_generated_inputs(
     return errors, digests
 
 
-def _validate_generated_input(
-    root: Path,
-    generated: GeneratedInput,
-) -> tuple[list[str], str, str]:
+def _validate_generated_input(root: Path, generated: GeneratedInput) -> tuple[list[str], str, str]:
     """Validate one generated artifact's producer, consumers, and Git policy."""
     errors: list[str] = []
     path = generated.path
@@ -149,9 +120,7 @@ def _validate_generated_input(
 
 
 def validate_demo(
-    contract_path: Path | str,
-    demo_root: Path | str,
-    booley_dir: Path | str,
+    contract_path: Path | str, demo_root: Path | str, booley_dir: Path | str
 ) -> list[str]:
     """Run the complete, idempotent public-demo readiness contract."""
     contract = load_contract(contract_path)

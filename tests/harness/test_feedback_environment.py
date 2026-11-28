@@ -65,10 +65,7 @@ def test_feedback_report_renders_real_doctor_stamp(tmp_path, monkeypatch):
     project = tmp_path / "project"
     booley_dir = project / ".booley"
     booley_dir.mkdir(parents=True)
-    (booley_dir / "booley.toml").write_text(
-        '[project]\nname = "project"\n',
-        encoding="utf-8",
-    )
+    (booley_dir / "booley.toml").write_text('[project]\nname = "project"\n', encoding="utf-8")
     append(Finding(title="project note", bucket="project"), booley_dir)
     assert doctor_stamp.record_clean_run(booley_dir, project, deep=True) is not None
     parser = ArgumentParser()

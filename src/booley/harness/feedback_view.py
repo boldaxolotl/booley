@@ -86,8 +86,6 @@ def _totals(log: FindingsLog) -> str:
 def render_listing(log: FindingsLog, entries: Sequence[Finding]) -> str:
     """Render *entries* as a table followed by a blank line and the log's totals."""
     lines = render_table(
-        _HEADERS,
-        [_row(entry) for entry in entries],
-        max_widths={_TITLE_COLUMN: _TITLE_CAP},
+        _HEADERS, [_row(entry) for entry in entries], max_widths={_TITLE_COLUMN: _TITLE_CAP}
     )
     return "\n".join([*lines, "", _totals(log)])

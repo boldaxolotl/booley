@@ -158,11 +158,7 @@ def _profile() -> RelayProfile:
 
 def _validate(docker: FakeDocker, labels: tuple[str, ...] = ()) -> None:
     validate_relay(
-        _RESOURCES,
-        SESSION_CONTAINER,
-        _profile(),
-        issuance_labels=labels,
-        runner=docker.runner,
+        _RESOURCES, SESSION_CONTAINER, _profile(), issuance_labels=labels, runner=docker.runner
     )
 
 
@@ -337,13 +333,7 @@ def test_provision_orders_topology_and_waits_for_health(docker: FakeDocker) -> N
     resources = provision_relay(
         _profile(), "session-a", runner=docker.runner, health_attempts=3, poll_interval=0
     )
-    assert docker.calls[0] == [
-        "image",
-        "inspect",
-        "booley-flexnet-relay:1",
-        "--format",
-        "{{.Id}}",
-    ]
+    assert docker.calls[0] == ["image", "inspect", "booley-flexnet-relay:1", "--format", "{{.Id}}"]
     assert docker.calls[1] == private_network_create_argv(resources)
     assert docker.calls[2] == outbound_network_create_argv(resources)
     assert docker.calls[3] == relay_run_argv(resources, _profile(), image=IMAGE_ID)
@@ -410,10 +400,7 @@ def test_resume_validation_rejects_session_on_outbound_network(docker: FakeDocke
         ({"PidsLimit": 65}, "resource limits"),
         ({"RestartPolicy": {"Name": "always", "MaximumRetryCount": 0}}, "restart"),
         ({"LogConfig": {"Type": "json-file", "Config": {}}}, "logging"),
-        (
-            {"env": ["BOOLEY_FLEXNET_UPSTREAM_IPV4=192.0.2.99"]},
-            "environment differs",
-        ),
+        ({"env": ["BOOLEY_FLEXNET_UPSTREAM_IPV4=192.0.2.99"]}, "environment differs"),
     ],
 )
 def test_resume_validation_rejects_each_container_security_drift(

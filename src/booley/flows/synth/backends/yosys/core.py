@@ -22,12 +22,7 @@ from typing import TYPE_CHECKING
 
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_layout import BOOLEY_DIR_NAME
-from booley.core.boundary import (
-    BoundaryError,
-    is_str_list,
-    require_finite_number,
-    require_opt_str,
-)
+from booley.core.boundary import BoundaryError, is_str_list, require_finite_number, require_opt_str
 from booley.flows.synth.backends.yosys.discovery import (
     DEFAULT_LIB_DIR,
     DEFAULT_LIBERTY,
@@ -94,8 +89,7 @@ __all__ = [
 
 
 _ABC_MAPPED_DELAY_RE = re.compile(
-    r"^ABC:\s+netlist\b.*?\bdelay\s*=\s*([0-9]+(?:\.[0-9]+)?)\b.*?\blev\s*=",
-    re.MULTILINE,
+    r"^ABC:\s+netlist\b.*?\bdelay\s*=\s*([0-9]+(?:\.[0-9]+)?)\b.*?\blev\s*=", re.MULTILINE
 )
 
 
@@ -136,11 +130,7 @@ def parse_effective_parameters(text: str) -> dict[str, str]:
     return dict(_EFFECTIVE_PARAM_RE.findall(text))
 
 
-def _parameter_guard_commands(
-    design_name: str,
-    work_dir: Path,
-    defines: list[str],
-) -> str:
+def _parameter_guard_commands(design_name: str, work_dir: Path, defines: list[str]) -> str:
     """Emit the effective-param artifact and fail on enabled-but-zero collisions."""
     artifact = _quote_yosys_path(work_dir / effective_params_filename(design_name))
     commands: list[str] = []
@@ -213,10 +203,7 @@ CHFORMAL_REMOVE = "chformal -remove"
 
 
 def resolve_frontend(
-    recipe: dict,
-    *,
-    override: str | None = None,
-    field: str = "Target flow_options.frontend",
+    recipe: dict, *, override: str | None = None, field: str = "Target flow_options.frontend"
 ) -> str | None:
     """The RTL frontend for the Yosys flows: *override* else the Target recipe.
 
@@ -238,9 +225,7 @@ def resolve_frontend(
 
 
 def resolve_slang_options(
-    recipe: dict,
-    *,
-    field: str = "Target flow_options.slang_options",
+    recipe: dict, *, field: str = "Target flow_options.slang_options"
 ) -> list[str]:
     """Extra raw ``read_slang`` tokens from a Target recipe.
 
@@ -349,11 +334,7 @@ def _rtl_frontend_commands(
 
 
 def _build_yosys_script(
-    spec: SynthSpec,
-    *,
-    sources: list[Path],
-    inc_dirs: list[Path],
-    work_dir: Path,
+    spec: SynthSpec, *, sources: list[Path], inc_dirs: list[Path], work_dir: Path
 ) -> str:
     """Build the Yosys synthesis command script string for *spec*.
 
@@ -677,12 +658,7 @@ def _toml_bool(cfg: dict, key: str, default: bool) -> bool:
 # ``[flows.synth.timing]``. These are the genuine flow/backend knobs
 # (ADR 0029 decision 2). Anything else is a typo or stale knob that would be
 # *silently ignored*, so we warn on unknown keys.
-TIMING_CONFIG_KEYS = frozenset(
-    {
-        "utilization_pct",
-        "repair_timing",
-    }
-)
+TIMING_CONFIG_KEYS = frozenset({"utilization_pct", "repair_timing"})
 
 # ADR 0029 decision 3 (hard cutoff): the portable *design constraints* moved
 # out of ``booley.toml`` and into a ``file_type: SDC`` fileset on the FuseSoC
@@ -690,13 +666,7 @@ TIMING_CONFIG_KEYS = frozenset(
 # setup-time error naming the migration (no additive fallback — a dual source
 # of truth would resurrect the design-list drift ADR 0022 decision 3 deleted).
 _MIGRATED_CONSTRAINT_KEYS = frozenset(
-    {
-        "sdc",
-        "period_ps",
-        "input_delay_pct",
-        "output_delay_pct",
-        "clock",
-    }
+    {"sdc", "period_ps", "input_delay_pct", "output_delay_pct", "clock"}
 )
 
 
@@ -798,11 +768,7 @@ def _resolve_sta_sdc_paths(sdc: list[str] | None, root: Path | None = None) -> l
 
 
 def _resolve_utilization_and_repair(
-    timing: dict,
-    ppa: OpenRoadPpaSettings | None,
-    *,
-    legacy_utilization: bool,
-    legacy_repair: bool,
+    timing: dict, ppa: OpenRoadPpaSettings | None, *, legacy_utilization: bool, legacy_repair: bool
 ) -> tuple[float, bool]:
     """Pick utilization and setup repair: legacy TOML, else *ppa*, else defaults."""
     if legacy_utilization:

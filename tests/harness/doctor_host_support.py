@@ -75,9 +75,7 @@ def hide_container_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     inspect_host = host_diagnostics.inspect_host
     monkeypatch.setattr(
-        host_diagnostics,
-        "inspect_host",
-        lambda root: replace(inspect_host(root), docker_exe=None),
+        host_diagnostics, "inspect_host", lambda root: replace(inspect_host(root), docker_exe=None)
     )
     monkeypatch.setattr(shutil, "which", lambda _name: None)
 

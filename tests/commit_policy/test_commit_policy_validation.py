@@ -26,14 +26,9 @@ def _configured_project(tmp_path: Path, stealth: str) -> Path:
     ],
 )
 def test_validation_uses_real_project_policy(
-    tmp_path: Path,
-    message: str,
-    error_fragment: str | None,
+    tmp_path: Path, message: str, error_fragment: str | None
 ) -> None:
-    root = _configured_project(
-        tmp_path,
-        "enabled = true\nmax_body_lines = 1\n",
-    )
+    root = _configured_project(tmp_path, "enabled = true\nmax_body_lines = 1\n")
 
     errors = validate_message(message, project_root=root)
 

@@ -116,10 +116,7 @@ def test_codec_rejects_oversized_json() -> None:
 
 
 @pytest.mark.parametrize(
-    "mutation",
-    [
-        pytest.param(lambda document: document.pop("started_at"), id="missing-field"),
-    ],
+    "mutation", [pytest.param(lambda document: document.pop("started_at"), id="missing-field")]
 )
 def test_attempt_field_mutation_is_rejected(mutation) -> None:
     mutated = _attempt()

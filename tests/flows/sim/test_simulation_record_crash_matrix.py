@@ -26,18 +26,13 @@ from booley.flows.sim.execution.contract import (
     SimulationTestOutcome,
 )
 from booley.flows.sim.record import collect_pre_sim_firings
-from booley.flows.sim.record.codec import (
-    SimulationRecordIntegrityError,
-    canonical_json_bytes,
-)
+from booley.flows.sim.record.codec import SimulationRecordIntegrityError, canonical_json_bytes
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
     SimulationRecord,
     SimulationRecordPolicy,
 )
-from booley.flows.sim.record.coverage_execution import (
-    CoverageAggregateExecutor,
-)
+from booley.flows.sim.record.coverage_execution import CoverageAggregateExecutor
 from booley.flows.sim.record.model import create_simulation_record_plan
 from booley.flows.sim.record.planning import finalize_manifest
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
@@ -267,10 +262,7 @@ def _assert_crash_recovery(outcome, store, crash_point, launches, crash) -> None
 @pytest.mark.parametrize("route", ("shared", "private"))
 @pytest.mark.parametrize("crash_point", _CRASH_POINTS)
 def test_serial_publication_boundary_resume_matrix(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    crash_point: str,
-    route: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, crash_point: str, route: str
 ) -> None:
     """Every durable prefix resumes on both build routes; only a committed Result suppresses rerun."""
     crash = _CrashOnce(crash_point)
@@ -664,8 +656,7 @@ def _coverage_case(root: Path):
     plan, target = _coverage_simulation_record_plan(root, runtime_input=True)
     record = SimulationRecord(
         CoverageAggregateExecutor(
-            plans={target.handle.identity: target},
-            execution_factory=_fresh_native_execution,
+            plans={target.handle.identity: target}, execution_factory=_fresh_native_execution
         )
     )
     invocation = root / "reports" / "1"
@@ -800,15 +791,10 @@ def test_compatibility_projection_boundary_is_retryable(tmp_path: Path) -> None:
             _write_projection(path)
         _write_projection(path)
 
-    assert json.loads(path.read_text(encoding="utf-8")) == {
-        "complete": True,
-        "target": "sim",
-    }
+    assert json.loads(path.read_text(encoding="utf-8")) == {"complete": True, "target": "sim"}
 
 
-def test_invalid_committed_result_fails_closed_before_executor_entry(
-    tmp_path: Path,
-) -> None:
+def test_invalid_committed_result_fails_closed_before_executor_entry(tmp_path: Path) -> None:
     document = _manifest()
     document.pop("fingerprints")
     manifest = finalize_manifest(document)
@@ -909,10 +895,7 @@ def _failed_build_case(tmp_path, monkeypatch, failure_path):
     engine_root.mkdir()
     infrastructure = failure_path.endswith("spawn")
     handle = SimpleNamespace(
-        identity="acme:lib:dut:1#sim",
-        project_root=project,
-        selector="sim",
-        eda_tool="icarus",
+        identity="acme:lib:dut:1#sim", project_root=project, selector="sim", eda_tool="icarus"
     )
     monkeypatch.setattr(
         "booley.flows.sim.record.serial_execution.TargetCatalog.build",
@@ -1111,10 +1094,7 @@ def _baseline_disclosure_manifest(manifest):
 
 
 def _resume_real_hook_crash(tmp_path, invocation, store):
-    from tests.flows.sim.simulation_record_test_support import (
-        _executor,
-        _legacy_disclosures,
-    )
+    from tests.flows.sim.simulation_record_test_support import _executor, _legacy_disclosures
 
     manifest = store.load_manifest()
     project = tmp_path / "project"
@@ -1165,8 +1145,7 @@ def test_process_death_at_actual_hook_publication_recovers_immutable_evidence(
 
 
 def test_result_commit_and_scan_trust_evidence_changed_after_publication(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Booley's own published evidence is trusted on commit and on every scan."""
 

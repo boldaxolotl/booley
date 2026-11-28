@@ -12,11 +12,7 @@ from typing import Any
 
 from booley.core.boundary import require_str_value
 from booley.flows.cli_arguments import add_project_args
-from booley.runtime.endpoint_execution import (
-    EndpointOutcome,
-    ExecutionResult,
-    execute_endpoint,
-)
+from booley.runtime.endpoint_execution import EndpointOutcome, ExecutionResult, execute_endpoint
 from booley.runtime.timefmt import UtcLogFormatter
 
 logger = logging.getLogger(__name__)
@@ -230,10 +226,7 @@ def cli(endpoint) -> None:
         sys.exit(endpoint.main())
     handler = logging.StreamHandler()
     handler.setFormatter(UtcLogFormatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s"))
-    logging.basicConfig(
-        level=logging.INFO,
-        handlers=[handler],
-    )
+    logging.basicConfig(level=logging.INFO, handlers=[handler])
     sys.exit(endpoint.main())
 
 

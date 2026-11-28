@@ -8,11 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from booley.evidence.recipe import (
-    constraint_recipe_entry,
-    jsonable,
-    recipe_snapshot_fingerprint,
-)
+from booley.evidence.recipe import constraint_recipe_entry, jsonable, recipe_snapshot_fingerprint
 
 from ..edam import EdamFile
 from ..run_evidence import FlowSourceEvidence
@@ -51,10 +47,7 @@ def normalized_fpga_flow_options(flow_options: Mapping[str, Any]) -> dict[str, A
 
 
 def fpga_recipe_snapshot(
-    resolved: Any,
-    *,
-    target: str,
-    profile: VivadoProfile | None = None,
+    resolved: Any, *, target: str, profile: VivadoProfile | None = None
 ) -> dict[str, Any]:
     """Return normalized FPGA implementation intent and design constraints."""
     constraints = []

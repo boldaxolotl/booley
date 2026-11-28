@@ -47,11 +47,7 @@ _OLD_PRIVATE_NAMES = (
     "_check_interactive_logs_tracked",
 )
 _RETIRED_VARIABLE_OR_DIRECTORY = re.compile(r"BOOLEY_MCP_MODE|\.interactive_logs")
-_HISTORY_PREFIXES = (
-    "CHANGELOG.md",
-    "changelog.d/",
-    "docs/adr/",
-)
+_HISTORY_PREFIXES = ("CHANGELOG.md", "changelog.d/", "docs/adr/")
 # The only lines allowed to name the retired variable or directory, counted per file: the
 # Doctor leftover check and its guarded behavior, and the Sandbox issued before the rename.
 _ALLOWED_HITS = {

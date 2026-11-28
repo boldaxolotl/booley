@@ -35,10 +35,7 @@ def server_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 def _command(name: str, definition: dict[str, object]) -> list[str]:
     return mcp_server._endpoint_command(
-        name,
-        {"target": "lint_uart"},
-        definition,
-        collections.defaultdict(int),
+        name, {"target": "lint_uart"}, definition, collections.defaultdict(int)
     )
 
 

@@ -112,9 +112,7 @@ def test_new_sandbox_at_cap_is_refused_with_live_project_and_age(
     )
     with pytest.raises(session_admission.AdmissionError) as caught:
         session_admission.admit_start(
-            current,
-            target_name="new",
-            now=datetime(2026, 9, 27, 10, 0, tzinfo=UTC),
+            current, target_name="new", now=datetime(2026, 9, 27, 10, 0, tzinfo=UTC)
         )
 
     message = str(caught.value)
@@ -259,24 +257,13 @@ def test_inventory_failure_refuses_instead_of_assuming_empty(
         session_admission.admit_start(project, target_name="headless")
 
 
-@pytest.mark.parametrize(
-    ("field", "value"),
-    [("Name", 7), ("StartedAt", "0001-01-01T00:00:00Z")],
-)
+@pytest.mark.parametrize(("field", "value"), [("Name", 7), ("StartedAt", "0001-01-01T00:00:00Z")])
 def test_malformed_live_inspection_fails_closed(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    docker: FakeDocker,
-    field: str,
-    value: object,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, docker: FakeDocker, field: str, value: object
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
-    document = _vscode_inspection(
-        project,
-        running=True,
-        started="2026-09-27T08:00:00Z",
-    )
+    document = _vscode_inspection(project, running=True, started="2026-09-27T08:00:00Z")
     if field == "StartedAt":
         document["State"][field] = value
     else:
@@ -354,8 +341,7 @@ def test_claim_reconciliation_uses_observed_container_state_not_cross_clock(
     )
 
     assert session_admission.claim_vscode_start(
-        project,
-        now=datetime(2026, 9, 27, 8, 0, 0, 900000, tzinfo=UTC),
+        project, now=datetime(2026, 9, 27, 8, 0, 0, 900000, tzinfo=UTC)
     )
     assert session_admission.has_pending_claim(project)
 
@@ -397,10 +383,7 @@ def test_vscode_cleanup_rejects_mismatched_sealed_project_identity(
         docker,
         {
             "editor-id": _vscode_inspection(
-                project,
-                running=True,
-                started="2026-09-27T08:00:00Z",
-                project_id="wrong",
+                project, running=True, started="2026-09-27T08:00:00Z", project_id="wrong"
             )
         },
     )
@@ -732,10 +715,7 @@ def test_project_inventory_skips_host_sidecars(tmp_path: Path, docker: FakeDocke
     project.mkdir()
     _listing(
         docker,
-        [
-            "reaper-id\tbooley-reaper\t\t\treaper",
-            "proxy-id\tbooley-proxy\t\t\tegress-proxy",
-        ],
+        ["reaper-id\tbooley-reaper\t\t\treaper", "proxy-id\tbooley-proxy\t\t\tegress-proxy"],
     )
 
     assert session_admission.running_project_sandboxes(project) == ()

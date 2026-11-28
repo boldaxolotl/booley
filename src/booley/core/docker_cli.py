@@ -38,13 +38,7 @@ class Validator(Protocol[_T_co]):
 
 
 def inspect_value(
-    run: Runner,
-    kind: str,
-    name: str,
-    *,
-    timeout: int,
-    template: str,
-    require: Validator[_T],
+    run: Runner, kind: str, name: str, *, timeout: int, template: str, require: Validator[_T]
 ) -> _T:
     """Return what *require* accepts of the JSON that *template* renders for one object.
 

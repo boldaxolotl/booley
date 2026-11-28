@@ -7,11 +7,7 @@ from typing import Any
 
 from booley.core.boundary import BoundaryError, require_dict, require_int, require_str
 
-_IDENTITY_KINDS = {
-    "linux-procfs-start",
-    "posix-ps-start",
-    "windows-creation-time",
-}
+_IDENTITY_KINDS = {"linux-procfs-start", "posix-ps-start", "windows-creation-time"}
 
 
 @dataclass(frozen=True)

@@ -233,10 +233,7 @@ def _is_transient(text: str) -> bool:
 
 
 def _empty_json_response(
-    returncode: int,
-    stderr: str,
-    *,
-    empty_exit_codes: frozenset[int],
+    returncode: int, stderr: str, *, empty_exit_codes: frozenset[int]
 ) -> list[Any]:
     message = _redact_error(stderr)
     expected_empty = not stderr.strip() or NO_CHECKS_REPORTED.fullmatch(message)
@@ -540,9 +537,7 @@ class GhTransport:
             raise WatchError("gh read failed")
         if not stdout.strip():
             return _empty_json_response(
-                process.returncode,
-                stderr,
-                empty_exit_codes=empty_exit_codes,
+                process.returncode, stderr, empty_exit_codes=empty_exit_codes
             )
         try:
             return json.loads(stdout)
@@ -566,10 +561,7 @@ class GhTransport:
             remaining = deadline - self._clock.monotonic()
             try:
                 return self._run(
-                    args,
-                    remaining,
-                    accepted=accepted,
-                    empty_exit_codes=empty_exit_codes,
+                    args, remaining, accepted=accepted, empty_exit_codes=empty_exit_codes
                 )
             except ConnectionError as error:
                 last_error = error
@@ -603,18 +595,7 @@ class GhTransport:
     def _producer_runs(self, repo: str, head: str, deadline: float) -> tuple[ProducerRun, ...]:
         fields = "databaseId,workflowName,event,status,conclusion,headSha,attempt,createdAt,url"
         value = self._read(
-            [
-                "run",
-                "list",
-                "--repo",
-                repo,
-                "--commit",
-                head,
-                "--limit",
-                "100",
-                "--json",
-                fields,
-            ],
+            ["run", "list", "--repo", repo, "--commit", head, "--limit", "100", "--json", fields],
             deadline,
         )
         return _parse_producer_runs(value)
@@ -639,11 +620,7 @@ class GhTransport:
         required_check_names = self._required_checks(repo, base_branch, deadline)
         checks = self._checks(repo, pr, deadline)
         provisional = _snapshot_from_json(
-            first,
-            checks,
-            [],
-            require_comments=False,
-            required_check_names=required_check_names,
+            first, checks, [], require_comments=False, required_check_names=required_check_names
         )
         observed_names = {
             check.name for check in _latest_checks(provisional.checks, provisional.head_sha)
@@ -705,10 +682,7 @@ def _latest_checks(checks: Iterable[Check], current_head: str | None) -> tuple[C
         with_start = [entry for entry in entries if entry.started_at is not None]
         if len(with_start) == len(entries):
             latest.append(
-                max(
-                    with_start,
-                    key=lambda entry: (entry.started_at or "", entry.attempt or -1),
-                )
+                max(with_start, key=lambda entry: (entry.started_at or "", entry.attempt or -1))
             )
             continue
         with_attempt = [entry for entry in entries if entry.attempt is not None]
@@ -763,11 +737,7 @@ def classify_ci(snapshot: Snapshot, expected_head: str) -> Decision:
 
 
 def _latest_producer_run(
-    runs: Iterable[ProducerRun],
-    *,
-    expected_head: str,
-    workflow: str,
-    event: str,
+    runs: Iterable[ProducerRun], *, expected_head: str, workflow: str, event: str
 ) -> ProducerRun | None:
     matching = [
         run
@@ -931,11 +901,7 @@ def _summary(result: WatchResult) -> str:
 
 
 def _result(
-    outcome: Outcome,
-    snapshot: Snapshot | None,
-    started: float,
-    clock: Clock,
-    transport: Transport,
+    outcome: Outcome, snapshot: Snapshot | None, started: float, clock: Clock, transport: Transport
 ) -> WatchResult:
     return WatchResult(
         outcome,
@@ -949,11 +915,7 @@ def _result(
 
 
 def _result_with_links(
-    decision: Decision,
-    snapshot: Snapshot,
-    started: float,
-    clock: Clock,
-    transport: Transport,
+    decision: Decision, snapshot: Snapshot, started: float, clock: Clock, transport: Transport
 ) -> WatchResult:
     return WatchResult(
         decision.outcome,
@@ -1023,12 +985,7 @@ def _watch_ci(
 
 
 def _watch_queue(
-    transport: Transport,
-    clock: Clock,
-    repo: str,
-    pr: int,
-    deadline: float,
-    started: float,
+    transport: Transport, clock: Clock, repo: str, pr: int, deadline: float, started: float
 ) -> WatchResult:
     memory = QueueMemory()
     snapshot: Snapshot | None = None

@@ -27,8 +27,7 @@ import pytest
 
 if sys.platform != "linux":
     pytest.skip(
-        "pty, /proc process identity and POSIX job control require Linux",
-        allow_module_level=True,
+        "pty, /proc process identity and POSIX job control require Linux", allow_module_level=True
     )
 
 import fcntl

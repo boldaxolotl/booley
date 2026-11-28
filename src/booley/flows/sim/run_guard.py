@@ -284,9 +284,7 @@ def _normalized_input_path(path: str, run_dir: Path) -> str | None:
 
 
 def classify_readmemh_termination(
-    missing: MissingMemoryInput,
-    run_dir: Path,
-    runtime_inputs: tuple[str, ...] | list[str],
+    missing: MissingMemoryInput, run_dir: Path, runtime_inputs: tuple[str, ...] | list[str]
 ) -> RunTermination:
     """Classify a fatal initializer against Target-declared destinations."""
     normalized = _normalized_input_path(missing.filename, run_dir)
@@ -307,17 +305,11 @@ def classify_readmemh_termination(
             "declare the file in the Target fileset (file_type: user/copyto)"
         )
         failure_kind = "missing_input"
-    return RunTermination(
-        "fatal_init",
-        detail,
-        failure_kind,
-        missing_input_path=missing.filename,
-    )
+    return RunTermination("fatal_init", detail, failure_kind, missing_input_path=missing.filename)
 
 
 _UNSTAGED_INPUT_RE = re.compile(
-    r"^ERROR: (declared runtime input '.+' was not staged before \$readmem[hb].*)$",
-    re.MULTILINE,
+    r"^ERROR: (declared runtime input '.+' was not staged before \$readmem[hb].*)$", re.MULTILINE
 )
 
 
@@ -671,12 +663,7 @@ class SimTimeStallGuard:
     """
 
     def __init__(
-        self,
-        proc: Any,
-        grace_s: float,
-        *,
-        interval: float = 5.0,
-        clock: Any = time.monotonic,
+        self, proc: Any, grace_s: float, *, interval: float = 5.0, clock: Any = time.monotonic
     ) -> None:
         self.proc = proc
         self.grace_s = float(grace_s)

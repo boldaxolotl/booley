@@ -31,10 +31,7 @@ def audit_agent_table(data: Mapping[str, Any]) -> ConfigTableAudit:
         return ConfigTableAudit()
     agent = as_dict(raw_agent)
     if agent is None:
-        return failure(
-            "booley.toml [agent] must be a table",
-            "rewrite [agent] as a TOML table",
-        )
+        return failure("booley.toml [agent] must be a table", "rewrite [agent] as a TOML table")
     retired = sorted(set(agent) & {"primary", "primary_auth", "secondary", "secondary_auth"})
     if retired:
         return failure(
@@ -67,16 +64,12 @@ def audit_agent_table(data: Mapping[str, Any]) -> ConfigTableAudit:
 def _models_table_problem(models: dict[str, Any] | None) -> ConfigTableAudit | None:
     """Fail a ``[models]`` that is not a table or names a key that is not a Specialist."""
     if models is None:
-        return failure(
-            "booley.toml [models] must be a table",
-            "rewrite [models] as a TOML table",
-        )
+        return failure("booley.toml [models] must be a table", "rewrite [models] as a TOML table")
     if unknown := sorted(set(models) - SPECIALISTS - RETIRED_MODEL_KEYS):
         valid = ", ".join(sorted(SPECIALISTS))
         keys = ", ".join(f"[models] {key}" for key in unknown)
         return failure(
-            unknown_models_key_message(unknown[0]),
-            f"delete {keys}; valid keys are {valid}",
+            unknown_models_key_message(unknown[0]), f"delete {keys}; valid keys are {valid}"
         )
     return None
 

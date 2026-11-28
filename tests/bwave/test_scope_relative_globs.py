@@ -81,11 +81,7 @@ b10 $
 """
 
 # The signals `list` prints under `dut` (scope prefix TOP.tb. + relative name).
-DUT_TREE = {
-    "TOP.tb.dut.count[7:0]",
-    "TOP.tb.dut.valid",
-    "TOP.tb.dut.u_core.state[3:0]",
-}
+DUT_TREE = {"TOP.tb.dut.count[7:0]", "TOP.tb.dut.valid", "TOP.tb.dut.u_core.state[3:0]"}
 ALL_DUT_NAMED = DUT_TREE | {"TOP.tb.other.dut.flag"}
 
 
@@ -219,10 +215,7 @@ def test_anchored_globs_select_as_before(store: Path, glob: str) -> None:
 def test_bare_name_suffix_match_unchanged(store: Path) -> None:
     """AC4: a bare name is a suffix match: ``bus`` finds ``data_bus``."""
     assert _selected("list", store, "bus") == (0, {"TOP.tb.data_bus[7:0]"})
-    assert _selected("list", store, "count") == (
-        0,
-        {"TOP.tb.count[7:0]", "TOP.tb.dut.count[7:0]"},
-    )
+    assert _selected("list", store, "count") == (0, {"TOP.tb.count[7:0]", "TOP.tb.dut.count[7:0]"})
 
 
 def _resolve_gui(store: Path, glob: str, monkeypatch: pytest.MonkeyPatch) -> set[str]:
@@ -236,11 +229,7 @@ def _resolve_gui(store: Path, glob: str, monkeypatch: pytest.MonkeyPatch) -> set
 
 @pytest.mark.parametrize(
     ("glob", "expected"),
-    [
-        ("TOP.tb.dut.*", DUT_TREE),
-        ("*dut.*", ALL_DUT_NAMED),
-        ("bus", {"TOP.tb.data_bus[7:0]"}),
-    ],
+    [("TOP.tb.dut.*", DUT_TREE), ("*dut.*", ALL_DUT_NAMED), ("bus", {"TOP.tb.data_bus[7:0]"})],
 )
 def test_gui_keeps_anchored_and_bare_matching(
     store: Path, monkeypatch: pytest.MonkeyPatch, glob: str, expected: set[str]
@@ -251,10 +240,7 @@ def test_gui_keeps_anchored_and_bare_matching(
 
 @pytest.mark.parametrize("group", [False, True])
 def test_gui_refuses_bit_slice(
-    store: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-    group: bool,
+    store: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], group: bool
 ) -> None:
     """#4898: ``gui`` takes whole signals, so a bit-slice selector exits 2."""
     monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)

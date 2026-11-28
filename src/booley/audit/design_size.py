@@ -13,16 +13,7 @@ from booley.targets.catalog import TargetCatalog
 
 HDL_SUFFIXES = frozenset({".v", ".sv", ".vh", ".svh"})
 SKIP_DIRECTORIES = frozenset(
-    {
-        ".git",
-        "build",
-        "dist",
-        "node_modules",
-        ".venv",
-        "__pycache__",
-        ".hg",
-        ".svn",
-    }
+    {".git", "build", "dist", "node_modules", ".venv", "__pycache__", ".hg", ".svn"}
 )
 LARGE_DESIGN_FILES = 250
 LARGE_DESIGN_LOC = 150_000
@@ -50,9 +41,7 @@ class DesignSizeAudit:
 
 
 def analyze_design_size(
-    project_root: Path,
-    booley_dir: Path,
-    configured_targets: Iterable[str],
+    project_root: Path, booley_dir: Path, configured_targets: Iterable[str]
 ) -> DesignSizeAudit:
     """Measure configured Target closure, falling back to a pruned repository scan."""
     configured_paths = _configured_hdl_paths(project_root, configured_targets)

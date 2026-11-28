@@ -19,8 +19,7 @@ def test_init_rejects_host_provisioning_on_windows(
     booley_dir = project / ".booley"
     booley_dir.mkdir(parents=True)
     (booley_dir / "booley.toml").write_text(
-        '[eda.vivado]\nprovisioning = "host"\n',
-        encoding="utf-8",
+        '[eda.vivado]\nprovisioning = "host"\n', encoding="utf-8"
     )
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.setattr(eda_config.sys, "platform", "win32")

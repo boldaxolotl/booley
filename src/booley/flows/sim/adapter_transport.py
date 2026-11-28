@@ -233,8 +233,7 @@ def _validated_scalars(payload: dict[str, Any]) -> tuple[bool, bool, int, int]:
 
 
 def _validate_identity(
-    payload: dict[str, Any],
-    identity: AdapterTransportIdentity,
+    payload: dict[str, Any], identity: AdapterTransportIdentity
 ) -> tuple[str, ...]:
     """Require the result to belong to the expected invocation."""
     if payload.get("adapter") != identity.adapter:
@@ -250,10 +249,7 @@ def _validate_identity(
 
 
 def _validated_result_fields(
-    payload: dict[str, Any],
-    identity: AdapterTransportIdentity,
-    passed: bool,
-    inconclusive: bool,
+    payload: dict[str, Any], identity: AdapterTransportIdentity, passed: bool, inconclusive: bool
 ) -> tuple[tuple[str, ...], RunTerminationKind, str, AdapterFailureKind, str]:
     """Decode fields whose constraints depend on the invocation or verdict."""
     tests = _string_tuple(payload, "tests")
@@ -517,9 +513,7 @@ def assess_native_verdict(
 ) -> NativeVerdictAssessment:
     """Apply shared native sentinel/SVA/termination precedence once."""
     verdict = parse_sim_verdict(
-        output,
-        pass_sentinels=pass_sentinels,
-        fail_sentinels=fail_sentinels,
+        output, pass_sentinels=pass_sentinels, fail_sentinels=fail_sentinels
     )
     sva_errors = count_sva_errors(output)
     termination = termination or RunTermination()
@@ -531,10 +525,7 @@ def assess_native_verdict(
 
 
 def native_verdict_message(
-    tool: str,
-    assessment: NativeVerdictAssessment,
-    returncode: int,
-    termination: RunTermination,
+    tool: str, assessment: NativeVerdictAssessment, returncode: int, termination: RunTermination
 ) -> str:
     """Render the shared native verdict precedence with a backend label."""
     if termination.aborted:
@@ -718,10 +709,7 @@ def evaluate_native_verdict(
     vrfc = extract_vrfc_warnings(output)
     print(
         format_summary(
-            assessment.passed,
-            assessment.sva_errors,
-            vrfc,
-            inconclusive=assessment.inconclusive,
+            assessment.passed, assessment.sva_errors, vrfc, inconclusive=assessment.inconclusive
         )
     )
     print(native_verdict_message(tool, assessment, returncode, termination))

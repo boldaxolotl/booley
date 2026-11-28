@@ -8,24 +8,12 @@ from pathlib import Path
 
 import pytest
 
-from booley.flows.sim.record.capacity import (
-    SimulationRecordCapacityError,
-)
+from booley.flows.sim.record.capacity import SimulationRecordCapacityError
 from booley.flows.sim.record.child_protocol import ChildExecutionRegistry
-from booley.flows.sim.record.scheduler import (
-    BoundedSimulationRecordScheduler,
-)
+from booley.flows.sim.record.scheduler import BoundedSimulationRecordScheduler
 from booley.flows.sim.record.store import SimulationRecordStore
-from booley.runtime.execution_records import (
-    ExecutionId,
-    execution_paths,
-    read_json,
-)
-from booley.runtime.job_slots import (
-    ClaimAbortedError,
-    SlotRecovery,
-    SlotStore,
-)
+from booley.runtime.execution_records import ExecutionId, execution_paths, read_json
+from booley.runtime.job_slots import ClaimAbortedError, SlotRecovery, SlotStore
 from tests.flows.sim.simulation_record_test_support import (
     _capacity,
     _item_capacity,
@@ -62,8 +50,7 @@ class _SimulationRecord:
 
     def scheduler(self, execute, *, timeout_seconds: float, prepare_child=None):
         admission = replace(
-            _managed(self.slots, self.outer, holders=self.lanes),
-            timeout_seconds=timeout_seconds,
+            _managed(self.slots, self.outer, holders=self.lanes), timeout_seconds=timeout_seconds
         )
         self.capacity = _item_capacity(
             admission, self.manifest, self.registry.project_data, lanes=self.lanes

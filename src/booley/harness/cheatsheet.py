@@ -42,17 +42,9 @@ SECTIONS: tuple[Section, ...] = (
         "`metrics.toml` text (needs a Project)",
     ),
     Section("flows", "Booley Flows", "Deterministic end-to-end orchestration"),
-    Section(
-        "specialists",
-        "Specialists",
-        "LLM specialists, review focuses, and mutation goals",
-    ),
+    Section("specialists", "Specialists", "LLM specialists, review focuses, and mutation goals"),
     Section("targets", "Targets", "FuseSoC Targets and `booley targets`"),
-    Section(
-        "project",
-        "Project Files",
-        "Editable .booley files and affected capabilities",
-    ),
+    Section("project", "Project Files", "Editable .booley files and affected capabilities"),
     Section("skills", "Skills", "Project workflow skills"),
     Section(
         "sandbox",

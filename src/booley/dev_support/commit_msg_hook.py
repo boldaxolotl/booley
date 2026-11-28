@@ -54,18 +54,12 @@ _STRUCTURAL_ATTRIBUTION_LINE_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
-_GENERATED_WITH_LINE_RE = re.compile(
-    r"^\s*generated\s+with\s+(?P<payload>.+?)\s*$",
-    re.IGNORECASE,
-)
+_GENERATED_WITH_LINE_RE = re.compile(r"^\s*generated\s+with\s+(?P<payload>.+?)\s*$", re.IGNORECASE)
 
 _MARKDOWN_LINK_RE = re.compile(r"^\[(?P<label>[^]]+)\]\([^)]+\)$")
 
 
-def _payload_names_protected_identity(
-    payload: str,
-    project_root: Path | None = None,
-) -> bool:
+def _payload_names_protected_identity(payload: str, project_root: Path | None = None) -> bool:
     """Return whether an attribution payload is exactly one protected name."""
     link = _MARKDOWN_LINK_RE.fullmatch(payload)
     visible_name = (link.group("label") if link else payload).strip()
@@ -181,11 +175,7 @@ def _print_kept_and_retry(msg_file: Path, *, merge: bool = False) -> None:
 
 
 def _print_banned_rejection(
-    matches: list[tuple[str, str]],
-    other_errors: list[str],
-    msg_file: Path,
-    *,
-    merge: bool,
+    matches: list[tuple[str, str]], other_errors: list[str], msg_file: Path, *, merge: bool
 ) -> None:
     """Print the banned-term rejection with every match and both ways out."""
     print(

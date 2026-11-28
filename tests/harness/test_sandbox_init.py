@@ -33,10 +33,7 @@ TASKS_JSON = b'{"version": "2.0.0", "tasks": [{"label": "build", "command": "mak
 
 def _git(repository: Path, *args: str) -> str:
     """Run git in *repository* and return stdout."""
-    completed = run_bounded_child(
-        ["git", *GIT_IDENTITY, "-C", str(repository), *args],
-        check=True,
-    )
+    completed = run_bounded_child(["git", *GIT_IDENTITY, "-C", str(repository), *args], check=True)
     return completed.stdout
 
 

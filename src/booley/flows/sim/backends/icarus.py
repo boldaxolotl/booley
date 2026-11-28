@@ -61,10 +61,7 @@ from booley.flows.sim.backends.shared import (
     find_icarus_image,
 )
 from booley.flows.sim.backends.supervision import SimulatorLaunch, run_supervised
-from booley.flows.sim.backends.trace_finalization import (
-    finalize_trace,
-    native_pending_publisher,
-)
+from booley.flows.sim.backends.trace_finalization import finalize_trace, native_pending_publisher
 from booley.flows.sim.config import DEFAULT_SIM_TRACE_CONVERT_TIMEOUT_S
 from booley.flows.sim.trace_session import TraceSession
 from booley.runtime.filesystem_utils import make_directories
@@ -105,10 +102,7 @@ def _find_vvp() -> str:
 
 
 def _build_vvp_cmd(
-    vvp_bin: str,
-    build_dir: Path,
-    image: str,
-    plusargs: list[str] | None,
+    vvp_bin: str, build_dir: Path, image: str, plusargs: list[str] | None
 ) -> list[str]:
     """Assemble the ``vvp`` command line (mirrors edalize's run target, minus -fst).
 
@@ -163,10 +157,7 @@ def _prepare_icarus_run(
 
 
 def _execute_icarus_run(
-    run: _IcarusRun,
-    timeout: int,
-    max_rundir_bytes: int,
-    runtime_inputs: tuple[str, ...],
+    run: _IcarusRun, timeout: int, max_rundir_bytes: int, runtime_inputs: tuple[str, ...]
 ):
     print(f"\n{'=' * 60}")
     print(f"[iverilog simulation: {run.image}]")

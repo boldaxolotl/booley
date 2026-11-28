@@ -184,9 +184,7 @@ _SELECTION_CASES = {
 
 
 @pytest.mark.parametrize(
-    "changes,stamps,flavor,expected",
-    _SELECTION_CASES.values(),
-    ids=_SELECTION_CASES,
+    "changes,stamps,flavor,expected", _SELECTION_CASES.values(), ids=_SELECTION_CASES
 )
 def test_final_selection_rules(changes, stamps, flavor, expected):
     fields = {

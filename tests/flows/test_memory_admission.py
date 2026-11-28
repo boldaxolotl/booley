@@ -26,12 +26,7 @@ BUDGET_MIB = 1200.0
 
 
 def _record(
-    target: str,
-    phase: str,
-    peak_mib: float,
-    *,
-    test_run: str = "",
-    wall_s: float | None = 1.0,
+    target: str, phase: str, peak_mib: float, *, test_run: str = "", wall_s: float | None = 1.0
 ) -> dict[str, Any]:
     """A history record with only the fields the estimator reads."""
     return {
@@ -463,9 +458,7 @@ def test_settled_work_item_reserves_sim_prepare_with_its_run() -> None:
     assert without_setup.run_alone
 
 
-def test_work_item_request_resolves_each_target_plan_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_work_item_request_resolves_each_target_plan_once(monkeypatch: pytest.MonkeyPatch) -> None:
     flow = _sim_flow()
     flow.begin_invocation()
     plans: list[str] = []
@@ -553,10 +546,7 @@ def test_specialist_claim_without_history_reserves_the_default() -> None:
 
 @pytest.mark.parametrize(
     ("swap_mib", "synth_mib", "specialist_mib"),
-    [
-        pytest.param(4096, 1100.0, 440.0, id="swap"),
-        pytest.param(0, 1250.0, 500.0, id="no-swap"),
-    ],
+    [pytest.param(4096, 1100.0, 440.0, id="swap"), pytest.param(0, 1250.0, 500.0, id="no-swap")],
 )
 def test_estimate_margin_follows_the_sandbox_swap_allowance(
     tmp_path: Path,

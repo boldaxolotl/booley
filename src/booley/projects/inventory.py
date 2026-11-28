@@ -325,8 +325,6 @@ def _locked_roots() -> Iterator[set[str]]:
         roots = _load_roots()
         yield roots
         payload = json.dumps(
-            {"schema": SCHEMA_VERSION, "projects": sorted(roots)},
-            indent=2,
-            sort_keys=True,
+            {"schema": SCHEMA_VERSION, "projects": sorted(roots)}, indent=2, sort_keys=True
         )
         store.atomic_write_text(_STATE_FILENAME, payload + "\n")

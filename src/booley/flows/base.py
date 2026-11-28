@@ -120,9 +120,7 @@ def blame_own_oom_kill(
 
 def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
     from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
-    from booley.runtime.supervised_execution import (
-        current_supervised_execution,
-    )
+    from booley.runtime.supervised_execution import current_supervised_execution
 
     scope = current_supervised_execution()
     if scope is not None and scope.execution_id is not None:
@@ -172,11 +170,7 @@ def _start_local_process(cmd, cwd, env, scope):
 
 
 def _communicate_local_process(
-    cmd: list[str],
-    proc: subprocess.Popen,
-    scope: Any,
-    started: float,
-    timeout: int,
+    cmd: list[str], proc: subprocess.Popen, scope: Any, started: float, timeout: int
 ) -> SubprocessResult:
     from booley.runtime.platform_paths import kill_process_tree
 
@@ -275,9 +269,7 @@ class FlowMechanics:
         cmd = self._build_command()
         if not cmd:
             return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text="No command to execute",
-                refused=True,
+                exit_code=EXIT_ERROR, report_text="No command to execute", refused=True
             )
         proc_result = self._execute(cmd)
         return self._interpret_result(proc_result)
@@ -450,11 +442,7 @@ class FlowMechanics:
     # ------------------------------------------------------------------
 
     def _execute_boundary(
-        self,
-        cmd: list[str],
-        *,
-        timeout: int | None = None,
-        cwd: Path | None = None,
+        self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
     ) -> SubprocessResult:
         """Run a boundary command locally inside the Sandbox, in *cwd* when given."""
         dispatched = time.time()
@@ -581,15 +569,11 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
             return None
         try:
             selection = PreparedTargetSelection.resolve(
-                self.args.work_dir,
-                self.args.target,
-                for_flow=self.name,
-                select_omitted=True,
+                self.args.work_dir, self.args.target, for_flow=self.name, select_omitted=True
             )
         except (FuseSocError, OSError, ValueError) as exc:
             return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"{self.name} Target selection failed: {exc}",
+                exit_code=EXIT_ERROR, report_text=f"{self.name} Target selection failed: {exc}"
             )
         self._prepared_target_selection = selection
         self.set_report_targets([handle.selector for handle in selection.handles])
@@ -619,9 +603,7 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         if prepared is not None and prepared.matches(self.args.work_dir, self.args.target):
             return prepared
         return PreparedTargetSelection.resolve(
-            self.args.work_dir,
-            self.args.target,
-            for_flow=self.name,
+            self.args.work_dir, self.args.target, for_flow=self.name
         )
 
     def _selected_target_handles(self) -> tuple[TargetHandle, ...]:
@@ -727,11 +709,7 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
 
     def _timeout_ms(self) -> int:
         """Resolve the strict shared timeout precedence for this built-in Flow."""
-        return resolve_timeout_ms(
-            self.name,
-            Path(self.args.work_dir),
-            self.args.timeout_ms,
-        )
+        return resolve_timeout_ms(self.name, Path(self.args.work_dir), self.args.timeout_ms)
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
         """Validate the shared invocation contract before dry-run can return."""

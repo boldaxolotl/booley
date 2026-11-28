@@ -53,11 +53,7 @@ _REAL_SETUP_HANDLE = fusesoc_registry.setup_command_for_handle
 
 def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandle:
     return make_target_handle(
-        project_root,
-        selector,
-        flow="generic",
-        eda_tool="vivado",
-        drivable_by=("fpga",),
+        project_root, selector, flow="generic", eda_tool="vivado", drivable_by=("fpga",)
     )
 
 
@@ -74,9 +70,7 @@ def _adr0039_lenient_selection(monkeypatch):
     """
 
     install_lenient_target_catalog(
-        monkeypatch,
-        real_catalog_build=_REAL_CATALOG_BUILD,
-        fallback_handle=_layer_target_handle,
+        monkeypatch, real_catalog_build=_REAL_CATALOG_BUILD, fallback_handle=_layer_target_handle
     )
 
 
@@ -85,11 +79,7 @@ def state_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return tmp_path / "state.json"
 
 
-def _write_project_config(
-    tmp_path: Path,
-    *,
-    execution_lines: str = "",
-) -> None:
+def _write_project_config(tmp_path: Path, *, execution_lines: str = "") -> None:
     """Write the fixture project config.
 
     *execution_lines* can inject a retired spelling to exercise the hard
@@ -98,12 +88,10 @@ def _write_project_config(
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir(exist_ok=True)
     (booley_dir / "booley.toml").write_text(
-        "[jobs.seats]\nvivado = 1\n\n[flows.fpga]\n" + execution_lines,
-        encoding="utf-8",
+        "[jobs.seats]\nvivado = 1\n\n[flows.fpga]\n" + execution_lines, encoding="utf-8"
     )
     (booley_dir / "configs.toml").write_text(
-        '[default]\ntop_module = "dut_top"\ndefines = ["CFG_DEFAULT"]\n',
-        encoding="utf-8",
+        '[default]\ntop_module = "dut_top"\ndefines = ["CFG_DEFAULT"]\n', encoding="utf-8"
     )
     (tmp_path / "constraints").mkdir()
     (tmp_path / "constraints" / "timing.xdc").write_bytes(b"create_clock\n")
@@ -119,10 +107,7 @@ def _flow(tmp_path: Path, state_file: Path, *extra_args: str) -> FpgaImplFlow:
 
 
 def _fake_fpga_resolved(
-    work_dir: Path,
-    *,
-    config: str = "default",
-    toplevel: str = "dut_top",
+    work_dir: Path, *, config: str = "default", toplevel: str = "dut_top"
 ) -> ResolvedTarget:
     """A ResolvedTarget shaped like a real vivado-flow EDAM.
 
@@ -135,9 +120,7 @@ def _fake_fpga_resolved(
     build_root = Path(work_dir)
     files = (
         ResolvedFile(
-            name="rtl/include/defs.svh",
-            file_type="systemVerilogSource",
-            is_include=True,
+            name="rtl/include/defs.svh", file_type="systemVerilogSource", is_include=True
         ),
         ResolvedFile(name="rtl/top.sv", file_type="systemVerilogSource"),
         ResolvedFile(name="rtl/legacy.v", file_type="verilogSource"),
@@ -326,12 +309,7 @@ def test_fpga_label_carries_target_source_bytes(tmp_path: Path, vivado: FakeViva
     ids=["boardless", "no-route", "exit-zero-no-route"],
 )
 def test_fpga_impl_record_outcome_follows_route_completion(
-    tmp_path: Path,
-    vivado: FakeVivado,
-    returncode: int,
-    route: bool,
-    exit_code: int,
-    outcome: str,
+    tmp_path: Path, vivado: FakeVivado, returncode: int, route: bool, exit_code: int, outcome: str
 ) -> None:
     _write_project_config(tmp_path)
     vivado.answer(returncode=returncode, route=route)

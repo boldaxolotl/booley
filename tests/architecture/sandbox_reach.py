@@ -18,11 +18,7 @@ from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
 
-from tests.architecture.import_graph import (
-    SourceModule,
-    SourceTreeAnalysis,
-    analyze_source_tree,
-)
+from tests.architecture.import_graph import SourceModule, SourceTreeAnalysis, analyze_source_tree
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SOURCE_ROOT = REPOSITORY_ROOT / "src" / "booley"

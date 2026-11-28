@@ -341,8 +341,7 @@ def test_project_target_recognises_checkout_spellings(command: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "tokens",
-    [["-c", "k.txt"], ["--constraint", "k.txt"], ["--constraint=k.txt"], ["-ck.txt"]],
+    "tokens", [["-c", "k.txt"], ["--constraint", "k.txt"], ["--constraint=k.txt"], ["-ck.txt"]]
 )
 def test_constraint_paths_recognise_every_flag_spelling(tokens: list[str]) -> None:
     """``-c`` / ``--constraint`` count in all their argparse spellings."""

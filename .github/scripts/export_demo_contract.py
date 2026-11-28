@@ -35,9 +35,7 @@ def _render_outputs(contract: DemoContract) -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--contract",
-        type=Path,
-        default=Path(".github/contracts/picorv32-demo.toml"),
+        "--contract", type=Path, default=Path(".github/contracts/picorv32-demo.toml")
     )
     args = parser.parse_args(argv)
     try:

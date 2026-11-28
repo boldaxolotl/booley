@@ -358,8 +358,7 @@ async def sdk_calls(
             "clientInfo": {"name": client_name, "version": "1"},
         }
         response = await client.post(
-            "/mcp",
-            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": initialize},
+            "/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": initialize}
         )
         client.headers["mcp-session-id"] = response.headers["mcp-session-id"]
         client.headers["mcp-protocol-version"] = "2025-11-25"

@@ -16,12 +16,7 @@ from booley.runtime.project_gitignore import project_transient_pattern
 from booley.runtime.project_repositories import is_git_worktree_root, run_git
 
 _SEEDS = (".gitignore", "booley.toml", "tests.toml", "FUSESOC_IGNORE")
-_OPTIONAL = (
-    "AGENTS.md",
-    "doctor-waivers.toml",
-    "SETUP-PLAN.md",
-    "pipeline.toml",
-)
+_OPTIONAL = ("AGENTS.md", "doctor-waivers.toml", "SETUP-PLAN.md", "pipeline.toml")
 _INPUT_TREES = (
     "cores",
     "selftest",
@@ -255,11 +250,7 @@ def _candidates(selected: Path, owners: set[Path], errors: list[str]) -> list[Pa
 
 
 def _groups(
-    owner: Path,
-    role: str,
-    selected: Path,
-    matches: tuple[IgnoreMatch, ...],
-    embedded: bool,
+    owner: Path, role: str, selected: Path, matches: tuple[IgnoreMatch, ...], embedded: bool
 ) -> list[IgnoredInputs]:
     if not matches:
         return []

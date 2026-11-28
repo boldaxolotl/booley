@@ -267,6 +267,5 @@ def prepare_coverage_invocation(
         except (FuseSocError, ValueError, OSError) as exc:
             findings.append(_finding("COV_TARGET_INVALID", f"{token}: {exc}"))
     return CoveragePreflightResult(
-        None if findings else CoverageInvocationPlan(tuple(targets)),
-        tuple(findings),
+        None if findings else CoverageInvocationPlan(tuple(targets)), tuple(findings)
     )

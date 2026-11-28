@@ -22,11 +22,7 @@ from booley.harness.dashboard.jobs import JobSnapshot, JobView
 from booley.measurement.run_document import Verdict
 from booley.measurement.run_store import MeasurementStore
 from booley.runtime.job_records import JobRecord
-from tests.harness.test_dashboard_preview import (
-    move_to,
-    session_row,
-    snapshot_of,
-)
+from tests.harness.test_dashboard_preview import move_to, session_row, snapshot_of
 from tests.harness.test_dashboard_sessions import stamp
 from tests.measurement.test_base_run import Entry, Table, build_run
 from tests.measurement.test_run_store import in_tree_repository, key_of, make_run

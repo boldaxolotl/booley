@@ -1006,9 +1006,7 @@ def test_unregister_cannot_replace_recovery_terminal_record(
     assert reaper.oserror is None
 
 
-def test_lock_waiters_let_the_holder_run(
-    build_machine: Callable[[], LaneStepMachine],
-) -> None:
+def test_lock_waiters_let_the_holder_run(build_machine: Callable[[], LaneStepMachine]) -> None:
     machine = build_machine()
     lane = machine.start_lane()
     assert lane.worker is not None
@@ -1470,9 +1468,7 @@ def test_a_cancel_during_promotion_retires_the_scheduled_lane_as_an_abort(
 
 
 def test_resume_keeps_run_directories_of_an_unrecoverable_lane(
-    build_machine: Callable[[], LaneStepMachine],
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
+    build_machine: Callable[[], LaneStepMachine], monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """Resume recovers every lane first: one that cannot be proven terminal keeps all runs."""
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))  # for the run directories' checkout

@@ -61,13 +61,7 @@ def run(cmd_str: str, timeout: int = _HANG_S) -> tuple[int, str]:
     command += [IMAGE, "bash", "-c", cmd_str]
     try:
         # Unbounded child: standalone script outside pytest; it maps the timeout to a TIMED OUT result itself
-        r = subprocess.run(
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-        )
+        r = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
         return r.returncode, (r.stdout + r.stderr).strip()
     except subprocess.TimeoutExpired:
         return -1, "TIMED OUT"
@@ -190,7 +184,7 @@ def main() -> None:
     global _VERBOSE
     parser = argparse.ArgumentParser(
         description="Run Docker sandbox isolation tests to verify container "
-        "security constraints (filesystem, process, network, resource limits).",
+        "security constraints (filesystem, process, network, resource limits)."
     )
     parser.add_argument(
         "--verbose",

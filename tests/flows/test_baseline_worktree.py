@@ -131,18 +131,13 @@ def test_bad_ref_raises_baseline_worktree_error(tmp_path: Path) -> None:
 
 
 def test_submodule_sources_are_checked_out_at_baseline_revision(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     submodule = tmp_path / "submodule"
     submodule.mkdir()
     _init_repo(submodule)
     old_submodule_sha = subprocess.run(
-        ["git", "rev-parse", "HEAD~1"],
-        cwd=submodule,
-        check=True,
-        capture_output=True,
-        text=True,
+        ["git", "rev-parse", "HEAD~1"], cwd=submodule, check=True, capture_output=True, text=True
     ).stdout.strip()
 
     repo = tmp_path / "repo"
@@ -167,20 +162,14 @@ def test_submodule_sources_are_checked_out_at_baseline_revision(
 
 
 def test_submodule_checkout_failure_is_an_infrastructure_error(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _init_repo(tmp_path)
     (tmp_path / ".gitmodules").write_text(
-        '[submodule "missing"]\n\tpath = missing\n\turl = /no/such/repository\n',
-        encoding="utf-8",
+        '[submodule "missing"]\n\tpath = missing\n\turl = /no/such/repository\n', encoding="utf-8"
     )
     sha = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-        text=True,
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
     ).stdout.strip()
     _git(tmp_path, "add", ".gitmodules")
     _git(tmp_path, "update-index", "--add", "--cacheinfo", f"160000,{sha},missing")
@@ -306,10 +295,7 @@ def test_paired_project_uses_ticket_fork_recipe(tmp_path: Path) -> None:
     outer = tmp_path / "outer"
     outer.mkdir()
     _init_repo(outer)
-    (outer / ".git" / "info" / "exclude").write_text(
-        "/.booley\n",
-        encoding="utf-8",
-    )
+    (outer / ".git" / "info" / "exclude").write_text("/.booley\n", encoding="utf-8")
 
     project = outer / ".booley"
     (project / "cores").mkdir(parents=True)

@@ -15,11 +15,7 @@ from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import NoReturn, ParamSpec, TypeAlias, TypeVar, cast
 
-from booley.core.boundary import (
-    BoundaryError,
-    require_dict,
-    require_str_value,
-)
+from booley.core.boundary import BoundaryError, require_dict, require_str_value
 from booley.flows.sim.record_files import canonical_json
 from booley.flows.simulation_record_results import OlderBooleyRecordError
 
@@ -297,12 +293,7 @@ def _require_within_ceiling(raw: bytes, limit: int) -> None:
 
 
 def _decode(
-    raw: bytes,
-    *,
-    schema: str,
-    fields: frozenset[str],
-    limit: int,
-    value_type: type[T],
+    raw: bytes, *, schema: str, fields: frozenset[str], limit: int, value_type: type[T]
 ) -> T:
     _require_within_ceiling(raw, limit)
     try:
@@ -365,10 +356,7 @@ def decode_simulator_bundle(raw: bytes) -> SimulatorBundle:
     return _decode_registered(raw, SimulatorBundle)
 
 
-def _encode_checked(
-    value: SimulationRecordDocument,
-    expected_type: type[T],
-) -> bytes:
+def _encode_checked(value: SimulationRecordDocument, expected_type: type[T]) -> bytes:
     if type(value) is not expected_type:
         raise SimulationRecordIntegrityError(f"expected {expected_type.__name__}")
     raw = canonical_json_bytes(value.document)

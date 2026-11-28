@@ -83,11 +83,7 @@ def test_published_mode_follows_the_mode_options(
 
 @pytest.mark.parametrize(
     ("durability", "synced"),
-    [
-        (Durability.FULL, ["file", "directory"]),
-        (Durability.FILE, ["file"]),
-        (Durability.NONE, []),
-    ],
+    [(Durability.FULL, ["file", "directory"]), (Durability.FILE, ["file"]), (Durability.NONE, [])],
     ids=["full", "file", "none"],
 )
 def test_durability_option_controls_fsync(

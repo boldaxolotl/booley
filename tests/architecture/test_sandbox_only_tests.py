@@ -34,9 +34,7 @@ def _coverage() -> dict[str, frozenset[str]]:
     return module_test_coverage(load_source_graph().modules)
 
 
-def _format_uncovered(
-    problems: dict[str, tuple[tuple[str, ...], tuple[str, ...]]],
-) -> str:
+def _format_uncovered(problems: dict[str, tuple[tuple[str, ...], tuple[str, ...]]]) -> str:
     return "\n".join(
         f"{module}\n  covered only by: {', '.join(tests)}\n  host path: {' -> '.join(path)}"
         for module, (tests, path) in problems.items()
@@ -117,11 +115,7 @@ def test_endpoint_help_roots_are_derived() -> None:
 
 def test_registry_is_the_only_sandbox_only_marker_source() -> None:
     from tests.architecture.platform_branches import marker_writers
-    from tests.sandbox_only import (
-        SANDBOX_ONLY_PATHS,
-        WINDOWS_HOST_TESTS,
-        is_sandbox_only,
-    )
+    from tests.sandbox_only import SANDBOX_ONLY_PATHS, WINDOWS_HOST_TESTS, is_sandbox_only
 
     root = _TESTS_ROOT.parent
     missing = [

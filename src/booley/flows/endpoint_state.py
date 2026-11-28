@@ -16,12 +16,7 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from booley.flows import (
-    endpoint_admission,
-    endpoint_reporting,
-    endpoint_session,
-    execution,
-)
+from booley.flows import endpoint_admission, endpoint_reporting, endpoint_session, execution
 from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.job_estimates import JobRequest
@@ -237,10 +232,7 @@ class EndpointState(ABC):
             if target:
                 from booley.flows.flow_config import tb_top_for_target
 
-                tb_top = tb_top_for_target(
-                    target,
-                    getattr(self.args, "work_dir", None),
-                )
+                tb_top = tb_top_for_target(target, getattr(self.args, "work_dir", None))
                 if tb_top:
                     self.args.tb_top = tb_top
 
@@ -321,29 +313,18 @@ class EndpointState(ABC):
         self._reserved_invocation_dir = None
 
     def invoke_endpoint(
-        self,
-        prepared: PreparedExecution,
-        *,
-        admission: object | None,
-        started: float,
+        self, prepared: PreparedExecution, *, admission: object | None, started: float
     ) -> EndpointOutcome:
         return endpoint_session.invoke_endpoint(
             self, prepared, admission=admission, started=started
         )
 
     def finish_execution(
-        self,
-        prepared: PreparedExecution,
-        outcome: EndpointOutcome,
+        self, prepared: PreparedExecution, outcome: EndpointOutcome
     ) -> ExecutionResult:
         return endpoint_session.finish_execution(self, prepared, outcome)
 
-    def _finish_main(
-        self,
-        result: EndpointOutcome,
-        *,
-        persist_report: bool,
-    ) -> int:
+    def _finish_main(self, result: EndpointOutcome, *, persist_report: bool) -> int:
         return endpoint_reporting._finish_main(self, result, persist_report=persist_report)
 
     # Admission class for this endpoint. None = quick endpoint, no admission.

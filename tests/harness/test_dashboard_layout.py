@@ -66,12 +66,7 @@ CASES = {
     "help": (NARROW, world(), _open_help, "help"),
     "job-narrow": (NARROW, world(), _open_jobs_job, "job"),
     # Here `#empty` correctly shows text, so only the panel itself is checked.
-    "jobs-empty-wide": (
-        WIDE,
-        replace(snapshot(2), jobs=JobSnapshot(())),
-        _open_jobs,
-        "jobs",
-    ),
+    "jobs-empty-wide": (WIDE, replace(snapshot(2), jobs=JobSnapshot(())), _open_jobs, "jobs"),
     "overview-standalone-only-wide": (
         WIDE,
         replace(snapshot(0), jobs=JobSnapshot((standalone_job(),))),

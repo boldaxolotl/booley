@@ -41,11 +41,7 @@ class CallerCheckout:
 
 
 def session_process(
-    peer: ProcessIdentity,
-    *,
-    client_name: str,
-    metadata: Mapping[str, Any],
-    proc_root: Path,
+    peer: ProcessIdentity, *, client_name: str, metadata: Mapping[str, Any], proc_root: Path
 ) -> ProcessIdentity | None:
     """The process whose cwd names the caller's checkout, mirroring session attribution."""
     if codex_client(client_name, metadata):
@@ -97,10 +93,7 @@ def caller_checkout(
         return CallerCheckout(None, None)
     try:
         process = session_process(
-            peer,
-            client_name=client_name,
-            metadata=metadata,
-            proc_root=proc_root,
+            peer, client_name=client_name, metadata=metadata, proc_root=proc_root
         )
         if process is None:
             return CallerCheckout(peer, None)

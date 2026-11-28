@@ -151,8 +151,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         "booley.runtime.runtime_context.container_only_error", lambda _command: None
     )
     monkeypatch.setattr(
-        "booley.specialists.specialist.parent_death_watchdog",
-        lambda *_: contextlib.nullcontext(),
+        "booley.specialists.specialist.parent_death_watchdog", lambda *_: contextlib.nullcontext()
     )
     setup = _Env(tmp_path, monkeypatch)
     setup.install_backend(monkeypatch)

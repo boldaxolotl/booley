@@ -266,11 +266,7 @@ def test_mcp_schema_exposes_only_canonical_property_and_description() -> None:
 @pytest.mark.parametrize("mode", ["elab-only", "elab-only-standalone"])
 @pytest.mark.parametrize(
     ("extra", "argument"),
-    [
-        (["--test", "smoke"], "--test"),
-        (["--trace"], "--trace"),
-        (["--no-kill"], "--no-kill"),
-    ],
+    [(["--test", "smoke"], "--test"), (["--trace"], "--trace"), (["--no-kill"], "--no-kill")],
 )
 def test_elab_only_rejects_run_stage_arguments(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str, extra: list[str], argument: str
@@ -331,8 +327,7 @@ def test_early_elab_error_names_available_report_destination(
 
 
 def test_elab_only_target_resolution_error_keeps_mode(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flow = SimulateFlow()
     flow.parse_args(["--work-dir", str(tmp_path), "--target", "sim_dut", "--mode", "elab-only"])
@@ -419,20 +414,14 @@ def test_build_stage_script_emits_record_before_run_half() -> None:
 def test_build_stage_script_measures_both_halves_and_preserves_run_exit() -> None:
     script = build_stage_script(["true"], "abc123", run_line="sh -c 'exit 7'")
 
-    completed = run_bounded_child(
-        ["sh", "-c", script],
-    )
+    completed = run_bounded_child(["sh", "-c", script])
 
     assert completed.returncode == 7
     assert re.search(
-        r"^BOOLEY_BUILD_STAGE token=abc123 rc=0 duration_ms=\d+$",
-        completed.stdout,
-        re.MULTILINE,
+        r"^BOOLEY_BUILD_STAGE token=abc123 rc=0 duration_ms=\d+$", completed.stdout, re.MULTILINE
     )
     assert re.search(
-        r"^BOOLEY_RUN_STAGE token=abc123 rc=7 duration_ms=\d+$",
-        completed.stdout,
-        re.MULTILINE,
+        r"^BOOLEY_RUN_STAGE token=abc123 rc=7 duration_ms=\d+$", completed.stdout, re.MULTILINE
     )
 
 
@@ -747,9 +736,7 @@ def test_target_report_write_fails_after_lasting_sharing_error(
     assert attempts[path] > 1
 
 
-def test_standalone_sweep_log_cannot_collide_with_target_named_standalone(
-    tmp_path: Path,
-) -> None:
+def test_standalone_sweep_log_cannot_collide_with_target_named_standalone(tmp_path: Path) -> None:
     # Private seam: the sweep log is written only by a real probe compile; no public path runs one probe without a toolchain.
     flow = _flow_with_state(tmp_path, ["standalone"])
 

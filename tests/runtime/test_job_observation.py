@@ -477,10 +477,7 @@ def test_unfinished_index_sees_new_records_and_retries_unreadable_ones(tmp_path,
     ]
     assert sorted(
         job.record.run_id for job in observer.read((), unfinished_roots=(root,)).jobs
-    ) == [
-        "first",
-        "second",
-    ]
+    ) == ["first", "second"]
 
 
 def test_recently_changed_root_is_relisted(tmp_path, monkeypatch):

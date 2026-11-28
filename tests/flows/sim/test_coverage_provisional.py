@@ -214,12 +214,7 @@ def _other_source_u1(points: tuple[CoveragePoint, ...]) -> tuple[CoveragePoint, 
         ),
         ({}, _duplicate_u1, "invalid", "Candidate does not name exactly one Coverage Point."),
         ({}, _unscored_u1, "invalid", "Point is not an eligible scored point."),
-        (
-            {},
-            _other_source_u1,
-            "invalid",
-            "Candidate source differs from the point's RTL source.",
-        ),
+        ({}, _other_source_u1, "invalid", "Candidate source differs from the point's RTL source."),
     ],
 )
 def test_candidates_are_rederived_from_the_coverage_record(

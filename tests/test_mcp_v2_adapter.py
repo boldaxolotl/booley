@@ -121,10 +121,7 @@ def test_http_adapter_rejects_host_and_origin_injection(source_sdk) -> None:
 
     hostile_host = asyncio.run(middleware.validate_request(request("attacker.invalid"), True))
     hostile_origin = asyncio.run(
-        middleware.validate_request(
-            request("localhost", "https://attacker.invalid"),
-            True,
-        )
+        middleware.validate_request(request("localhost", "https://attacker.invalid"), True)
     )
     loopback = asyncio.run(middleware.validate_request(request("localhost"), True))
 
@@ -320,12 +317,7 @@ async def _legacy_http_notification(url, directory):
         headers["mcp-protocol-version"] = "2025-11-25"
         # This POST fully closes before the standalone GET carries notifications.
         await client.post(
-            url,
-            headers=headers,
-            json={
-                "jsonrpc": "2.0",
-                "method": "notifications/initialized",
-            },
+            url, headers=headers, json={"jsonrpc": "2.0", "method": "notifications/initialized"}
         )
         received = False
         async with client.stream("GET", url, headers=headers) as stream:

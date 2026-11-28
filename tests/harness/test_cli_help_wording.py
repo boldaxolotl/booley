@@ -36,7 +36,7 @@ ALLOWED = {
     ("booley flow synth", "violating-endpoint repair percentage"): (
         "--repair-tns-percent names timing-path endpoints, the static-timing term "
         "OpenROAD itself uses"
-    ),
+    )
 }
 EXPECTED_ENDPOINTS = {
     ("flow", "sim"),

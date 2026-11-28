@@ -16,11 +16,7 @@ from booley.flows.endpoint_admission import AdmissionContext
 from booley.flows.endpoint_session import default_report_root
 from booley.flows.test_runs import TestRun
 from booley.fusesoc import fusesoc_registry
-from booley.runtime.endpoint_execution import (
-    EXIT_ERROR,
-    EXIT_SUCCESS,
-    EndpointOutcome,
-)
+from booley.runtime.endpoint_execution import EXIT_ERROR, EXIT_SUCCESS, EndpointOutcome
 
 from .record import (
     NewSimulationRecordPreviewRequest,
@@ -48,25 +44,18 @@ if TYPE_CHECKING:
     from booley.flows.target_test_plan import TargetTestPlan
     from booley.targets.domain import TargetHandle
 
-    from .flow import (
-        OrdinarySimulationRecordPlanning,
-        PlannedTarget,
-        PreparedSimulationEndpoint,
-    )
+    from .flow import OrdinarySimulationRecordPlanning, PlannedTarget, PreparedSimulationEndpoint
     from .record import SimulationRecordPolicy
     from .test_run_invocation import TestRunInvocation
 
 
-def _manifest_run_groups(
-    manifest: SimulationRecordManifest,
-) -> tuple[tuple[TestRun, ...], ...]:
+def _manifest_run_groups(manifest: SimulationRecordManifest) -> tuple[tuple[TestRun, ...], ...]:
     """The Test Runs of each work item, exactly as the manifest froze them."""
     return SimulationRecordManifestView(manifest).test_run_groups
 
 
 def _fresh_simulation_record_recovery_detail(
-    validated: ValidatedResumeManifest,
-    observed: SimulationRecordRecoveryStatus,
+    validated: ValidatedResumeManifest, observed: SimulationRecordRecoveryStatus
 ) -> dict[str, object]:
     """Refresh failure presentation without treating the pre-run view as authority."""
     try:
@@ -105,15 +94,12 @@ class SimulationRecordResumeMixin:
             execution_id: str,
         ) -> SimulationRecordPlan: ...
         def _ordinary_simulation_record_run(
-            self,
-            planning: OrdinarySimulationRecordPlanning,
-            record_directory: Path | None = None,
+            self, planning: OrdinarySimulationRecordPlanning, record_directory: Path | None = None
         ) -> _SimulationRecordRun: ...
         def _simulation_record_policy(self) -> SimulationRecordPolicy: ...
         @staticmethod
         def _simulation_record_cancelled_outcome(
-            error: SimulationRecordCancellationError,
-            detail: Mapping[str, object] | None = None,
+            error: SimulationRecordCancellationError, detail: Mapping[str, object] | None = None
         ) -> EndpointOutcome: ...
 
     def _refuse_coverage_resume(
@@ -128,8 +114,7 @@ class SimulationRecordResumeMixin:
             status = SimulationRecord().inspect_resume(validated)
         except (OSError, ValueError) as exc:
             return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"Simulation Record integrity failure: {exc}",
+                exit_code=EXIT_ERROR, report_text=f"Simulation Record integrity failure: {exc}"
             )
         unfinished = view.unfinished_work_item_ids(status)
         if unfinished:
@@ -296,8 +281,7 @@ class SimulationRecordResumeMixin:
             observed = SimulationRecord().inspect_resume(validated)
         except (OSError, ValueError) as exc:
             return EndpointOutcome(
-                exit_code=EXIT_ERROR,
-                report_text=f"Simulation Record integrity failure: {exc}",
+                exit_code=EXIT_ERROR, report_text=f"Simulation Record integrity failure: {exc}"
             )
         planning = self._plan_ordinary_simulation_records(
             list(prepared.selected_targets), prepared.test_names_map
@@ -397,9 +381,7 @@ class SimulationRecordResumeMixin:
         )
 
     def _lock_simulation_record_resume_origin(
-        self,
-        validated: ValidatedResumeManifest,
-        observed: SimulationRecordRecoveryStatus,
+        self, validated: ValidatedResumeManifest, observed: SimulationRecordRecoveryStatus
     ) -> EndpointOutcome | None:
         from .record_reports import simulation_record_invocation_lock
 

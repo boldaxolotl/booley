@@ -287,13 +287,7 @@ def _minimum_conditions(value: Any) -> dict[str, Any]:
 
 
 def _minimum_comparison(value: dict[str, Any]) -> dict[str, Any]:
-    keep = (
-        "requested_ref",
-        "resolved_ref",
-        "baseline_target",
-        "candidate_target",
-        "basis_valid",
-    )
+    keep = ("requested_ref", "resolved_ref", "baseline_target", "candidate_target", "basis_valid")
     minimum = {key: copy.deepcopy(value[key]) for key in keep if key in value}
     errors = value.get("basis_errors")
     if isinstance(errors, list):
@@ -370,10 +364,7 @@ def _enforce_structured_budget(payload: dict[str, Any]) -> None:
         omitted_count += 1
         if len(omitted_sample) < 10:
             omitted_sample.insert(0, key)
-        payload["omitted_artifact_entries"] = {
-            "count": omitted_count,
-            "sample": omitted_sample,
-        }
+        payload["omitted_artifact_entries"] = {"count": omitted_count, "sample": omitted_sample}
     if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
         payload.pop("artifacts", None)
     if _payload_size(payload) > _MAX_STRUCTURED_REPORT_BYTES:
@@ -484,12 +475,7 @@ def _structured_from_report(report: dict[str, Any] | None) -> dict[str, Any] | N
 
 
 def _append_stream_section(
-    parts: list[str],
-    *,
-    label: str,
-    stream: str,
-    limit: int,
-    mark_truncation: bool,
+    parts: list[str], *, label: str, stream: str, limit: int, mark_truncation: bool
 ) -> tuple[str, bool]:
     """Append one displayed stream tail and return its dedupe inputs."""
     if not stream:
@@ -526,14 +512,10 @@ def _append_report_section(
         if field == "report_text":
             report_text = str(report[field])
             shown_in_stdout = _contains_whole_line_block(
-                shown_stdout,
-                report_text,
-                leading_truncated=stdout_truncated,
+                shown_stdout, report_text, leading_truncated=stdout_truncated
             )
             shown_in_stderr = _contains_whole_line_block(
-                shown_stderr,
-                report_text,
-                leading_truncated=stderr_truncated,
+                shown_stderr, report_text, leading_truncated=stderr_truncated
             )
             if shown_in_stdout or shown_in_stderr:
                 continue
@@ -558,10 +540,7 @@ def _final_attempt_stdout(stdout: str) -> str:
 
 
 def _format_mcp_tool_result(
-    exit_code: int,
-    stdout: str,
-    stderr: str,
-    report: dict[str, Any] | None = None,
+    exit_code: int, stdout: str, stderr: str, report: dict[str, Any] | None = None
 ) -> str:
     """Format hybrid MCP tool result (stdout + report fields)."""
     parts = [f"EXIT_CODE: {exit_code}"]
@@ -574,11 +553,7 @@ def _format_mcp_tool_result(
         mark_truncation=True,
     )
     shown_stderr, stderr_truncated = _append_stream_section(
-        parts,
-        label="stderr",
-        stream=stderr,
-        limit=_max_stderr_bytes(),
-        mark_truncation=False,
+        parts, label="stderr", stream=stderr, limit=_max_stderr_bytes(), mark_truncation=False
     )
     _append_report_section(
         parts,

@@ -31,11 +31,7 @@ from booley.flows import endpoint_admission
 from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate
 from booley.flows.endpoint_session import _attach_memory_warning
 from booley.flows.job_estimates import JobRequest
-from booley.flows.memory_admission import (
-    MemorySizing,
-    job_thread_count,
-    measure_memory_claim,
-)
+from booley.flows.memory_admission import MemorySizing, job_thread_count, measure_memory_claim
 from booley.flows.sim import build_session
 from booley.flows.sim.build_session import (
     SimulationBuildLeaseStoppedError,
@@ -51,10 +47,7 @@ from booley.flows.sim.record.coordinator import (
     SimulationRecord,
     SimulationRecordPolicy,
 )
-from booley.flows.sim.record.model import (
-    SimulationRecordManifest,
-    create_simulation_record_plan,
-)
+from booley.flows.sim.record.model import SimulationRecordManifest, create_simulation_record_plan
 from booley.flows.sim.record.planning import finalize_manifest
 from booley.flows.sim.record.scheduler import ScheduledAttempt
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
@@ -815,9 +808,7 @@ def test_stepped_front_run_item_starts_before_a_later_job(
                 holders.extend(_held(token) for token in scenario.store.observe(CLASS_MEMORY)[0])
 
         pool = coordinator.BoundedSimulationRecordScheduler(
-            lanes,
-            allocate=lambda item: _scheduled_attempt(record_store, item),
-            execute=execute,
+            lanes, allocate=lambda item: _scheduled_attempt(record_store, item), execute=execute
         )
         run = ScheduledRun(record_store)
         run.worker = machine.scheduler.start(
@@ -916,10 +907,7 @@ def test_item_reserves_its_build_when_the_shared_build_does_not_cover_it(
     ],
 )
 def test_item_with_pre_sim_commands_reserves_their_estimate_not_the_build(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    pre_sim_peak: float | None,
-    reservation: float,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pre_sim_peak: float | None, reservation: float
 ) -> None:
     sized: list[tuple[JobRequest, bool]] = []
     original = MemorySizing.plan_work_item

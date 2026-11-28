@@ -438,10 +438,7 @@ def test_tracked_metric_and_empty_results_decide_measured(tmp_path: Path) -> Non
     run = make_run(keyed, "r1")
     table = replace(
         run.tables[0],
-        results=(
-            *run.tables[0].results,
-            MetricResult("area", None, 3.0, Verdict.TRACKED, None),
-        ),
+        results=(*run.tables[0].results, MetricResult("area", None, 3.0, Verdict.TRACKED, None)),
     )
 
     assert store.write(replace(run, rules=tracked_rules, tables=(table,)), []).measured

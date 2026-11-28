@@ -161,9 +161,7 @@ def _run_node_suite(script_name: str, *, suite_label: str, output_dir: Path) -> 
 @pytest.mark.timeout(_NODE_SUITE_PYTEST_TIMEOUT_S)
 def test_workspace_extension_lifecycle_in_node(tmp_path):
     _run_node_suite(
-        "dashboard.test.cjs",
-        suite_label="Dashboard lifecycle suite",
-        output_dir=tmp_path,
+        "dashboard.test.cjs", suite_label="Dashboard lifecycle suite", output_dir=tmp_path
     )
 
 
@@ -173,9 +171,7 @@ def test_workspace_extension_lifecycle_in_node(tmp_path):
 @pytest.mark.timeout(_NODE_SUITE_PYTEST_TIMEOUT_S)
 def test_vaporview_bridge_in_node(tmp_path):
     _run_node_suite(
-        "vaporview_bridge.test.cjs",
-        suite_label="VaporView bridge suite",
-        output_dir=tmp_path,
+        "vaporview_bridge.test.cjs", suite_label="VaporView bridge suite", output_dir=tmp_path
     )
 
 

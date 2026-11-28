@@ -474,10 +474,7 @@ def _wait_for_manifests(home: Path, *, sleep, clock) -> list[Path]:
     if budget <= 0 or sentinel.exists():
         return []
     manifests = _poll_until(
-        lambda: find_manifests(home) or None,
-        sleep=sleep,
-        clock=clock,
-        deadline=clock() + budget,
+        lambda: find_manifests(home) or None, sleep=sleep, clock=clock, deadline=clock() + budget
     )
     _mark_waited(sentinel)
     return manifests or []

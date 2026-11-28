@@ -25,18 +25,13 @@ class StatusPresentation:
 def add_subparser(subparsers: argparse._SubParsersAction) -> None:
     """Register ``booley upgrade`` and its status/acknowledge commands."""
     parser = subparsers.add_parser(
-        "upgrade",
-        help="Inspect or acknowledge version-upgrade review state",
+        "upgrade", help="Inspect or acknowledge version-upgrade review state"
     )
-    commands = parser.add_subparsers(
-        dest="upgrade_command",
-        metavar="{status,acknowledge}",
-    )
+    commands = parser.add_subparsers(dest="upgrade_command", metavar="{status,acknowledge}")
     status = commands.add_parser("status", help="Report pending version review state")
     status.add_argument("--json", action="store_true", help="Emit machine-readable JSON")
     acknowledge = commands.add_parser(
-        "acknowledge",
-        help="Acknowledge the exact reviewed target after successful verification",
+        "acknowledge", help="Acknowledge the exact reviewed target after successful verification"
     )
     acknowledge.add_argument("--expected-target", required=True)
     acknowledge.add_argument("--json", action="store_true", help="Emit machine-readable JSON")

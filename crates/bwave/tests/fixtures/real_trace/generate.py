@@ -227,13 +227,7 @@ def _sha256(path: Path) -> str:
 
 def _run(cmd: list[str], cwd: Path, env: dict[str, str] | None = None) -> None:
     result = subprocess.run(
-        cmd,
-        cwd=cwd,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=180,
-        check=False,
+        cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=180, check=False
     )
     if result.returncode != 0:
         raise RuntimeError(
@@ -247,11 +241,7 @@ def _tool_env() -> dict[str, str]:
     if sys.platform == "win32":
         oss_root = Path(env.get("OSS_CAD_SUITE", r"C:\oss-cad-suite"))
         env["PATH"] = os.pathsep.join(
-            [
-                str(oss_root / "bin"),
-                str(oss_root / "lib"),
-                env.get("PATH", ""),
-            ]
+            [str(oss_root / "bin"), str(oss_root / "lib"), env.get("PATH", "")]
         )
         env.setdefault("VERILATOR_ROOT", str(oss_root / "share" / "verilator"))
         env.setdefault("SYSTEMROOT", r"C:\WINDOWS")

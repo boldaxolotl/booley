@@ -143,10 +143,7 @@ def _successful_claude_query(options_seen):
 
 
 def persist_large_current_coverage_record(root: Path, point_count: int = 2_000) -> Path:
-    from booley.flows.sim.coverage_record import (
-        DurableTargetIdentity,
-        encode_coverage_point_id,
-    )
+    from booley.flows.sim.coverage_record import DurableTargetIdentity, encode_coverage_point_id
     from booley.flows.sim.coverage_record_store import publish_coverage_record
 
     document = _valid_document()
@@ -163,9 +160,7 @@ def persist_large_current_coverage_record(root: Path, point_count: int = 2_000) 
         points.append(point)
     document["points"] = points
     document["rollups"][0].update(
-        total_points=point_count,
-        eligible_points=point_count,
-        covered_points=point_count,
+        total_points=point_count, eligible_points=point_count, covered_points=point_count
     )
     coverage_record = decode_document(
         document, DurableTargetIdentity(document["target"]["identity"])
@@ -756,14 +751,7 @@ def test_cli_reports_terminal_provider_failures_without_mutating_state(
         raise provider_error
 
     result = CoverageAnalystSpecialist(model=fail).execute_cli(
-        [
-            "--work-dir",
-            str(tmp_path),
-            "--record",
-            str(path),
-            "--report-dir",
-            str(report_dir),
-        ]
+        ["--work-dir", str(tmp_path), "--record", str(path), "--report-dir", str(report_dir)]
     )
 
     assert result.exit_code == 2
@@ -926,8 +914,7 @@ def test_default_wrapper_keeps_role_usage_and_exposes_only_evidence_tool(tmp_pat
     set_backend_config(
         BackendConfig(
             settings=AgentSettings(
-                default_cli="claude",
-                specialist_models={"coverage_analyst": "claude-chosen-model"},
+                default_cli="claude", specialist_models={"coverage_analyst": "claude-chosen-model"}
             ),
             active_backend=ClaudeSDKBackend(auth_mode="visitor"),
         )

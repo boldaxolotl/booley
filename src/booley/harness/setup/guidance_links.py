@@ -50,10 +50,7 @@ _EXCLUDE_HEADER = "# Booley guidance links (generated; canonical file in project
 
 
 def ensure_guidance_links(
-    project_root: Path,
-    booley_dir: Path,
-    *,
-    plan: InitPlan | None = None,
+    project_root: Path, booley_dir: Path, *, plan: InitPlan | None = None
 ) -> list[Path]:
     """Point ``<project_root>/{AGENTS,CLAUDE}.md`` at ``<booley_dir>/AGENTS.md``.
 
@@ -121,8 +118,7 @@ def plan_guidance_links(project_root: Path, booley_dir: Path) -> InitPlan:
             )
         )
     return plan_init_filesystem(
-        InitFilesystemRequest(root=project_root, targets=tuple(targets)),
-        _GuidanceHostProbe(),
+        InitFilesystemRequest(root=project_root, targets=tuple(targets)), _GuidanceHostProbe()
     )
 
 

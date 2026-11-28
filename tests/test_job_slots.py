@@ -37,13 +37,7 @@ from booley.runtime.job_slots import (
     ROLE_INTERACTIVE,
     SlotStore,
 )
-from booley.runtime.pid import (
-    DEAD,
-    REUSED,
-    RUNNING,
-    ProcessIdentity,
-    ProcessObservation,
-)
+from booley.runtime.pid import DEAD, REUSED, RUNNING, ProcessIdentity, ProcessObservation
 from tests.job_slot_steps import PROMOTION_GATE, held_gate, lease_gate
 from tests.sharing_error_support import hold_opens, hold_unlinks
 from tests.time_budget import hang_guard_s
@@ -201,13 +195,7 @@ _HALF = job_slots.MemoryClaim(budget_mb=2, reservation_mb=1)
 
 
 def make_store(
-    root: Path,
-    world: FakeWorld,
-    *,
-    sleep=None,
-    capture_identity=None,
-    getpid=None,
-    recovery=None,
+    root: Path, world: FakeWorld, *, sleep=None, capture_identity=None, getpid=None, recovery=None
 ) -> SlotStore:
     """A simulated process. Its lease gates name the process *getpid* returns (the real
     test process by default): a test that holds a lease gate while another store looks
@@ -554,10 +542,7 @@ class TestSingleProcess:
     def test_promotion_never_reactivates_a_recovery_claimed_waiter(self, root, world):
         spawn(world, 100)
         store = make_execution_store(
-            root,
-            world,
-            execution_terminal=lambda _execution_id: False,
-            cancellations=[],
+            root, world, execution_terminal=lambda _execution_id: False, cancellations=[]
         )
         waiter = store.submit(CLASS_MEMORY, memory=_ALONE, pid=100, execution_id="e" * 32)
         copy = store.observe(CLASS_MEMORY)[1][0]
@@ -1253,11 +1238,7 @@ REAP_ROWS = {
     "unknown-cmdline": (_unknown_cmdline, False, []),
     "dead-owner-recovery-fails": (_dead_execution_owner, False, ["a" * 32]),
     "terminal-execution": (_terminal_execution, True, []),
-    "execution-without-id": (
-        _dead_owner(owner_kind="execution", execution_id=None),
-        False,
-        [],
-    ),
+    "execution-without-id": (_dead_owner(owner_kind="execution", execution_id=None), False, []),
     "future-schema": (_dead_owner(schema_version=FUTURE_SCHEMA), False, []),
     "future-string-schema": (_dead_owner(schema_version="future"), False, []),
     "corrupt-young": (_stray(_ENTRY_NAME, 0), False, []),

@@ -19,13 +19,7 @@ import tomli
 from booley.core import sandbox_layout
 from booley.harness import incontainer_register as entry
 from booley.mcp import catalog
-from booley.runtime import (
-    auth_token,
-    booley_dir,
-    mount_history,
-    paths,
-    worktree_mount_repair,
-)
+from booley.runtime import auth_token, booley_dir, mount_history, paths, worktree_mount_repair
 from booley.runtime import devcontainer as dc
 from booley.runtime import incontainer_setup as reg
 from booley.runtime.worktree_mount_repair import MountRepair, RegistrationProblem
@@ -664,10 +658,7 @@ def _registered(original):
         "web_search": "disabled",
         "features": {**original.get("features", {}), "mcp_2026_07_28": True},
         "notice": {**original.get("notice", {}), "hide_full_access_warning": True},
-        "mcp_servers": {
-            **servers,
-            "booley": {"url": reg.http_url(), "tool_timeout_sec": 7200},
-        },
+        "mcp_servers": {**servers, "booley": {"url": reg.http_url(), "tool_timeout_sec": 7200}},
     }
 
 
@@ -1327,11 +1318,7 @@ def test_one_cli_refusal_leaves_the_other_registered(first_run, monkeypatch, cap
 
 @pytest.mark.parametrize(
     "spec",
-    [
-        ("claude", None, None),
-        ("codex", None, None),
-        ("codex", "codex=auto", "auto"),
-    ],
+    [("claude", None, None), ("codex", None, None), ("codex", "codex=auto", "auto")],
     ids=["handwritten-claude", "handwritten-codex", "issued-codex"],
 )
 def test_single_cli_sandbox_registers_only_that_cli(first_run, monkeypatch, capsys, spec):

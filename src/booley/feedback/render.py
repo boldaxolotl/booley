@@ -33,12 +33,7 @@ from pathlib import Path
 from booley.core.boundary import as_int
 from booley.core.sandbox_detection import inside_session_runtime
 from booley.feedback import redact as redact_mod
-from booley.feedback.findings import (
-    BUCKET_TITLE,
-    Finding,
-    FindingsLog,
-    read_log,
-)
+from booley.feedback.findings import BUCKET_TITLE, Finding, FindingsLog, read_log
 from booley.runtime.timefmt import format_human_date, format_human_datetime_safe
 
 #: The local report of entries logged by a setup run.
@@ -262,15 +257,9 @@ def _summary_table(log: FindingsLog) -> list[str]:
         "",
     ]
     if log.friction:
-        lines += [
-            f"Friction reports (confusing, not broken): **{len(log.friction)}**.",
-            "",
-        ]
+        lines += [f"Friction reports (confusing, not broken): **{len(log.friction)}**.", ""]
     if log.impressions:
-        lines += [
-            f"Impressions (what you think of Booley): **{len(log.impressions)}**.",
-            "",
-        ]
+        lines += [f"Impressions (what you think of Booley): **{len(log.impressions)}**.", ""]
     if log.wins:
         lines += [f"Checks that passed first try: **{len(log.wins)}**.", ""]
     if log.corrupt_lines:
@@ -283,11 +272,7 @@ def _summary_table(log: FindingsLog) -> list[str]:
 
 
 def render_user_report(
-    log: FindingsLog,
-    *,
-    project_name: str = "",
-    env: Environment | None = None,
-    origin: str = "",
+    log: FindingsLog, *, project_name: str = "", env: Environment | None = None, origin: str = ""
 ) -> str:
     """The local, unredacted report for the project owner.
 

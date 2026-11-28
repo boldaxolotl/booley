@@ -13,11 +13,7 @@ from tests.time_budget import hang_guard_s
 
 
 def _token_record(
-    total_input: int,
-    cached: int,
-    output: int,
-    context: int,
-    limit: int = 258_400,
+    total_input: int, cached: int, output: int, context: int, limit: int = 258_400
 ) -> str:
     return json.dumps(
         {
@@ -74,10 +70,7 @@ async def test_regressive_or_malformed_snapshots_are_ignored_and_completion_adds
     tmp_path,
 ):
     usage, events = await _tail(
-        tmp_path,
-        _token_record(100, 80, 20, 90),
-        _token_record(99, 80, 20, 90),
-        "not json",
+        tmp_path, _token_record(100, 80, 20, 90), _token_record(99, 80, 20, 90), "not json"
     )
     assert len(events) == 1
 

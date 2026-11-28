@@ -91,18 +91,12 @@ def test_project_metadata_is_advisory_and_preserves_warning_identity() -> None:
 def test_valid_project_and_feedback_redaction_settings_produce_pass_findings() -> None:
     project = project_schema.audit_project_table({"project": {"name": "demo"}})
     feedback = project_schema.audit_feedback_table(
-        {
-            "feedback": {
-                "redact_extra": ["codename"],
-                "redact_identifiers": True,
-            }
-        }
+        {"feedback": {"redact_extra": ["codename"], "redact_identifiers": True}}
     )
 
     assert project.findings == (
         config_common.ConfigFinding(
-            config_common.ConfigFindingSeverity.PASS,
-            "booley.toml [project].name set",
+            config_common.ConfigFindingSeverity.PASS, "booley.toml [project].name set"
         ),
     )
     assert feedback.is_valid
@@ -111,12 +105,7 @@ def test_valid_project_and_feedback_redaction_settings_produce_pass_findings() -
 
 def test_feedback_audit_collects_independent_field_failures() -> None:
     audit = project_schema.audit_feedback_table(
-        {
-            "feedback": {
-                "redact_extra": "codename",
-                "redact_identifiers": "false",
-            }
-        }
+        {"feedback": {"redact_extra": "codename", "redact_identifiers": "false"}}
     )
 
     assert not audit.is_valid
@@ -253,15 +242,12 @@ def test_flow_audit_collects_shape_failures_and_ignored_knob_warning() -> None:
         == 3
     )
     warnings = [item for item in audit.findings if item.check_id == "config.flow-knob-ignored"]
-    assert {item.subject for item in warnings} == {
-        "lint.pre_run_commands",
-    }
+    assert {item.subject for item in warnings} == {"lint.pre_run_commands"}
 
 
 def test_flow_collection_reports_required_sections_and_retired_aliases() -> None:
     audit = flow_schema.audit_flow_tables(
-        {"flows": {"simulate": {"default_target": "sim_fast"}}},
-        ("sim", "lint", "synth"),
+        {"flows": {"simulate": {"default_target": "sim_fast"}}}, ("sim", "lint", "synth")
     )
 
     assert not audit.is_valid
@@ -314,12 +300,7 @@ def test_doctor_does_not_reimplement_config_schema_mechanisms() -> None:
 
 def test_config_schema_domains_do_not_depend_on_presentation_layers() -> None:
     forbidden = ("booley.harness", "booley.mcp", "booley.specialists")
-    for name in (
-        "agent_schema.py",
-        "config_common.py",
-        "flow_schema.py",
-        "project_schema.py",
-    ):
+    for name in ("agent_schema.py", "config_common.py", "flow_schema.py", "project_schema.py"):
         module_path = _ROOT / "src" / "booley" / "audit" / name
         tree = ast.parse(module_path.read_text(encoding="utf-8"))
         imports = {
@@ -338,13 +319,7 @@ def test_config_schema_domains_do_not_depend_on_presentation_layers() -> None:
         }
 
 
-@pytest.mark.parametrize(
-    "key, value",
-    [
-        ("max_sessions", 2),
-        ("egress_allowlist", ["foo.test"]),
-    ],
-)
+@pytest.mark.parametrize("key, value", [("max_sessions", 2), ("egress_allowlist", ["foo.test"])])
 def test_project_sandbox_rejects_host_policy_with_migration(key: str, value: object) -> None:
     audit = project_schema.audit_sandbox_table({"sandbox": {"memory": "8g", key: value}})
     assert not audit.is_valid

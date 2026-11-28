@@ -40,9 +40,7 @@ def test_target_without_declared_tests_gets_default_invocation() -> None:
 
 def test_vlnv_target_matches_bare_tests_section() -> None:
     suite = resolve_target_test_suite(
-        identity="vendor:lib:core:1.0#sim",
-        test_names={"sim": ["smoke", "corner"]},
-        test_skips={},
+        identity="vendor:lib:core:1.0#sim", test_names={"sim": ["smoke", "corner"]}, test_skips={}
     )
 
     assert suite.tests == ("smoke", "corner")

@@ -45,10 +45,7 @@ def project_sandbox_image(project_root: Path) -> str:
     return _selected_from_config(project_root, sandbox)
 
 
-def _selected_from_config(
-    project_root: Path,
-    sandbox: dict[str, object],
-) -> str:
+def _selected_from_config(project_root: Path, sandbox: dict[str, object]) -> str:
     raw = sandbox.get("image", "")
     logical = raw.strip() if isinstance(raw, str) and raw.strip() else SANDBOX_IMAGE
     if logical in {SANDBOX_IMAGE, "booley-sandbox-riscv", project_image_name(project_root)}:

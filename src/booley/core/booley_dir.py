@@ -117,10 +117,7 @@ def _environment_selection() -> Path | None:
         if not p.is_dir():
             import warnings
 
-            warnings.warn(
-                f"BOOLEY_DIR={env!r} does not exist; using anyway",
-                stacklevel=2,
-            )
+            warnings.warn(f"BOOLEY_DIR={env!r} does not exist; using anyway", stacklevel=2)
         return p
 
     return None

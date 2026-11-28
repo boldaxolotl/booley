@@ -20,11 +20,7 @@ def test_run_evidence_records_only_artifact_provenance(tmp_path, monkeypatch):
     )
 
     evidence = run_evidence.build_flow_run_evidence(
-        flow="synth",
-        target="core",
-        recipe_sha256="d" * 64,
-        work_dir=tmp_path,
-        run_id="run-1",
+        flow="synth", target="core", recipe_sha256="d" * 64, work_dir=tmp_path, run_id="run-1"
     )
 
     assert evidence.run_id == "run-1"

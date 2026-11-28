@@ -62,8 +62,7 @@ def _remote_runner(documents: dict):
 
 def _fingerprint(repo: Path) -> str:
     result = run_bounded_child(
-        [sys.executable, str(_SCRIPT), "--repo", str(repo), "--manifest", "inputs.txt"],
-        check=True,
+        [sys.executable, str(_SCRIPT), "--repo", str(repo), "--manifest", "inputs.txt"], check=True
     )
     return result.stdout.strip()
 
@@ -83,14 +82,7 @@ def test_contract_changes_with_content_but_not_mtime(tmp_path: Path) -> None:
 def test_contract_rejects_missing_or_unsafe_inputs(tmp_path: Path) -> None:
     (tmp_path / "inputs.txt").write_text("../outside\n", encoding="utf-8")
     result = run_bounded_child(
-        [
-            sys.executable,
-            str(_SCRIPT),
-            "--repo",
-            str(tmp_path),
-            "--manifest",
-            "inputs.txt",
-        ],
+        [sys.executable, str(_SCRIPT), "--repo", str(tmp_path), "--manifest", "inputs.txt"],
         check=False,
     )
 
@@ -111,14 +103,7 @@ def test_contract_rejects_symlink_escape(tmp_path: Path) -> None:
     (tmp_path / "linked.txt").symlink_to(outside)
 
     result = run_bounded_child(
-        [
-            sys.executable,
-            str(_SCRIPT),
-            "--repo",
-            str(tmp_path),
-            "--manifest",
-            "inputs.txt",
-        ],
+        [sys.executable, str(_SCRIPT), "--repo", str(tmp_path), "--manifest", "inputs.txt"],
         check=False,
     )
 

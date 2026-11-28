@@ -3,9 +3,7 @@
 from pathlib import Path
 
 from booley.core.host_shell import quote_arg
-from booley.core.private_store import (
-    PrivateStore,
-)
+from booley.core.private_store import PrivateStore
 
 
 def session_store_repair(path: Path, root: str) -> str:

@@ -198,9 +198,7 @@ def test_history_gives_position_earlier_outcomes_and_problems(tmp_path: Path) ->
     assert (last["position"], last["earlier"][-1]) == (6, {"run_id": "r3", "outcome": "met"})
 
 
-def test_history_carries_an_earlier_run_with_a_damaged_result_as_a_problem(
-    tmp_path: Path,
-) -> None:
+def test_history_carries_an_earlier_run_with_a_damaged_result_as_a_problem(tmp_path: Path) -> None:
     repo, _, head = feature_repo(tmp_path)
     store = MeasurementStore(repo / ".booley")
     keyed = key_of(repo, head)

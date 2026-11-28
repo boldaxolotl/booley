@@ -211,24 +211,15 @@ def test_mutation_target_schema_remains_single_required_scalar() -> None:
     assert "Exactly one Simulation Target" in target["description"]
 
 
-@pytest.mark.parametrize(
-    "specialist",
-    [ReviewerSpecialist, CoverageAnalystSpecialist],
-)
-def test_specialist_schemas_expose_bounded_agent_controls(
-    specialist: type[Any],
-) -> None:
+@pytest.mark.parametrize("specialist", [ReviewerSpecialist, CoverageAnalystSpecialist])
+def test_specialist_schemas_expose_bounded_agent_controls(specialist: type[Any]) -> None:
     schema = flow_schema(specialist())
     properties = schema["properties"]
 
     assert schema["additionalProperties"] is False
-    assert {
-        "max_turns",
-        "timeout_ms",
-        "timeout",
-        "report_dir",
-        "transcript_dir",
-    }.isdisjoint(properties)
+    assert {"max_turns", "timeout_ms", "timeout", "report_dir", "transcript_dir"}.isdisjoint(
+        properties
+    )
 
 
 def test_specialist_custom_schema_keeps_public_agent_controls() -> None:
@@ -251,17 +242,13 @@ def test_specialist_custom_schema_keeps_public_agent_controls() -> None:
     assert schema["required"] == ["custom"]
 
 
-@pytest.mark.parametrize(
-    "specialist",
-    [ReviewerSpecialist, CoverageAnalystSpecialist],
-)
+@pytest.mark.parametrize("specialist", [ReviewerSpecialist, CoverageAnalystSpecialist])
 @pytest.mark.parametrize(
     "undeclared",
     ["report_dir", "transcript_dir", "timeout", "timeout_ms", "model", "max_turns", "policy"],
 )
 def test_specialist_schema_rejects_undeclared_arguments(
-    specialist: type[Any],
-    undeclared: str,
+    specialist: type[Any], undeclared: str
 ) -> None:
     schema = flow_schema(specialist())
     arguments = {
@@ -290,10 +277,7 @@ def test_specialist_schema_rejects_undeclared_arguments(
     assert dispatched is False
 
 
-@pytest.mark.parametrize(
-    "specialist",
-    [ReviewerSpecialist, CoverageAnalystSpecialist],
-)
+@pytest.mark.parametrize("specialist", [ReviewerSpecialist, CoverageAnalystSpecialist])
 def test_specialist_schema_accepts_omitted_agent_controls(specialist: type[Any]) -> None:
     schema = flow_schema(specialist())
     arguments = {
@@ -303,11 +287,7 @@ def test_specialist_schema_accepts_omitted_agent_controls(specialist: type[Any])
     }
     calls: list[dict[str, Any]] = []
 
-    async def dispatch(
-        _name: str,
-        received: dict[str, Any],
-        _source: object,
-    ) -> list[object]:
+    async def dispatch(_name: str, received: dict[str, Any], _source: object) -> list[object]:
         calls.append(received)
         return []
 

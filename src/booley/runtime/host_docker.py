@@ -17,12 +17,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from booley.core import docker_cli
-from booley.core.boundary import (
-    BoundaryError,
-    require_bool_value,
-    require_dict,
-    require_str_value,
-)
+from booley.core.boundary import BoundaryError, require_bool_value, require_dict, require_str_value
 from booley.runtime.devcontainer import EGRESS_NETWORK, UNPROXIED_NETWORK
 from booley.runtime.platform_paths import run_captured_bounded
 
@@ -63,10 +58,7 @@ _T = TypeVar("_T")
 
 
 def _run_docker(
-    args: list[str],
-    *,
-    timeout: int = _DOCKER_TIMEOUT,
-    executable: str = "docker",
+    args: list[str], *, timeout: int = _DOCKER_TIMEOUT, executable: str = "docker"
 ) -> subprocess.CompletedProcess:
     """Run ``docker <args>`` capturing text output. Never raises on non-zero exit.
 
@@ -199,11 +191,7 @@ def image_id(reference: str) -> str | None:
     )
 
 
-def inspect_image_metadata(
-    reference: str,
-    *,
-    executable: str = "docker",
-) -> ImageMetadata | None:
+def inspect_image_metadata(reference: str, *, executable: str = "docker") -> ImageMetadata | None:
     """Return the full metadata of exactly *reference*, or ``None`` when it does not exist.
 
     Same contract as :func:`image_id`: only "no such image" is absent. Failures
@@ -292,10 +280,7 @@ def compare_issued_selection(
 
 
 def compare_issued_reference(
-    issued_reference: str,
-    configured_reference: str,
-    *,
-    executable: str = "docker",
+    issued_reference: str, configured_reference: str, *, executable: str = "docker"
 ) -> Comparison:
     """Compare exact IDs when no trusted logical provenance contract exists."""
     from booley.runtime.image_identity import Comparison, Status
@@ -342,12 +327,7 @@ def remove_image_tag(target: str) -> None:
     raise RuntimeError(f"cannot remove issued Sandbox Image keeper: {detail}")
 
 
-def strict_docker(
-    args: list[str],
-    *,
-    context: str = _STRICT_CONTEXT,
-    timeout: int = 30,
-) -> str:
+def strict_docker(args: list[str], *, context: str = _STRICT_CONTEXT, timeout: int = 30) -> str:
     """Run one Docker command, raising ``RuntimeError`` with *context* on any failure."""
     try:
         result = _run_docker(args, timeout=timeout)

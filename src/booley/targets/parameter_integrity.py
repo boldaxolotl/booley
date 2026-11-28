@@ -140,11 +140,7 @@ def _without_comments(text: str) -> str:
 
 def _without_strings(text: str) -> str:
     """Mask string contents so diagnostics cannot look like module instances."""
-    return re.sub(
-        r'"(?:\\.|[^"\\])*"',
-        lambda match: " " * len(match.group(0)),
-        text,
-    )
+    return re.sub(r'"(?:\\.|[^"\\])*"', lambda match: " " * len(match.group(0)), text)
 
 
 def _without_explicit_generate_blocks(text: str) -> str:

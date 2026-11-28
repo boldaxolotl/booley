@@ -15,12 +15,7 @@ from booley.flows.synth.timing import StaTimingConfig
 
 
 def _config(**overrides):
-    base = {
-        "mode": "physical",
-        "sdc": (),
-        "utilization_pct": 40.0,
-        "repair_timing": True,
-    }
+    base = {"mode": "physical", "sdc": (), "utilization_pct": 40.0, "repair_timing": True}
     base.update(overrides)
     return StaTimingConfig(**base)
 
@@ -111,11 +106,7 @@ class TestWriteScript:
                 ],
                 [],
             ),
-            (
-                {"repair_timing": True},
-                ["repair_timing -setup -skip_gate_cloning"],
-                [],
-            ),
+            ({"repair_timing": True}, ["repair_timing -setup -skip_gate_cloning"], []),
             (
                 {"repair_timing": False},
                 ['puts "BOOLEY_STAGE: repair_design"', "repair_design"],

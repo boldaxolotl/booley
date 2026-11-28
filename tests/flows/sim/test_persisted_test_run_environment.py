@@ -90,10 +90,7 @@ def test_a_valid_environment_renders_shell_safe_exports(value: str):
     line = _export_line("FAULT_MODE", value)
 
     assert shlex.split(line) == ["export", f"FAULT_MODE={value}"]
-    shown = run_bounded_child(
-        ["sh", "-c", f'{line} && printf %s "$FAULT_MODE"'],
-        check=True,
-    )
+    shown = run_bounded_child(["sh", "-c", f'{line} && printf %s "$FAULT_MODE"'], check=True)
     assert shown.stdout == value
 
 

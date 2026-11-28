@@ -66,10 +66,7 @@ def _read_job_records(
 
 
 def _job_expired(
-    run_id: str,
-    found: dict[str, list[job_records.JobRecord]],
-    unreadable: set[str],
-    now: float,
+    run_id: str, found: dict[str, list[job_records.JobRecord]], unreadable: set[str], now: float
 ) -> bool:
     if run_id in unreadable:
         return False

@@ -157,10 +157,7 @@ class _Pairing:
         """
         if isinstance(old, ast.ImportFrom) and isinstance(new, ast.ImportFrom):
             self.unordered.append(
-                (
-                    [(a.name, a.asname) for a in old.names],
-                    [(a.name, a.asname) for a in new.names],
-                )
+                ([(a.name, a.asname) for a in old.names], [(a.name, a.asname) for a in new.names])
             )
             same_source = (old.module, old.level) == (new.module, new.level)
             return same_source and len(old.names) == len(new.names)
@@ -265,8 +262,7 @@ def main() -> None:
     parser.add_argument("--base", required=True)
     args = parser.parse_args()
     paths = subprocess.check_output(
-        ["git", "diff", "--name-only", f"{args.base}...HEAD", "--", "src/booley/"],
-        text=True,
+        ["git", "diff", "--name-only", f"{args.base}...HEAD", "--", "src/booley/"], text=True
     ).splitlines()
     changes: dict[str, tuple[str, str]] = {}
     for name in paths:

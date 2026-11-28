@@ -32,9 +32,7 @@ from booley.flows.sim.record.coordinator import (
     SimulationRecordPolicy,
     SimulationRecordPublicationError,
 )
-from booley.flows.sim.record.coverage_execution import (
-    CoverageAggregateExecutor,
-)
+from booley.flows.sim.record.coverage_execution import CoverageAggregateExecutor
 from booley.flows.sim.record.flow_planning import plan_coarse_simulation_record
 from booley.flows.sim.record.model import SimulationResult, create_simulation_record_plan
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
@@ -60,10 +58,7 @@ from tests.flows.sim.simulation_record_test_support import (
     _unfiltered_cocotb_manifest,
 )
 from tests.flows.sim.test_coverage_transaction import NativeExecution
-from tests.flows.sim.test_simulation_record_crash_matrix import (
-    _CrashOnce,
-    _InjectedProcessDeath,
-)
+from tests.flows.sim.test_simulation_record_crash_matrix import _CrashOnce, _InjectedProcessDeath
 
 
 def test_no_waivers_is_written_only_when_requested(tmp_path: Path) -> None:
@@ -188,13 +183,7 @@ def test_coarse_planner_rejects_foreign_inspection(tmp_path: Path) -> None:
         ),
     )
     inspection = TargetInspection(
-        foreign_handle,
-        "tb",
-        "sim",
-        "verilator",
-        {"cocotb_module": "test_counter"},
-        {},
-        (),
+        foreign_handle, "tb", "sim", "verilator", {"cocotb_module": "test_counter"}, {}, ()
     )
 
     with pytest.raises(SimulationRecordIntegrityError, match="Target facts disagree"):
@@ -253,9 +242,7 @@ class _RuntimeCheckingExecution(NativeExecution):
         return super().run(request)
 
 
-def test_coverage_aggregate_executes_authenticated_bundle_not_original(
-    tmp_path: Path,
-) -> None:
+def test_coverage_aggregate_executes_authenticated_bundle_not_original(tmp_path: Path) -> None:
     native = _ImageCheckingExecution()
     outcome, store = _run_coverage_simulation_record(tmp_path, native)
 
@@ -680,10 +667,7 @@ def test_production_cocotb_batch_retries_whole_batch_after_crash(tmp_path: Path)
     assert recovered.attempt_count == 2
     result = recovered.result
     assert result is not None
-    assert tuple(item["test"] for item in result.document["observations"]) == (
-        "count",
-        "reset",
-    )
+    assert tuple(item["test"] for item in result.document["observations"]) == ("count", "reset")
     assert [item["kind"] for item in result.document["evidence"]] == ["cocotb_results"]
 
 

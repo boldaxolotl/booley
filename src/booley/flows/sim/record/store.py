@@ -25,10 +25,7 @@ from booley.flows.artifact_durability import (
     durable_directory,
     fsync_directory,
 )
-from booley.flows.sim.record_files import (
-    read_bounded,
-    read_json_object,
-)
+from booley.flows.sim.record_files import read_bounded, read_json_object
 from booley.flows.sim.record_layout import RECORD_DIRECTORY, refuse_older_manifest_path
 from booley.flows.sim.record_reports import is_report_link
 from booley.runtime.file_lock import nonblocking_file_lock
@@ -150,10 +147,7 @@ class SimulationRecordStore:
     def _read(self, path: Path, *, limit: int) -> bytes:
         discard_published_staging(path)
         return read_bounded(
-            path,
-            limit=limit,
-            error=SimulationRecordIntegrityError,
-            booley_dir=self.booley_dir,
+            path, limit=limit, error=SimulationRecordIntegrityError, booley_dir=self.booley_dir
         )
 
     def _decode_located(self, decode: Callable[[bytes], _T], path: Path, limit: int) -> _T:
@@ -378,11 +372,7 @@ class SimulationRecordStore:
         return paths
 
     @reads_simulation_record_documents
-    def _attempt_firings(
-        self,
-        directory: Path,
-        terminal: bool,
-    ) -> tuple[PreSimFiring, ...]:
+    def _attempt_firings(self, directory: Path, terminal: bool) -> tuple[PreSimFiring, ...]:
         """Parse one attempt's sidecars."""
         if not (directory / "attempt.json").exists():
             return ()
@@ -415,9 +405,7 @@ class SimulationRecordStore:
         return path
 
     def scan(
-        self,
-        manifest: SimulationRecordManifest | None = None,
-        manifest_sha256: str | None = None,
+        self, manifest: SimulationRecordManifest | None = None, manifest_sha256: str | None = None
     ) -> SimulationRecordRecovery:
         """Recover work item state without reading Pre-Sim sidecars.
 
@@ -436,10 +424,7 @@ class SimulationRecordStore:
         return SimulationRecordRecovery(recovered)
 
     def _scan_item(
-        self,
-        work_item: Mapping[str, object],
-        manifest_sha256: str,
-        workload_sha256: str,
+        self, work_item: Mapping[str, object], manifest_sha256: str, workload_sha256: str
     ) -> WorkItemRecovery:
         work_item_id = cast(str, work_item["work_item_id"])
         # ``scan`` already decoded the complete manifest.  Re-loading and
@@ -531,9 +516,7 @@ class SimulationRecordStore:
         return tuple(children)
 
     def regenerate_summary(
-        self,
-        manifest: SimulationRecordManifest | None = None,
-        manifest_sha256: str | None = None,
+        self, manifest: SimulationRecordManifest | None = None, manifest_sha256: str | None = None
     ) -> Mapping[str, object]:
         """Regenerate the projection; ``manifest_sha256`` is the digest of the passed manifest."""
         manifest = manifest or self.load_manifest()
@@ -572,8 +555,7 @@ class SimulationRecordStore:
 
 
 def collect_pre_sim_firings(
-    *manifest_paths: Path,
-    booley_dir: Path | None = None,
+    *manifest_paths: Path, booley_dir: Path | None = None
 ) -> tuple[PreSimFiring, ...]:
     """Read each named record's Pre-Sim firings; the only entry that does.
 
@@ -626,10 +608,7 @@ def _load_build_execution(
     path = directory / cast(str, match["path"])
     discard_published_staging(path)
     document = read_json_object(
-        path,
-        limit=RECORD_MAX_BYTES,
-        error=SimulationRecordIntegrityError,
-        booley_dir=booley_dir,
+        path, limit=RECORD_MAX_BYTES, error=SimulationRecordIntegrityError, booley_dir=booley_dir
     )
     if document.get("$schema") != "booley.simulation-build-execution/v1":
         raise SimulationRecordIntegrityError("build execution evidence schema disagrees")

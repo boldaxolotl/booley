@@ -58,8 +58,7 @@ def write_variant(directory: Path, source: str, family: str, variant: str) -> Pa
         period = 1920 if family == "timeout_early" else 2176
         source = source.replace("TIMEOUT_CYCLES = 2048", f"TIMEOUT_CYCLES = {period}")
     content = source.replace(
-        f"CORRUPT_{family.upper()} = 0",
-        f"CORRUPT_{family.upper()} = {int(variant == 'corrupt')}",
+        f"CORRUPT_{family.upper()} = 0", f"CORRUPT_{family.upper()} = {int(variant == 'corrupt')}"
     )
     fixture = directory / "transport.sv"
     fixture.write_text(content)

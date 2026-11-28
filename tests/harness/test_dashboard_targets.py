@@ -124,11 +124,7 @@ def session(handle: str, work_dir: Path | str, default: Path | str = "") -> Sess
     """A connected session whose handle is *handle* (``S3``); the key is ``codex:03``."""
     number = int(handle[1:])
     attribution = Attribution(
-        f"codex:{number:02}",
-        "thread",
-        str(work_dir),
-        f"wk{number}",
-        default_work_dir=str(default),
+        f"codex:{number:02}", "thread", str(work_dir), f"wk{number}", default_work_dir=str(default)
     )
     return SessionRow(attribution, STAMP, STAMP, (RecentCall(STAMP, "sim", "completed"),))
 

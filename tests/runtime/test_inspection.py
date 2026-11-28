@@ -123,10 +123,7 @@ def live_sandbox(tmp_path, monkeypatch):
             "extra-security-option",
             lambda s: s["HostConfig"]["SecurityOpt"].append("label=disable"),
         ),
-        (
-            "unreported-state",
-            lambda s: (s.pop("State"), s["HostConfig"].update(Privileged=True)),
-        ),
+        ("unreported-state", lambda s: (s.pop("State"), s["HostConfig"].update(Privileged=True))),
     ],
 )
 def test_host_doctor_rejects_full_live_runtime_state_drift(live_sandbox, drift, mutate) -> None:
@@ -416,10 +413,7 @@ def test_same_source_immutable_image_tag_move_passes(tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     ("comparator", "image"),
-    [
-        ("compare_issued_selection", "managed"),
-        ("compare_issued_reference", "custom-sandbox"),
-    ],
+    [("compare_issued_selection", "managed"), ("compare_issued_reference", "custom-sandbox")],
 )
 def test_changed_image_warns_stale(tmp_path, monkeypatch, comparator, image):
     dc.write_devcontainer(tmp_path, build_spec(dc.APP_CLAUDE, image=_OLD_ID))

@@ -5,13 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 try:
-    from booley.commit_policy.policy import (
-        find_banned as _find_banned,
-    )
-    from booley.commit_policy.policy import (
-        max_body_lines,
-        stealth_enabled,
-    )
+    from booley.commit_policy.policy import find_banned as _find_banned
+    from booley.commit_policy.policy import max_body_lines, stealth_enabled
 except ImportError:
     from booley_commit_policy import (  # pyright: ignore[reportMissingImports]
         find_banned as _find_banned,

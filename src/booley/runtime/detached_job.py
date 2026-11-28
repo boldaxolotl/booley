@@ -103,13 +103,7 @@ def worker_command(*args: str) -> list[str]:
     return [sys.executable, "-m", WORKER_MODULE, *args]
 
 
-def spawn(
-    command: list[str],
-    log_path: Path,
-    *,
-    jobs_root: Path,
-    run_id: str,
-) -> None:
+def spawn(command: list[str], log_path: Path, *, jobs_root: Path, run_id: str) -> None:
     """Start *command* detached in its own session, output appended to *log_path*.
 
     The caller already published the pid-less ``running`` record *run_id* under
@@ -140,10 +134,7 @@ def spawn(
 
 
 def _reap_unstarted(
-    process: subprocess.Popen[Any],
-    log_path: Path,
-    jobs_root: Path,
-    run_id: str,
+    process: subprocess.Popen[Any], log_path: Path, jobs_root: Path, run_id: str
 ) -> None:
     """Fail a still pid-less record when its worker exits; errors are logged, never raised."""
     code = process.wait()

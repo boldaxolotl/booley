@@ -108,12 +108,7 @@ class TestIsAllowed:
 
 class TestDefaultAllowlist:
     def test_expected_domains_present(self):
-        expected = [
-            "api.anthropic.com",
-            "api.openai.com",
-            "auth.anthropic.com",
-            "sentry.io",
-        ]
+        expected = ["api.anthropic.com", "api.openai.com", "auth.anthropic.com", "sentry.io"]
         for domain in expected:
             assert domain in DEFAULT_ALLOWLIST, f"{domain} missing from DEFAULT_ALLOWLIST"
 
@@ -153,11 +148,7 @@ class TestTunnelIdleDirection:
 
     @pytest.mark.asyncio
     async def test_missing_proxy_auth_is_rejected_without_secret_disclosure(self):
-        proxy = EgressProxy(
-            allowlist=["127.0.0.1"],
-            host="127.0.0.1",
-            auth_token="private-token",
-        )
+        proxy = EgressProxy(allowlist=["127.0.0.1"], host="127.0.0.1", auth_token="private-token")
         proxy._server = await asyncio.start_server(proxy._handle_client, "127.0.0.1", 0)
         proxy.port = proxy._server.sockets[0].getsockname()[1]
 
@@ -190,11 +181,7 @@ class TestTunnelIdleDirection:
         upstream = await asyncio.start_server(upstream_handler, "127.0.0.1", 0)
         upstream_port = upstream.sockets[0].getsockname()[1]
 
-        proxy = EgressProxy(
-            allowlist=["127.0.0.1"],
-            host="127.0.0.1",
-            auth_token="private-token",
-        )
+        proxy = EgressProxy(allowlist=["127.0.0.1"], host="127.0.0.1", auth_token="private-token")
 
         # Run the proxy server on this test's own event loop (not its thread) so we
         # can await it directly; start_server binds an ephemeral port.

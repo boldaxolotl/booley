@@ -27,10 +27,7 @@ from booley.flows.sim.build_reuse import stock_verilator_recipe
 from booley.flows.sim.coverage_overlay import write_coverage_overlay
 from booley.flows.sim.verilator_coverage import VERILATOR_COVERAGE_INSTRUMENTATION
 from booley.flows.sim.verilator_coverage_execution import prepare_coverage_collection
-from booley.fusesoc.fusesoc_registry import (
-    ResolvedFile,
-    setup_command_for_handle,
-)
+from booley.fusesoc.fusesoc_registry import ResolvedFile, setup_command_for_handle
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle
 from tests.flows.test_isolated_build_headers import real_fusesoc  # noqa: F401  (fixture)
@@ -43,10 +40,7 @@ _TOP = '`include "listed.vh"\nmodule top; endmodule\n'
 
 
 def _core(
-    *,
-    dependency: bool = False,
-    absolute_include: Path | None = None,
-    headers: bool = True,
+    *, dependency: bool = False, absolute_include: Path | None = None, headers: bool = True
 ) -> str:
     """The fixture core; every header sits in ``rtl/inc``, one with an ``include_path``."""
     files: list = [{"rtl/top.v": {"file_type": "verilogSource"}}]

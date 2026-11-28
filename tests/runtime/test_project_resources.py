@@ -329,10 +329,7 @@ def test_leftovers_lists_legacy_policy_volumes(tmp_path: Path, host: FakeHost) -
 
     found = project_resources.leftovers(root)
 
-    assert [item.name for item in found if item.kind == "volume"] == [
-        base,
-        f"{base}-subscription",
-    ]
+    assert [item.name for item in found if item.kind == "volume"] == [base, f"{base}-subscription"]
     # A subscription Sandbox now owns the unsuffixed volume; the old name is the legacy one.
     assert state_volume_mount("claude", project_name_id(root), "subscription") == (
         f"source={base},target=/home/agent/.claude,type=volume"

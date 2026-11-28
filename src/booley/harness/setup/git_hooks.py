@@ -20,19 +20,8 @@ import subprocess
 from collections.abc import Mapping
 from pathlib import Path
 
-from booley.harness.bootstrap import (
-    RELATIVE_WORKTREE_MIN_GIT_VERSION,
-    parse_git_version,
-)
-from booley.harness.setup.common import (
-    InitContext,
-    current,
-    info,
-    note,
-    ok,
-    skip,
-    warn,
-)
+from booley.harness.bootstrap import RELATIVE_WORKTREE_MIN_GIT_VERSION, parse_git_version
+from booley.harness.setup.common import InitContext, current, info, note, ok, skip, warn
 from booley.harness.setup.line_endings import (
     LineEndingActionKind,
     LineEndingActionResult,
@@ -149,8 +138,7 @@ def _render_line_ending_action(action: LineEndingActionResult) -> None:
 
 
 def _unreadable_line_ending_detail(
-    report: RepositoryLineEndingReport,
-    codes: set[LineEndingObservationCode],
+    report: RepositoryLineEndingReport, codes: set[LineEndingObservationCode]
 ) -> str | None:
     fixed_details = (
         (LineEndingObservationCode.AUTOCRLF_UNREADABLE, "autocrlf unreadable"),
@@ -184,8 +172,7 @@ def _line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
     if unreadable is not None:
         return unreadable
     failed = next(
-        (action for action in report.actions if action.state is LineEndingActionState.FAILED),
-        None,
+        (action for action in report.actions if action.state is LineEndingActionState.FAILED), None
     )
     if failed:
         return _FAILED_ACTION_DETAILS[failed.kind]
@@ -215,8 +202,7 @@ def _safe_line_ending_result_detail(report: RepositoryLineEndingReport) -> str:
         action.kind for action in report.actions if action.state is LineEndingActionState.COMPLETED
     }
     completed_detail = next(
-        (detail for kind, detail in _COMPLETED_ACTION_DETAILS if kind in completed),
-        None,
+        (detail for kind, detail in _COMPLETED_ACTION_DETAILS if kind in completed), None
     )
     if completed_detail is None and report.actions:
         planned = {action.kind for action in report.actions}
@@ -375,11 +361,7 @@ def _repository_uses_relative_extension(repository: Path) -> bool:
 def _host_git_version() -> tuple[int, int, int] | None:
     try:
         result = subprocess.run(
-            ["git", "--version"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=10,
+            ["git", "--version"], capture_output=True, text=True, check=False, timeout=10
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -427,8 +409,7 @@ def _reconcile_relative_policy(repositories: tuple[Path, ...], desired: str) -> 
 
 
 def _worktree_policy_capable(
-    host_version: tuple[int, int, int] | None,
-    sandbox_version: tuple[int, int, int] | None,
+    host_version: tuple[int, int, int] | None, sandbox_version: tuple[int, int, int] | None
 ) -> bool:
     minimum = RELATIVE_WORKTREE_MIN_GIT_VERSION
     return (

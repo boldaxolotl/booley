@@ -337,9 +337,7 @@ _LOST = "run 42: job test / x ran pytest but its evidence upload failed"
     ids=lambda value: value.__name__.strip("_") if callable(value) else "message",
 )
 def test_failures_name_the_run(
-    capsys: pytest.CaptureFixture[str],
-    arrange: Callable[[GhApiFake], None],
-    fragments: list[str],
+    capsys: pytest.CaptureFixture[str], arrange: Callable[[GhApiFake], None], fragments: list[str]
 ) -> None:
     fake = GhApiFake()
     arrange(fake)

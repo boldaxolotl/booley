@@ -605,9 +605,7 @@ def _tool_closure(
 
 
 def _library_files(
-    link: list[str],
-    environment: Mapping[str, str],
-    system_libraries: tuple[tuple[str, ...], ...],
+    link: list[str], environment: Mapping[str, str], system_libraries: tuple[tuple[str, ...], ...]
 ) -> list[Path] | None:
     """Resolve each system ``-l`` library through the link driver, or decline.
 

@@ -410,11 +410,7 @@ def test_doctor_audits_what_the_runtime_resolves(
         audit.default_cli,
         sorted(audit.allowed),
         {c: audit.policy(c) for c in audit.allowed},
-    ) == (
-        runtime.default_cli,
-        sorted(runtime.clis),
-        dict(runtime.auth),
-    )
+    ) == (runtime.default_cli, sorted(runtime.clis), dict(runtime.auth))
     assert audit.allowed[0] == runtime.default_cli
     if "codex" in audit.allowed:
         assert audit.policy("codex") == codex_policy

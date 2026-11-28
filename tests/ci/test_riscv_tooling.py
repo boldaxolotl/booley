@@ -352,8 +352,7 @@ def test_promotion_accepts_a_reindexed_tag_serving_the_verified_manifest(
 ) -> None:
     """The annotation changes the index digest but not the image manifest."""
     promoted = RemoteImage(
-        "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "a" * 64,
-        _VERIFIED.platform_manifest,
+        "ghcr.io/boldaxolotl/booley-sandbox-base@sha256:" + "a" * 64, _VERIFIED.platform_manifest
     )
     resolve, calls = _resolver({_FINAL_TAG: promoted, _CANDIDATE: _VERIFIED})
     monkeypatch.setattr(riscv_tooling, "resolve_labeled_image_remote", resolve)
@@ -434,8 +433,7 @@ def test_rendered_checks_keep_errexit_inside_each_probe(
     toml_command = command.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
     contract = tmp_path / "contract.toml"
     contract.write_text(
-        f'[riscv]\n[[riscv.probe]]\nname = "probe"\ncommand = "{toml_command}"\n',
-        encoding="utf-8",
+        f'[riscv]\n[[riscv.probe]]\nname = "probe"\ncommand = "{toml_command}"\n', encoding="utf-8"
     )
 
     result = subprocess.run(

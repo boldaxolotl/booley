@@ -32,12 +32,7 @@ from booley.mcp.endpoint_process import (
     stop_grace_seconds,
 )
 from booley.mcp.job_ownership import Caller, owns
-from booley.mcp.job_results import (
-    _KNOWN_JOB_ROOTS,
-    JobRepository,
-    LocatedJob,
-    read_record_or_none,
-)
+from booley.mcp.job_results import _KNOWN_JOB_ROOTS, JobRepository, LocatedJob, read_record_or_none
 from booley.runtime import job_records as jobrec
 from booley.runtime import job_slots
 from booley.runtime.display_identity import DisplayScope
@@ -160,11 +155,7 @@ class JobLifecycle:
         return jobrec.make_run_id(endpoint, stamp, self._counter)
 
     def _new_record(
-        self,
-        run_id: str,
-        name: str,
-        cmd: list[str],
-        timeout: int,
+        self, run_id: str, name: str, cmd: list[str], timeout: int
     ) -> jobrec.JobRecord:
         return jobrec.JobRecord(
             run_id=run_id,
@@ -236,13 +227,7 @@ class JobLifecycle:
         if checkout_dir is not None:
             sweep_cancelled_publication(checkout_dir)
 
-    def _record_terminal(
-        self,
-        rec: jobrec.JobRecord,
-        exit_code: int,
-        *,
-        timed_out: bool,
-    ) -> None:
+    def _record_terminal(self, rec: jobrec.JobRecord, exit_code: int, *, timed_out: bool) -> None:
         self._repair_progress(rec)
         rec.status = jobrec.terminal_status(exit_code, timed_out)
         rec.exit_code = exit_code
@@ -291,18 +276,11 @@ class JobLifecycle:
         # The submit CALL returns in seconds (mark_mcp_endpoint_end fires then), so hold
         # the lifetime busy independently or the server idle-exits mid-run.
         self._lifetime.mark_mcp_endpoint_start()
-        self._tasks[run_id] = asyncio.create_task(
-            self._run_and_record(rec, context),
-        )
+        self._tasks[run_id] = asyncio.create_task(self._run_and_record(rec, context))
         return run_id
 
     async def run_synchronous(
-        self,
-        name: str,
-        cmd: list[str],
-        timeout: int,
-        *,
-        context: CallContext,
+        self, name: str, cmd: list[str], timeout: int, *, context: CallContext
     ) -> tuple[int, str, str, bool]:
         """Run an inline endpoint while publishing bounded status state."""
         rec = self._new_record(uuid.uuid4().hex, name, cmd, timeout)
@@ -395,11 +373,7 @@ class JobLifecycle:
             self._requeue_reasons[rec.run_id] = state.reason
         return withdrawn
 
-    async def _cancel_tracked_task(
-        self,
-        run_id: str,
-        task: asyncio.Task[None],
-    ) -> None:
+    async def _cancel_tracked_task(self, run_id: str, task: asyncio.Task[None]) -> None:
         if task.done():
             return
         self._cancel_requested.add(run_id)
@@ -488,10 +462,7 @@ class JobLifecycle:
             await asyncio.wait({task}, timeout=timeout)
         return task.done()
 
-    def _result_parts(
-        self,
-        run_id: str,
-    ) -> tuple[int, str, str, dict[str, Any] | None, bool]:
+    def _result_parts(self, run_id: str) -> tuple[int, str, str, dict[str, Any] | None, bool]:
         """Resolve one terminal Job into authoritative rendering inputs."""
         rec = self._read_run(run_id)
         report, report_fresh = self._report(rec)
