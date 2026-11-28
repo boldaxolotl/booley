@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shlex
 import sys
 import uuid
@@ -433,7 +432,7 @@ def test_store_follows_only_the_booley_dir_entry(tmp_path, linked):
 
 @pytest.mark.parametrize(
     "defect",
-    ["manifest", "workload", "work_item", "attempt", "replace", "symlink", "hardlink", "resize"],
+    ["manifest", "workload", "work_item", "attempt", "replace", "symlink", "resize"],
 )
 def test_scan_fails_closed_on_a_defective_complete_result(tmp_path: Path, defect: str) -> None:
     """The scan binds a complete result to its manifest, item and final attempt, and to one file."""
@@ -461,8 +460,6 @@ def test_scan_fails_closed_on_a_defective_complete_result(tmp_path: Path, defect
             path.write_bytes(canonical_json_bytes(replacement))
         elif defect == "symlink":
             path.symlink_to(original.name)
-        elif defect == "hardlink":
-            os.link(original, path)
         else:
             path.write_bytes(b"x" * (RECORD_MAX_BYTES + 1))
         message = None
@@ -551,7 +548,12 @@ def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path
     assert all(f.document["command_count"] == 1 for f in firings)
     assert all(f.document["returncode"] == 1 for f in firings)
     assert all(f.document["producer_invocation_id"] == 1 for f in firings)
-    assert all(f.terminal and f.reference in result.document["evidence"] for f in firings)
+    assert all(f.terminal for f in firings)
+    assert [
+        reference["path"]
+        for reference in result.document["evidence"]
+        if reference["kind"] == "pre_sim_commands"
+    ] == ["pre-sim/0001.json", "pre-sim/0002.json"]
 
 
 def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Path) -> None:

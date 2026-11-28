@@ -22,7 +22,6 @@ VSIX is redistributed unmodified is rewritten to name the shipped build.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import os
 import re
 import sys
@@ -31,6 +30,7 @@ import zipfile
 from collections.abc import Sequence
 from pathlib import Path
 
+from booley.core.file_hash import file_sha256
 from booley.runtime import incontainer_vaporview, vaporview
 
 # Members of the VSIX archive the compatibility edits touch.
@@ -145,10 +145,6 @@ def _replacements(archive: zipfile.ZipFile, path: Path) -> dict[str, str] | None
     return replacements
 
 
-def _sha256(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
-
-
 _CHANGES = (
     "Changes, both in the files VS Code installs from the VSIX:\n"
     "- extension/dist/extension.js: the two calls to getTokenColorsForTheme()\n"
@@ -176,7 +172,7 @@ def modification_notice(vsix: Path) -> str:
     return (
         f"{_NOTICE_HEADER}"
         f"Booley modified {vsix} on {_MODIFIED_ON}.\n"
-        f"The shipped file is the modified build (sha256 {_sha256(vsix)});\n"
+        f"The shipped file is the modified build (sha256 {file_sha256(vsix)});\n"
         f"SOURCE.txt names the official build and source it was made from.\n"
         f"\n"
         f"{_CHANGES}"
@@ -225,7 +221,7 @@ def rewrite_source_notice(text: str, shipped_sha256: str) -> str:
 def _write_notices(notice: Path, source_notice: Path, vsix: Path) -> None:
     """Write MODIFICATIONS.txt and bring SOURCE.txt in line with the shipped VSIX."""
     source = source_notice.read_text(encoding="utf-8")
-    rewritten = rewrite_source_notice(source, _sha256(vsix))
+    rewritten = rewrite_source_notice(source, file_sha256(vsix))
     notice.parent.mkdir(parents=True, exist_ok=True)
     notice.write_text(modification_notice(vsix), encoding="utf-8")
     notice.chmod(0o644)

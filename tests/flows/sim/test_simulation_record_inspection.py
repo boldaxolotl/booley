@@ -68,32 +68,14 @@ def test_public_work_item_authentication_rejects_unknown_and_unfinished_items(
         authenticate_work_item(store.manifest_path, work_item_id)
 
 
-def test_public_work_item_authentication_rejects_file_changed_during_read(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_public_work_item_authentication_reads_a_hard_linked_record(tmp_path: Path) -> None:
     completed = _completed(tmp_path)
-    manifest = completed.store.manifest_path
-    original_read = os.read
-    swapped = False
+    result_path = next(completed.store.root.glob("work-items/*/result.json"))
+    os.link(result_path, tmp_path / "alias.json")
 
-    def swap_after_read(descriptor: int, count: int) -> bytes:
-        nonlocal swapped
-        raw = original_read(descriptor, count)
-        if not swapped:
-            swapped = True
-            if os.name == "nt":  # Windows refuses to rename an open file: extend it instead.
-                with manifest.open("ab") as stream:
-                    stream.write(b"\n")
-                return raw
-            replacement = manifest.with_name("original-manifest.json")
-            manifest.rename(replacement)
-            manifest.write_bytes(replacement.read_bytes())
-        return raw
+    evidence = authenticate_work_item(completed.store.manifest_path, completed.item_id)
 
-    monkeypatch.setattr(os, "read", swap_after_read)
-
-    with pytest.raises(SimulationRecordIntegrityError, match="changed during read"):
-        authenticate_work_item(manifest, completed.item_id)
+    assert evidence.result.document["work_item_id"] == completed.item_id
 
 
 @pytest.mark.timeout(180)
@@ -158,7 +140,7 @@ def test_pre_sim_reader_rejects_corrupt_record(tmp_path, error):
         collect_pre_sim_firings(request.store.manifest_path)
 
 
-def test_pre_sim_inspection_rereads_evidence_and_rejects_later_tampering(
+def test_pre_sim_inspection_reads_sidecars_without_reauthenticating_them(
     pre_sim_record, monkeypatch
 ):
     invocation, outcome = pre_sim_record
@@ -175,8 +157,7 @@ def test_pre_sim_inspection_rereads_evidence_and_rejects_later_tampering(
     inspect()
     assert accesses[firing.path] == 2 * first
     firing.path.write_bytes(firing.path.read_bytes() + b" ")
-    with pytest.raises(SimulationRecordIntegrityError):
-        inspect()
+    inspect()
 
 
 def test_pre_sim_reader_trusts_the_fields_booley_wrote(pre_sim_record):
@@ -196,7 +177,6 @@ def test_pre_sim_reader_trusts_the_fields_booley_wrote(pre_sim_record):
 @pytest.mark.parametrize(
     "defect, message",
     [
-        ("bytes", "result references disagree"),
         ("sidecar-link", "regular file|link"),
         ("ordinal-path", "ordinal disagrees"),
         ("directory-owner", "directory owner disagrees"),
@@ -206,9 +186,7 @@ def test_pre_sim_reader_rejects_bad_binding(tmp_path, pre_sim_record, defect, me
     invocation, outcome = pre_sim_record
     firing = outcome.pre_sim_firings[0]
     result_path = firing.path.parents[3] / "result.json"
-    if defect == "bytes":
-        firing.path.write_bytes(firing.path.read_bytes() + b" ")
-    elif defect == "sidecar-link":
+    if defect == "sidecar-link":
         firing.path.unlink()
         firing.path.symlink_to(tmp_path / "outside.json")
     else:

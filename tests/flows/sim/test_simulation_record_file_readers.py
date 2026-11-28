@@ -40,20 +40,28 @@ def test_read_bounded_refuses_a_file_that_grows_past_the_limit_while_read(
         record_files.read_bounded(path, limit=3, error=_DomainError)
 
 
-def test_read_bounded_refuses_a_missing_file(tmp_path: Path) -> None:
+@pytest.mark.parametrize("kind", ["missing", "fifo", "directory"])
+def test_read_bounded_refuses_a_path_that_is_not_a_regular_file(tmp_path: Path, kind: str) -> None:
+    path = tmp_path / "record.bin"
+    if kind == "fifo":
+        if not hasattr(os, "mkfifo"):
+            pytest.skip("os.mkfifo is unavailable")
+        # Without the refusal before the open, reading a FIFO blocks until the test times out.
+        os.mkfifo(path)
+    elif kind == "directory":
+        path.mkdir()
+
     with pytest.raises(_DomainError, match="not a regular file"):
-        record_files.read_bounded(tmp_path / "absent", limit=3, error=_DomainError)
+        record_files.read_bounded(path, limit=3, error=_DomainError)
 
 
-def test_read_bounded_checks_single_link_only_when_asked(tmp_path: Path) -> None:
+def test_read_bounded_and_stream_digest_read_a_hard_linked_file(tmp_path: Path) -> None:
     path = tmp_path / "record.bin"
     path.write_bytes(b"abc")
     (tmp_path / "alias.bin").hardlink_to(path)
 
     assert record_files.read_bounded(path, limit=3, error=_DomainError) == b"abc"
     assert record_files.stream_digest(path) == (3, content_digest(b"abc"))
-    with pytest.raises(_DomainError, match="multiple filesystem links"):
-        record_files.read_bounded(path, limit=3, error=_DomainError, single_link=True)
 
 
 def test_canonical_json_refuses_a_value_that_is_not_json() -> None:

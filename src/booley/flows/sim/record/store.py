@@ -14,7 +14,6 @@ from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from types import MappingProxyType
 from typing import TypeVar, cast
 
 from booley.core.booley_dir_links import is_booley_dir_entry
@@ -58,7 +57,6 @@ from .codec import (
 from .model import (
     BundleBuildAttempt,
     BundleBuildResult,
-    FrozenJson,
     SimulationAttempt,
     SimulationRecordDocument,
     SimulationRecordManifest,
@@ -156,7 +154,6 @@ class SimulationRecordStore:
             limit=limit,
             error=SimulationRecordIntegrityError,
             booley_dir=self.booley_dir,
-            single_link=True,
         )
 
     def _decode_located(self, decode: Callable[[bytes], _T], path: Path, limit: int) -> _T:
@@ -380,91 +377,36 @@ class SimulationRecordStore:
             raise SimulationRecordIntegrityError("too many Pre-Sim Commands firings")
         return paths
 
-    def _reread_prior_attempt(
-        self,
-        manifest: SimulationRecordManifest,
-        items: Mapping[str, Mapping[str, object]],
-        directory: Path,
-        owned: list[PreSimFiring],
-    ) -> dict[tuple[str, str, str, int], PreSimFiring]:
-        """Check one attempt once and return the fresh firings matching its prior ones."""
-        digest = manifest_digest(manifest)
-        item = items.get(owned[0].key[1])
-        if any(firing.document["manifest_sha256"] != digest for firing in owned):
-            raise SimulationRecordIntegrityError("prior hook manifest changed")
-        if item is None:
-            raise SimulationRecordIntegrityError("prior hook manifest owner changed")
-        _require_safe_parents(directory, self.root, self.booley_dir)
-        if directory.parent != self._work_item_directory(item) / "attempts":
-            raise SimulationRecordIntegrityError("prior hook attempt owner changed")
-        fresh = {
-            candidate.key: candidate
-            for candidate in self._attempt_firings(manifest, item, directory, None)
-        }
-        for firing in owned:
-            match = fresh.get(firing.key)
-            if match is None or (match.path, match.reference) != (firing.path, firing.reference):
-                raise SimulationRecordIntegrityError("prior hook reference changed")
-        return {firing.key: fresh[firing.key] for firing in owned}
-
     @reads_simulation_record_documents
     def _attempt_firings(
         self,
-        manifest: SimulationRecordManifest,
-        item: Mapping[str, object],
         directory: Path,
-        terminal: SimulationResult | None,
+        terminal: bool,
     ) -> tuple[PreSimFiring, ...]:
-        """Authenticate one attempt's sidecars; ``terminal`` is the result binding this attempt.
-
-        An attempt without sidecars and without a terminal result costs no read.
-        A terminal attempt always has its result references compared with its sidecars.
-        """
+        """Parse one attempt's sidecars."""
         if not (directory / "attempt.json").exists():
             return ()
-        paths = self._pre_sim_paths(directory)
-        if not paths and terminal is None:
-            return ()
-        attempt = self.read_attempt(directory)
-        _require_attempt_directory_name(directory, attempt)
         firings: list[PreSimFiring] = []
-        if paths:
-            for ordinal, path in enumerate(paths, start=1):
-                _require_safe_parents(path, directory, self.booley_dir)
-                raw = self._read(path, limit=MANIFEST_MAX_BYTES)
-                firing = PreSimFiring(
-                    self.manifest_path,
-                    path,
-                    MappingProxyType(_reference(path, raw, directory.name.split("-", 1)[1])),
-                    decode_pre_sim_firing(raw),
-                    terminal is not None,
-                )
-                if firing.document["ordinal"] != ordinal or path.name != f"{ordinal:04d}.json":
-                    raise SimulationRecordIntegrityError("Pre-Sim Commands ordinal disagrees")
-                firings.append(firing)
-        if terminal is not None:
-            # The terminal result is the scan-authenticated result Booley published.
-            evidence = cast(tuple[Mapping[str, FrozenJson], ...], terminal.document["evidence"])
-            if [
-                reference for reference in evidence if reference["kind"] == "pre_sim_commands"
-            ] != [firing.reference for firing in firings]:
-                raise SimulationRecordIntegrityError("Pre-Sim Commands result references disagree")
-            if firings:
-                _validate_result_attempt_binding(attempt, terminal)
+        for ordinal, path in enumerate(self._pre_sim_paths(directory), start=1):
+            raw = self._read(path, limit=MANIFEST_MAX_BYTES)
+            firing = PreSimFiring(self.manifest_path, path, decode_pre_sim_firing(raw), terminal)
+            if firing.document["ordinal"] != ordinal or path.name != f"{ordinal:04d}.json":
+                raise SimulationRecordIntegrityError("Pre-Sim Commands ordinal disagrees")
+            firings.append(firing)
         return tuple(firings)
 
     def _simulation_record_firings(
         self, manifest: SimulationRecordManifest, recovery: SimulationRecordRecovery
     ) -> tuple[PreSimFiring, ...]:
-        """Authenticate every retained attempt's firings against the scan's terminal results."""
+        """Read every retained attempt's firings, marking those the scan found terminal."""
         items = cast(tuple[Mapping[str, object], ...], manifest.document["work_items"])
         firings: list[PreSimFiring] = []
         for item, recovered in zip(items, recovery.items, strict=True):
             directories = self._attempt_directories(self._work_item_directory(item) / "attempts")
             for directory in directories:
                 # The scan proved a result binds the final attempt, so only it is terminal.
-                terminal = recovered.result if directory == directories[-1] else None
-                firings.extend(self._attempt_firings(manifest, item, directory, terminal))
+                terminal = recovered.result is not None and directory == directories[-1]
+                firings.extend(self._attempt_firings(directory, terminal))
         return tuple(firings)
 
     def _publish(self, path: Path, value: _T, encoder: Callable[[_T], bytes]) -> Path:
@@ -632,23 +574,13 @@ class SimulationRecordStore:
 def collect_pre_sim_firings(
     *manifest_paths: Path,
     booley_dir: Path | None = None,
-    prior: tuple[PreSimFiring, ...] = (),
 ) -> tuple[PreSimFiring, ...]:
-    """Read Pre-Sim firings; the only entry that does, in one of two modes.
+    """Read each named record's Pre-Sim firings; the only entry that does.
 
-    With ``manifest_paths``, read each named record's own firings and
-    deduplicate by full firing identity ``(campaign_id, work_item_id,
+    Deduplicates by full firing identity ``(campaign_id, work_item_id,
     attempt_id, ordinal)``.  Each distinct manifest path is scanned once, in the
     order given.
-
-    With ``prior`` (and no paths), freshly reread earlier-authenticated firings,
-    one read per attempt.  No scan runs and no terminal record is consulted, so
-    unrelated terminal corruption cannot drop valid firing evidence, and changed
-    sidecar bytes change the reference and raise.  Only fresh firings matching a
-    prior key are returned.
     """
-    if prior:
-        return _reread_prior(prior, booley_dir)
     firings = {}
     for path in dict.fromkeys(Path(path).absolute() for path in manifest_paths):
         refuse_older_manifest_path(path)
@@ -660,26 +592,6 @@ def collect_pre_sim_firings(
         for firing in store._simulation_record_firings(manifest, recovery):
             firings[firing.key] = firing
     return tuple(firings.values())
-
-
-def _reread_prior(
-    prior: tuple[PreSimFiring, ...], booley_dir: Path | None
-) -> tuple[PreSimFiring, ...]:
-    """Reread each attempt owning a prior firing once; raise when any reference changed."""
-    by_manifest: dict[Path, dict[Path, list[PreSimFiring]]] = {}
-    for firing in prior:
-        attempts = by_manifest.setdefault(firing.manifest_path, {})
-        attempts.setdefault(firing.path.parent.parent, []).append(firing)
-    fresh = {}
-    for manifest_path, attempts in by_manifest.items():
-        store = SimulationRecordStore(manifest_path.parent, booley_dir=booley_dir)
-        manifest = store.load_manifest()
-        # The codec's _read_manifest reads the work items list.
-        work_items = cast(tuple[Mapping[str, FrozenJson], ...], manifest.document["work_items"])
-        items = {cast(str, item["work_item_id"]): item for item in work_items}
-        for directory, owned in attempts.items():
-            fresh.update(store._reread_prior_attempt(manifest, items, directory, owned))
-    return tuple(fresh[key] for key in dict.fromkeys(firing.key for firing in prior))
 
 
 def _require_attempt_directory_name(directory: Path, attempt: SimulationAttempt) -> None:
@@ -718,28 +630,10 @@ def _load_build_execution(
         limit=RECORD_MAX_BYTES,
         error=SimulationRecordIntegrityError,
         booley_dir=booley_dir,
-        single_link=True,
     )
     if document.get("$schema") != "booley.simulation-build-execution/v1":
         raise SimulationRecordIntegrityError("build execution evidence schema disagrees")
     return document
-
-
-def _validate_result_attempt_binding(attempt: SimulationAttempt, result: SimulationResult) -> None:
-    left, right = attempt.document, result.document
-    fields = (
-        "simulation_record_id",
-        "manifest_sha256",
-        "workload_sha256",
-        "work_item_id",
-        "attempt_id",
-        "attempt_ordinal",
-        "producer_invocation_id",
-    )
-    if any(left[field] != right[field] for field in fields):
-        raise SimulationRecordIntegrityError(
-            "Simulation Result identity disagrees with Simulation Attempt"
-        )
 
 
 __all__ = [

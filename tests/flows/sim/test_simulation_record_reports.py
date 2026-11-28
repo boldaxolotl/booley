@@ -825,33 +825,6 @@ def test_resume_count_budget_uses_only_actual_current_hook_keys(
     assert result.report_text.count("pre_run_commands") == int(interrupted)
 
 
-def test_prior_firing_reauthentication_rejects_byte_identical_symlink_attempt(
-    tmp_path, monkeypatch
-):
-    from booley.flows.sim.record import SimulationRecordIntegrityError
-    from tests.conftest import require_symlinks
-    from tests.flows.sim.test_endpoint_record_lifecycle import _successful_pre_sim_record
-
-    require_symlinks(tmp_path)
-    _invocation, simulation_record = _successful_pre_sim_record(tmp_path, monkeypatch, "immutable")
-    firing = simulation_record.pre_sim_firings[0]
-    directory = firing.path.parent.parent
-    copy = tmp_path / "copied-attempt"
-    sidecar_bytes = firing.path.read_bytes()
-    # An attempt directory holds no executable: the record keeps one, read-only,
-    # in its shared bundle.
-    assert not list(directory.rglob("simv"))
-    executables = list(directory.parents[3].rglob("simv"))
-    assert len(executables) == 1, "successful Simulation Record must retain one real executable"
-    assert not executables[0].stat().st_mode & 0o222
-    directory.rename(copy)
-    assert (copy / "pre-sim/0001.json").read_bytes() == sidecar_bytes
-    symlink_or_skip(directory, copy, target_is_directory=True)
-    assert firing.path.read_bytes() == sidecar_bytes
-    with pytest.raises(SimulationRecordIntegrityError):
-        collect_pre_sim_firings(prior=(firing,))
-
-
 @pytest.mark.parametrize("defect", ["root", "descendant", "lock", "target_link"])
 def test_alias_keeps_user_report_links_strict(flow_project, project_alias, defect):
 
@@ -926,51 +899,6 @@ def test_projection_rejects_corrupt_record(tmp_path, error):
         del document["complete"]
     with pytest.raises(ValueError):
         decode_simulation_projection(document, coverage_expected=False)
-
-
-def _two_firing_store(tmp_path):
-    """Run a coverage Simulation Record whose one attempt holds two failed Pre-Sim firings."""
-    from booley.flows.sim.execution.contract import PreSimEvidence
-    from booley.flows.sim.verilator_coverage import SimulationRunResult
-    from tests.flows.sim.simulation_record_test_support import _run_coverage_simulation_record
-    from tests.flows.sim.test_coverage_transaction import NativeExecution
-
-    class Hooks(NativeExecution):
-        def run(self, request):
-            evidence = PreSimEvidence(
-                ("prepare-vectors",),
-                (request.test.name,),
-                "failed",
-                0.2,
-                "vector generator rejected input",
-                returncode=1,
-            )
-            return SimulationRunResult("elab_error", evidence.detail, evidence)
-
-    outcome, store = _run_coverage_simulation_record(
-        tmp_path, Hooks(), pre_sim_commands=("prepare-vectors",)
-    )
-    firings = collect_pre_sim_firings(store.manifest_path)
-    assert len(firings) == 2 and outcome.complete
-    return firings
-
-
-def test_prior_firing_reauthentication_reads_each_attempt_once(tmp_path, monkeypatch):
-    """A re-read returns only the prior firings it was given, decoding each sidecar once."""
-    from tests.flows.sim.simulation_record_test_support import _observe_pre_sim_reads
-
-    firings = _two_firing_store(tmp_path)
-    first, second = firings
-    assert first.path.parent == second.path.parent
-    fresh = collect_pre_sim_firings(prior=(first,))
-    assert [(f.key, f.path, f.terminal) for f in fresh] == [(first.key, first.path, False)]
-
-    accesses, decodes, _results = _observe_pre_sim_reads(monkeypatch)
-    collect_pre_sim_firings(prior=firings)
-    assert decodes == {(f.key[2], f.key[3]): 1 for f in firings}, (
-        "each sidecar must be decoded once"
-    )
-    assert accesses == {f.path: 1 for f in firings}, "each sidecar must have one byte access"
 
 
 @pytest.mark.parametrize("linked", ["entry", "below", "above"])
