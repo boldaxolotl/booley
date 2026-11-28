@@ -2765,7 +2765,7 @@ def _check_current_runtime_git_identity(
     for result in (
         sandbox_git_identity.inspect_override(project.project_root, project.booley_dir),
         sandbox_git_identity.inspect_gitconfig_identity(project.project_root),
-        sandbox_git_identity.inspect_credential_helpers(project.project_root),
+        *sandbox_git_identity.inspect_credential_helpers(project.project_root),
     ):
         if result.warning is not None:
             _warn(result.warning, result.fix)
