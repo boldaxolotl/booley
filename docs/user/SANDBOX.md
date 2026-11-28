@@ -418,6 +418,10 @@ Booley runs T3 Code under a managed policy:
 - Threads run only with Claude or Codex, and only with those listed in
   [`[agent] clis`](#agent-cli-logins-in-the-sandbox).
 - A thread's runtime mode is capped at `auto`, below **Full access**.
+- New worktrees start from the base branch as it is in your local repository,
+  with no fetch from the remote, unless **Start from remote** is on. It is off
+  for a new thread but on in a new scheduled task, so turn it off there if the
+  Sandbox cannot reach the remote.
 
 Booley mounts the policy read-only, so the Developer Agent cannot change it.
 
