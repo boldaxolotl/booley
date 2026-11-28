@@ -16,7 +16,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=engine /usr/local/bin/ /usr/local/bin/
 COPY --from=engine /usr/local/libexec/docker/ /usr/local/libexec/docker/
-COPY --from=ghcr.io/astral-sh/uv:0.11.28 /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:0.13.10 /uv /usr/local/bin/uv
 
 # Booley must run as uid 1000 (the Sandbox `agent` uid). Ubuntu ships an
 # `ubuntu` user with uid 1000; rename it to `qa`. The `docker` group owns the
