@@ -2,13 +2,13 @@
   "name": "booley-agent-clis",
   "private": true,
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.329",
-    "@anthropic-ai/claude-code-linux-x64": "2.1.329",
-    "@openai/codex": "0.171.0",
-    "@openai/codex-linux-x64": "npm:@openai/codex@0.171.0-linux-x64"
+    "@anthropic-ai/claude-code": "2.1.332",
+    "@anthropic-ai/claude-code-linux-x64": "2.1.332",
+    "@openai/codex": "0.172.0",
+    "@openai/codex-linux-x64": "npm:@openai/codex@0.172.0-linux-x64"
   },
   "t3code": {
-    "version": "0.1.11",
-    "sha256": "2b691c07f5bcb5adea4a863d5324aae7db21bd6d82280cec7787836dcaa013e1"
+    "version": "0.1.12",
+    "sha256": "9ba3db46e3554fb9970fd5ede9e823c2f6d6f6763f40340bd4c8ef6b09501c54"
   }
 }

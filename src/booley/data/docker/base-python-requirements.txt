@@ -8,4 +8,4 @@ numpy==2.5.5
 cocotbext-axi==0.1.28
 cocotbext-uart==0.1.4
 # Mutant generator parser (ADR 0088); a test holds it equal to the hdl-parser extra.
-pyslang==12.1.0
+pyslang==12.2.0
