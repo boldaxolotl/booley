@@ -17,12 +17,6 @@ from pathlib import Path
 from typing import TypeVar, cast
 
 from booley.core.booley_dir_links import is_booley_dir_entry
-from booley.core.boundary import (
-    BoundaryError,
-    require_bool_value,
-    require_finite_number,
-    require_int,
-)
 from booley.flows.artifact_durability import (
     discard_published_staging,
     discard_staged_files,
@@ -30,19 +24,15 @@ from booley.flows.artifact_durability import (
     durable_directory,
     fsync_directory,
 )
-from booley.flows.sim.build_session import CacheDecision
-from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.record_files import (
     read_bounded,
     read_json_object,
-    stream_digest,
 )
 from booley.flows.sim.record_layout import RECORD_DIRECTORY, refuse_older_manifest_path
 from booley.flows.sim.record_reports import is_report_link
 from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.file_lock import nonblocking_file_lock
 
-from .bundle import require_bundle_inventory
 from .codec import (
     MANIFEST_MAX_BYTES,
     RECORD_MAX_BYTES,
@@ -75,17 +65,11 @@ from .model import (
     StrictGrade,
 )
 from .planning import manifest_digest
-from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder, _reference
+from .pre_sim_evidence import PreSimFiring, _reference, decode_pre_sim_firing
 
 _T = TypeVar("_T", bound=SimulationRecordDocument)
 _SUMMARY_SCHEMA = "booley.simulation-record-summary/v1"
 _HEX64 = re.compile(r"[0-9a-f]{64}")
-_COMMON_BUILD_FIELDS = (
-    "simulation_record_id",
-    "manifest_sha256",
-    "workload_sha256",
-    "build_variant_id",
-)
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,7 +103,7 @@ class SimulationRecordRecovery:
 
 @dataclass(frozen=True, slots=True)
 class SharedBuildRecovery:
-    """One fully authenticated settled shared build for an invocation."""
+    """One settled shared build of an invocation, as its records state it."""
 
     directory: Path
     attempt: BundleBuildAttempt
@@ -171,11 +155,6 @@ class SimulationRecordStore:
             error=SimulationRecordIntegrityError,
             booley_dir=self.booley_dir,
         )
-
-    def _identity(self, path: Path) -> tuple[int, str]:
-        if is_report_link(path) or not path.is_file():
-            raise SimulationRecordIntegrityError(f"evidence is not a regular file: {path}")
-        return stream_digest(path)
 
     def _decode_located(self, decode: Callable[[bytes], _T], path: Path, limit: int) -> _T:
         """Read and decode one record; a Booley 0.3.0 refusal names its invocation."""
@@ -298,15 +277,12 @@ class SimulationRecordStore:
     def recover_shared_build(
         self, build_variant_id: str, producer_invocation_id: int
     ) -> SharedBuildRecovery | None:
-        """Return one fully authenticated settled build for this invocation."""
+        """Return the one settled build of this invocation, if its records state one."""
         digest = _variant_digest(build_variant_id)
         attempts = self._attempt_directories(self.root / "build-variants" / digest / "attempts")
-        expected = self._shared_expected(build_variant_id)
         recovered: list[SharedBuildRecovery] = []
-        for ordinal, directory in enumerate(attempts, start=1):
-            candidate = self._recover_shared_attempt(
-                directory, ordinal, producer_invocation_id, expected
-            )
+        for directory in attempts:
+            candidate = self._recover_shared_attempt(directory, producer_invocation_id)
             if candidate is not None:
                 recovered.append(candidate)
         if len(recovered) > 1:
@@ -315,90 +291,35 @@ class SimulationRecordStore:
             )
         return recovered[0] if recovered else None
 
-    def _shared_expected(self, build_variant_id: str) -> Mapping[str, object]:
-        manifest = self.load_manifest()
-        workload = cast(Mapping[str, object], manifest.document["workload"])
-        fingerprints = cast(Mapping[str, str], manifest.document["fingerprints"])
-        variants = cast(tuple[Mapping[str, object], ...], manifest.document["build_variants"])
-        if not any(item["build_variant_id"] == build_variant_id for item in variants):
-            raise SimulationRecordIntegrityError("shared build variant is not in manifest")
-        eda = cast(Mapping[str, str], workload["eda"])
-        return {
-            "simulation_record_id": manifest.document["simulation_record_id"],
-            "manifest_sha256": self.manifest_sha256(),
-            "workload_sha256": fingerprints["workload_sha256"],
-            "build_variant_id": build_variant_id,
-            "tool_provenance": {
-                "eda_kind": eda["kind"],
-                "eda_version": eda["version"],
-                "adapter_contract_version": workload["adapter_contract_version"],
-            },
-        }
-
     def _recover_shared_attempt(
-        self, directory, ordinal, invocation_id, expected
+        self, directory: Path, invocation_id: int
     ) -> SharedBuildRecovery | None:
         attempt_path = directory / "build-attempt.json"
         if not attempt_path.exists():
             return None
         attempt = decode_bundle_build_attempt(self._read(attempt_path, limit=RECORD_MAX_BYTES))
-        _validate_shared_attempt(attempt, ordinal, expected)
         result_path = directory / "build-result.json"
         if not result_path.exists():
             return None
         result = decode_bundle_build_result(self._read(result_path, limit=RECORD_MAX_BYTES))
-        self._validate_shared_result(directory, attempt, result, expected)
         if attempt.document["producer_invocation_id"] != invocation_id:
             return None
         if result.document["state"] == "infrastructure_error":
             return None
-        bundle, execution = self._shared_result_evidence(directory, attempt, result, expected)
-        return SharedBuildRecovery(directory, attempt, result, bundle, execution)
+        if result.document["state"] == "design_failure":
+            return SharedBuildRecovery(directory, attempt, result, None, None)
+        return SharedBuildRecovery(
+            directory,
+            attempt,
+            result,
+            self._load_shared_bundle(directory, result),
+            _load_build_execution(directory, result.document, self.booley_dir),
+        )
 
-    def _validate_shared_result(self, directory, attempt, result, expected) -> None:
-        document = result.document
-        if any(document[field] != expected[field] for field in _COMMON_BUILD_FIELDS):
-            raise SimulationRecordIntegrityError("shared Build Result identity disagrees")
-        if document["state"] not in {"ready", "design_failure", "infrastructure_error"}:
-            raise SimulationRecordIntegrityError("shared Build Result state is invalid")
-        reference = cast(Mapping[str, object], document["build_attempt"])
-        attempt_id = attempt.document["build_attempt_id"]
-        if (
-            reference["build_attempt_id"] != attempt_id
-            or reference["owner"] != attempt_id
-            or reference["kind"] != "bundle_build_attempt"
-            or reference["path"] != "build-attempt.json"
-        ):
-            raise SimulationRecordIntegrityError("shared Build Result attempt reference disagrees")
-        self._authenticate_reference(directory, reference)
-
-    def _shared_result_evidence(self, directory, attempt, result, expected):
-        document = result.document
-        for reference in cast(tuple[Mapping[str, object], ...], document["evidence"]):
-            if reference["owner"] != attempt.document["build_attempt_id"]:
-                raise SimulationRecordIntegrityError("shared build evidence owner disagrees")
-            self._authenticate_reference(directory, reference)
-        if document["state"] == "design_failure":
-            return None, None
-        bundle = self._load_shared_bundle(directory, attempt, result, expected)
-        execution = _load_build_execution(directory, document, self.booley_dir)
-        return bundle, execution
-
-    def _load_shared_bundle(self, directory, attempt, result, expected) -> SimulatorBundle:
-        binding = cast(Mapping[str, object], result.document["bundle"])
-        path = directory / validate_relative_path(binding["manifest_path"])
-        raw = self._read(path, limit=RECORD_MAX_BYTES)
-        if (
-            len(raw) != binding["manifest_bytes"]
-            or content_digest(raw) != binding["manifest_sha256"]
-        ):
-            raise SimulationRecordIntegrityError("shared Build Result bundle digest disagrees")
-        bundle = decode_simulator_bundle(raw)
-        _validate_shared_bundle(bundle, binding, attempt, expected)
-        require_bundle_inventory(bundle)
-        for artifact in cast(tuple[Mapping[str, object], ...], bundle.document["artifacts"]):
-            self._authenticate_reference(directory, artifact)
-        return bundle
+    def _load_shared_bundle(self, directory: Path, result: BundleBuildResult) -> SimulatorBundle:
+        binding = cast(Mapping[str, str], result.document["bundle"])
+        path = directory / binding["manifest_path"]
+        return decode_simulator_bundle(self._read(path, limit=RECORD_MAX_BYTES))
 
     def publish_result(self, work_item_id: str, result: SimulationResult) -> Path:
         path = self.work_item_directory(work_item_id) / "result.json"
@@ -459,25 +380,16 @@ class SimulationRecordStore:
     @reads_simulation_record_documents
     def _attempt_firings(
         self,
-        manifest: SimulationRecordManifest,
-        item: Mapping[str, object],
         directory: Path,
         terminal: bool,
     ) -> tuple[PreSimFiring, ...]:
-        """Parse one attempt's sidecars; an attempt without sidecars costs no read."""
+        """Parse one attempt's sidecars."""
         if not (directory / "attempt.json").exists():
             return ()
-        paths = self._pre_sim_paths(directory)
-        if not paths:
-            return ()
-        attempt = self.read_attempt(directory)
-        decoder = PreSimFiringDecoder(manifest)
         firings: list[PreSimFiring] = []
-        for ordinal, path in enumerate(paths, start=1):
+        for ordinal, path in enumerate(self._pre_sim_paths(directory), start=1):
             raw = self._read(path, limit=MANIFEST_MAX_BYTES)
-            firing = PreSimFiring(
-                self.manifest_path, path, decoder.decode(raw, item, attempt), terminal
-            )
+            firing = PreSimFiring(self.manifest_path, path, decode_pre_sim_firing(raw), terminal)
             if firing.document["ordinal"] != ordinal or path.name != f"{ordinal:04d}.json":
                 raise SimulationRecordIntegrityError("Pre-Sim Commands ordinal disagrees")
             firings.append(firing)
@@ -494,17 +406,8 @@ class SimulationRecordStore:
             for directory in directories:
                 # The scan proved a result binds the final attempt, so only it is terminal.
                 terminal = recovered.result is not None and directory == directories[-1]
-                firings.extend(self._attempt_firings(manifest, item, directory, terminal))
+                firings.extend(self._attempt_firings(directory, terminal))
         return tuple(firings)
-
-    def _authenticate_reference(self, root: Path, reference: Mapping[str, object]) -> None:
-        path = root / validate_relative_path(reference["path"])
-        _require_safe_parents(path, root, self.booley_dir)
-        size, digest = self._identity(path)
-        if size != reference["bytes"] or digest != reference["sha256"]:
-            raise SimulationRecordIntegrityError(
-                f"result evidence reference does not authenticate {path}"
-            )
 
     def _publish(self, path: Path, value: _T, encoder: Callable[[_T], bytes]) -> Path:
         _require_safe_parents(path, self.root, self.booley_dir)
@@ -715,143 +618,22 @@ def _variant_digest(build_variant_id: str) -> str:
     return digest
 
 
-def _validate_shared_attempt(attempt, ordinal: int, expected) -> None:
-    document = attempt.document
-    if any(document[field] != expected[field] for field in _COMMON_BUILD_FIELDS):
-        raise SimulationRecordIntegrityError("shared Build Attempt identity disagrees")
-    if (
-        document["build_attempt_ordinal"] != ordinal
-        or document["sharing"] != "shared_variant"
-        or document["owner"] != {"work_item_id": None, "simulation_attempt_id": None}
-        or document["tool_provenance"] != expected["tool_provenance"]
-    ):
-        raise SimulationRecordIntegrityError("shared Build Attempt scope disagrees")
-
-
-def _validate_shared_bundle(bundle, binding, attempt, expected) -> None:
-    document = bundle.document
-    if any(document[field] != expected[field] for field in _COMMON_BUILD_FIELDS):
-        raise SimulationRecordIntegrityError("shared Simulator Bundle identity disagrees")
-    if (
-        binding["sharing"] != "shared_variant"
-        or document["build_attempt_id"] != attempt.document["build_attempt_id"]
-        or document["bundle_id"] != binding["bundle_id"]
-        or document["sharing"] != "shared_variant"
-        or document["owner"] != {"work_item_id": None, "simulation_attempt_id": None}
-        or document["tool_provenance"] != expected["tool_provenance"]
-        or document["artifacts"] != binding["artifacts"]
-    ):
-        raise SimulationRecordIntegrityError("shared Simulator Bundle binding disagrees")
-
-
 def _load_build_execution(
     directory: Path, result: Mapping[str, object], booley_dir: Path | None = None
 ) -> Mapping[str, object]:
     references = cast(tuple[Mapping[str, object], ...], result["evidence"])
-    matches = [item for item in references if item["kind"] == "simulation_build_execution"]
-    if len(matches) != 1:
-        raise SimulationRecordIntegrityError("ready shared build lacks exact execution evidence")
-    path = directory / cast(str, matches[0]["path"])
+    (match,) = [item for item in references if item["kind"] == "simulation_build_execution"]
+    path = directory / cast(str, match["path"])
     discard_published_staging(path)
     document = read_json_object(
         path,
         limit=RECORD_MAX_BYTES,
         error=SimulationRecordIntegrityError,
         booley_dir=booley_dir,
-        canonical=True,
     )
-    if set(document) != {"$schema", "process", "build"} or document["$schema"] != (
-        "booley.simulation-build-execution/v1"
-    ):
+    if document.get("$schema") != "booley.simulation-build-execution/v1":
         raise SimulationRecordIntegrityError("build execution evidence schema disagrees")
-    _validate_build_execution_document(document)
-    return cast(Mapping[str, object], document)
-
-
-def _validate_build_execution_document(document: Mapping[str, object]) -> None:
-    process = document["process"]
-    build = document["build"]
-    if not isinstance(process, dict) or set(process) != {
-        "returncode",
-        "stdout",
-        "stderr",
-        "timed_out",
-        "duration_s",
-        "dispatched_unix",
-        "peak_rss_mb",
-        "oom_kill_delta",
-    }:
-        raise SimulationRecordIntegrityError("build process evidence fields disagree")
-    if not isinstance(build, dict) or set(build) != {
-        "ran",
-        "verdict",
-        "failure_kind",
-        "elapsed_s",
-        "output",
-        "returncode",
-        "timed_out",
-        "peak_rss_mb",
-        "oom_kill_delta",
-        "terminal_record",
-        "reason",
-        "cache_decision",
-    }:
-        raise SimulationRecordIntegrityError("normalized build evidence fields disagree")
-    _validate_process_values(process)
-    _validate_build_values(build)
-
-
-def _validate_process_values(process: Mapping[str, object]) -> None:
-    try:
-        require_int(process["returncode"], field="build process returncode")
-        require_int(process["oom_kill_delta"], field="build process OOM delta")
-        require_bool_value(process["timed_out"], field="build process timed_out")
-        for field in ("duration_s", "dispatched_unix"):
-            require_finite_number(process[field], field=f"build process {field}")
-        peak = process["peak_rss_mb"]
-        if peak is not None:
-            require_finite_number(peak, field="build process peak_rss_mb")
-    except BoundaryError as exc:
-        raise SimulationRecordIntegrityError("build process evidence types disagree") from exc
-    if not isinstance(process["stdout"], str) or not isinstance(process["stderr"], str):
-        raise SimulationRecordIntegrityError("build process evidence types disagree")
-
-
-def _validate_build_values(build: Mapping[str, object]) -> None:
-    try:
-        require_int(build["returncode"], field="normalized build returncode")
-        require_bool_value(build["timed_out"], field="normalized build timed_out")
-        require_bool_value(build["terminal_record"], field="normalized build terminal_record")
-        require_int(build["oom_kill_delta"], field="normalized build OOM delta")
-        for field in ("elapsed_s", "peak_rss_mb"):
-            if build[field] is not None:
-                require_finite_number(build[field], field=f"normalized build {field}")
-    except BoundaryError as exc:
-        raise SimulationRecordIntegrityError("normalized build measurement is invalid") from exc
-    if (
-        not (build["ran"] is True or _is_recorded_reuse_hit(build))
-        or build["verdict"] != "pass"
-        or build["failure_kind"] is not None
-        or build["returncode"] != 0
-        or build["timed_out"] is not False
-        or any(
-            not isinstance(build[field], str) for field in ("output", "reason", "cache_decision")
-        )
-    ):
-        raise SimulationRecordIntegrityError("normalized build evidence is not successful")
-
-
-def _is_recorded_reuse_hit(build: Mapping[str, object]) -> bool:
-    """Whether a build record says a retained image served it (``ran`` false, ``hit``).
-
-    The store checks only the recorded decision; the engine verified the image.
-    """
-    decision = build["cache_decision"]
-    return (
-        build["ran"] is False
-        and isinstance(decision, str)
-        and decision.startswith(f"{CacheDecision.HIT};")
-    )
+    return document
 
 
 __all__ = [
