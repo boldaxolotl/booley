@@ -12,6 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 import anyio
 import pytest
 
+from booley.config import agent as config_agent
+from booley.config import agent_app
 from booley.config.agent import AgentSettings, set_agent_settings
 from booley.config.settings import BackendConfigError
 from booley.core.models import AgentCallParams
@@ -33,7 +35,7 @@ from tests.codex_cli_fake import (
     write_codex_login,
 )
 from tests.conftest import require_symlinks
-from tests.sandbox_venue_fake import place
+from tests.sandbox_venue_fake import place, point_mounts
 from tests.time_budget import scaled
 
 _MODEL = "claude-opus-4-8"
@@ -775,11 +777,85 @@ def sandbox(monkeypatch):
     set_backend_config(None)
 
     def choose(*, inside: bool) -> None:
-        place(monkeypatch, RuntimeLocation.HOST, container_host=inside)
+        place(
+            monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX if inside else RuntimeLocation.HOST
+        )
 
     choose(inside=False)
     yield choose
     set_backend_config(None)
+
+
+def _container_host(monkeypatch):
+    place(monkeypatch, RuntimeLocation.HOST, container_host=True)
+
+
+def _unmarked_sandbox(monkeypatch):
+    """A Sandbox its spec declares, in an image that left no marker file."""
+    place(monkeypatch, RuntimeLocation.HOST)
+    point_mounts(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+
+
+_VENUES = [
+    pytest.param(_container_host, False, id="container-host"),
+    pytest.param(_unmarked_sandbox, True, id="sandbox-without-marker"),
+]
+
+
+@pytest.mark.parametrize(("venue", "in_sandbox"), _VENUES)
+def test_agent_configuration_follows_the_sandbox_classification(
+    sandbox, monkeypatch, venue, in_sandbox
+):
+    venue(monkeypatch)
+    monkeypatch.delenv("BOOLEY_AGENT_CLIS", raising=False)
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "gateway")
+
+    assert config_agent.gateway_handoff_active() is in_sandbox
+    assert config_agent.visitor_mode_honoured() is in_sandbox
+    settings = config_agent.settings_from_data({"agent": {"default": "codex"}}, lazy=True)
+    assert (settings.auth_for("codex") == "gateway") is in_sandbox
+
+    monkeypatch.setenv("BOOLEY_AGENT_APP", "auto")
+    if in_sandbox:
+        assert agent_app.auto_requested() is True
+    else:
+        with pytest.raises(agent_app.AgentAppError, match="honored only inside a Sandbox"):
+            agent_app.auto_requested()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("venue", "in_sandbox"), _VENUES)
+async def test_codex_bypasses_its_os_sandbox_in_any_container(
+    tmp_path, monkeypatch, venue, in_sandbox
+):
+    # Both venues are containers, so the expectation does not depend on ``in_sandbox``.
+    launches = replay_codex_run(monkeypatch)
+    venue(monkeypatch)
+
+    await CodexBackend().call(
+        AgentCallParams(
+            prompt="work", model="test", cwd=tmp_path, allowed_agent_capabilities=["Read"]
+        )
+    )
+
+    (launch,) = launches
+    assert launch["cmd"][-len(_BYPASS) :] == _BYPASS
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("venue", "in_sandbox"), _VENUES)
+async def test_nested_codex_home_only_in_a_sandbox(tmp_path, monkeypatch, venue, in_sandbox):
+    require_symlinks(tmp_path)
+    install_fake_codex(tmp_path, monkeypatch)
+    venue(monkeypatch)
+    selected = write_codex_login(tmp_path).parent
+    (selected / "config.toml").write_bytes(b"")
+    monkeypatch.setenv("CODEX_HOME", str(selected))
+
+    report = await codex_report(tmp_path, nested_mcp_tools=["lint"])
+
+    assert (Path(report["home"]) != selected) is in_sandbox
 
 
 def _write_toml(directory: Path, name: str, text: str) -> None:

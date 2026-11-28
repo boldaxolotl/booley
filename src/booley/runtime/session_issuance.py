@@ -45,6 +45,7 @@ from booley.core.egress_modes import declared_egress
 from booley.core.file_hash import file_sha256
 from booley.core.private_store import PrivateStore, ProjectStore
 from booley.core.project_identity import project_label_id
+from booley.core.sandbox_layout import DEVCONTAINER_TARGET
 from booley.core.user_paths import config_dir
 from booley.eda.provisioning import authority
 from booley.eda.provisioning import session_requirements as eda_requirements
@@ -72,7 +73,6 @@ from booley.runtime.incontainer_git_identity import (
 from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
 from booley.runtime.platform_paths import docker_mount_path, host_path_from_docker_mount
 from booley.runtime.private_store import session_store_repair
-from booley.runtime.sandbox_layout import DEVCONTAINER_TARGET
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 
 _IS_WINDOWS = os.name == "nt"

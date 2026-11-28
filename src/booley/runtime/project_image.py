@@ -39,8 +39,7 @@ from booley.config.sandbox import (
     project_image_name,
     project_sandbox_image,
 )
-from booley.core import docker_cli
-from booley.runtime import sandbox_layout
+from booley.core import docker_cli, sandbox_layout
 from booley.runtime.platform_paths import run_captured_bounded
 
 logger = logging.getLogger(__name__)

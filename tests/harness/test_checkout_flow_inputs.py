@@ -21,8 +21,9 @@ from pathlib import Path
 
 import pytest
 
+from booley.core import sandbox_layout
 from booley.harness import checkout_flow
-from booley.runtime import booley_dir, sandbox_layout
+from booley.runtime import booley_dir
 from booley.runtime.commit_export import export_commit
 from booley.runtime.runtime_context import RuntimeLocation
 from tests.harness.test_checkout_flow import git, linux_only

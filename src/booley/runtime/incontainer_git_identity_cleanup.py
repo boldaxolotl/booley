@@ -8,13 +8,13 @@ import stat
 import subprocess
 from pathlib import Path
 
+from booley.core.sandbox_layout import BOOLEY_DIR_TARGET
 from booley.runtime.incontainer_git_identity import (
     GitIdentity,
     GitIdentityError,
     _worktree_config_path,
     load_git_identity,
 )
-from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
 
 
 def _config(checkout: Path, target: Path, *args: str) -> subprocess.CompletedProcess[str]:

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from booley.core.boundary import BoundaryError, require_int, require_str_value
+from booley.core.sandbox_layout import canonical_project_alias_path
 from booley.flows.artifact_durability import durable_create
 from booley.flows.sim.coverage_json import content_digest, freeze_coverage_mapping
 from booley.flows.sim.coverage_record_store import (
@@ -29,7 +30,6 @@ from booley.flows.sim.record_layout import (
     refuse_older_nested_path,
 )
 from booley.runtime.booley_dir import crossed_booley_dir_entry
-from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
     from booley.flows.sim.record import SimulationRecordWorkItemEvidence
