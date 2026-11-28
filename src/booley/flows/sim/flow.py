@@ -504,13 +504,13 @@ class SimulateFlow(
         return self._attach_published_pre_sim(result)
 
     def _record_pre_sim_firing(self, key: tuple[str, str, str, int]) -> None:
-        """Record only authenticated firings durably published by this execution."""
+        """Record only the firings durably published by this execution."""
         self._current_published_pre_sim_keys.add(key)
 
     def _attach_published_pre_sim(
         self, result: EndpointOutcome, origin_manifest: Path | None = None
     ) -> EndpointOutcome:
-        """Attach authentic hook evidence even when no terminal Simulation Record outcome exists."""
+        """Attach hook evidence even when no terminal Simulation Record outcome exists."""
         from .record import collect_pre_sim_firings
 
         invocation = self._reserved_invocation_dir
@@ -544,32 +544,23 @@ class SimulateFlow(
     def _retain_pre_sim_after_scan_error(
         self, result: EndpointOutcome, error: Exception
     ) -> EndpointOutcome:
-        from .record import collect_pre_sim_firings
-
+        # A failed scan cannot vouch for a terminal result.
         firings = tuple(
-            firing
+            replace(firing, terminal=False)
             for outcome in self._simulation_record_outcomes
             for firing in outcome.pre_sim_firings
         )
         retained = False
-        invocation = self._reserved_invocation_dir
         if firings:
             try:
                 result = self._project_published_pre_sim(
-                    result,
-                    collect_pre_sim_firings(
-                        prior=firings,
-                        booley_dir=None
-                        if invocation is None
-                        else invocation_booley_dir(invocation),
-                    ),
-                    invocation,
+                    result, firings, self._reserved_invocation_dir
                 )
                 retained = True
             except (OSError, ValueError):
                 pass
         self._simulation_record_outcomes = ()
-        return _pre_sim_integrity_failure(result, error, retain_authenticated=retained)
+        return _pre_sim_integrity_failure(result, error, retain_hook_evidence=retained)
 
     def _prepare_simulation_record_targets(
         self,

@@ -179,9 +179,10 @@ the attempt it measured:
 
 The reference's `coverage_record` object has `path`, `path_base`, `schema`,
 `coverage_record_id`, `bytes`, and `sha256`. Its `path_base: origin_target`
-resolves `path` against the Target directory to the nested manifest; size,
-digest, and identities authenticate it. Native paths inside the manifest
-resolve from the **Coverage Record directory**, not the Target directory.
+resolves `path` against the Target directory to the nested manifest.
+Identities bind the reference to that manifest; `bytes` and `sha256` are
+recorded but not re-hashed on read. Native paths inside the manifest resolve
+from the **Coverage Record directory**, not the Target directory.
 
 Give the Coverage Analyst the numbered Target-level `coverage.json`: it
 resolves the reference and checks the enclosing Simulation Record and the
