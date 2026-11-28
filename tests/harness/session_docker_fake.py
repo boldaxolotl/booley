@@ -216,7 +216,9 @@ class SandboxDocker:
         record = self.images.get(args[1])
         if args[0] != "inspect" or record is None:
             return subprocess.CompletedProcess(argv, 1, "", f"No such image: {args[-1]}")
-        out = record["Id"] if "--format" in args else json.dumps([record])
+        template = args[args.index("--format") + 1] if "--format" in args else None
+        documents = {None: [record], "{{json .}}": record, "{{json .Id}}": record["Id"]}
+        out = json.dumps(documents[template]) if template in documents else record["Id"]
         return subprocess.CompletedProcess(argv, 0, out, "")
 
     def _network(self, argv: list[str], args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -260,6 +262,8 @@ class SandboxDocker:
             return subprocess.CompletedProcess(
                 argv, 0, "true" if state["State"]["Running"] else "false", ""
             )
+        if "{{json .Image}}" in args and isinstance(state, dict):
+            return subprocess.CompletedProcess(argv, 0, json.dumps(state.get("Image", "")), "")
         out = (
             state
             if isinstance(state, str)

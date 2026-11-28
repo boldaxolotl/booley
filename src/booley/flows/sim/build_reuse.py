@@ -38,6 +38,7 @@ import yaml
 
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.boundary import as_dict, as_str
+from booley.core.file_hash import file_sha256
 from booley.fusesoc import fusesoc_registry
 
 from .compiler_cache import RESERVED as COMPILER_CACHE_MANAGED
@@ -179,15 +180,6 @@ class _RecipeScan:
         self.libraries += other.libraries
 
 
-def hash_file(path: Path) -> str:
-    """Return the SHA-256 hex digest of one regular file."""
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _elf_header(path: Path) -> bytes:
     """Read the identification and ``e_type`` fields of an ELF header."""
     with path.open("rb") as stream:
@@ -296,7 +288,7 @@ def capture_core_closure(
                 generation_neutral_core_path(core_file, project_root, generation)
                 or core_file.relative_to(root).as_posix()
             )
-            closure[str(name)] = f"{relative}:{hash_file(core_file)}"
+            closure[str(name)] = f"{relative}:{file_sha256(core_file)}"
         return closure
     except (OSError, UnicodeError, yaml.YAMLError, fusesoc_registry.FuseSocError):
         return None
@@ -675,7 +667,7 @@ def _hash_paths_with_dependencies(paths: Iterable[Path]) -> str | None:
             return None
         digest.update(str(path).encode("utf-8"))
         digest.update(str(path.resolve()).encode("utf-8"))
-        digest.update(hash_file(path).encode("ascii"))
+        digest.update(file_sha256(path).encode("ascii"))
     return digest.hexdigest()
 
 
@@ -848,7 +840,7 @@ def collect_read_closure(
             key = _closure_key(path, work, identity, project_root)
             if key.startswith("abs:") and path.stat().st_ctime_ns >= captured_ns - RACE_MARGIN_NS:
                 raise ReadClosureError(f"read-closure file changed around the build: {path}")
-            closure[key] = hash_file(path)
+            closure[key] = file_sha256(path)
         return closure
     except (OSError, UnicodeError) as exc:
         raise ReadClosureError(f"cannot read build dependency evidence: {exc}") from exc
@@ -900,7 +892,7 @@ def verify_read_closure(
             if key is None or as_str(digest) is None:
                 return False
             path = _closure_path(key, work, identity, project_root)
-            if path is None or hash_file(path) != digest:
+            if path is None or file_sha256(path) != digest:
                 return False
     except OSError:
         return False
@@ -943,7 +935,6 @@ __all__ = [
     "elf_dependencies",
     "generation_neutral_core_path",
     "has_generated_core_behavior",
-    "hash_file",
     "is_elf",
     "keyed_environment_names",
     "parse_depfile",

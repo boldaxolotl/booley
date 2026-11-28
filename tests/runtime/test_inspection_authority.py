@@ -69,23 +69,23 @@ def _fake_runtime_transport(monkeypatch):
         if argv[0] == "git":
             return subprocess.CompletedProcess(argv, 1, "", "not a git repository")
         if argv[1:3] == ["image", "inspect"]:
-            if "--format" in argv:
+            if argv[-1] == "{{json .Id}}":
+                return subprocess.CompletedProcess(argv, 0, json.dumps(observations["image"]), "")
+            if argv[-1] != "{{json .}}":
                 return subprocess.CompletedProcess(argv, 0, observations["image"], "")
             if isinstance(observations["inspection_error"], Exception):
                 raise observations["inspection_error"]
-            document = [
-                {
-                    "Id": observations["image"],
-                    "Config": {
-                        "Labels": {
-                            "org.opencontainers.image.version": "1.0",
-                            "org.opencontainers.image.revision": observations["revision"],
-                            "io.booley.wheel.source-fingerprint": observations["wheel_source"],
-                        },
-                        "Env": [],
+            document = {
+                "Id": observations["image"],
+                "Config": {
+                    "Labels": {
+                        "org.opencontainers.image.version": "1.0",
+                        "org.opencontainers.image.revision": observations["revision"],
+                        "io.booley.wheel.source-fingerprint": observations["wheel_source"],
                     },
-                }
-            ]
+                    "Env": [],
+                },
+            }
             return subprocess.CompletedProcess(argv, 0, json.dumps(document), "")
         if argv[1] == "run" and "--entrypoint=python3" in argv and "canonical-alias" in argv[-1]:
             return subprocess.CompletedProcess(argv, 0, "directory\n", "")
@@ -147,10 +147,10 @@ def test_inspection_preserves_stamp_and_conditional_authority_effects(issued_env
     identity_call = next(
         (argv, kw)
         for argv, kw in calls
-        if argv[1:3] == ["image", "inspect"] and "--format" not in argv
+        if argv[1:3] == ["image", "inspect"] and argv[-1] == "{{json .}}"
     )
     assert identity_call[1]["timeout"] == 15
-    assert identity_call[0][-1] == request.image
+    assert identity_call[0][3] == request.image
 
 
 def test_owner_detects_issuance_drift_without_doctor_wiring_changes(issued_environment):
@@ -165,7 +165,7 @@ def test_owner_detects_issuance_drift_without_doctor_wiring_changes(issued_envir
         for f in report.findings
     )
     assert not any(
-        argv[1:3] == ["image", "inspect"] and "--format" not in argv for argv, _ in calls
+        argv[1:3] == ["image", "inspect"] and argv[-1] == "{{json .}}" for argv, _ in calls
     )
 
 

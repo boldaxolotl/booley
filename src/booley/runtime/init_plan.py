@@ -13,6 +13,7 @@ from typing import Protocol
 
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.core.booley_layout import BOOLEY_DIR_NAME
+from booley.core.file_hash import file_sha256
 
 
 class Ownership(Enum):
@@ -285,7 +286,7 @@ def _classify_link(target: InitTarget, observed: ObservedPrecondition) -> InitAc
             FilesystemMutation.NONE,
             target.reason,
         )
-    identity_digest = _file_digest(target.desired_identity)
+    identity_digest = file_sha256(target.desired_identity)
     if observed.tracked:
         ownership = (
             Ownership.TRACKED_MATCH
@@ -340,7 +341,7 @@ def _observe(root: Path, path: Path, host_probe: HostProbe) -> ObservedPrecondit
     if stat.S_ISREG(metadata.st_mode):
         return ObservedPrecondition(
             NodeKind.FILE,
-            digest=_file_digest(path),
+            digest=file_sha256(path),
             mode=mode,
             tracked=tracked,
         )
@@ -378,7 +379,3 @@ def _points_to(path: Path, identity: Path) -> bool:
 
 def _digest(content: bytes) -> str:
     return hashlib.sha256(content).hexdigest()
-
-
-def _file_digest(path: Path) -> str:
-    return _digest(path.read_bytes())

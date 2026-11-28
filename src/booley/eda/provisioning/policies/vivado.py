@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import os
 import platform
 import re
@@ -11,6 +10,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.file_hash import file_sha256
 from booley.core.resources import package_data_dir
 
 KIND = "vivado"
@@ -44,7 +44,7 @@ def wrapper_path() -> Path:
 def wrapper_sha256() -> str:
     """Return the expected wrapper digest for spec and Doctor checks."""
     try:
-        return hashlib.sha256(wrapper_path().read_bytes()).hexdigest()
+        return file_sha256(wrapper_path())
     except OSError as exc:
         raise VivadoPolicyError(f"cannot read the packaged Vivado wrapper: {exc}") from exc
 

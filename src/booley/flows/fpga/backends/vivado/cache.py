@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import as_dict, as_positive_int, as_str
+from booley.core.file_hash import file_sha256_and_size
 from booley.eda.provisioning.policies.vivado import POLICY_REVISION, SUPPORTED_VERSION
 from booley.flows.fpga.recipe import normalized_fpga_flow_options
 from booley.runtime.filesystem_utils import make_directories
@@ -43,23 +44,13 @@ def _package_version(name: str) -> str:
         return "unavailable"
 
 
-def _hash_file(path: Path) -> tuple[str, int]:
-    digest = hashlib.sha256()
-    size = 0
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            size += len(chunk)
-            digest.update(chunk)
-    return digest.hexdigest(), size
-
-
 def _input_file_evidence(resolved: Any) -> list[dict[str, Any]]:
     """Describe every resolved input byte that participates in cache identity."""
     files: list[dict[str, Any]] = []
     for item in resolved.rtl_files:
         path = item.absolute(resolved.build_root)
         try:
-            digest, size = _hash_file(path)
+            digest, size = file_sha256_and_size(path)
             missing = False
         except OSError:
             digest, size, missing = hashlib.sha256(b"").hexdigest(), 0, True
@@ -112,7 +103,7 @@ def _reachable_file_evidence(
             if path in listed or path in evidence:
                 continue
             try:
-                digest, size = _hash_file(path)
+                digest, size = file_sha256_and_size(path)
             except OSError:
                 digest, size, missing = hashlib.sha256(b"").hexdigest(), 0, True
             else:
@@ -243,7 +234,7 @@ def store(
     artifacts: list[dict[str, Any]] = []
     try:
         for path in paths:
-            digest, size = _hash_file(path)
+            digest, size = file_sha256_and_size(path)
             artifacts.append(
                 {
                     "path": path.relative_to(work_root).as_posix(),
@@ -350,7 +341,7 @@ def _artifacts_match(
         if not path.is_relative_to(work_root.resolve()) or not path.is_file():
             return False
         try:
-            digest, size = _hash_file(path)
+            digest, size = file_sha256_and_size(path)
         except OSError:
             return False
         if digest != item.get("sha256") or size != item.get("size"):

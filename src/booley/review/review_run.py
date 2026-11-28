@@ -10,7 +10,6 @@ no Reviewer and prints nothing.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import secrets
 from collections.abc import Collection, Mapping, Sequence
@@ -18,6 +17,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.file_hash import file_sha256
 from booley.evidence.review_vocabulary import OPEN_STATUSES
 from booley.measurement.base import Base
 from booley.review.review_resolution import DeclaredReview
@@ -102,7 +102,7 @@ def spec_digest(checkout: Path, spec: str | None) -> str | None:
     """``sha256:<hex>`` of the bytes of *spec* in *checkout*; null without a spec."""
     if spec is None:
         return None
-    return "sha256:" + hashlib.sha256((checkout / spec).read_bytes()).hexdigest()
+    return "sha256:" + file_sha256(checkout / spec)
 
 
 def plan_reviews(
