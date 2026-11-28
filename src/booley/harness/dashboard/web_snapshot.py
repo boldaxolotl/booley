@@ -98,15 +98,15 @@ def _worktree_jobs(worktree: Path, jobs: Sequence[JobView]) -> list[JobView]:
     resolved: dict[str, Path | None] = {}
     mine: list[JobView] = []
     for job in jobs:
-        work_dir = job.record.work_dir
-        if not work_dir:
+        checkout = job.checkout
+        if not checkout:
             continue
-        if work_dir not in resolved:
+        if checkout not in resolved:
             try:
-                resolved[work_dir] = Path(work_dir).resolve()
+                resolved[checkout] = Path(checkout).resolve()
             except (OSError, ValueError, RuntimeError):
-                resolved[work_dir] = None
-        if resolved[work_dir] == worktree:
+                resolved[checkout] = None
+        if resolved[checkout] == worktree:
             mine.append(job)
     return mine
 

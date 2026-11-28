@@ -248,7 +248,7 @@ class TestDispatchWithoutCwd:
     def test_specialist_without_work_dir_starts_and_attaches_with_cwd_gone(
         self, job_env: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        # On main a work_dir-less Specialist call never read the cwd: the
+        # A deleted cwd must not stop a work_dir-less Specialist call: the
         # transcript dir, timeout, and attach scan come from the environment.
         release = asyncio.Event()
 

@@ -91,13 +91,15 @@ async def test_validation_unknown_input_required_and_stdio_outcomes(monkeypatch)
     assert form.input_requests["answer"].params.message == "human form"
 
 
-def test_job_record_is_stamped_with_the_submitting_call():
+@pytest.mark.parametrize("explicit", [Path("/fixture"), None], ids=["explicit", "server-cwd"])
+def test_job_record_is_stamped_with_the_submitting_call(tmp_path, monkeypatch, explicit):
     from booley.mcp.call_context import CallContext
 
+    monkeypatch.chdir(tmp_path)
     rec = job_records.JobRecord("one", "sim", "2026-10-08T10:00:00Z", 60)
-    context = CallContext(Path("/fixture"), None, None, None, {})
-    server._JobManager._stamp_context(rec, context)
-    assert rec.work_dir == str(context.work_dir)
+    server._JobManager._stamp_context(rec, CallContext(explicit, None, None, None, {}))
+    assert rec.work_dir is not None
+    assert Path(rec.work_dir).resolve() == (explicit or tmp_path).resolve()
 
 
 _NEEDS_PROC = pytest.mark.skipif(
