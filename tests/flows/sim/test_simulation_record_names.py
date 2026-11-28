@@ -35,7 +35,6 @@ from booley.runtime.execution_records import (
 from booley.runtime.execution_recovery import recover_execution
 from tests.flows.sim import test_simulation_record_lane_pool as lane_pool
 from tests.flows.sim.simulation_record_test_support import _retained_invocation
-from tests.flows.sim.test_simulation_record_dependency import _two_role_simulation_records
 from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_refused,
     _assert_unsupported_type,
@@ -110,19 +109,6 @@ def test_a_run_writes_simulation_record_names(tmp_path: Path) -> None:
     summary = _json(store.summary_path)
     assert summary["$schema"] == "booley.simulation-record-summary/v1"
     assert summary["simulation_record_id"] == record_id
-
-
-def test_prerequisites_name_the_simulation_record(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    _invocation, candidate, baseline = _two_role_simulation_records(tmp_path, monkeypatch)
-    baseline_id = _json(baseline.manifest_path)["simulation_record_id"]
-    prerequisites = _json(candidate.manifest_path)["prerequisites"]
-    assert prerequisites
-    for entry in prerequisites:
-        assert entry["simulation_record_id"] == baseline_id
-        assert "campaign_id" not in entry
-        assert entry["manifest"]["kind"] == "simulation_record_manifest"
 
 
 def _prepared_lane(
@@ -216,8 +202,10 @@ def test_old_simulation_record_names_are_not_aliases(tmp_path: Path) -> None:
         decode_simulation_attempt: next(store.root.glob("work-items/*/attempts/*/attempt.json")),
     }
     for decode, path in documents.items():
-        # The old key is an unknown field: an integrity error, not an older Booley's record.
-        with pytest.raises(SimulationRecordIntegrityError, match="exact fields") as refused:
+        # The old key leaves a field missing: an integrity error, not an older Booley's record.
+        with pytest.raises(
+            SimulationRecordIntegrityError, match="lacks required fields"
+        ) as refused:
             decode(_with_old_key(_json(path)))
         assert "older Booley" not in str(refused.value)
 

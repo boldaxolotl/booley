@@ -8,11 +8,13 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from booley.core import docker_cli
 from booley.core.booley_layout import (
     BOOLEY_DIR_NAME,
     RETIRED_DIR_NAME,
@@ -491,27 +493,29 @@ def _running_sandboxes() -> list[dict[str, Any]]:
         raise BooleyLayoutError(
             "cannot inventory live Sandboxes; install/restore Docker before migration"
         )
-    result = run_captured_bounded(["docker", "ps", "-q"], timeout=30)
+    result = _docker(["ps", "-q"], 30)
     if result.returncode:
         raise BooleyLayoutError(
             "cannot inventory live Sandboxes; stop consumers and restore Docker before migration"
         )
-    documents = []
-    for container in result.stdout.split():
-        inspected = run_captured_bounded(["docker", "inspect", container], timeout=30)
-        if inspected.returncode:
-            raise BooleyLayoutError(f"cannot inspect live Sandbox {container}")
-        try:
-            values = json.loads(inspected.stdout)
-            if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict):
-                raise ValueError("expected one container object")
-            _validate_container_inventory(values[0])
-            documents.append(values[0])
-        except (ValueError, TypeError, IndexError) as exc:
-            raise BooleyLayoutError(
-                f"cannot inspect live Sandbox {container}: invalid inventory"
-            ) from exc
-    return documents
+    return [_sandbox_inventory(container) for container in result.stdout.split()]
+
+
+def _docker(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return run_captured_bounded(["docker", *args], timeout=timeout)
+
+
+def _sandbox_inventory(container: str) -> dict[str, Any]:
+    invalid = f"cannot inspect live Sandbox {container}: invalid inventory"
+    try:
+        document = docker_cli.inspect(_docker, "container", container, timeout=30)
+        _validate_container_inventory(document)
+    except docker_cli.InspectError as exc:
+        message = invalid if exc.result is None else f"cannot inspect live Sandbox {container}"
+        raise BooleyLayoutError(message) from exc
+    except (ValueError, TypeError) as exc:
+        raise BooleyLayoutError(invalid) from exc
+    return document
 
 
 def _validate_container_inventory(document: dict[str, Any]) -> None:
@@ -562,7 +566,8 @@ def _refuse_live_sandboxes(
     for document in _running_sandboxes():
         labels = document.get("Config", {}).get("Labels", {}) or {}
         if any(
-            matches_project_label(labels.get("booley.project-id"), str(path)) for path in roots
+            matches_project_label(labels.get(docker_cli.PROJECT_ID_LABEL), str(path))
+            for path in roots
         ):
             raise BooleyLayoutError("stop live Sandbox before running `booley init`")
         for mount in document.get("Mounts", []):

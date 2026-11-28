@@ -9,14 +9,20 @@ which reads the shared object names defined here. All commands go through
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import subprocess
+from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeVar
 
-from booley.core.boundary import BoundaryError
+from booley.core import docker_cli
+from booley.core.boundary import (
+    BoundaryError,
+    require_bool_value,
+    require_dict,
+    require_str_value,
+)
 from booley.runtime.devcontainer import EGRESS_NETWORK, UNPROXIED_NETWORK
 from booley.runtime.platform_paths import run_captured_bounded
 
@@ -44,6 +50,12 @@ _METADATA_TIMEOUT = 15
 GATEWAY_MODE_OPTION = "com.docker.network.bridge.gateway_mode_ipv4"
 GATEWAY_MODE_ISOLATED = "isolated"
 
+# Docker's own wording for an absent image, the only failure read as absence.
+_NO_SUCH = re.compile(r"\bno such (?:image|object)\b", re.IGNORECASE)
+_STRICT_CONTEXT = "cannot observe issued Sandbox Image keepers"
+_STRICT_FALLBACK = "Docker command failed"
+_T = TypeVar("_T")
+
 
 # ---------------------------------------------------------------------------
 # Low-level docker seam
@@ -70,13 +82,19 @@ def _run_docker(
 
 
 def relay_docker(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
-    """Bounded ``docker <args>`` in the shape the FlexNet relay's ``Runner`` expects.
+    """Bounded ``docker <args>`` as a :data:`booley.core.docker_cli.Runner`.
 
     ``booley.eda`` cannot import this package, so runtime composers inject this
-    function as the relay's runner. It shares :func:`_run_docker`, so a hung Docker
-    CLI is killed as a whole process tree within *timeout* plus the bounded margin.
+    function as the relay's runner, and Sandbox admission uses it by default. It shares
+    :func:`_run_docker`, so a hung Docker CLI is killed as a whole process tree within
+    *timeout* plus the bounded margin.
     """
     return _run_docker(args, timeout=timeout)
+
+
+def _runner(executable: str) -> docker_cli.Runner:
+    """:func:`relay_docker` for a chosen Docker *executable*."""
+    return lambda args, timeout: _run_docker(args, timeout=timeout, executable=executable)
 
 
 # ---------------------------------------------------------------------------
@@ -84,96 +102,84 @@ def relay_docker(args: list[str], timeout: int) -> subprocess.CompletedProcess[s
 # ---------------------------------------------------------------------------
 
 
-def network_exists(name: str = EGRESS_NETWORK) -> bool:
+def _exists(kind: str, name: str, *, timeout: int = 15, executable: str = "docker") -> bool:
     try:
-        return _run_docker(["network", "inspect", name], timeout=15).returncode == 0
+        return docker_cli.exists(_runner(executable), kind, name, timeout=timeout)
     except (subprocess.SubprocessError, FileNotFoundError):
         return False
+
+
+def _is_true(kind: str, name: str, template: str) -> bool:
+    try:
+        return docker_cli.inspect_value(
+            relay_docker, kind, name, timeout=15, template=template, require=require_bool_value
+        )
+    except (docker_cli.InspectError, subprocess.SubprocessError, FileNotFoundError):
+        return False
+
+
+def network_exists(name: str = EGRESS_NETWORK) -> bool:
+    return _exists("network", name)
 
 
 def network_is_internal(name: str = EGRESS_NETWORK) -> bool:
     """True if the named network exists and is ``--internal`` (no external route)."""
-    try:
-        result = _run_docker(
-            ["network", "inspect", name, "--format", "{{.Internal}}"],
-            timeout=15,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return False
-    return result.returncode == 0 and result.stdout.strip().lower() == "true"
+    return _is_true("network", name, "{{.Internal}}")
 
 
 def container_exists(name: str) -> bool:
-    try:
-        return _run_docker(["container", "inspect", name], timeout=15).returncode == 0
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return False
+    return _exists("container", name)
 
 
 def container_running(name: str) -> bool:
-    try:
-        result = _run_docker(
-            ["container", "inspect", name, "--format", "{{.State.Running}}"],
-            timeout=15,
-        )
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return False
-    return result.returncode == 0 and result.stdout.strip().lower() == "true"
+    return _is_true("container", name, "{{.State.Running}}")
 
 
 def image_exists(name: str, *, executable: str = "docker", timeout: int = 15) -> bool:
     """Observe local image availability without pulling or starting an image."""
-    try:
-        return (
-            _run_docker(
-                ["image", "inspect", name], timeout=timeout, executable=executable
-            ).returncode
-            == 0
-        )
-    except (subprocess.SubprocessError, FileNotFoundError):
-        return False
+    return _exists("image", name, timeout=timeout, executable=executable)
 
 
 class ImageInspectError(RuntimeError):
     """Docker could not say whether an image exists (as opposed to it being absent)."""
 
 
-def _absent_or_inspect_error(
-    reference: str, result: subprocess.CompletedProcess
-) -> ImageInspectError | None:
-    """Classify a non-zero ``docker image inspect``: ``None`` means no such image."""
-    detail = result.stderr.strip() or result.stdout.strip()
-    if re.search(r"\bno such (?:image|object)\b", detail, re.IGNORECASE):
-        return None
-    return ImageInspectError(
-        f"cannot inspect Docker image {reference!r}: "
-        + (detail or f"Docker exited {result.returncode}")
-    )
-
-
 def _inspect_image(
-    reference: str, extra: list[str], *, timeout: int, executable: str = "docker"
-) -> subprocess.CompletedProcess | None:
-    """Run ``docker image inspect``; ``None`` when the image does not exist.
+    reference: str,
+    template: str,
+    require: docker_cli.Validator[_T],
+    *,
+    invalid: str,
+    timeout: int,
+    executable: str = "docker",
+) -> _T | None:
+    """Inspect one image; ``None`` when it does not exist.
 
     Only Docker's own "no such image" answer means absent; a missing or
-    non-executable CLI, an unreachable daemon, a timeout, and any other
-    non-zero exit raise :class:`ImageInspectError` naming *reference*.
+    non-executable CLI, an unreachable daemon, a timeout, any other non-zero
+    exit, and output *require* rejects (named *invalid*) raise
+    :class:`ImageInspectError` naming *reference*.
     """
+    failed = f"cannot inspect Docker image {reference!r}"
     try:
-        result = _run_docker(
-            ["image", "inspect", reference, *extra],
+        return docker_cli.inspect_value(
+            _runner(executable),
+            "image",
+            reference,
             timeout=timeout,
-            executable=executable,
+            template=template,
+            require=require,
         )
     except (OSError, subprocess.SubprocessError) as exc:
-        raise ImageInspectError(f"cannot inspect Docker image {reference!r}: {exc}") from exc
-    if result.returncode == 0:
-        return result
-    error = _absent_or_inspect_error(reference, result)
-    if error is not None:
-        raise error
-    return None
+        raise ImageInspectError(f"{failed}: {exc}") from exc
+    except docker_cli.InspectError as exc:
+        result = exc.result
+        if result is None:
+            raise ImageInspectError(f"{failed}: {invalid}: {exc.__cause__}") from exc
+        detail = docker_cli.failure_detail(result, f"Docker exited {result.returncode}")
+        if _NO_SUCH.search(detail):
+            return None
+        raise ImageInspectError(f"{failed}: {detail}") from exc
 
 
 def image_id(reference: str) -> str | None:
@@ -184,14 +190,12 @@ def image_id(reference: str) -> str | None:
     unreachable daemon, a timeout, any other non-zero exit, and an empty answer
     raise :class:`ImageInspectError` naming *reference* and the cause.
     """
-    result = _inspect_image(reference, ["--format", "{{.Id}}"], timeout=_DOCKER_TIMEOUT)
-    if result is None:
-        return None
-    value = result.stdout.strip()
-    if value:
-        return value
-    raise ImageInspectError(
-        f"cannot inspect Docker image {reference!r}: Docker returned no image ID"
+    return _inspect_image(
+        reference,
+        "{{json .Id}}",
+        require_str_value,
+        invalid="Docker returned no image ID",
+        timeout=_DOCKER_TIMEOUT,
     )
 
 
@@ -207,12 +211,19 @@ def inspect_image_metadata(
     """
     from booley.runtime.image_identity import decode_image_metadata
 
-    result = _inspect_image(reference, [], timeout=_METADATA_TIMEOUT, executable=executable)
-    if result is None:
+    record: dict[str, Any] | None = _inspect_image(
+        reference,
+        "{{json .}}",
+        require_dict,
+        invalid="invalid metadata",
+        timeout=_METADATA_TIMEOUT,
+        executable=executable,
+    )
+    if record is None:
         return None
     try:
-        return decode_image_metadata(reference, json.loads(result.stdout))
-    except (json.JSONDecodeError, BoundaryError) as exc:
+        return decode_image_metadata(reference, [record])
+    except BoundaryError as exc:
         raise ImageInspectError(
             f"cannot inspect Docker image {reference!r}: invalid metadata: {exc}"
         ) from exc
@@ -313,7 +324,7 @@ def tag_image(source: str, target: str) -> None:
     except (subprocess.SubprocessError, FileNotFoundError) as exc:
         raise RuntimeError(f"cannot retain issued Sandbox Image: {exc}") from exc
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "docker image tag failed"
+        detail = docker_cli.failure_detail(result, "docker image tag failed")
         raise RuntimeError(f"cannot retain issued Sandbox Image: {detail}")
 
 
@@ -325,18 +336,16 @@ def remove_image_tag(target: str) -> None:
         raise RuntimeError(f"cannot remove issued Sandbox Image keeper: {exc}") from exc
     if result.returncode == 0:
         return
-    detail = result.stderr.strip() or result.stdout.strip()
-    if re.search(r"\bno such (?:image|object)\b", detail, re.IGNORECASE):
+    detail = docker_cli.failure_detail(result, "docker image rm failed")
+    if _NO_SUCH.search(detail):
         return
-    raise RuntimeError(
-        "cannot remove issued Sandbox Image keeper: " + (detail or "docker image rm failed")
-    )
+    raise RuntimeError(f"cannot remove issued Sandbox Image keeper: {detail}")
 
 
 def strict_docker(
     args: list[str],
     *,
-    context: str = "cannot observe issued Sandbox Image keepers",
+    context: str = _STRICT_CONTEXT,
     timeout: int = 30,
 ) -> str:
     """Run one Docker command, raising ``RuntimeError`` with *context* on any failure."""
@@ -345,11 +354,33 @@ def strict_docker(
     except (subprocess.SubprocessError, OSError) as exc:
         raise RuntimeError(f"{context}: {exc}") from exc
     if result.returncode != 0:
-        raise RuntimeError(
-            f"{context}: "
-            + (result.stderr.strip() or result.stdout.strip() or "Docker command failed")
-        )
+        raise RuntimeError(f"{context}: {docker_cli.failure_detail(result, _STRICT_FALLBACK)}")
     return result.stdout
+
+
+def strict_inspect(
+    kind: str,
+    name: str,
+    template: str,
+    require: docker_cli.Validator[_T],
+    *,
+    context: str = _STRICT_CONTEXT,
+    timeout: int = 30,
+) -> _T:
+    """Inspect one value, raising ``RuntimeError`` with *context* on any failure."""
+    try:
+        return docker_cli.inspect_value(
+            relay_docker, kind, name, timeout=timeout, template=template, require=require
+        )
+    except (subprocess.SubprocessError, OSError) as exc:
+        raise RuntimeError(f"{context}: {exc}") from exc
+    except docker_cli.InspectError as exc:
+        detail = (
+            f"{exc}: {exc.__cause__}"
+            if exc.result is None
+            else docker_cli.failure_detail(exc.result, _STRICT_FALLBACK)
+        )
+        raise RuntimeError(f"{context}: {detail}") from exc
 
 
 def validated_image_id(value: str) -> str:
@@ -379,8 +410,10 @@ def container_image_ids_strict() -> frozenset[str]:
         raise RuntimeError("malformed Docker container listing during keeper inspection")
     images = set()
     for container in ids:
-        image = strict_docker(["container", "inspect", container, "--format", "{{.Image}}"])
-        images.add(validated_image_id(image.strip()))
+        image = strict_inspect(
+            "container", container, "{{json .Image}}", partial(require_str_value, allow_empty=True)
+        )
+        images.add(validated_image_id(image))
     return frozenset(images)
 
 
@@ -428,6 +461,6 @@ def ensure_unproxied_network() -> bool:
     result = _run_docker(["network", "create", "--driver", "bridge", UNPROXIED_NETWORK])
     if result.returncode != 0:
         raise RuntimeError(
-            f"failed to create network {UNPROXIED_NETWORK}: {result.stderr.strip()}"
+            f"failed to create network {UNPROXIED_NETWORK}: {docker_cli.failure_detail(result)}"
         )
     return True

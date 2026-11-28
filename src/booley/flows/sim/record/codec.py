@@ -1,11 +1,9 @@
-"""Strict canonical JSON codecs for immutable Simulation Record values.
+"""Canonical JSON codecs for immutable Simulation Record values.
 
-This module is deliberately infrastructure-free. It decodes untrusted
-documents into immutable values. Manifests are checked for shape only: planning proved their content and
-published them atomically, so each manifest reader below reads just the members
-its callers use (#2136). Attempt, build attempt, build result, bundle and
-result records get only the boundary check: size, UTF-8 JSON, exact fields, ``$schema``
-and canonical bytes (#1743, #1744).
+This module is deliberately infrastructure-free. Records Booley wrote are trusted
+on read: decoding parses the document, enforces its size ceiling, refuses a format
+an older Booley wrote, and checks the required keys and ``$schema``. No field is
+checked one by one (coding principle 17).
 """
 
 from __future__ import annotations
@@ -19,18 +17,11 @@ from typing import NoReturn, ParamSpec, TypeAlias, TypeVar, cast
 
 from booley.core.boundary import (
     BoundaryError,
-    require_bool_value,
     require_dict,
-    require_finite_number,
-    require_int,
-    require_list,
     require_str_value,
-    require_uuid4,
 )
 from booley.flows.sim.record_files import canonical_json
-from booley.flows.sim.record_layout import RECORD_DIRECTORY
 from booley.flows.simulation_record_results import OlderBooleyRecordError
-from booley.runtime.timefmt import parse_timestamp
 
 from .model import (
     BundleBuildAttempt,
@@ -51,14 +42,9 @@ RECORD_MAX_BYTES = 1024 * 1024
 MAX_WORK_ITEMS = 1_000
 MAX_OBSERVATIONS = 4_000
 MAX_PATH_BYTES = 1_024
-MAX_STRING_BYTES = 4_096
 MAX_COMMAND_BYTES = 16 * 1024
-MAX_OBSERVATION_TEST_BYTES = 512
 MAX_DETAIL_BYTES = 2 * 1024
-MAX_JSON_DEPTH = 64
-MAX_LIST_ITEMS = 100_000
 
-_VARIANT_ID_RE = re.compile(r"variant:[0-9a-f]{64}\Z")
 _WINDOWS_DRIVE_RE = re.compile(r"[A-Za-z]:")
 
 
@@ -284,8 +270,7 @@ _R = TypeVar("_R")
 def reads_simulation_record_documents(function: Callable[_P, _R]) -> Callable[_P, _R]:
     """Report bad nested data in a published record as record corruption.
 
-    Attempt, build, bundle and result decoders check only the document boundary (#1743, #1744),
-    so the code that reads a nested member of a record from disk wraps itself
+    Decoders check only the document boundary (#1743, #1744, #5747), so the code that reads a nested member of a record from disk wraps itself
     here: a missing or mistyped member becomes the integrity error instead of a
     bare ``KeyError``/``TypeError``/``ValueError``/``AttributeError``. OS errors, including lock
     timeouts, pass through.
@@ -329,253 +314,30 @@ def _decode(
     except BoundaryError as exc:
         raise SimulationRecordIntegrityError(str(exc)) from exc
     raise_if_retired(document)
-    if set(document) != fields:
-        missing = sorted(fields - set(document))
-        unknown = sorted(set(document) - fields)
-        raise SimulationRecordIntegrityError(
-            f"document must have exact fields; missing={missing}, unknown={unknown}"
-        )
-    if document.get("$schema") != schema:
-        raise SimulationRecordIntegrityError(f"unsupported $schema {document.get('$schema')!r}")
-    try:
-        # The depth/size walk bounds recursion for every record. Records without
-        # a reader get nothing more than the canonical-bytes check (#1743);
-        # their consumers guard what they use.
-        _validate_json(document)
-        reader = _DOCUMENT_READERS.get(schema)
-        if reader is not None:
-            _validate_common(document)
-        if canonical_json_bytes(document) != raw:
-            raise SimulationRecordIntegrityError("document is not canonical JSON")
-        if reader is not None:
-            reader(document)
-    except BoundaryError as exc:
-        raise SimulationRecordIntegrityError(str(exc)) from exc
+    missing = sorted(fields - set(document))
+    if missing:
+        raise SimulationRecordIntegrityError(f"document lacks required fields {missing}")
+    if document["$schema"] != schema:
+        raise SimulationRecordIntegrityError(f"unsupported $schema {document['$schema']!r}")
     return value_type(cast(Mapping[str, FrozenJson], document))
 
 
-def _validate_json(value: object, *, depth: int = 0) -> None:
-    if depth > MAX_JSON_DEPTH:
-        raise SimulationRecordIntegrityError("JSON nesting exceeds resource ceiling")
-    if isinstance(value, str):
-        if len(value.encode("utf-8")) > MAX_COMMAND_BYTES:
-            raise SimulationRecordIntegrityError("string exceeds resource ceiling")
-        return
-    if isinstance(value, bool | int) or value is None:
-        return
-    if isinstance(value, float):
-        require_finite_number(value, field="number")
-        return
-    if isinstance(value, list):
-        if len(value) > MAX_LIST_ITEMS:
-            raise SimulationRecordIntegrityError("list exceeds resource ceiling")
-        for item in value:
-            _validate_json(item, depth=depth + 1)
-        return
-    if isinstance(value, dict):
-        for key, item in value.items():
-            require_str_value(key, field="object key", allow_empty=True)
-            _validate_json(item, depth=depth + 1)
-        return
-
-
-def _require_uuid(value: object, field: str) -> str:
-    try:
-        return require_uuid4(value, field=field)
-    except BoundaryError as exc:
-        raise SimulationRecordIntegrityError(f"{field} must be lowercase UUIDv4") from exc
-
-
-def _require_variant_id(value: object) -> str:
-    parsed = _bounded_string(value, "build_variant_id")
-    if not _VARIANT_ID_RE.fullmatch(parsed):
-        raise SimulationRecordIntegrityError("build_variant_id is invalid")
-    return parsed
-
-
-def _bounded_string(
-    value: object,
-    field: str,
-    *,
-    limit: int = MAX_STRING_BYTES,
-    allow_empty: bool = False,
-) -> str:
-    parsed = require_str_value(value, field=field, allow_empty=allow_empty)
-    if len(parsed.encode("utf-8")) > limit:
-        raise SimulationRecordIntegrityError(f"{field} exceeds {limit}-byte ceiling")
-    return parsed
-
-
-def _bounded_string_list(
-    value: object,
-    field: str,
-    *,
-    count_limit: int,
-    byte_limit: int,
-) -> list[str]:
-    items = _exact_list(value, field, count_limit)
-    return [
-        _bounded_string(item, f"{field}[{index}]", limit=byte_limit)
-        for index, item in enumerate(items)
-    ]
-
-
-def _validate_common(value: Mapping[str, object]) -> None:
-    simulation_record_id = value.get("simulation_record_id")
-    if simulation_record_id is not None:
-        _require_uuid(simulation_record_id, "simulation_record_id")
-    for key in ("created_at", "started_at", "finished_at"):
-        timestamp = value.get(key)
-        if timestamp is not None:
-            parsed_value = _bounded_string(timestamp, key)
-            try:
-                parsed_timestamp = parse_timestamp(parsed_value)
-            except (TypeError, ValueError) as exc:
-                raise SimulationRecordIntegrityError(
-                    f"{key} must be canonical UTC RFC3339"
-                ) from exc
-            if "." in parsed_value or not parsed_value.endswith("Z"):
-                raise SimulationRecordIntegrityError(f"{key} must be canonical UTC RFC3339")
-            del parsed_timestamp
-
-
-def _exact_list(value: object, field: str, ceiling: int) -> list[object]:
-    decoded = require_list(value, field=field)
-    if len(decoded) > ceiling:
-        raise SimulationRecordIntegrityError(f"{field} must be a list capped at {ceiling}")
-    return decoded
-
-
-def _read_manifest(value: Mapping[str, object]) -> None:
-    """Read the members manifest readers use; planning proved the rest."""
-    origin = require_dict(value["origin"], field="origin")
-    require_int(origin.get("invocation_id"), field="origin.invocation_id")
-    _read_strings(value["target"], "target", ("vlnv", "name", "selector", "revision", "role"))
-    _read_workload(value["workload"])
-    _read_required_suite(value["required_suite"])
-    _read_build_variant_ids(value["build_variants"])
-    for index, item in enumerate(require_list(value["prerequisites"], field="prerequisites")):
-        _read_prerequisite(item, f"prerequisites[{index}]")
-    for index, item in enumerate(require_list(value["work_items"], field="work_items")):
-        _read_work_item(item, f"work_items[{index}]")
-    fingerprints = require_dict(value["fingerprints"], field="fingerprints")
-    require_str_value(fingerprints.get("workload_sha256"), field="fingerprints.workload_sha256")
-
-
-def _read_strings(value: object, field: str, keys: tuple[str, ...]) -> dict[str, object]:
-    """Read *value* as an object whose *keys* are nonempty strings."""
-    mapping = require_dict(value, field=field)
-    for key in keys:
-        require_str_value(mapping.get(key), field=f"{field}.{key}")
-    return mapping
-
-
-def _read_prerequisite(value: object, field: str) -> None:
-    """Read the prerequisite members resume, the Pre-Sim walk and acceptance use."""
-    entry = _read_strings(value, field, ("simulation_record_id", "work_item_id"))
-    require_dict(entry.get("target"), field=f"{field}.target")
-    reference = _read_strings(entry.get("manifest"), f"{field}.manifest", ("path", "sha256"))
-    require_int(reference.get("bytes"), field=f"{field}.manifest.bytes")
-
-
-def _read_work_item(value: object, field: str) -> None:
-    """Read the work-item members the store, scheduler and reports use."""
-    item = _read_strings(
-        value, field, ("work_item_id", "kind", "role", "revision", "build_variant_id")
-    )
-    require_int(item.get("ordinal"), field=f"{field}.ordinal")
-    require_dict(item.get("target"), field=f"{field}.target")
-    selection = _read_strings(item.get("selection"), f"{field}.selection", ("kind",))
-    for name in require_list(selection.get("names"), field=f"{field}.selection.names"):
-        require_str_value(name, field=f"{field}.selection.names[]")
-    for index, run in enumerate(require_list(item.get("test_runs"), field=f"{field}.test_runs")):
-        # Full Test Run parsing stays at its uses; name, fingerprint and test are read raw.
-        entry = _read_strings(run, f"{field}.test_runs[{index}]", ("name", "fingerprint"))
-        if entry.get("test") is not None:
-            require_str_value(entry["test"], field=f"{field}.test_runs[{index}].test")
-
-
-def _read_workload(value: object) -> None:
-    """Read the workload members manifest readers use; planning proved the rest."""
-    workload = require_dict(value, field="workload")
-    require_bool_value(workload.get("trace"), field="workload.trace")
-    require_bool_value(workload.get("coverage"), field="workload.coverage")
-    eda = require_dict(workload.get("eda"), field="workload.eda")
-    for key in ("kind", "version"):
-        require_str_value(eda.get(key), field=f"workload.eda.{key}")
-    require_str_value(
-        workload.get("adapter_contract_version"), field="workload.adapter_contract_version"
-    )
-    run_cwd = require_dict(workload.get("run_cwd"), field="workload.run_cwd")
-    for key in ("configured", "kind"):
-        require_str_value(run_cwd.get(key), field=f"workload.run_cwd.{key}")
-
-
-def _read_required_suite(value: object) -> None:
-    """Read the required-suite members resume and acceptance use."""
-    suite = require_dict(value, field="required_suite")
-    require_bool_value(suite.get("default_invocation"), field="required_suite.default_invocation")
-    _bounded_string_list(
-        suite.get("names"),
-        "required_suite.names",
-        count_limit=MAX_OBSERVATIONS,
-        byte_limit=MAX_OBSERVATION_TEST_BYTES,
-    )
-
-
-def _read_build_variant_ids(value: object) -> None:
-    """Read the build-variant IDs inspection uses."""
-    for index, item in enumerate(_exact_list(value, "build_variants", MAX_WORK_ITEMS)):
-        variant = require_dict(item, field=f"build_variants[{index}]")
-        _require_variant_id(variant.get("build_variant_id"))
-
-
-_DOCUMENT_SPECS: dict[
-    type[SimulationRecordDocument],
-    tuple[str, frozenset[str], int, Callable[[Mapping[str, object]], None] | None],
-] = {
-    SimulationRecordManifest: (
-        MANIFEST_SCHEMA,
-        _MANIFEST_FIELDS,
-        MANIFEST_MAX_BYTES,
-        _read_manifest,
-    ),
-    SimulationAttempt: (
-        "booley.simulation-attempt/v2",
-        _ATTEMPT_FIELDS,
-        RECORD_MAX_BYTES,
-        None,
-    ),
+_DOCUMENT_SPECS: dict[type[SimulationRecordDocument], tuple[str, frozenset[str], int]] = {
+    SimulationRecordManifest: (MANIFEST_SCHEMA, _MANIFEST_FIELDS, MANIFEST_MAX_BYTES),
+    SimulationAttempt: ("booley.simulation-attempt/v2", _ATTEMPT_FIELDS, RECORD_MAX_BYTES),
     BundleBuildAttempt: (
         "booley.bundle-build-attempt/v2",
         _BUILD_ATTEMPT_FIELDS,
         RECORD_MAX_BYTES,
-        None,
     ),
-    BundleBuildResult: (
-        "booley.bundle-build-result/v2",
-        _BUILD_RESULT_FIELDS,
-        RECORD_MAX_BYTES,
-        None,
-    ),
-    SimulationResult: (
-        RESULT_SCHEMA,
-        _RESULT_FIELDS,
-        RECORD_MAX_BYTES,
-        None,
-    ),
-    SimulatorBundle: (
-        "booley.simulator-bundle/v3",
-        _BUNDLE_FIELDS,
-        MANIFEST_MAX_BYTES,
-        None,
-    ),
+    BundleBuildResult: ("booley.bundle-build-result/v2", _BUILD_RESULT_FIELDS, RECORD_MAX_BYTES),
+    SimulationResult: (RESULT_SCHEMA, _RESULT_FIELDS, RECORD_MAX_BYTES),
+    SimulatorBundle: ("booley.simulator-bundle/v3", _BUNDLE_FIELDS, MANIFEST_MAX_BYTES),
 }
-_DOCUMENT_READERS = {spec[0]: spec[3] for spec in _DOCUMENT_SPECS.values() if spec[3] is not None}
 
 
 def _decode_registered(raw: bytes, value_type: type[T]) -> T:
-    schema, fields, limit, _ = _DOCUMENT_SPECS[value_type]
+    schema, fields, limit = _DOCUMENT_SPECS[value_type]
     return _decode(raw, schema=schema, fields=fields, limit=limit, value_type=value_type)
 
 
@@ -661,25 +423,3 @@ def validate_relative_path(path: object) -> str:
     if any(part in {"", ".", ".."} for part in parts):
         raise SimulationRecordIntegrityError("path must be contained and normalized")
     return parsed
-
-
-def linked_manifest_path(invocation: Path, reference: Mapping[str, object]) -> Path:
-    """The prerequisite manifest *reference* names, inside its *invocation*.
-
-    Decode does not check the path, so every walk checks it before opening it:
-    exactly ``targets/<Target>/record/manifest.json``, relative and contained,
-    which is what planning writes. That also keeps the invocation the same at
-    every hop of a prerequisite walk.
-    """
-    path = reference["path"]
-    parts = path.split("/") if isinstance(path, str) else []
-    if (
-        len(parts) != 4
-        or parts[0] != "targets"
-        or parts[2:] != [RECORD_DIRECTORY, "manifest.json"]
-    ):
-        raise SimulationRecordIntegrityError(
-            f"prerequisite manifest path {path!r} is not "
-            "targets/<Target>/record/manifest.json inside its invocation"
-        )
-    return invocation / validate_relative_path(path)

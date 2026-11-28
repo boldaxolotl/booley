@@ -24,6 +24,7 @@ import yaml
 
 from booley.core.boundary import as_dict
 from booley.core.build_paths import work_root_for
+from booley.core.file_hash import file_sha256
 from booley.core.file_lock import (
     LockTimeoutError,
     release_file_lock,
@@ -42,7 +43,6 @@ from booley.targets.domain import TargetHandle
 
 from . import build_reuse
 from .build import PreparedSimulationBuild
-from .build_reuse import hash_file
 
 
 class SimulationBuildSlotError(RuntimeError):
@@ -183,7 +183,7 @@ def _hash_generation(prepared: PreparedSimulationBuild, *, skip_reserved: bool) 
             if not path.is_file() or not path.resolve().is_relative_to(root.resolve()):
                 raise SimulationBuildSlotError(f"unsafe generated build input: {path}")
             relative = path.relative_to(root).as_posix()
-            hashes[relative] = hash_file(path)
+            hashes[relative] = file_sha256(path)
         return hashes
     except OSError as exc:
         raise SimulationBuildSlotError(f"cannot read generated build input: {exc}") from exc
@@ -233,11 +233,11 @@ def project_compile_surface(
                 continue
             if not path.is_file():
                 raise SimulationBuildSlotError(f"Project compile input is not a file: {path}")
-            result[identity] = hash_file(path)
+            result[identity] = file_sha256(path)
         for path in surface.optional_paths:
             identity = _compile_input_identity(surface.project_root, path)
             if path.is_file():
-                result[identity] = hash_file(path)
+                result[identity] = file_sha256(path)
             elif path.is_symlink() or path.exists():
                 raise SimulationBuildSlotError(f"Project compile input is not a file: {path}")
             else:
@@ -266,7 +266,7 @@ def _python_recipe_identity() -> str | None:
                 for path in sorted(package.rglob("*.py")):
                     digest.update(name.encode("utf-8"))
                     digest.update(path.relative_to(package).as_posix().encode("utf-8"))
-                    digest.update(hash_file(path).encode("ascii"))
+                    digest.update(file_sha256(path).encode("ascii"))
         return digest.hexdigest()
     except OSError:
         return None
@@ -387,7 +387,7 @@ def _ambient_environment(prepared: PreparedSimulationBuild) -> dict[str, str]:
 def _matching_hashes(root: Path, recorded: Mapping[str, str]) -> bool:
     """Whether every recorded file exists under *root* with its recorded digest."""
     return all(
-        (root / name).is_file() and hash_file(root / name) == digest
+        (root / name).is_file() and file_sha256(root / name) == digest
         for name, digest in recorded.items()
     )
 
@@ -627,7 +627,7 @@ class SimulationBuildSession(AbstractContextManager["SimulationBuildSession"]):
                 key = None
             artifacts = _runtime_artifacts(prepared)
             hashes = {
-                path.relative_to(prepared.build_root).as_posix(): hash_file(path)
+                path.relative_to(prepared.build_root).as_posix(): file_sha256(path)
                 for path in artifacts
             }
             self._write_manifest(prepared, inputs, key, hashes, closure or {}, reason)

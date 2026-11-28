@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.devcontainer_spec_support import build_spec
+from tests.sandbox_venue_fake import place
 
 from booley.config import agent as config_agent
 from booley.config import agent_app
@@ -28,6 +29,7 @@ from booley.harness import incontainer_register as entry
 from booley.runtime import devcontainer as dc
 from booley.runtime import incontainer_setup as reg
 from booley.runtime import inspection
+from booley.runtime.runtime_context import RuntimeLocation
 
 _GATEWAY_URL = "https://gateway.example/v1"
 _CREDENTIAL_ENV = (
@@ -48,9 +50,7 @@ _CREDENTIAL_ENV = (
 
 
 def _pin_venue(monkeypatch, *, inside: bool) -> None:
-    # private: the container marker is /.dockerenv on the real filesystem; no public
-    # seam points the Sandbox probe at a fixture.
-    monkeypatch.setattr(config_agent, "_inside_container", lambda: inside)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX if inside else RuntimeLocation.HOST)
 
 
 def _use_home(monkeypatch, home: Path) -> Path:

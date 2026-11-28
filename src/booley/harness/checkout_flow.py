@@ -76,6 +76,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from booley.config.flow_enablement import flow_enabled
+from booley.core import sandbox_layout
 from booley.core.booley_layout import validate_environment
 from booley.core.boundary import as_dict, as_float
 from booley.flows.metric_declarations import FlowMetricValues, MetricsUnavailable
@@ -93,7 +94,7 @@ from booley.measurement.environment import (
 )
 from booley.measurement.flow_metrics import report_metric_values
 from booley.measurement.live_paths import LiveRoot, input_findings, resolved_findings
-from booley.runtime import booley_dir, job_records, runtime_context, sandbox_layout
+from booley.runtime import booley_dir, job_records, runtime_context
 from booley.runtime.handles import register_job
 from booley.runtime.process_group import (
     capture_process_group,

@@ -141,11 +141,6 @@ class SimulationRecordManifestView:
     def eda_tool_kind(self) -> str:
         return cast(str, _mapping(self._workload["eda"])["kind"])
 
-    @property
-    def prerequisites(self) -> tuple[Mapping[str, object], ...]:
-        """The raw prerequisite entries, handed back to the planner."""
-        return cast(tuple[Mapping[str, object], ...], self.manifest.document["prerequisites"])
-
     def unfinished_work_item_ids(self, status: SimulationRecordRecoveryStatus) -> tuple[str, ...]:
         """Pending and interrupted ids in manifest order; ``()`` unless a coverage record."""
         if not self.is_coverage:

@@ -11,14 +11,16 @@ from tests.docker_cli_guard import (
     route_bounded_captures_through_subprocess_run,
     route_docker_helper_through_subprocess_run,
 )
+from tests.sandbox_venue_fake import place
 from tests.session_issuance_support import install_trusted_validator, plain_builder
 
 from booley.audit.diagnostic_results import Severity
 from booley.config.eda import EdaConfig
 from booley.eda.provisioning import authority
 from booley.runtime import devcontainer as dc
-from booley.runtime import inspection, runtime_context, session_issuance
+from booley.runtime import inspection, session_issuance
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.runtime_context import RuntimeLocation
 
 
 @pytest.fixture(autouse=True)
@@ -40,7 +42,7 @@ def _configured_project(tmp_path, monkeypatch, *, active: bool):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     executable = install_trusted_validator(tmp_path, monkeypatch)
     monkeypatch.setenv("PATH", str(executable.parent))
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     return project
 
 
@@ -67,23 +69,23 @@ def _fake_runtime_transport(monkeypatch):
         if argv[0] == "git":
             return subprocess.CompletedProcess(argv, 1, "", "not a git repository")
         if argv[1:3] == ["image", "inspect"]:
-            if "--format" in argv:
+            if argv[-1] == "{{json .Id}}":
+                return subprocess.CompletedProcess(argv, 0, json.dumps(observations["image"]), "")
+            if argv[-1] != "{{json .}}":
                 return subprocess.CompletedProcess(argv, 0, observations["image"], "")
             if isinstance(observations["inspection_error"], Exception):
                 raise observations["inspection_error"]
-            document = [
-                {
-                    "Id": observations["image"],
-                    "Config": {
-                        "Labels": {
-                            "org.opencontainers.image.version": "1.0",
-                            "org.opencontainers.image.revision": observations["revision"],
-                            "io.booley.wheel.source-fingerprint": observations["wheel_source"],
-                        },
-                        "Env": [],
+            document = {
+                "Id": observations["image"],
+                "Config": {
+                    "Labels": {
+                        "org.opencontainers.image.version": "1.0",
+                        "org.opencontainers.image.revision": observations["revision"],
+                        "io.booley.wheel.source-fingerprint": observations["wheel_source"],
                     },
-                }
-            ]
+                    "Env": [],
+                },
+            }
             return subprocess.CompletedProcess(argv, 0, json.dumps(document), "")
         if argv[1] == "run" and "--entrypoint=python3" in argv and "canonical-alias" in argv[-1]:
             return subprocess.CompletedProcess(argv, 0, "directory\n", "")
@@ -145,10 +147,10 @@ def test_inspection_preserves_stamp_and_conditional_authority_effects(issued_env
     identity_call = next(
         (argv, kw)
         for argv, kw in calls
-        if argv[1:3] == ["image", "inspect"] and "--format" not in argv
+        if argv[1:3] == ["image", "inspect"] and argv[-1] == "{{json .}}"
     )
     assert identity_call[1]["timeout"] == 15
-    assert identity_call[0][-1] == request.image
+    assert identity_call[0][3] == request.image
 
 
 def test_owner_detects_issuance_drift_without_doctor_wiring_changes(issued_environment):
@@ -163,7 +165,7 @@ def test_owner_detects_issuance_drift_without_doctor_wiring_changes(issued_envir
         for f in report.findings
     )
     assert not any(
-        argv[1:3] == ["image", "inspect"] and "--format" not in argv for argv, _ in calls
+        argv[1:3] == ["image", "inspect"] and argv[-1] == "{{json .}}" for argv, _ in calls
     )
 
 
@@ -202,7 +204,7 @@ def test_failed_live_enumeration_is_not_an_empty_success(issued_environment):
 def test_malformed_spec_returns_independent_configuration_and_issuance_failures(
     tmp_path, monkeypatch, raw, fake_sandbox_attachment
 ):
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     path = dc.devcontainer_path(tmp_path)
     path.parent.mkdir()
     path.write_text(raw)

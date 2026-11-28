@@ -231,7 +231,8 @@ def test_an_unreadable_object_keeps_its_entry(case: _Case, monkeypatch) -> None:
     def unreadable(_path: Path) -> str:
         raise PermissionError("denied")
 
-    monkeypatch.setattr(staged_input_ledger, "_sha256", unreadable)
+    # No portable file is unreadable to the sweep (root and Windows ignore chmod 000).
+    monkeypatch.setattr(staged_input_ledger, "file_sha256", unreadable)
     retained = sweep_cancelled_run_inputs(case.booley)
 
     assert case.run.resolve() / case.file in retained
@@ -272,7 +273,7 @@ def test_an_entry_is_retired_before_its_object_is_unlinked(case: _Case, monkeypa
 
 def test_an_object_replaced_while_it_was_hashed_is_not_deleted(case: _Case, monkeypatch) -> None:
     case.die()
-    real_sha256 = staged_input_ledger._sha256
+    real_sha256 = staged_input_ledger.file_sha256
 
     def replacing(path: Path) -> str:
         digest = real_sha256(path)
@@ -281,7 +282,8 @@ def test_an_object_replaced_while_it_was_hashed_is_not_deleted(case: _Case, monk
         successor.replace(path)  # a new inode: the old one is only freed afterwards
         return digest
 
-    monkeypatch.setattr(staged_input_ledger, "_sha256", replacing)
+    # No public hook runs between the sweep's hash and its unlink.
+    monkeypatch.setattr(staged_input_ledger, "file_sha256", replacing)
     sweep_cancelled_run_inputs(case.booley)
 
     assert (case.run / case.file).read_bytes() == b"x"

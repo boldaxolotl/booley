@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path, PurePosixPath
 
+from booley.core import sandbox_layout
 from booley.core.booley_dir import (
     BOOLEY_DIR_NAME,
     own_booley_dir_relative,
@@ -15,7 +16,7 @@ from booley.core.booley_dir import (
     resolve_checkout_booley_dir,
 )
 from booley.core.booley_layout import BooleyLayoutError
-from booley.runtime import platform_paths, sandbox_layout
+from booley.runtime import platform_paths
 
 
 class BooleyDirMismatchError(ValueError):

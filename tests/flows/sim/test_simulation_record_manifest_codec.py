@@ -210,27 +210,6 @@ def _manifest_fingerprints(manifest, target, source_recipe, build_recipe, varian
     }
 
 
-def _baseline_manifest():
-    document = _manifest()
-    document.pop("fingerprints")
-    document["simulation_record_id"] = "550e8400-e29b-41d4-a716-446655440000"
-    target = document["target"]
-    target.update(  # type: ignore[union-attr]
-        {
-            "name": "base",
-            "selector": "base",
-            "revision": "base-rev",
-            "role": "cycle_count_baseline",
-        }
-    )
-    item = document["work_items"][0]  # type: ignore[index]
-    item.update(  # type: ignore[union-attr]
-        {"role": "cycle_count_baseline", "revision": "base-rev", "target": target}
-    )
-    _seal_item(item)  # type: ignore[arg-type]
-    return finalize_manifest(document)
-
-
 def _prerequisite_entry() -> dict[str, object]:
     """A cycle-count baseline prerequisite entry with literal, self-consistent fields."""
     return {
@@ -299,7 +278,7 @@ def _stub_resume_target(monkeypatch: pytest.MonkeyPatch, manifest) -> None:
     )
 
 
-@pytest.mark.parametrize("defect", ["ancestor_symlink", "final_symlink", "hardlink"])
+@pytest.mark.parametrize("defect", ["ancestor_symlink", "final_symlink"])
 def test_resume_rejects_linked_manifest_paths_without_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, defect: str
 ) -> None:
@@ -312,10 +291,7 @@ def test_resume_rejects_linked_manifest_paths_without_writes(
         (tmp_path / "view/000001").symlink_to(real.root.parents[2], target_is_directory=True)
     else:
         view.mkdir(parents=True)
-        if defect == "final_symlink":
-            (view / "manifest.json").symlink_to(real.manifest_path)
-        else:
-            (view / "manifest.json").hardlink_to(real.manifest_path)
+        (view / "manifest.json").symlink_to(real.manifest_path)
     _stub_resume_target(monkeypatch, manifest)
     before = sorted(path.relative_to(tmp_path) for path in tmp_path.rglob("*"))
 
@@ -494,7 +470,7 @@ def test_resume_of_a_non_coverage_record_with_an_interrupted_item_is_not_refused
     store.allocate_attempt_directory(work_item_id, "550e8400-e29b-41d4-a716-446655440001")
     assert store.scan().interrupted == (work_item_id,)
     validated = ValidatedResumeManifest(
-        ValidatedManifestNode(store.manifest_path, manifest, "0" * 64), (), (object(),)
+        ValidatedManifestNode(store.manifest_path, manifest, "0" * 64), (object(),)
     )
 
     def forbidden(*_args: object) -> None:

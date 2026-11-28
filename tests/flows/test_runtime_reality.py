@@ -15,13 +15,15 @@ import pytest
 
 from booley.audit.diagnostic_results import DiagnosticReport, Severity
 from booley.flows import runtime_reality as owner
-from booley.runtime import runtime_context, sandbox_apply, session_runtime
+from booley.runtime import sandbox_apply, session_runtime
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import (
     UNKNOWN_SANDBOX_STEPS,
     Attachment,
 )
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
 from tests.runtime.test_sandbox_remedy_workflows import VSCODE_INIT
+from tests.sandbox_venue_fake import place
 
 _BAKE = "bake verilator into the Sandbox Image, then recreate the Sandbox: "
 _BAKE_FIX_INSIDE = _BAKE + UNKNOWN_SANDBOX_STEPS
@@ -31,7 +33,7 @@ _BAKE_FIX_VSCODE = _BAKE + VSCODE_INIT
 @pytest.fixture
 def vscode_owner(monkeypatch):
     """The Project's Sandbox is a VS Code container on the host."""
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(session_runtime, "sandbox_attachment", lambda _root: Attachment.VSCODE)
 
 
@@ -116,9 +118,7 @@ def test_present_binary_passes(tmp_path, lint_core, monkeypatch):
     assert _summary(inside) == expected
 
 
-def test_missing_binary_fails(
-    tmp_path, lint_core, monkeypatch, vscode_owner, hand_written_sandbox
-):
+def test_missing_binary_fails(tmp_path, lint_core, monkeypatch, vscode_owner):
     """An absent binary FAILs with the host or in-Sandbox wording and the bake fix."""
 
     probe = _HostProbe(monkeypatch, returncode=1)
@@ -133,7 +133,7 @@ def test_missing_binary_fails(
         (Severity.FAIL, "lint: 'verilator' is not on this container's PATH", _BAKE_FIX_INSIDE)
     ]
 
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     (finding,) = owner.inspect_flow_runtime_reality(_request(tmp_path, inside=True)).findings
     assert finding.fix == _BAKE + sandbox_apply.HAND_WRITTEN_SANDBOX_STEPS
 

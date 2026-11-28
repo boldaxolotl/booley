@@ -782,9 +782,18 @@ def _terminal_as_under_capture(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
 
 
-def use_terminal_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make ``sys.stdin`` an empty terminal, so ``booley init`` runs interactively."""
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+class _TerminalStdin(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+def use_terminal_stdin(monkeypatch: pytest.MonkeyPatch, *answers: str) -> None:
+    """Make ``sys.stdin`` a terminal, so ``booley init`` runs interactively.
+
+    It holds *answers* as lines: ``input()`` returns each in turn, then raises EOFError.
+    """
+    lines = "".join(f"{answer}\n" for answer in answers)
+    monkeypatch.setattr(sys, "stdin", _TerminalStdin(lines))
 
 
 @pytest.fixture(autouse=True)
@@ -827,64 +836,6 @@ def write_activity_signal(booley_dir: Path, key: str, state: str, at: str, tool:
     signal = {"schema": SCHEMA, "key": key, "state": state, "at": at}
     path.write_text(json.dumps(signal | ({"tool": tool} if tool else {})), encoding="utf-8")
     return path
-
-
-_FAKE_BWAVE = '''#!{python}
-"""Stand-in for ``bwave build``: modes come from FAKE_BWAVE_MODE."""
-import os
-import sys
-import time
-
-args = sys.argv[1:]
-if args[0] == "list":
-    sys.stdout.write(
-        '{{"data": {{"scope_prefix": "tb", "root_scopes": ["tb"], '
-        '"signal_count": 1, "total_ticks": 1}}}}'
-    )
-    sys.exit(0)
-store = args[args.index("-o") + 1]
-mode = os.environ.get("FAKE_BWAVE_MODE", "ok")
-if mode == "never_read":
-    time.sleep(60)
-if mode == "exit_early":
-    sys.stderr.write("fake bwave refused the input\\n")
-    sys.exit(1)
-data = sys.stdin.buffer.read()
-if b"$enddefinitions" not in data:
-    sys.stderr.write("fake bwave: no VCD header\\n")
-    sys.exit(1)
-if not data.endswith(b"\\n"):
-    offset = data.rfind(b"\\n") + 1
-    sys.stderr.write(
-        "WARNING: input does not end with a newline; the final line "
-        f"(byte {{offset}}) may be a truncated record\\n"
-    )
-sys.stderr.write(f"# wrote {{store}}\\n")
-with open(store, "wb") as out:
-    out.write({store_bytes!r})
-'''
-
-
-@pytest.fixture
-def fake_bwave(tmp_path, monkeypatch):
-    """A POSIX ``bwave build`` fake selected as the native binary (never via PATH).
-
-    It reads stdin to EOF and writes a minimal store when it saw a VCD header,
-    else exits 1; like the real tool it warns on stderr about input without a final
-    newline and reports ``# wrote <store>``, and ``list`` answers a one-signal
-    hierarchy. ``FAKE_BWAVE_MODE`` = ``never_read`` (sleeps without reading
-    stdin) or ``exit_early`` (exits 1 at once).
-    """
-    from booley.bwave import waveform_store
-
-    script = tmp_path / "fake-bin" / "bwave"
-    script.parent.mkdir()
-    script.write_text(
-        _FAKE_BWAVE.format(python=sys.executable, store_bytes=MINIMAL_FST_BYTES), encoding="utf-8"
-    )
-    script.chmod(0o755)
-    monkeypatch.setattr(waveform_store, "native_bwave_binary", lambda: str(script))
-    return script
 
 
 @pytest.fixture

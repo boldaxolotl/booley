@@ -60,6 +60,14 @@ Reach for the `booley.core.boundary` helpers (`src/booley/core/boundary.py`) —
 rejects NaN/inf and the `isinstance(True, int)` bool trap (in Python, `bool`
 subclasses `int`, so a naive `isinstance(x, int)` wrongly accepts `True`/`False`).
 
+Docker CLI output is external input too. Read `docker inspect` output (an
+object, one value or a list), a registry image's `docker buildx imagetools
+inspect` output, and Booley's labels, through `booley.core.docker_cli`
+(`src/booley/core/docker_cli.py`): its `Runner`, `inspect`, `inspect_value`,
+`inspect_registry_image`, `inspect_label`, `inspect_labels`, `exists`, `labels`,
+`failure_detail`, and label-name constants, instead of another runner type or
+JSON guard.
+
 ### 6. Fail fast, fail loud
 
 Raise exceptions on unexpected state. Don't return `None` and hope the
@@ -309,6 +317,9 @@ Tests that touch time, processes, sockets, or the filesystem also:
 Write the smallest change that fully solves the stated problem. Every line
 traces to an acceptance criterion or a demonstrated failure; "it might happen"
 is not a reason. Before adding code, delete or reuse what exists.
+Hash one file by path with `booley.core.file_hash` (`file_sha256`,
+`file_sha256_or_none`, `file_sha256_and_size`); a ratchet test catches the
+common forms of a new file-hash function.
 
 These are bloat. Do not write them:
 

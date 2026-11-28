@@ -28,7 +28,6 @@ unwritable stamp must never block doctor, a session, or a ticket run.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -38,6 +37,7 @@ from pathlib import Path
 from booley.audit.doctor_waivers import WAIVER_FILENAME
 from booley.audit.health import HEALTHY_MAX_AGE_DAYS
 from booley.core.differences import format_differences
+from booley.core.file_hash import file_sha256_or_none
 from booley.runtime import runtime_context
 from booley.runtime.booley_dir import resolve_main_checkout_root
 from booley.runtime.devcontainer import devcontainer_path
@@ -74,14 +74,6 @@ def stamp_path(booley_dir: Path) -> Path:
     return booley_dir / "runtime" / STAMP_FILENAME
 
 
-def _sha256_or_none(path: Path) -> str | None:
-    """Content hash of *path*, or None when the file is absent/unreadable."""
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError:
-        return None
-
-
 def compute_fingerprint(booley_dir: Path, project_root: Path) -> dict[str, str | None]:
     """Hash the config inputs whose drift should invalidate the stamp.
 
@@ -93,9 +85,9 @@ def compute_fingerprint(booley_dir: Path, project_root: Path) -> dict[str, str |
     on the other.
     """
     return {
-        "booley_toml_sha256": _sha256_or_none(booley_dir / "booley.toml"),
-        "doctor_waivers_sha256": _sha256_or_none(booley_dir / WAIVER_FILENAME),
-        "devcontainer_json_sha256": _sha256_or_none(
+        "booley_toml_sha256": file_sha256_or_none(booley_dir / "booley.toml"),
+        "doctor_waivers_sha256": file_sha256_or_none(booley_dir / WAIVER_FILENAME),
+        "devcontainer_json_sha256": file_sha256_or_none(
             devcontainer_path(resolve_main_checkout_root(project_root))
         ),
     }

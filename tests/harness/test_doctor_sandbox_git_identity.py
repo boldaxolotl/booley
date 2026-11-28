@@ -17,8 +17,7 @@ from booley.harness import sandbox_git_identity
 from booley.harness.sandbox_git_identity import IdentityCheck
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from tests.harness.doctor_host_support import serve_healthy_doctor_host
-from tests.harness.doctor_run_support import enter_sandbox, findings, run_doctor
-from tests.harness.test_doctor import _write_project
+from tests.harness.doctor_run_support import enter_sandbox, findings, run_doctor, write_project
 from tests.subprocess_budget import run_bounded_child
 
 OVERRIDE_ID = "sandbox.git-identity-override"
@@ -36,7 +35,7 @@ class _SandboxGit:
         self.checkout = root / "checkout"
         self.checkout.mkdir()
         run_bounded_child(["git", "init", "-q", str(self.checkout)], check=True)
-        self.booley_dir = _write_project(self.checkout)
+        self.booley_dir = write_project(self.checkout)
         agent_git = f'\n[agent.git]\nname = "{AGENT_NAME}"\nemail = "{AGENT_EMAIL}"\n'
         with (self.booley_dir / "booley.toml").open("ab") as stream:
             stream.write(agent_git.encode())

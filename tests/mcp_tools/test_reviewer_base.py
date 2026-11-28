@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.specialists.reviewer import ReviewerSpecialist
 from tests.mcp_tools.reviewer_support import (
     ScriptedAgent,
@@ -22,6 +23,7 @@ from tests.mcp_tools.reviewer_support import (
     run_review,
 )
 from tests.project_runtime_git_support import git
+from tests.sandbox_venue_fake import place
 
 A_SV = "module a(input logic x);\nendmodule\n"
 B_SV = "module b;\n  a u_a (.x(1'b0));\nendmodule\n"
@@ -150,7 +152,8 @@ def test_cli_prints_the_report_once(
     exit_code: int,
     report: str,
 ) -> None:
-    monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
+    monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")  # the Sandbox spec hand-off
     monkeypatch.delenv("BOOLEY_DIR")  # the endpoints conftest points it at a non-Project
     (repo / ".booley").mkdir()
     (repo / "rtl/e.sv").write_text(E_SV + "// outside scope\n", newline="\n")

@@ -17,7 +17,9 @@ from booley.harness import chat_cmd, codex_chat
 from booley.runtime import handles as handles_module
 from booley.runtime.handles import HandleStore
 from booley.runtime.pid import ProcessIdentity
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.session_activity import process_session_key
+from tests.sandbox_venue_fake import place
 
 
 class _ExecCalledError(Exception):
@@ -597,10 +599,9 @@ _GATEWAY_VALUES = {
 
 
 def _gateway_sandbox(monkeypatch, *, record):
-    """A container process with the gateway settings set; *record* is ``BOOLEY_AGENT_CLIS``."""
-    from booley.config import agent as agent_config
+    """A Sandbox process with the gateway settings set; *record* is ``BOOLEY_AGENT_CLIS``."""
 
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     for name, value in _GATEWAY_VALUES.items():
         monkeypatch.setenv(name, value)
     # Register the marker for restoration: the launch writes it straight into os.environ.
