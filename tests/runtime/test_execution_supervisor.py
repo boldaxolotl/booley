@@ -30,11 +30,11 @@ from tests.execution_test_support import (
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s, scaled
 
+from booley.core.atomic_files import atomic_write_json
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
     ExecutionPaths,
-    atomic_write_json,
     execution_paths,
     force_cancellation_requested,
     read_json,

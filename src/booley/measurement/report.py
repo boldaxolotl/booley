@@ -24,6 +24,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.measurement.run_document import is_measured
 from booley.presentation.colors import bold
 from booley.presentation.report_blocks import (
@@ -37,7 +38,6 @@ from booley.presentation.report_blocks import (
     paint,
     terminal_sections,
 )
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.timefmt import format_duration
 
 _LIST_CAP = 20

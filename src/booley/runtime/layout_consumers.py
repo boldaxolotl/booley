@@ -10,11 +10,11 @@ from contextlib import contextmanager
 from itertools import islice
 from pathlib import Path
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.booley_layout import BooleyLayoutError, layout_metadata, validate_environment
 from booley.core.file_lock import LockTimeoutError
 from booley.core.layout_lock import layout_gate
 from booley.core.process_identity import ProcessIdentity
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.pid import DEAD, REUSED, ZOMBIE, capture_process_identity, observe_process
 from booley.runtime.safe_storage import refuse_symlinks
 

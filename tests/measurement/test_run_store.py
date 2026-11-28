@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from booley.core.atomic_files import WriteOnceConflictError
 from booley.core.booley_dir import reset_cache, resolve_common_booley_dir
 from booley.flows.metric_declarations import FlowMetricValues
 from booley.measurement import run_store
@@ -24,7 +25,6 @@ from booley.measurement.run_document import (
 from booley.measurement.run_key import KeyedCommit, RulesNotVersionedError, resolve_measurement_key
 from booley.measurement.run_store import FlowReport, MeasurementStore, MeasurementStoreError
 from booley.measurement.toolchain import ToolchainFingerprint
-from booley.runtime.atomic_files import WriteOnceConflictError
 from booley.runtime.pinned_history import FileCommitError
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE
 from tests.runtime.test_commit_export import (

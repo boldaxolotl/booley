@@ -38,6 +38,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, cast, get_args
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.booley_dir import resolve_common_booley_dir, resolve_main_checkout_root
 from booley.core.booley_layout import BooleyLayoutError
 from booley.core.layout_lock import layout_gate
@@ -50,7 +51,6 @@ from booley.harness.worktree_list import (
     registered_worktrees,
 )
 from booley.mcp.session_registry import DEAD_PROCESS_STATES, SessionRegistry, namespace
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import own_booley_dir, own_booley_dir_repo_path
 from booley.runtime.handles import HandleStore
 from booley.runtime.pid import observe_process

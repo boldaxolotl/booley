@@ -54,8 +54,7 @@ from booley.core.boundary import BoundaryError
 from booley.core.checkout_role import SourceCheckoutProjectError
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.core.host_shell import quote_arg
-from booley.runtime.atomic_files import keep_unreadable
-from booley.runtime.filesystem_utils import make_directories
+from booley.runtime.filesystem_utils import keep_unreadable, make_directories
 from booley.runtime.project_discovery import session_store_checkout
 from booley.runtime.timefmt import format_age, utc_now_rfc3339
 

@@ -23,10 +23,10 @@ import tomlkit
 
 sys.path.insert(0, str(Path(__file__).parents[3] / "src"))
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.dev_support.demo_contract_codec import load_contract
 from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 from booley.measurement.run_document import is_measured
-from booley.runtime.atomic_files import atomic_replace_bytes
 
 SCHEMA = 1
 _TIMEOUT_S = 1800

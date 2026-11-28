@@ -9,6 +9,7 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.booley_dir import own_booley_dir
 from booley.core.booley_dir_links import lexical_booley_path
 from booley.harness.setup.common import (
@@ -28,7 +29,6 @@ from booley.harness.setup.project_git_hook_bundle import (
     _source_package_root,
     build_project_git_hook_bundle,
 )
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.git_environment import inherited_git_environment
 from booley.runtime.sandbox_apply import shell_command

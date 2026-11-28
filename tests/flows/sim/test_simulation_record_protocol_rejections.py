@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.core.atomic_files import atomic_write_json
 from booley.flows.sim.record import child_protocol
 from booley.flows.sim.record.codec import (
     SimulationRecordIntegrityError,
@@ -14,7 +15,6 @@ from booley.flows.sim.record.codec import (
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.runtime.execution_records import (
     ExecutionId,
-    atomic_write_json,
     execution_paths,
 )
 from tests.flows.sim.simulation_record_test_support import _two_item_manifest

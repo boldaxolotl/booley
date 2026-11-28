@@ -12,6 +12,7 @@ from typing import cast
 
 import pytest
 
+from booley.core.atomic_files import atomic_write_json
 from booley.flows.endpoint_admission import AdmissionGate
 from booley.flows.sim.config import parse_run_cwd_template, resolve_pre_sim_build_access
 from booley.flows.sim.flow import SimulateFlow
@@ -37,7 +38,6 @@ from booley.flows.sim.request import SimRequest
 from booley.runtime.endpoint_execution import EXIT_CANCELLED, EXIT_ERROR
 from booley.runtime.execution_records import (
     ExecutionId,
-    atomic_write_json,
     execution_paths,
 )
 from booley.runtime.job_slots import (

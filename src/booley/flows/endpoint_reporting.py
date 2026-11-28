@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from booley.core.atomic_files import atomic_write_json
 from booley.presentation.colors import strip_ansi
 from booley.runtime.endpoint_execution import (
     EXIT_SUCCESS,
@@ -20,7 +21,6 @@ from booley.runtime.endpoint_execution import (
     EndpointOutcome,
     normalize_completion_error,
 )
-from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import utc_now_rfc3339
 
