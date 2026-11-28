@@ -26,6 +26,7 @@ still-empty hidden layout so ``.booley/`` can be committed normally.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import shutil
 import tomllib
@@ -34,7 +35,8 @@ from pathlib import Path
 
 import tomlkit
 
-from booley.core.booley_dir import BOOLEY_DIR_NAME
+from booley.core.booley_dir import BOOLEY_DIR_NAME, own_booley_dir
+from booley.core.booley_dir_parts import in_linked_worktree
 from booley.harness.setup.common import (
     InitContext,
     err,
@@ -319,11 +321,17 @@ def existing_design_files(root: Path, limit: int = 5) -> list[Path]:
 
     Hidden trees (``.git/``, ``.booley/`` worktrees, editor state) are
     skipped — except ``.booley/cores/``, whose stealth ``.core`` files
-    are real design description (ADR 0036).
+    are real design description (ADR 0036). Linked worktrees under the
+    Booley Directory are skipped even when that directory is not hidden.
     """
     found: list[Path] = []
+    base = Path(os.path.normpath(root.absolute()))
+    booley_dir = own_booley_dir(root)
+    own = booley_dir.relative_to(base) if booley_dir.is_relative_to(base) else None
     for path in sorted(root.rglob("*")):
         rel = path.relative_to(root)
+        if own and rel.is_relative_to(own) and in_linked_worktree(rel.relative_to(own)):
+            continue
         hidden = any(part.startswith(".") for part in rel.parts[:-1])
         stealth_core = rel.parts[:2] == (".booley", "cores") and path.suffix == ".core"
         if hidden and not stealth_core:

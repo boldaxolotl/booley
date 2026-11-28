@@ -19,6 +19,7 @@ from typing import Any
 from booley.audit import agent_schema, config_common, flow_schema, project_schema
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.config.eda import EdaConfig, parse_eda_config
+from booley.core.booley_dir_parts import in_linked_worktree
 from booley.core.booley_layout import BooleyLayoutError
 from booley.core.config_paths import resolve_toml
 from booley.core.host_shell import quote_arg
@@ -59,7 +60,7 @@ from booley.targets.catalog import TargetCatalog
 _REQUIRED_FLOW_TABLES = ("sim", "lint", "synth")
 _GUIDANCE_BTOOL_MARKER = "booley_status"
 _GUIDANCE_SANDBOX_MARKERS = ("inside the sandbox", "session runtime")
-_STATE_TRANSIENT_DIR_NAMES = frozenset({"worktrees", "build", "_build", ".runtime", ".git", "tmp"})
+_STATE_TRANSIENT_DIR_NAMES = frozenset({"build", "_build", ".runtime", ".git", "tmp"})
 
 
 @dataclass(frozen=True)
@@ -698,7 +699,7 @@ def _check_stealth_cores(
         for p in booley_dir.rglob("*.core")
         if not p.is_relative_to(stealth_root)
         and not _STATE_TRANSIENT_DIR_NAMES.intersection(p.relative_to(booley_dir).parts)
-        and not any(part.startswith(".baseline-wt") for part in p.relative_to(booley_dir).parts)
+        and not in_linked_worktree(p.relative_to(booley_dir))
         and TRACE_OVERLAY_MARKER not in p.name
     ]
     if stranded:

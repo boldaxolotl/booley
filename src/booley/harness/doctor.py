@@ -1768,10 +1768,6 @@ def _check_worktree_core_shadow_guard(
         )
 
 
-# Booley Directory subtrees that legitimately hold transient .core COPIES (worktree /
-# baseline checkouts, build caches) — never authored sources, never "stranded".
-
-
 # ---------------------------------------------------------------------------
 # ADR 0087 Sandbox memory + ADR 0028 runtime detection health
 # ---------------------------------------------------------------------------
