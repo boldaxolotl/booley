@@ -89,11 +89,7 @@ def assert_ok(result: subprocess.CompletedProcess[str]) -> None:
 
 def _candidate_platform(image: str) -> str:
     result = HOST_DOCKER.run(
-        "image",
-        "inspect",
-        image,
-        "--format",
-        "{{.Id}}\t{{.Os}}/{{.Architecture}}",
+        "image", "inspect", image, "--format", "{{.Id}}\t{{.Os}}/{{.Architecture}}"
     )
     assert_ok(result)
     image_id, separator, platform = result.stdout.strip().partition("\t")

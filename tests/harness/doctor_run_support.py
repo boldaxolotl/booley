@@ -117,8 +117,7 @@ auth = "subscription"
     )
     (root / "rtl" / "dut.sv").write_text("module dut; endmodule\n", encoding="utf-8")
     (root / "tb" / "tb.sv").write_text(
-        'module tb; initial $display("[SIM_RESULT] PASSED"); endmodule\n',
-        encoding="utf-8",
+        'module tb; initial $display("[SIM_RESULT] PASSED"); endmodule\n', encoding="utf-8"
     )
     if write_tickets:
         for name in ("board", "state", "logs", "locks"):

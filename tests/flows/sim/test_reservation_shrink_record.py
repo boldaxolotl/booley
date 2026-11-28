@@ -118,9 +118,7 @@ def probes(
 
 
 def test_reused_build_drops_reservation_without_building(
-    flow_project: Path,
-    tmp_path: Path,
-    probes: list[tuple[str, float | None]],
+    flow_project: Path, tmp_path: Path, probes: list[tuple[str, float | None]]
 ) -> None:
     reports = tmp_path / "reports"
     reuse._assert_built(reuse._flow_sim(flow_project, reports, "first"), "missing provenance")

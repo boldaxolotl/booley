@@ -214,10 +214,7 @@ class TestResolve:
         assert [run.name for run in runs] == ["stress+soak@1", "basic@1", "reset@5"]
 
     def test_seed_applies_to_every_selected_run(self):
-        assert [run.name for run in _plan().resolve(None, seed=9)] == [
-            "reset@9",
-            "stress+short@9",
-        ]
+        assert [run.name for run in _plan().resolve(None, seed=9)] == ["reset@9", "stress+short@9"]
 
     def test_random_draws_one_seed_per_test_run(self):
         draw = _fixed_draw(11, 22)
@@ -330,11 +327,7 @@ class TestBatching:
                 "sim": {
                     "tests": ["a", "b", "c"],
                     "variants": {
-                        "c": {
-                            "default": "plain",
-                            "plain": [],
-                            "slow": {"env": {"SPEED": "slow"}},
-                        }
+                        "c": {"default": "plain", "plain": [], "slow": {"env": {"SPEED": "slow"}}}
                     },
                 }
             }

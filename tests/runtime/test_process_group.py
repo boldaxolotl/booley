@@ -154,10 +154,7 @@ def test_force_signal_uses_captured_group_after_direct_child_exit(
     monkeypatch.setattr(process_group.sys, "platform", "linux")
     monkeypatch.setattr(process_group.signal, "SIGKILL", 9, raising=False)
     monkeypatch.setattr(
-        process_group.os,
-        "killpg",
-        lambda pgid, sig: calls.append((pgid, sig)),
-        raising=False,
+        process_group.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)), raising=False
     )
 
     process_group.force_async_process_group_now(process, process_group.ProcessGroup(417))
@@ -180,21 +177,13 @@ def test_uncertain_posix_group_liveness_is_treated_as_alive(
     monkeypatch.setattr(process_group.os, "killpg", killpg, raising=False)
 
     process_group.terminate_process_group(
-        process,
-        process_group.ProcessGroup(417),
-        is_windows=False,
+        process, process_group.ProcessGroup(417), is_windows=False
     )
 
-    assert calls == [
-        (417, sigterm),
-        (417, 0),
-        (417, sigkill),
-    ]
+    assert calls == [(417, sigterm), (417, 0), (417, sigkill)]
 
 
-def test_sync_timeout_forces_group_and_reaps_direct_child(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_sync_timeout_forces_group_and_reaps_direct_child(monkeypatch: pytest.MonkeyPatch) -> None:
     sigterm, sigkill = _install_posix_process_apis(monkeypatch)
 
     class Process:
@@ -212,26 +201,16 @@ def test_sync_timeout_forces_group_and_reaps_direct_child(
 
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr(
-        process_group.os,
-        "killpg",
-        lambda pgid, sig: calls.append((pgid, sig)),
-        raising=False,
+        process_group.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)), raising=False
     )
     process = Process()
 
     process_group.terminate_process_group(
-        process,
-        process_group.ProcessGroup(417),
-        grace_seconds=0.25,
-        is_windows=False,
+        process, process_group.ProcessGroup(417), grace_seconds=0.25, is_windows=False
     )
 
     assert process.waits == [0.25, 5]
-    assert calls == [
-        (417, sigterm),
-        (417, 0),
-        (417, sigkill),
-    ]
+    assert calls == [(417, sigterm), (417, 0), (417, sigkill)]
 
 
 @pytest.mark.asyncio
@@ -251,19 +230,12 @@ async def test_async_graceful_termination_uses_captured_group(
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr(process_group.sys, "platform", "linux")
     monkeypatch.setattr(
-        process_group.os,
-        "killpg",
-        lambda pgid, sig: calls.append((pgid, sig)),
-        raising=False,
+        process_group.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)), raising=False
     )
 
     await process_group.terminate_async_process_group(Process(), process_group.ProcessGroup(417))
 
-    assert calls == [
-        (417, sigterm),
-        (417, 0),
-        (417, sigkill),
-    ]
+    assert calls == [(417, sigterm), (417, 0), (417, sigkill)]
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX process-group semantics")
@@ -341,23 +313,14 @@ async def test_adopted_group_termination_escalates_by_group_identity(
     calls: list[tuple[int, int]] = []
     monkeypatch.setattr(process_group.sys, "platform", "linux")
     monkeypatch.setattr(
-        process_group.os,
-        "killpg",
-        lambda pgid, sig: calls.append((pgid, sig)),
-        raising=False,
+        process_group.os, "killpg", lambda pgid, sig: calls.append((pgid, sig)), raising=False
     )
 
     await process_group.terminate_adopted_process_group(
-        process_group.ProcessGroup(417),
-        grace_seconds=0,
+        process_group.ProcessGroup(417), grace_seconds=0
     )
 
-    assert calls == [
-        (417, sigterm),
-        (417, 0),
-        (417, 0),
-        (417, sigkill),
-    ]
+    assert calls == [(417, sigterm), (417, 0), (417, 0), (417, sigkill)]
 
 
 @pytest.mark.asyncio
@@ -378,15 +341,9 @@ async def test_windows_taskkill_failure_still_escalates_to_force(
     monkeypatch.setattr(process_group.sys, "platform", "win32")
     monkeypatch.setattr(process_group.asyncio, "create_subprocess_exec", create_taskkill)
 
-    await process_group.terminate_async_process_group(
-        leader,
-        process_group.ProcessGroup(417),
-    )
+    await process_group.terminate_async_process_group(leader, process_group.ProcessGroup(417))
 
-    assert commands == [
-        ("taskkill", "/T", "/PID", "417"),
-        ("taskkill", "/F", "/T", "/PID", "417"),
-    ]
+    assert commands == [("taskkill", "/T", "/PID", "417"), ("taskkill", "/F", "/T", "/PID", "417")]
 
 
 @pytest.mark.asyncio
@@ -423,10 +380,7 @@ async def test_windows_hung_taskkill_is_stopped_and_reaped(
     monkeypatch.setattr(process_group.asyncio, "create_subprocess_exec", create_taskkill)
     monkeypatch.setattr(process_group.asyncio, "wait_for", bounded_wait)
 
-    await process_group.terminate_async_process_group(
-        leader,
-        process_group.ProcessGroup(417),
-    )
+    await process_group.terminate_async_process_group(leader, process_group.ProcessGroup(417))
 
     assert len(killers) == 2
     assert all(killer.killed for killer in killers)

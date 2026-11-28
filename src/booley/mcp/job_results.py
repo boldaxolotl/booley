@@ -229,8 +229,7 @@ def _job_report(
 
 
 def _gate_report_by_window(
-    rec: jobrec.JobRecord,
-    report: dict[str, Any],
+    rec: jobrec.JobRecord, report: dict[str, Any]
 ) -> tuple[dict[str, Any] | None, bool]:
     """Legacy freshness gate for reports with no ``run_id`` (see _job_report)."""
     report_ts = jobrec.parse_stamp(report.get("timestamp"))
@@ -369,10 +368,7 @@ def _strip_transcript_dir(argv: list[str]) -> list[str]:
 
 
 def _find_attachable_job(
-    name: str,
-    cmd: list[str],
-    *,
-    roots: tuple[Path, ...] | None = None,
+    name: str, cmd: list[str], *, roots: tuple[Path, ...] | None = None
 ) -> str | None:
     """run_id of a live (running or queued) job matching endpoint + argv, or None.
 

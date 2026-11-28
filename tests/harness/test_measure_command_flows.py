@@ -35,10 +35,7 @@ from tests.harness.test_checkout_flow import (
     make_world,
     use_fusesoc,
 )
-from tests.harness.test_measure_children_flows import (
-    declare_stub_metrics,
-    started_targets,
-)
+from tests.harness.test_measure_children_flows import declare_stub_metrics, started_targets
 from tests.time_budget import hang_guard_s
 
 __all__ = ["make_world"]

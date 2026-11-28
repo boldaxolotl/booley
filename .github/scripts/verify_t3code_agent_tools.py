@@ -235,9 +235,7 @@ def _codex_calls() -> list[dict[str, Any]]:
     return [_codex_exec(_DENIED_CALL), {**direct, "arguments": "{}"}, _codex_exec(_KEPT_CALL)]
 
 
-def _judge_codex(
-    requests: list[dict[str, Any]],
-) -> tuple[list[str], list[str], dict[str, str]]:
+def _judge_codex(requests: list[dict[str, Any]]) -> tuple[list[str], list[str], dict[str, str]]:
     """Return one thread's directly offered MCP servers, its problems and its call outputs."""
     namespaces = sorted(
         {

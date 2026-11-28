@@ -40,9 +40,7 @@ def rtl_module_candidates(inspection: TargetInspection) -> tuple[str, ...]:
 
 
 def source_gap_findings(
-    candidates: tuple[str, ...],
-    closure: Mapping[str, FrozenJson],
-    present: tuple[str, ...],
+    candidates: tuple[str, ...], closure: Mapping[str, FrozenJson], present: tuple[str, ...]
 ) -> tuple[CoverageFinding, ...]:
     """One warning per candidate that no native record of any type maps to."""
     records = closure["rtl"]

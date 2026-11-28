@@ -14,11 +14,7 @@ from ci_changes import classify
 
 _REGRESSION_PATHS = {
     ".github/scripts/image_size_report.py": {"release_sensitive", "standard_image", "riscv_image"},
-    ".github/contracts/picorv32-demo.toml": {
-        "release_sensitive",
-        "standard_image",
-        "riscv_image",
-    },
+    ".github/contracts/picorv32-demo.toml": {"release_sensitive", "standard_image", "riscv_image"},
     "src/booley/flows/sim/flow.py": {"release_sensitive", "standard_image"},
     "src/booley/harness/doctor.py": {"release_sensitive", "standard_image"},
     ".github/contracts/image-size-limits.toml": {
@@ -264,10 +260,7 @@ def _candidate_sha(repo: Path) -> str:
     if configured:
         return configured
     result = subprocess.run(
-        ["git", "-C", str(repo), "rev-parse", "HEAD"],
-        capture_output=True,
-        check=True,
-        text=True,
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, check=True, text=True
     )
     return result.stdout.strip()
 
@@ -279,10 +272,7 @@ def validate_repository(repo: Path, *, candidate_sha: str | None = None) -> dict
     checks = [
         _check("classifier.release-sensitive", _classifier_errors()),
         _check("workflow.pr-topology", validate_pr_topology(pr)),
-        _check(
-            "workflow.publication-topology",
-            validate_publication_topology(publication, pr),
-        ),
+        _check("workflow.publication-topology", validate_publication_topology(publication, pr)),
         _check("workflow.release-topology", validate_release_topology(release)),
     ]
     errors = [error for check in checks for error in check["errors"]]

@@ -60,11 +60,7 @@ HEADLINES = [
         {"records": {"top": {**simulation_record(), "grade": "inconclusive"}}},
         "grade inconclusive",
     ),
-    (
-        "sim",
-        {"coverage": True, "targets": ["alpha", "beta"]},
-        "Coverage: evaluation unavailable",
-    ),
+    ("sim", {"coverage": True, "targets": ["alpha", "beta"]}, "Coverage: evaluation unavailable"),
     *[
         (
             "reviewer",
@@ -107,11 +103,7 @@ HEADLINES = [
         {"targets": ["top"], "total_warnings": 3, "eda_tools": {"top": "verilator"}},
         "Lint: 3 warnings",
     ),
-    (
-        "synth",
-        {"implementation": implementation()},
-        "Synthesis: 1 Target",
-    ),
+    ("synth", {"implementation": implementation()}, "Synthesis: 1 Target"),
     (
         "fpga",
         {

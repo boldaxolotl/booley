@@ -13,12 +13,7 @@ _GIB = resource_policy.GIB_BYTES
 
 @pytest.mark.parametrize(
     ("text", "expected"),
-    [
-        ("6g", 6 * _GIB),
-        ("512M", 512 * 1024**2),
-        ("2048", 2048),
-        ("lots", None),
-    ],
+    [("6g", 6 * _GIB), ("512M", 512 * 1024**2), ("2048", 2048), ("lots", None)],
 )
 def test_parse_memory_limit(text: str, expected: int | None) -> None:
     assert resource_policy.parse_memory_limit(text) == expected

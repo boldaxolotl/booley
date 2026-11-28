@@ -120,12 +120,7 @@ def _artifact_reference(
     if not isinstance(sha256, str) or not _DIGEST.fullmatch(sha256):
         raise ArtifactReferenceError("artifact digest is invalid")
     return ArtifactReference(
-        base,
-        relative,
-        bytes_,
-        sha256,
-        _nonempty(kind, "kind"),
-        _nonempty(owner, "owner"),
+        base, relative, bytes_, sha256, _nonempty(kind, "kind"), _nonempty(owner, "owner")
     )
 
 

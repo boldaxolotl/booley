@@ -110,9 +110,7 @@ class TestMainEnvParsing:
             proxy_entry.main()
 
         mock_proxy_cls.assert_called_once_with(
-            port=8080,
-            host="0.0.0.0",
-            allowlist=["example.com", "api.test.io"],
+            port=8080, host="0.0.0.0", allowlist=["example.com", "api.test.io"]
         )
 
 
@@ -125,10 +123,7 @@ class TestStatsOutput:
         mock_proxy = MagicMock()
         mock_proxy.port = 8080
         mock_proxy.stats = MagicMock(
-            allowed=5,
-            blocked=3,
-            errors=1,
-            blocked_log=["CONNECT evil.com:443"],
+            allowed=5, blocked=3, errors=1, blocked_log=["CONNECT evil.com:443"]
         )
         mock_proxy_cls.return_value = mock_proxy
 

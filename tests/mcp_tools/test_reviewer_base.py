@@ -83,10 +83,7 @@ def base_argv(root: Path, *args: str) -> list[str]:
 
 
 def review(
-    root: Path,
-    agent: ScriptedAgent,
-    args: list[str],
-    issues: list[dict[str, Any]] | None = None,
+    root: Path, agent: ScriptedAgent, args: list[str], issues: list[dict[str, Any]] | None = None
 ) -> EndpointOutcome:
     """Run one discovery review whose agent reports *issues*."""
     agent.answer({"issues": issues or []})
@@ -315,24 +312,14 @@ def test_pre_existing_findings_do_not_fail_the_review(repo: Path, agent: Scripte
 def test_diff_review_rejects_finding_without_origin(repo: Path, agent: ScriptedAgent) -> None:
     commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
 
-    result = review(
-        repo,
-        agent,
-        ["--scope", "rtl/a.sv", "--base", "main"],
-        [finding(origin=None)],
-    )
+    result = review(repo, agent, ["--scope", "rtl/a.sv", "--base", "main"], [finding(origin=None)])
 
     assert result.exit_code == 2
     assert "failed the schema" in result.report_text
 
 
 def test_origin_is_ignored_without_base(repo: Path, agent: ScriptedAgent) -> None:
-    result = review(
-        repo,
-        agent,
-        ["--scope", "rtl/a.sv"],
-        [finding(origin="pre_existing")],
-    )
+    result = review(repo, agent, ["--scope", "rtl/a.sv"], [finding(origin="pre_existing")])
 
     assert result.exit_code == 0
     assert result.detail["issues"] == 1

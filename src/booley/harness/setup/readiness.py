@@ -31,10 +31,7 @@ from booley.harness.setup.git_hooks import (
     read_local_config,
     worktree_policy_repositories,
 )
-from booley.harness.setup.guidance_links import (
-    CANON_NAME,
-    guidance_links_current,
-)
+from booley.harness.setup.guidance_links import CANON_NAME, guidance_links_current
 from booley.harness.setup.line_endings import (
     LineEndingMode,
     LineEndingObservation,
@@ -148,9 +145,7 @@ def inspect_line_endings(request: LineEndingInspectionRequest) -> DiagnosticRepo
     """Map the shared read-only line-ending report into findings; never repairs."""
     report = Findings()
     line_endings = reconcile_project_line_endings(
-        request.project_root,
-        request.booley_dir,
-        mode=LineEndingMode.INSPECT,
+        request.project_root, request.booley_dir, mode=LineEndingMode.INSPECT
     )
     if line_endings.status is LineEndingStatus.NOT_APPLICABLE:
         report.skip("line endings: Project Root is not a git repo")
@@ -168,19 +163,15 @@ def inspect_line_endings(request: LineEndingInspectionRequest) -> DiagnosticRepo
 
 
 def _line_ending_observation(
-    report: RepositoryLineEndingReport,
-    *codes: LineEndingObservationCode,
+    report: RepositoryLineEndingReport, *codes: LineEndingObservationCode
 ) -> LineEndingObservation | None:
     return next(
-        (observation for observation in report.observations if observation.code in codes),
-        None,
+        (observation for observation in report.observations if observation.code in codes), None
     )
 
 
 def _report_unreadable_line_endings(
-    repository: RepositoryLineEndingReport,
-    identity: str,
-    report: Findings,
+    repository: RepositoryLineEndingReport, identity: str, report: Findings
 ) -> bool:
     observation = _line_ending_observation(
         repository,
@@ -206,9 +197,7 @@ def _report_unreadable_line_endings(
 
 
 def _report_autocrlf_risk(
-    repository: RepositoryLineEndingReport,
-    identity: str,
-    report: Findings,
+    repository: RepositoryLineEndingReport, identity: str, report: Findings
 ) -> bool:
     risk = _line_ending_observation(
         repository,
@@ -231,8 +220,7 @@ def _report_autocrlf_risk(
 
 
 def _report_repository_line_endings(
-    repository: RepositoryLineEndingReport,
-    report: Findings,
+    repository: RepositoryLineEndingReport, report: Findings
 ) -> None:
     identity = line_ending_repository_display(
         repository.repository.role, repository.repository.root
@@ -338,12 +326,7 @@ def _inspect_git_versions(
     _report_git_version("host Git", current, report)
     sandbox = (
         _git_version_at(
-            request.docker_exe,
-            "run",
-            "--rm",
-            request.sandbox_image,
-            "git",
-            "--version",
+            request.docker_exe, "run", "--rm", request.sandbox_image, "git", "--version"
         )
         if request.docker_exe
         else None

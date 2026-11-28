@@ -56,10 +56,7 @@ def is_transient_read_error(exc: OSError) -> bool:
 
 
 def replace_file(
-    source: Path,
-    destination: Path,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
+    source: Path, destination: Path, *, sleep: Callable[[float], None] = time.sleep
 ) -> None:
     """Atomically replace ``destination`` with ``source``, tolerating Windows readers.
 
@@ -81,10 +78,7 @@ def replace_file(
 
 
 def unlink_file(
-    path: Path,
-    *,
-    missing_ok: bool = False,
-    sleep: Callable[[float], None] = time.sleep,
+    path: Path, *, missing_ok: bool = False, sleep: Callable[[float], None] = time.sleep
 ) -> None:
     """Remove ``path``, tolerating a concurrent reader on Windows.
 
@@ -109,12 +103,7 @@ def unlink_file(
     path.unlink(missing_ok=missing_ok)
 
 
-def link_file(
-    target: Path,
-    source: Path,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
-) -> None:
+def link_file(target: Path, source: Path, *, sleep: Callable[[float], None] = time.sleep) -> None:
     """Hard-link ``target`` to ``source``, tolerating a Windows sharing violation.
 
     Counterpart of :func:`replace_file`: retries only the transient Windows
@@ -135,12 +124,7 @@ def link_file(
     target.hardlink_to(source)
 
 
-def write_file_text(
-    path: Path,
-    text: str,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
-) -> None:
+def write_file_text(path: Path, text: str, *, sleep: Callable[[float], None] = time.sleep) -> None:
     """Create or truncate ``path`` with ``text`` as UTF-8, retrying its refused open.
 
     A sharing violation of a write surfaces at the open, so this retries the
@@ -149,11 +133,7 @@ def write_file_text(
     open_with_sharing_retry(lambda: path.write_text(text, encoding="utf-8"), path, sleep=sleep)
 
 
-def read_file_bytes(
-    path: Path,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
-) -> bytes:
+def read_file_bytes(path: Path, *, sleep: Callable[[float], None] = time.sleep) -> bytes:
     """Read ``path``, tolerating a concurrent atomic replace on Windows.
 
     Counterpart of :func:`replace_file`: retries only the transient Windows
@@ -176,10 +156,7 @@ def read_file_bytes(
 
 
 def open_with_sharing_retry(
-    open_once: Callable[[], _T],
-    path: Path,
-    *,
-    sleep: Callable[[float], None] = time.sleep,
+    open_once: Callable[[], _T], path: Path, *, sleep: Callable[[float], None] = time.sleep
 ) -> _T:
     """Call ``open_once`` and retry it while Windows reports a sharing error.
 

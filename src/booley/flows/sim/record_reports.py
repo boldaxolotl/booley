@@ -34,10 +34,7 @@ def write_simulation_record_json(path: Path, document: dict[str, object]) -> Non
 
 
 def write_compatibility_projection(
-    path: Path,
-    document: dict[str, object],
-    *,
-    acceptance_committed: bool,
+    path: Path, document: dict[str, object], *, acceptance_committed: bool
 ) -> None:
     """Atomically publish a ``simulation.json`` acceptance projection.
 

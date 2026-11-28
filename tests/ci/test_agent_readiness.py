@@ -431,8 +431,7 @@ def test_docker_check_reports_the_probe(checkout, bare_path, monkeypatch, capsys
 
 
 @pytest.mark.parametrize(
-    "case",
-    ["build", "no-cargo", "ready", pytest.param("binary", marks=pytest.mark.native_bwave)],
+    "case", ["build", "no-cargo", "ready", pytest.param("binary", marks=pytest.mark.native_bwave)]
 )
 def test_full_profile_reports_native_prerequisites(checkout, bare_path, monkeypatch, capsys, case):
     if case == "build":

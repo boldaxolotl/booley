@@ -363,11 +363,7 @@ class TargetTestPlan:
         ]
 
     def _runs_of(
-        self,
-        selector: TestSelector,
-        seed: SeedRequest,
-        draw: SeedDraw,
-        earlier: Sequence[TestRun],
+        self, selector: TestSelector, seed: SeedRequest, draw: SeedDraw, earlier: Sequence[TestRun]
     ) -> list[TestRun]:
         """The Test Runs one selector stands for."""
         form = selector.seed_form
@@ -498,10 +494,7 @@ def _variant_tables(section: Mapping[str, object], where: str) -> tuple[TestVari
 
 
 def _check_variants_against_target(
-    tables: Sequence[TestVariantTable],
-    adapter: str,
-    target_plusargs: Collection[str],
-    where: str,
+    tables: Sequence[TestVariantTable], adapter: str, target_plusargs: Collection[str], where: str
 ) -> None:
     """Refuse Variant arguments the resolved Target cannot take."""
     owned = {option_key(f"+{name}") for name in target_plusargs}

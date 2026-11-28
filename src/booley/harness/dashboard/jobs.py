@@ -78,11 +78,7 @@ class JobReader:
     ) -> None:
         self._booley_dir = booley_dir
         self._main = main
-        self._observer = JobObserver(
-            booley_dir,
-            slots_root=slots_root,
-            proc_root=proc_root,
-        )
+        self._observer = JobObserver(booley_dir, slots_root=slots_root, proc_root=proc_root)
 
     def read(
         self,
@@ -110,11 +106,7 @@ class JobReader:
 
 
 def _job_view(
-    job: JobObservation,
-    handles: dict[str, str],
-    now: float,
-    standalone: Path,
-    main: Path | None,
+    job: JobObservation, handles: dict[str, str], now: float, standalone: Path, main: Path | None
 ) -> JobView:
     record = job.record
     state = job.state

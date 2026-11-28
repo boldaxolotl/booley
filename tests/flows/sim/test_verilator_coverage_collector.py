@@ -208,8 +208,7 @@ class _StagedSourceExecution(_PresenceExecution):
         super().__init__(
             _HEADER
             + _LINE_POINT.replace(
-                "\x01f\x02rtl/counter.sv",
-                "\x01f\x02/build/src/acme_demo_counter_1/rtl/counter.sv",
+                "\x01f\x02rtl/counter.sv", "\x01f\x02/build/src/acme_demo_counter_1/rtl/counter.sv"
             )
         )
 
@@ -274,16 +273,14 @@ class _CocotbExecution(_GeneratedMainExecution):
         hits = len(self.run_requests)
         request.raw_path.parent.mkdir(parents=True, exist_ok=True)
         request.raw_path.write_text(
-            _HEADER + _native_entry("line", "block", hits=hits),
-            encoding="utf-8",
+            _HEADER + _native_entry("line", "block", hits=hits), encoding="utf-8"
         )
         return SimulationRunResult(verdict="pass" if hits == 1 else "fail")
 
     def command(self, request) -> SimulationCommandResult:
         request.output_path.parent.mkdir(parents=True, exist_ok=True)
         request.output_path.write_text(
-            _HEADER + _native_entry("line", "block", hits=3),
-            encoding="utf-8",
+            _HEADER + _native_entry("line", "block", hits=3), encoding="utf-8"
         )
         return SimulationCommandResult(returncode=0)
 
@@ -325,8 +322,7 @@ class _BuildFailureExecution(_NoExecution):
 class _WrongVerilatorExecution(_NoExecution):
     def build(self, request) -> SimulationBuildResult:
         return SimulationBuildResult(
-            success=True,
-            collector=VerilatorCollectorIdentity("v5.050", "0" * 40),
+            success=True, collector=VerilatorCollectorIdentity("v5.050", "0" * 40)
         )
 
 
@@ -389,10 +385,7 @@ def test_pre_sim_spawn_error_aborts_later_tests(tmp_path: Path) -> None:
 
     assert execution.tests == ["first"]
     assert result.infrastructure_error is True
-    assert [run.simulation_verdict for run in result.runs] == [
-        "elab_error",
-        "inconclusive",
-    ]
+    assert [run.simulation_verdict for run in result.runs] == ["elab_error", "inconclusive"]
     assert result.runs[1].attributes == {
         "execution": "not_run",
         "failure_kind": "infrastructure",
@@ -427,11 +420,7 @@ def test_protected_surface_failure_takes_priority_over_failed_hook(tmp_path: Pat
     class ChangedImage(_GeneratedMainExecution):
         def run(self, request) -> SimulationRunResult:
             evidence = PreSimEvidence(
-                ("mutate-and-fail",),
-                (request.test.name,),
-                "failed",
-                0.25,
-                "hook exited 1",
+                ("mutate-and-fail",), (request.test.name,), "failed", 0.25, "hook exited 1"
             )
             return SimulationRunResult(
                 "inconclusive",
@@ -472,10 +461,7 @@ def test_generated_main_collects_one_native_database_and_normalizes_line_point(
     assert [(run.test, run.simulation_verdict, run.collection) for run in result.runs] == [
         ("reset", "pass", "included")
     ]
-    assert [artifact.kind for artifact in result.artifacts] == [
-        "raw_native",
-        "merged_native",
-    ]
+    assert [artifact.kind for artifact in result.artifacts] == ["raw_native", "merged_native"]
     assert result.merge.status == "equivalent"
 
 
@@ -534,8 +520,7 @@ def test_missing_raw_database_is_a_collector_error_without_losing_simulation_tru
 
 
 @pytest.mark.parametrize(
-    ("mode", "message_fragment"),
-    [("outside", "escapes"), ("directory", "not a regular file")],
+    ("mode", "message_fragment"), [("outside", "escapes"), ("directory", "not a regular file")]
 )
 def test_unsafe_raw_database_is_reported_as_unsafe(
     tmp_path: Path, mode: str, message_fragment: str
@@ -613,9 +598,7 @@ def test_incompatible_native_format_blocks_normalization_with_stable_evidence(
     assert [finding.code for finding in result.findings] == ["COV_NATIVE_FORMAT_INCOMPATIBLE"]
 
 
-def test_known_deferred_and_unknown_record_classes_are_retained_losslessly(
-    tmp_path: Path,
-) -> None:
+def test_known_deferred_and_unknown_record_classes_are_retained_losslessly(tmp_path: Path) -> None:
     request = _request(tmp_path, "all_metrics")
 
     result = collect(request, _RichNativeExecution())
@@ -641,10 +624,7 @@ def _assert_rich_points(result) -> None:
     ]
     assert [
         point.identity.hierarchy for point in result.points if point.identity.metric == "line"
-    ] == [
-        "TOP.first",
-        "TOP.second",
-    ]
+    ] == ["TOP.first", "TOP.second"]
     dispositions = {point.identity.metric: point.disposition["kind"] for point in result.points}
     assert dispositions["fsm"] == "unscored"
     assert dispositions["covergroup"] == "unscored"
@@ -664,9 +644,7 @@ def _assert_rich_capabilities(result) -> None:
     }
 
 
-def test_supported_but_unobserved_record_classes_are_explicitly_absent(
-    tmp_path: Path,
-) -> None:
+def test_supported_but_unobserved_record_classes_are_explicitly_absent(tmp_path: Path) -> None:
     result = collect(_request(tmp_path, "line_only"), _GeneratedMainExecution())
 
     statuses = {capability.record_class: capability.status for capability in result.capabilities}
@@ -685,8 +663,7 @@ def test_post_reset_window_requires_one_fresh_successful_start_hook(tmp_path: Pa
     request = _request(tmp_path, "post_reset", reset_included=False)
 
     result = collect(
-        request,
-        _HookFailureExecution([{"hook": "start", "sequence": 1, "success": True}]),
+        request, _HookFailureExecution([{"hook": "start", "sequence": 1, "success": True}])
     )
 
     assert result.status == "complete", _collection_detail(result)
@@ -699,9 +676,7 @@ def test_post_reset_window_requires_one_fresh_successful_start_hook(tmp_path: Pa
     assert result.coverage_window.hook_artifacts == ("artifact:hook:001",)
 
 
-def test_missing_post_reset_hook_evidence_is_a_structured_collector_error(
-    tmp_path: Path,
-) -> None:
+def test_missing_post_reset_hook_evidence_is_a_structured_collector_error(tmp_path: Path) -> None:
     request = _request(tmp_path, "forgot_hook", reset_included=False)
 
     result = collect(request, _GeneratedMainExecution())
@@ -745,20 +720,12 @@ def test_unchanged_prior_hook_evidence_is_rejected_as_stale(tmp_path: Path) -> N
             ],
             "COV_WINDOW_HOOK_DUPLICATE",
         ),
-        (
-            [{"hook": "start", "sequence": 1, "success": False}],
-            "COV_WINDOW_HOOK_FAILED",
-        ),
-        (
-            [{"hook": "start", "sequence": "first", "success": True}],
-            "COV_WINDOW_HOOK_INVALID",
-        ),
+        ([{"hook": "start", "sequence": 1, "success": False}], "COV_WINDOW_HOOK_FAILED"),
+        ([{"hook": "start", "sequence": "first", "success": True}], "COV_WINDOW_HOOK_INVALID"),
     ],
 )
 def test_invalid_start_hook_is_a_collector_error(
-    tmp_path: Path,
-    events: list[dict[str, object]],
-    expected_code: str,
+    tmp_path: Path, events: list[dict[str, object]], expected_code: str
 ) -> None:
     request = _request(tmp_path, "bad_hook", reset_included=False)
 
@@ -770,13 +737,7 @@ def test_invalid_start_hook_is_a_collector_error(
 
 
 _INVALID_HOOK_CASES = [
-    (
-        "generated_main",
-        ("write_hook",),
-        True,
-        "COV_CUSTOM_MAIN_HOOK_FORBIDDEN",
-        "remove it",
-    ),
+    ("generated_main", ("write_hook",), True, "COV_CUSTOM_MAIN_HOOK_FORBIDDEN", "remove it"),
     (
         "custom_main",
         ("write_hook", "write_hook"),
@@ -843,8 +804,7 @@ def test_custom_main_requires_one_successful_runtime_write_hook(tmp_path: Path) 
     request = _request(tmp_path, "custom", harness="custom_main", hooks=("write_hook",))
 
     result = collect(
-        request,
-        _HookFailureExecution([{"hook": "write", "sequence": 1, "success": True}]),
+        request, _HookFailureExecution([{"hook": "write", "sequence": 1, "success": True}])
     )
 
     assert result.status == "complete", _collection_detail(result)
@@ -885,11 +845,7 @@ def test_failed_custom_main_write_hook_precedes_raw_database_failure(
         artifact for artifact in result.artifacts if artifact.kind == "coverage_hook_evidence"
     )
     document = json.loads((request.artifact_root / hook.path).read_text(encoding="utf-8"))
-    assert document["events"][-1] == {
-        "hook": "write",
-        "sequence": 2,
-        "success": False,
-    }
+    assert document["events"][-1] == {"hook": "write", "sequence": 2, "success": False}
 
 
 @pytest.mark.parametrize(
@@ -1012,10 +968,7 @@ def test_cocotb_trace_coverage_runs_one_process_per_test_and_keeps_failed_run_da
     assert [run.simulation_verdict for run in result.runs] == ["pass", "fail"]
     assert len(execution.run_requests) == 2
     assert execution.run_requests[0].raw_path != execution.run_requests[1].raw_path
-    assert dict(result.points[0].hits_by_run) == {
-        "run:001:increments": 1,
-        "run:002:wraps": 2,
-    }
+    assert dict(result.points[0].hits_by_run) == {"run:001:increments": 1, "run:002:wraps": 2}
 
 
 def test_native_merge_tool_failure_retains_normalized_per_run_evidence(tmp_path: Path) -> None:
@@ -1043,11 +996,7 @@ def test_native_merge_tool_failure_retains_normalized_per_run_evidence(tmp_path:
     ],
 )
 def test_bad_native_merge_never_discards_per_run_evidence(
-    tmp_path: Path,
-    mode: str,
-    expected_code: str,
-    merge_status: str,
-    merged_state: str | None,
+    tmp_path: Path, mode: str, expected_code: str, merge_status: str, merged_state: str | None
 ) -> None:
     request = _request(tmp_path, "reset")
     if mode == "stale":

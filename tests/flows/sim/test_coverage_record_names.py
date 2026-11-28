@@ -43,9 +43,7 @@ from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_refused,
     _assert_unsupported_type,
 )
-from tests.flows.sim.test_simulation_record_unsupported_formats import (
-    reports as _reports_fixture,
-)
+from tests.flows.sim.test_simulation_record_unsupported_formats import reports as _reports_fixture
 from tests.harness.test_coverage_cli import _booley
 from tests.sandbox_venue_fake import place
 
@@ -264,9 +262,7 @@ def test_a_0_4_0_coverage_record_is_refused_naming_its_invocation(reports: Path)
     assert "delete its Simulation invocation directory" in str(unlocated.value)
 
 
-def test_a_0_4_0_coverage_record_reference_is_refused_naming_its_invocation(
-    reports: Path,
-) -> None:
+def test_a_0_4_0_coverage_record_reference_is_refused_naming_its_invocation(reports: Path) -> None:
     raw = _0_4_0_reference()
 
     # The decoder sees bytes only, so it cannot name a directory.

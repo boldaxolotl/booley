@@ -32,10 +32,7 @@ PLAIN_MOUNTINFO = "1 0 0:1 / / rw - overlay overlay rw\n2 1 0:2 / /work rw - ext
 
 def _git(repository: Path, *args: str) -> str:
     """Run git in *repository* and return stdout."""
-    completed = run_bounded_child(
-        ["git", *GIT_IDENTITY, "-C", str(repository), *args],
-        check=True,
-    )
+    completed = run_bounded_child(["git", *GIT_IDENTITY, "-C", str(repository), *args], check=True)
     return completed.stdout
 
 

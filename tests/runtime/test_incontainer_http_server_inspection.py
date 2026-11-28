@@ -46,10 +46,7 @@ def test_serving_port_passes_with_restart_hint(
 
 @pytest.mark.parametrize("hand_written", [False, True])
 def test_not_serving_fails_with_log_tail_and_remedy(
-    closed_port: int,
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    hand_written: bool,
+    closed_port: int, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, hand_written: bool
 ) -> None:
     if hand_written:
         place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)

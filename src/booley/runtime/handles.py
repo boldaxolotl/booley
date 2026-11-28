@@ -59,11 +59,7 @@ class HandleMap:
 
     def stored(self) -> dict[str, object]:
         """The persisted fields."""
-        return {
-            "entries": self.entries,
-            "aliases": self.aliases,
-            "next_number": self.next_number,
-        }
+        return {"entries": self.entries, "aliases": self.aliases, "next_number": self.next_number}
 
     def reserve(self, key: str, prefix: str) -> str:
         """Reserve *key*'s handle, keeping the one it already has."""

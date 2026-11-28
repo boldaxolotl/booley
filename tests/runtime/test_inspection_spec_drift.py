@@ -23,13 +23,7 @@ from booley.config.agent import RetiredAuthError
 from booley.config.host_config import host_config_path
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
-from booley.runtime import (
-    auth_token,
-    inspection,
-    project_image,
-    sandbox_apply,
-    session_runtime,
-)
+from booley.runtime import auth_token, inspection, project_image, sandbox_apply, session_runtime
 from booley.runtime import devcontainer as dc
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime.runtime_context import RuntimeLocation
@@ -380,10 +374,7 @@ _DRIFT_CASES = {
     "token-seed-mount": (_remove_token_seed, "mounts[]"),
     "post-attach": (_remove_post_attach, "postAttachCommand"),
     "hdl-vsix": (_remove_extension(dc.HDL_VSIX), "customizations.vscode.extensions[]"),
-    "retired-extension": (
-        _add_extension("bitwisecook.tcl"),
-        "customizations.vscode.extensions[]",
-    ),
+    "retired-extension": (_add_extension("bitwisecook.tcl"), "customizations.vscode.extensions[]"),
     "retired-file-association": (
         _set_setting("files.associations", {"*.sdc": "tcl"}),
         "customizations.vscode.settings.files.associations.*.sdc",
@@ -565,9 +556,7 @@ def test_hand_written_sandbox_unparseable_spec_names_no_init_rerun(
 
 @pytest.mark.parametrize("hand_written", [True, False])
 def test_inconclusive_image_comparison_names_host_doctor_only_off_a_hand_written_sandbox(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    hand_written: bool,
+    project: Path, monkeypatch: pytest.MonkeyPatch, hand_written: bool
 ) -> None:
     if hand_written:
         place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)

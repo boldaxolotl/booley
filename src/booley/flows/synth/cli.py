@@ -108,9 +108,7 @@ class SynthArguments(BuiltinArguments):
     @staticmethod
     def add_args(parser: argparse.ArgumentParser, features: frozenset[str]) -> None:  # noqa: ARG004 — implements BuiltinArguments.add_args
         parser.add_argument(
-            "--baseline",
-            default=None,
-            help="Baseline git ref (SHA/branch/tag) for comparison",
+            "--baseline", default=None, help="Baseline git ref (SHA/branch/tag) for comparison"
         )
         # ADR 0029 decision 7: flatten is an A/B experiment toggle, so it lives
         # on the Flow CLI. Tri-state: unset (None) means "use the selected

@@ -102,11 +102,7 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     worker = getattr(config, "workerinput", {}).get("workerid")
     if worker in {None, "gw0"}:
         write_manifest(
-            manifest,
-            group=group,
-            shard_index=shard_index,
-            shards=shards,
-            all_nodeids=nodeids,
+            manifest, group=group, shard_index=shard_index, shards=shards, all_nodeids=nodeids
         )
 
 

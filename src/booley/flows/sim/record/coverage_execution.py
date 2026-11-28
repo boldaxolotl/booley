@@ -42,11 +42,7 @@ from booley.flows.sim.verilator_coverage import (
 from booley.runtime.timefmt import utc_now_rfc3339
 
 from .codec import SimulationRecordIntegrityError
-from .coordinator import (
-    SerialWorkExecutor,
-    WorkExecutionRequest,
-    simulation_options_from_policy,
-)
+from .coordinator import SerialWorkExecutor, WorkExecutionRequest, simulation_options_from_policy
 from .model import (
     BundleBuildAttempt,
     BundleBuildResult,
@@ -176,8 +172,7 @@ def _raise_if_coverage_aborted(
     if message is None and build_result is not None:
         message = build_result.output
     raise _CoverageAggregateError(
-        str(message or "native coverage collection failed"),
-        outcome.detail,
+        str(message or "native coverage collection failed"), outcome.detail
     )
 
 
@@ -318,11 +313,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
                 "coverage plan is missing for record Target"
             ) from exc
         origin_invocation = request.store.root.parents[2]
-        nested_plan = replace(
-            plan,
-            invocation_dir=origin_invocation,
-            started_at=utc_now_rfc3339(),
-        )
+        nested_plan = replace(plan, invocation_dir=origin_invocation, started_at=utc_now_rfc3339())
         try:
             return run_coverage_target(
                 nested_plan,
@@ -404,10 +395,7 @@ class CoverageAggregateExecutor(SerialWorkExecutor):
         evidence_root = request.attempt_directory / "execution-evidence"
         evidence_root.mkdir(mode=0o700, exist_ok=True)
         execution.bind_authenticated_attempt(
-            captured.directory,
-            evidence_root,
-            run_cwd,
-            lambda: _verify_or_carry(captured),
+            captured.directory, evidence_root, run_cwd, lambda: _verify_or_carry(captured)
         )
         faults.fault_point("after:runtime_inputs")
         return bindings
@@ -495,12 +483,7 @@ def _publish_coverage_build_failure(
         ),
     )
     result = publish_failed_build_result(
-        request,
-        directory,
-        attempt,
-        failed,
-        elapsed,
-        infrastructure=infrastructure,
+        request, directory, attempt, failed, elapsed, infrastructure=infrastructure
     )
     return blocked_result(
         request,
@@ -525,8 +508,7 @@ def _coverage_tests(outcome: CoverageTargetOutcome) -> tuple[Mapping[str, object
 def _coverage_observation(item: Mapping[str, object]) -> dict[str, object]:
     execution = item.get("execution")
     return observation_document(
-        _coverage_test_outcome(item),
-        execution="not_run" if execution == "not_run" else None,
+        _coverage_test_outcome(item), execution="not_run" if execution == "not_run" else None
     )
 
 

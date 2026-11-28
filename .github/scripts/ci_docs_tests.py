@@ -294,8 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     missing = [module for module in REQUIRED_CONTENT_TESTS if module not in modules]
     if missing:
         print(
-            f"error: required content test(s) not derived: {', '.join(missing)}",
-            file=sys.stderr,
+            f"error: required content test(s) not derived: {', '.join(missing)}", file=sys.stderr
         )
         return 2
     print("\n".join(modules))

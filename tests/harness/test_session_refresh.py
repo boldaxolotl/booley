@@ -20,11 +20,7 @@ import pytest
 from booley.harness import init_cmd
 from booley.harness import session_refresh as harness_refresh
 from booley.runtime import devcontainer as dc
-from booley.runtime import (
-    issuance_invalidation,
-    session_admission,
-    session_refresh,
-)
+from booley.runtime import issuance_invalidation, session_admission, session_refresh
 from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.image_lifecycle import (
@@ -41,11 +37,7 @@ from tests.git_support import repository
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.harness.session_docker_fake import SandboxDocker, serve_sandbox_docker
 from tests.runtime import test_session_issuance as issuance_fixtures
-from tests.runtime.test_sandbox_remedy_workflows import (
-    EXTERNAL,
-    HEADLESS_RESEED,
-    VSCODE_SEED,
-)
+from tests.runtime.test_sandbox_remedy_workflows import EXTERNAL, HEADLESS_RESEED, VSCODE_SEED
 from tests.sandbox_venue_fake import place
 
 project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution

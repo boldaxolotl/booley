@@ -90,10 +90,7 @@ def _core(name: str) -> str:
             id="worktree-and-registry-copies",
         ),
         pytest.param(
-            {".booley/notes/worktrees/x.core": "n"},
-            False,
-            "notes",
-            id="nested-worktrees-name",
+            {".booley/notes/worktrees/x.core": "n"}, False, "notes", id="nested-worktrees-name"
         ),
         pytest.param(
             {"repo.core": "dup", ".booley/cores/s.core": "dup"},

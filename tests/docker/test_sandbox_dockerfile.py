@@ -366,10 +366,7 @@ def test_bundled_vsix_install_rejects_bad_payload(tmp_path: Path, name: str, cas
     body = body.replace("/tmp/", f"{tmp_path}/").replace("/usr/local", str(root / "usr/local"))
     # Substitute the network download only; run the shipped verification commands.
     curl = 'curl() { for arg; do if [ "$arg" = "-o" ]; then shift; break; fi; shift; done; cp "$FIXTURE" "$1"; }; '
-    result = run_bounded_child(
-        ["sh", "-c", curl + body],
-        env=environment,
-    )
+    result = run_bounded_child(["sh", "-c", curl + body], env=environment)
     installed = list((root / "usr/local/libexec/booley").glob("*.vsix"))
     assert (result.returncode == 0) == (case == "good"), result.stderr
     assert bool(installed) == (case == "good")
@@ -445,9 +442,7 @@ _CLI_VERSION_ALLOWED = (
 
 def _stray_files(pattern: str, *, manifest_matches: bool = True) -> list[str]:
     """Return tracked files outside the allowlist that match ``pattern``."""
-    result = run_bounded_child(
-        ["git", "grep", "-l", "-E", pattern, "--", ".", ":!*Cargo.lock"],
-    )
+    result = run_bounded_child(["git", "grep", "-l", "-E", pattern, "--", ".", ":!*Cargo.lock"])
     assert result.returncode in (0, 1), result.stderr
     found = result.stdout.splitlines()
     # The search must see the manifest itself, or an empty match proves nothing.
@@ -507,8 +502,7 @@ def test_agent_cli_build_check_compares_installed_clis_with_the_manifest(tmp_pat
             stub.write_text(f"#!/bin/sh\necho '{output}'\n", encoding="utf-8")
             stub.chmod(0o755)
         return run_bounded_child(
-            ["sh", "-c", checks[0].replace(manifest_path, str(manifest))],
-            env=env,
+            ["sh", "-c", checks[0].replace(manifest_path, str(manifest))], env=env
         ).returncode
 
     assert exit_code("9.9.9", "8.8.8") == 0
@@ -716,10 +710,7 @@ def test_riscv_document_install_rejects_wrong_checksums(
     ).replace("/opt/riscv-docs", str(tmp_path / "docs"))
     # Substitute network downloads only; execute the shipped checksum and index commands.
     curl = 'curl() { for arg; do if [ "$arg" = "-o" ]; then shift; break; fi; shift; done; printf fixture > "$1"; }; '
-    result = run_bounded_child(
-        ["sh", "-c", curl + install],
-        env=environment,
-    )
+    result = run_bounded_child(["sh", "-c", curl + install], env=environment)
     assert (result.returncode != 0) == (bad_hash is not None), result.stderr
     assert (tmp_path / "docs" / "INDEX.md").exists() == (bad_hash is None)
     if bad_hash is None:

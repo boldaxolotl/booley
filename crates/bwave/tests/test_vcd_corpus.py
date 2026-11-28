@@ -178,14 +178,7 @@ def test_replay_offsets_complete_windows_and_records_hash(tmp_path: Path) -> Non
     source.write_bytes(SOURCE_VCD)
     assert _capture(source, excerpt).returncode == 0
 
-    result = _run(
-        "replay",
-        str(excerpt),
-        "--output",
-        str(output),
-        "--target-bytes",
-        "1024",
-    )
+    result = _run("replay", str(excerpt), "--output", str(output), "--target-bytes", "1024")
 
     assert result.returncode == 0, result.stderr
     data = output.read_bytes()

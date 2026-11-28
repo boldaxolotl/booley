@@ -187,8 +187,7 @@ def from_references(contents: str) -> tuple[FromReference, ...]:
                 "",
             )
             resolved = _ARGUMENT_REFERENCE.sub(
-                lambda match: globals_.get(match.group(1) or match.group(2), match.group(0)),
-                image,
+                lambda match: globals_.get(match.group(1) or match.group(2), match.group(0)), image
             )
             if not resolved or "$" in resolved:
                 raise ValueError(f"Dockerfile:{instruction.line}: unresolved FROM {image}")

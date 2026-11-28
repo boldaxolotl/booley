@@ -43,11 +43,7 @@ def fail(step: str, output: str) -> NoReturn:
 
 def run_t3(*args: str, timeout_s: float = _COMMAND_TIMEOUT_S) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["t3", *args],
-        capture_output=True,
-        text=True,
-        timeout=timeout_s,
-        check=False,
+        ["t3", *args], capture_output=True, text=True, timeout=timeout_s, check=False
     )
 
 

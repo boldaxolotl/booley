@@ -28,10 +28,7 @@ class _EditorInstallCandidate:
 
 _EDITOR_SPECS = (
     _EditorSpec(
-        "code",
-        "Visual Studio Code.app",
-        "Electron",
-        Path("Programs/Microsoft VS Code/Code.exe"),
+        "code", "Visual Studio Code.app", "Electron", Path("Programs/Microsoft VS Code/Code.exe")
     ),
     _EditorSpec(
         "code-insiders",

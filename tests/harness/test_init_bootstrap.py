@@ -47,8 +47,7 @@ def _args(**overrides: object) -> argparse.Namespace:
 
 
 def _finding(
-    state: init_cmd.BootstrapState,
-    resource: str = "resource",
+    state: init_cmd.BootstrapState, resource: str = "resource"
 ) -> bootstrap.BootstrapFinding:
     return bootstrap.BootstrapFinding(resource, state, state.value)
 
@@ -61,10 +60,7 @@ def test_init_coordinators_fit_on_a_screen(coordinator: str) -> None:
 
 
 def _host_setup_run(
-    operation: str,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    invoked: list[str],
+    operation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invoked: list[str]
 ) -> Callable[[], int]:
     if operation == "init":
         # private: stands for everything after the lock, which needs Docker-backed
@@ -79,8 +75,7 @@ def _host_setup_run(
         bootstrap_cli,
         "register_host_installation",
         lambda *_args, **_kwargs: SimpleNamespace(
-            version="1.0",
-            payload_fingerprint="abcdef123456",
+            version="1.0", payload_fingerprint="abcdef123456"
         ),
     )
     monkeypatch.setattr(
@@ -108,10 +103,7 @@ def test_host_setup_waits_for_lifecycle_lock(
     )
     run = _host_setup_run(operation, tmp_path, monkeypatch, invoked)
 
-    with (
-        held_lifecycle_lock(lock_path) as holder,
-        ThreadPoolExecutor(max_workers=1) as executor,
-    ):
+    with held_lifecycle_lock(lock_path) as holder, ThreadPoolExecutor(max_workers=1) as executor:
         result = executor.submit(run)
         assert waiting.wait(hang_guard_s())
         assert not result.done()
@@ -260,8 +252,7 @@ def test_retired_project_policy_fails_before_project_mutation(
     booley_dir.mkdir()
     config = booley_dir / "booley.toml"
     config.write_text(
-        f"[{table}]\nidle_timeout_seconds = 600\nmax_sessions = 2\n",
-        encoding="utf-8",
+        f"[{table}]\nidle_timeout_seconds = 600\nmax_sessions = 2\n", encoding="utf-8"
     )
     monkeypatch.setattr(
         init_cmd,
@@ -278,8 +269,7 @@ def test_retired_project_policy_fails_before_project_mutation(
 
 
 @pytest.mark.parametrize(
-    ("force", "outcome"),
-    [(True, "current"), (False, "external"), (True, "capacity")],
+    ("force", "outcome"), [(True, "current"), (False, "external"), (True, "capacity")]
 )
 def test_init_image_step_records_each_reconciliation_outcome(
     tmp_path: Path,

@@ -116,8 +116,7 @@ _RENDERED_ID_RULE = (
 # one-line diagnosis (F-6, taxi port). cocotb 2.x prints no such line: see
 # _discovery_import_failure.
 _IMPORT_FAILURE_RE = re.compile(
-    r"Failed to import module\s+(?P<module>[\w.]+)\s*:\s*(?P<error>.+?)\s*$",
-    re.MULTILINE,
+    r"Failed to import module\s+(?P<module>[\w.]+)\s*:\s*(?P<error>.+?)\s*$", re.MULTILINE
 )
 
 # cocotb 2.x lets the exception out of its test discovery, so the console holds a
@@ -262,23 +261,16 @@ def parse_results_xml(path: Path | str) -> CocotbResults:
     """
     path = Path(path)
     if not path.is_file():
-        return CocotbResults(
-            state=STATE_MISSING,
-            detail=f"results.xml not found at {path}",
-        )
+        return CocotbResults(state=STATE_MISSING, detail=f"results.xml not found at {path}")
     try:
         root = ElementTree.parse(path).getroot()
     except ElementTree.ParseError as exc:
         return CocotbResults(
-            state=STATE_UNPARSEABLE,
-            detail=f"results.xml is truncated or malformed: {exc}",
+            state=STATE_UNPARSEABLE, detail=f"results.xml is truncated or malformed: {exc}"
         )
     tests = tuple(_parse_testcase(el) for el in root.iter("testcase"))
     if not tests:
-        return CocotbResults(
-            state=STATE_EMPTY,
-            detail="results.xml contains no testcase entries",
-        )
+        return CocotbResults(state=STATE_EMPTY, detail="results.xml contains no testcase entries")
     return CocotbResults(state=STATE_OK, tests=tests)
 
 
@@ -297,9 +289,7 @@ def _bare_progress_name(logged: str) -> str:
 
 
 def recover_timeout_progress(
-    output: str,
-    selected: list[str],
-    parsed: CocotbResults | None = None,
+    output: str, selected: list[str], parsed: CocotbResults | None = None
 ) -> CocotbResults:
     """Recover completed, active, and not-run tests from cocotb progress lines."""
     # Cocotb 2.x logs <module>.<test>, while XML and selected tests use bare
@@ -351,10 +341,7 @@ def recover_timeout_progress(
         elif name == active:
             tests.append(
                 CocotbTest(
-                    name=name,
-                    module="",
-                    status=VERDICT_FAIL,
-                    failure_text=TIMEOUT_ACTIVE_DETAIL,
+                    name=name, module="", status=VERDICT_FAIL, failure_text=TIMEOUT_ACTIVE_DETAIL
                 )
             )
         elif name in failed:
@@ -416,12 +403,7 @@ def _parse_testcase(el: ElementTree.Element) -> CocotbTest:
         )
     if el.find("skipped") is not None:
         return CocotbTest(name=name, module=module, status="skipped")
-    return CocotbTest(
-        name=name,
-        module=module,
-        status=VERDICT_PASS,
-        elapsed_s=elapsed_s,
-    )
+    return CocotbTest(name=name, module=module, status=VERDICT_PASS, elapsed_s=elapsed_s)
 
 
 def _skip_log_entry(lines: Sequence[str], test: CocotbTest) -> tuple[str, str] | None:
@@ -571,8 +553,7 @@ def _absent_test_detail(name: str, results: CocotbResults) -> str:
 
 
 def reconcile(
-    selected: list[str],
-    results: CocotbResults,
+    selected: list[str], results: CocotbResults
 ) -> list[tuple[str, ReconciledVerdict, str]]:
     """Map every *selected* tests.toml name to ``(name, verdict, detail)``.
 

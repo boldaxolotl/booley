@@ -313,10 +313,7 @@ def _load_announcements(path: Path) -> dict[str, str]:
 
 
 def consume_changed_snapshot(
-    project_root: Path,
-    *,
-    channel: str,
-    issues_only: bool = False,
+    project_root: Path, *, channel: str, issues_only: bool = False
 ) -> HealthSnapshot | None:
     """Return a changed, current observation once per reporting channel.
 

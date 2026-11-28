@@ -226,8 +226,7 @@ class TestDockerfile:
     def test_multistage_parent_requires_explicit_directive(self, tmp_path):
         dockerfile = tmp_path / "Dockerfile"
         dockerfile.write_text(
-            "FROM booley-sandbox AS build\nFROM build AS final\n",
-            encoding="utf-8",
+            "FROM booley-sandbox AS build\nFROM build AS final\n", encoding="utf-8"
         )
 
         assert pi.dockerfile_parent_image(dockerfile) is None

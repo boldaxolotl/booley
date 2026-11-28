@@ -67,11 +67,7 @@ from booley.runtime.devcontainer import (
     devcontainer_path,
     render_devcontainer_json,
 )
-from booley.runtime.filesystem_utils import (
-    open_with_sharing_retry,
-    replace_file,
-    unlink_file,
-)
+from booley.runtime.filesystem_utils import open_with_sharing_retry, replace_file, unlink_file
 from booley.runtime.guarded_write import replace_regular_file
 from booley.runtime.incontainer_git_identity import (
     GitIdentity,
@@ -155,12 +151,7 @@ _PROXY_REMOTE_ENV = {
     "NO_PROXY": "localhost,127.0.0.1",
 }
 _REQUIRED_REMOTE_ENV = frozenset(
-    {
-        DEVELOPER_AGENT_ENV,
-        "BOOLEY_DIR",
-        COMPILER_CACHE_ROOT_ENV,
-        "BOOLEY_AGENT_APP",
-    }
+    {DEVELOPER_AGENT_ENV, "BOOLEY_DIR", COMPILER_CACHE_ROOT_ENV, "BOOLEY_AGENT_APP"}
 )
 _ALLOWED_REMOTE_ENV = (
     _REQUIRED_REMOTE_ENV
@@ -275,10 +266,7 @@ SpecBuilder = Callable[[SessionSpecInputs], dict[str, Any]]
 
 
 def _authentication_differences(
-    issuance: Issuance,
-    project: Path,
-    spec: dict[str, Any],
-    spec_path: Path,
+    issuance: Issuance, project: Path, spec: dict[str, Any], spec_path: Path
 ) -> str | None:
     recorded = {
         "project_root": issuance.project_root,
@@ -470,13 +458,7 @@ def keeper_image_for_identity(project_root: str) -> str:
 
 def initialize_command(executable: str = "booley") -> list[str]:
     """Fixed host-side validator/topology preparer used before VS Code create."""
-    return [
-        executable,
-        "session",
-        "prepare",
-        "--project",
-        "${localWorkspaceFolder}",
-    ]
+    return [executable, "session", "prepare", "--project", "${localWorkspaceFolder}"]
 
 
 def pin_image(spec: dict[str, Any], *, expected_image_id: str | None = None) -> str:
@@ -496,9 +478,7 @@ def pin_image(spec: dict[str, Any], *, expected_image_id: str | None = None) -> 
 
 @contextlib.contextmanager
 def _issuance_requirements(
-    project_root: Path,
-    spec: dict[str, Any],
-    prior: Issuance | None = None,
+    project_root: Path, spec: dict[str, Any], prior: Issuance | None = None
 ) -> Iterator[eda_requirements.SessionEdaRequirements]:
     """Resolve EDA authority only when the runtime has an active consumer.
 
@@ -515,9 +495,7 @@ def _issuance_requirements(
         prior is not None and (prior.installation is not None or prior.license_profile is not None)
     )
     with eda_requirements.lease_requirements(
-        project_root,
-        vivado_enabled=flow_enabled("fpga", project_root),
-        prior_eda=prior_eda,
+        project_root, vivado_enabled=flow_enabled("fpga", project_root), prior_eda=prior_eda
     ) as leased:
         yield eda_requirements.with_relay_identity(leased, runner=host_docker.relay_docker)
 
@@ -553,9 +531,7 @@ def _seal_with_requirements(
 
 
 def requested_license(
-    project_root: Path,
-    *,
-    expected_name: str | None = "",
+    project_root: Path, *, expected_name: str | None = ""
 ) -> authority.LicenseProfile | None:
     """Return the host-selected License Profile, when the runtime requests one.
 
@@ -574,23 +550,16 @@ def requested_license(
 
 
 def preview(
-    project_root: Path,
-    build_spec: SpecBuilder,
-    *,
-    expected_image_id: str | None = None,
+    project_root: Path, build_spec: SpecBuilder, *, expected_image_id: str | None = None
 ) -> PreparedSessionSpec:
     """Build, pin, and seal a Runtime spec without persistent side effects."""
     project = project_root.resolve(strict=True)
     try:
         requirements = eda_requirements.inspect_build_requirements(
-            project,
-            vivado_enabled=flow_enabled("fpga", project),
+            project, vivado_enabled=flow_enabled("fpga", project)
         )
         return _prepare_spec(
-            project,
-            build_spec,
-            requirements,
-            expected_image_id=expected_image_id,
+            project, build_spec, requirements, expected_image_id=expected_image_id
         )
     except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
         raise RuntimeSpecError(str(exc)) from exc
@@ -627,12 +596,7 @@ def _prepare_spec(
         raise RuntimeSpecError("Sandbox spec builder must return a dictionary")
     pin_image(spec, expected_image_id=expected_image_id)
     _pin_initialize_command(project, spec)
-    _pin_project_data_mount(
-        spec,
-        docker_mount_path(project_data_path),
-        project,
-        project_data_path,
-    )
+    _pin_project_data_mount(spec, docker_mount_path(project_data_path), project, project_data_path)
     _pin_devcontainer_mount(spec, project)
     _mount_t3_policy(spec, project)
     digest = _seal_with_requirements(project, spec, project_data_path, requirements, inputs.egress)
@@ -652,8 +616,7 @@ def _prepare_spec(
 
 
 def _session_spec_inputs(
-    project: Path,
-    requirements: eda_requirements.SessionEdaRequirements,
+    project: Path, requirements: eda_requirements.SessionEdaRequirements
 ) -> SessionSpecInputs:
     installation = requirements.installation
     license_environment = (
@@ -720,10 +683,7 @@ def _revalidate_prepared(
     if prepared.prospective_issuance != prospective:
         raise RuntimeSpecError(
             "Sandbox policy changed after its specification was prepared: "
-            + format_differences(
-                asdict(prepared.prospective_issuance),
-                asdict(prospective),
-            )
+            + format_differences(asdict(prepared.prospective_issuance), asdict(prospective))
         )
 
 
@@ -740,14 +700,11 @@ def issue_prepared(
         raise RuntimeSpecError("prepared Sandbox specification digest is inconsistent")
     try:
         with eda_requirements.lease_requirements(
-            project,
-            vivado_enabled=flow_enabled("fpga", project),
+            project, vivado_enabled=flow_enabled("fpga", project)
         ) as leased:
             _revalidate_prepared(project, prepared, leased, current_builder)
             requirements = eda_requirements.prepare_runtime_dependencies(
-                leased,
-                runner=host_docker.relay_docker,
-                force_relay=force_dependencies,
+                leased, runner=host_docker.relay_docker, force_relay=force_dependencies
             )
             return _persist_prepared(project, prepared, requirements=requirements)
     except (FlowConfigError, eda_requirements.SessionRequirementsError) as exc:
@@ -779,10 +736,7 @@ def _persist_prepared(
     )
     try:
         mount_history.record_former_mount(
-            authorized_project_data_source(project),
-            snapshots[path][0],
-            BOOLEY_DIR_TARGET,
-            path,
+            authorized_project_data_source(project), snapshots[path][0], BOOLEY_DIR_TARGET, path
         )
     except mount_history.MountHistoryError as exc:
         raise RuntimeSpecError(str(exc)) from exc
@@ -952,10 +906,7 @@ def _validate_grant_identity(
             requirements.license_profile.name if requirements.license_profile else None
         ),
     }
-    recorded = {
-        "installation": stamp.installation,
-        "license_profile": stamp.license_profile,
-    }
+    recorded = {"installation": stamp.installation, "license_profile": stamp.license_profile}
     if recorded != expected:
         raise RuntimeSpecError(
             "Project grant differs from the issued Sandbox spec: "
@@ -1261,21 +1212,11 @@ def _validate_egress_mode(spec: dict[str, Any], egress: str) -> None:
 
 
 def _validate_run_args(
-    raw: object,
-    *,
-    expected_labels: tuple[str, ...],
-    private_network: str | None,
-    egress: str,
+    raw: object, *, expected_labels: tuple[str, ...], private_network: str | None, egress: str
 ) -> None:
     if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
         raise RuntimeSpecError("devcontainer.json runArgs must be a string list")
-    forbidden = {
-        "--privileged",
-        "--pid=host",
-        "--network=host",
-        "--ipc=host",
-        "--userns=host",
-    }
+    forbidden = {"--privileged", "--pid=host", "--network=host", "--ipc=host", "--userns=host"}
     if any(item in forbidden for item in raw):
         raise RuntimeSpecError("devcontainer.json requests forbidden host authority")
     fixed = _FIXED_RUN_ARGS if egress == "proxy" else _UNPROXIED_RUN_ARGS
@@ -1284,8 +1225,7 @@ def _validate_run_args(
         raise RuntimeSpecError(
             "devcontainer.json run arguments differ from fixed runtime hardening: "
             + format_differences(
-                {"fixed_hardening": fixed},
-                {"fixed_hardening": tuple(raw[:cursor])},
+                {"fixed_hardening": fixed}, {"fixed_hardening": tuple(raw[:cursor])}
             )
         )
     cursor = _validate_memory_args(raw, cursor)
@@ -1395,10 +1335,7 @@ def _validate_remote_environment(
     if any(remote.get(key) != value for key, value in fixed_remote.items()):
         raise RuntimeSpecError(
             "devcontainer.json fixed Sandbox environment has drifted: "
-            + format_differences(
-                fixed_remote,
-                {key: remote.get(key) for key in fixed_remote},
-            )
+            + format_differences(fixed_remote, {key: remote.get(key) for key in fixed_remote})
         )
     from booley.runtime import auth_token
 
@@ -1694,10 +1631,7 @@ def _reject_project_authored_mount_override(project: Path) -> None:
         )
 
 
-def _validate_project_data_source(
-    project: Path,
-    candidate: Path,
-) -> Path:
+def _validate_project_data_source(project: Path, candidate: Path) -> Path:
     if not candidate.is_absolute():
         raise RuntimeSpecError("BOOLEY_DIR must be an absolute host path")
     if any(char == "," or ord(char) < 32 for char in str(candidate)):
@@ -1810,10 +1744,7 @@ def _pin_devcontainer_mount(spec: dict[str, Any], project: Path) -> None:
     index = indexes[0]
     source = project.resolve() / ".devcontainer"
     canonical = expected_devcontainer_mount(project)
-    allowed = {
-        f"source={source},target={DEVCONTAINER_TARGET},type=bind,readonly",
-        canonical,
-    }
+    allowed = {f"source={source},target={DEVCONTAINER_TARGET},type=bind,readonly", canonical}
     if mounts[index] not in allowed:
         raise RuntimeSpecError(
             f"trusted target {DEVCONTAINER_TARGET} must have one exact read-only bind"
@@ -2036,11 +1967,7 @@ def _require_project_data_source(source: str | None) -> Path:
 
 
 def _require_project_data_mount(
-    mounts: list[str],
-    source: str | None,
-    project_root: Path,
-    *,
-    layout: str = "legacy",
+    mounts: list[str], source: str | None, project_root: Path, *, layout: str = "legacy"
 ) -> str | None:
     project = _require_project_data_source(source)
     canonical = _validate_project_data_bind_source(project_root, project)
@@ -2267,8 +2194,7 @@ def _copy_from_image(image_id: str, sources: Mapping[str, Path], *, refusal: str
     try:
         for source, destination in sources.items():
             copied = docker._run_docker(
-                ["container", "cp", "-L", f"{container}:{source}", str(destination)],
-                timeout=60,
+                ["container", "cp", "-L", f"{container}:{source}", str(destination)], timeout=60
             )
             if copied.returncode != 0:
                 raise RuntimeSpecError(refusal.format(source=source))

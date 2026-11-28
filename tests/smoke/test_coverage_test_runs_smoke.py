@@ -28,8 +28,7 @@ from booley.targets.catalog import TargetCatalog
 
 _MISSING = [tool for tool in ("verilator", "verilator_coverage") if shutil.which(tool) is None]
 pytestmark = pytest.mark.skipif(
-    bool(_MISSING),
-    reason=f"needs {', '.join(_MISSING)} on PATH (the pinned Booley Sandbox Image)",
+    bool(_MISSING), reason=f"needs {', '.join(_MISSING)} on PATH (the pinned Booley Sandbox Image)"
 )
 
 _TESTS_TOML = (

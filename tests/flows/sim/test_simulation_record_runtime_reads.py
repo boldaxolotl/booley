@@ -96,9 +96,7 @@ def test_queued_memory_claim_whose_entry_vanishes_fails_instead_of_waiting_forev
         )
 
 
-def test_memory_claim_gives_up_relisting_a_listed_entry_that_stays_gone(
-    tmp_path: Path,
-) -> None:
+def test_memory_claim_gives_up_relisting_a_listed_entry_that_stays_gone(tmp_path: Path) -> None:
     """The relist after a vanished entry is bounded: an entry that never reads counts as blocking."""
     store = SlotStore(tmp_path / "slots")
     claim = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=100.0)

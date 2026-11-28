@@ -13,12 +13,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from booley.audit.diagnostic_results import (
-    DiagnosticFinding,
-    DiagnosticReport,
-    Findings,
-    Severity,
-)
+from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Findings, Severity
 from booley.core.boundary import (
     BoundaryError,
     as_dict,

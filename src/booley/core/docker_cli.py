@@ -11,6 +11,7 @@ from booley.core.boundary import BoundaryError, require_dict, require_str_value
 
 ROLE_LABEL = "booley.role"
 PROJECT_ID_LABEL = "booley.project-id"
+PROJECT_NAME_LABEL = "booley.project"
 
 #: Runs ``docker <args>`` within *timeout* seconds; a non-zero exit is returned, not raised.
 Runner = Callable[[list[str], int], subprocess.CompletedProcess[str]]
@@ -40,7 +41,7 @@ class Validator(Protocol[_T_co]):
 def inspect_value(
     run: Runner,
     kind: str,
-    name: str,
+    name: str | None,
     *,
     timeout: int,
     template: str,
@@ -48,10 +49,12 @@ def inspect_value(
 ) -> _T:
     """Return what *require* accepts of the JSON that *template* renders for one object.
 
-    Whatever *run* raises, such as a timeout, passes through.
+    A ``None`` *name* names no object, as ``docker context inspect`` of the current
+    context does. Whatever *run* raises, such as a timeout, passes through.
     """
-    args = [kind, "inspect", name, "--format", template]
-    return _decoded(run, args, f"{kind} {name}", timeout, require)
+    named = [] if name is None else [name]
+    args = [kind, "inspect", *named, "--format", template]
+    return _decoded(run, args, " ".join([kind, *named]), timeout, require)
 
 
 def inspect_registry_image(
@@ -137,7 +140,9 @@ def labels(raw: object, *, allow_empty: bool = False) -> dict[str, str]:
 
 
 def failure_detail(result: subprocess.CompletedProcess[str], fallback: str | None = None) -> str:
-    """Say why a command failed: stderr, else stdout, else *fallback* or the exit code."""
-    return (
-        result.stderr.strip() or result.stdout.strip() or fallback or f"exit {result.returncode}"
-    )
+    """Say why a command failed: stderr, else stdout, else *fallback* or the exit code.
+
+    An empty *fallback* yields an empty string for a command that printed nothing.
+    """
+    detail = result.stderr.strip() or result.stdout.strip()
+    return detail or (f"exit {result.returncode}" if fallback is None else fallback)

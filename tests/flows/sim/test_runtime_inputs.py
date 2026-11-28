@@ -219,8 +219,7 @@ def test_runtime_input_cannot_escape_its_roots(roots: tuple[Path, Path], relativ
 
     with (
         pytest.raises(
-            RuntimeInputError,
-            match=r"invalid build input path|build input path escapes its root",
+            RuntimeInputError, match=r"invalid build input path|build input path escapes its root"
         ),
         materialize_runtime_inputs(build, run, (relative,), booley_dir=run.parent / ".booley"),
     ):

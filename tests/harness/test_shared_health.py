@@ -13,9 +13,7 @@ import pytest
 from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Findings, Severity
 from booley.harness import auto_doctor, doctor
 from booley.harness import booley as cli
-from booley.mcp import (
-    server,
-)
+from booley.mcp import server
 from booley.runtime import health, health_presentation
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.timefmt import rfc3339_from_datetime

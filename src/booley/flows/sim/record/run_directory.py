@@ -131,11 +131,7 @@ def expand_run_directory(
 
 
 @contextmanager
-def claimed_run_directory(
-    run: RunDirectory,
-    *,
-    identity: Mapping[str, str],
-) -> Iterator[Path]:
+def claimed_run_directory(run: RunDirectory, *, identity: Mapping[str, str]) -> Iterator[Path]:
     """Claim a templated cwd, cleaning only the matching owned directory."""
     with (
         _held_path_lock(run.lock_path, discard=run.owned),

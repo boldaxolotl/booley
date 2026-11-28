@@ -7,11 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from tests.architecture.import_graph import (
-    Dependency,
-    top_level_package,
-    top_level_package_sccs,
-)
+from tests.architecture.import_graph import Dependency, top_level_package, top_level_package_sccs
 
 _MODULE_PATTERN = re.compile(r"^[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*$")
 _ISSUE_PATTERN = re.compile(r"(?:#\d+|https://github\.com/[^/]+/[^/]+/issues/\d+)")
@@ -228,8 +224,7 @@ def _direction_problems(
 
 
 def _scc_problems(
-    dependencies: tuple[Dependency, ...],
-    approved_sccs: tuple[frozenset[str], ...],
+    dependencies: tuple[Dependency, ...], approved_sccs: tuple[frozenset[str], ...]
 ) -> tuple[ContractProblem, ...]:
     problems = []
     for group in top_level_package_sccs(dependencies):
@@ -282,9 +277,7 @@ def _format_scc_witnesses(
     approved_sccs: tuple[frozenset[str], ...],
 ) -> str:
     baseline = max(
-        approved_sccs,
-        key=lambda approved: len(members & approved),
-        default=frozenset(),
+        approved_sccs, key=lambda approved: len(members & approved), default=frozenset()
     )
     unexpected_sources = members - baseline
     witnesses = []
@@ -305,9 +298,7 @@ def _format_scc_witnesses(
     return "\n".join(sorted(witnesses))
 
 
-def _rules_by_identifier(
-    rules: tuple[DirectionRule, ...],
-) -> dict[str, tuple[DirectionRule, ...]]:
+def _rules_by_identifier(rules: tuple[DirectionRule, ...]) -> dict[str, tuple[DirectionRule, ...]]:
     identifiers = sorted({item.identifier for item in rules})
     return {
         identifier: tuple(item for item in rules if item.identifier == identifier)

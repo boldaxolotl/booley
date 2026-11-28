@@ -44,9 +44,7 @@ class SessionEdaRequirements:
 
 
 def inspect_build_requirements(
-    project_root: Path,
-    *,
-    vivado_enabled: bool,
+    project_root: Path, *, vivado_enabled: bool
 ) -> SessionEdaRequirements:
     """Resolve prospective Runtime inputs without creating authority state."""
     project = project_root.resolve(strict=True)
@@ -55,8 +53,7 @@ def inspect_build_requirements(
         return _requirements(project, None, None)
     try:
         installation, profile = authority.resolve_for_inspection(
-            project,
-            config.provisioning == PROVISIONING_HOST,
+            project, config.provisioning == PROVISIONING_HOST
         )
     except authority.AuthorityError as exc:
         raise SessionRequirementsError(str(exc)) from exc
@@ -65,10 +62,7 @@ def inspect_build_requirements(
 
 @contextmanager
 def lease_requirements(
-    project_root: Path,
-    *,
-    vivado_enabled: bool,
-    prior_eda: bool = False,
+    project_root: Path, *, vivado_enabled: bool, prior_eda: bool = False
 ) -> Iterator[SessionEdaRequirements]:
     """Hold one coherent EDA authority snapshot through Runtime persistence.
 
@@ -86,10 +80,7 @@ def lease_requirements(
         config is not None and vivado_enabled and config.provisioning == PROVISIONING_HOST
     )
     try:
-        with authority.resolve_for_issuance(project, host_provisioning) as (
-            installation,
-            profile,
-        ):
+        with authority.resolve_for_issuance(project, host_provisioning) as (installation, profile):
             yield _requirements(project, installation, profile)
     except authority.AuthorityError as exc:
         raise SessionRequirementsError(str(exc)) from exc
@@ -112,10 +103,7 @@ def with_relay_identity(
 
 
 def prepare_runtime_dependencies(
-    requirements: SessionEdaRequirements,
-    *,
-    runner: docker_cli.Runner,
-    force_relay: bool = False,
+    requirements: SessionEdaRequirements, *, runner: docker_cli.Runner, force_relay: bool = False
 ) -> SessionEdaRequirements:
     """Prepare mutable dependencies after a caller validates one leased value."""
     try:
@@ -127,10 +115,7 @@ def prepare_runtime_dependencies(
 
 
 def requested_license(
-    project_root: Path,
-    *,
-    vivado_enabled: bool = True,
-    expected_name: str | None = "",
+    project_root: Path, *, vivado_enabled: bool = True, expected_name: str | None = ""
 ) -> authority.LicenseProfile | None:
     """Return the host-selected License Profile when an active Flow requests it."""
     if expected_name is None:

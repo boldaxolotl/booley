@@ -97,9 +97,7 @@ def patch_doctor_environment(
     monkeypatch.setattr(session_issuance, "validate", lambda *_args: issuance)
     monkeypatch.setattr(session_issuance, "requested_license", lambda _root: None)
     monkeypatch.setattr(
-        doctor.session_runtime,
-        "up_without_recovery",
-        lambda _root: "booley-session-test",
+        doctor.session_runtime, "up_without_recovery", lambda _root: "booley-session-test"
     )
     monkeypatch.setattr(
         doctor.idk,
@@ -168,7 +166,7 @@ def _other_command(cmd, payload: dict, runtime_booley_version: str):  # noqa: PL
         # Healthy default: the sandbox image bakes the ADR 0028 runtime marker.
         return subprocess.CompletedProcess(cmd, 0, stdout='["BOOLEY_CONTAINER=1"]\n', stderr="")
     if cmd[1:3] == ["image", "inspect"] and "--format" in cmd:
-        return subprocess.CompletedProcess(cmd, 0, stdout="2099-01-01T00:00:00Z\n", stderr="")
+        return subprocess.CompletedProcess(cmd, 0, stdout='"2099-01-01T00:00:00Z"\n', stderr="")
     if "import booley; print(booley.__version__)" in cmd:
         return subprocess.CompletedProcess(cmd, 0, stdout=f"{runtime_booley_version}\n", stderr="")
     if cmd[-3:] == ["python", "-m", "booley.mcp.probe"]:

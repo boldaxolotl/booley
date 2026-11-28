@@ -15,13 +15,7 @@ from booley.audit.config_common import (
     pass_finding,
 )
 from booley.config.feature_flags import FEATURES_TABLE, FeatureConfigError, parse_enabled_features
-from booley.core.boundary import (
-    BoundaryError,
-    as_dict,
-    as_str,
-    is_str_list,
-    require_bool,
-)
+from booley.core.boundary import BoundaryError, as_dict, as_str, is_str_list, require_bool
 from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW
 
 KNOWN_BOOLEY_TOML_TABLES = frozenset(
@@ -82,10 +76,7 @@ def audit_known_tables(data: Mapping[str, Any]) -> ConfigTableAudit:
             continue
         if key == "mcp_tools":
             findings.append(
-                fail_finding(
-                    "booley.toml [mcp_tools] is retired",
-                    RETIRED_BOOLEY_TOML_TABLES[key],
-                )
+                fail_finding("booley.toml [mcp_tools] is retired", RETIRED_BOOLEY_TOML_TABLES[key])
             )
             continue
         hint = RETIRED_BOOLEY_TOML_TABLES.get(key)
@@ -98,10 +89,7 @@ def audit_known_tables(data: Mapping[str, Any]) -> ConfigTableAudit:
             )
         findings.append(
             ConfigFinding(
-                ConfigFindingSeverity.WARN,
-                message,
-                check_id="config.unknown-table",
-                subject=key,
+                ConfigFindingSeverity.WARN, message, check_id="config.unknown-table", subject=key
             )
         )
     return ConfigTableAudit(tuple(findings))
@@ -202,10 +190,7 @@ def audit_project_table(data: Mapping[str, Any]) -> ConfigTableAudit:
 
 def _project_warning(message: str, *, subject: str | None = None) -> ConfigFinding:
     return ConfigFinding(
-        ConfigFindingSeverity.WARN,
-        message,
-        check_id="config.project-metadata",
-        subject=subject,
+        ConfigFindingSeverity.WARN, message, check_id="config.project-metadata", subject=subject
     )
 
 
@@ -217,8 +202,7 @@ def audit_feedback_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     feedback = as_dict(raw_feedback)
     if feedback is None:
         return failure(
-            "booley.toml [feedback] must be a table",
-            "rewrite [feedback] as a TOML table",
+            "booley.toml [feedback] must be a table", "rewrite [feedback] as a TOML table"
         )
     findings = _feedback_field_findings(feedback)
     if findings:
@@ -226,8 +210,7 @@ def audit_feedback_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     return ConfigTableAudit(
         (
             ConfigFinding(
-                ConfigFindingSeverity.PASS,
-                "booley.toml [feedback] redaction settings valid",
+                ConfigFindingSeverity.PASS, "booley.toml [feedback] redaction settings valid"
             ),
         )
     )
@@ -249,8 +232,7 @@ def _feedback_field_findings(feedback: Mapping[str, Any]) -> list[ConfigFinding]
     if "redact_identifiers" in feedback and not _has_valid_bool(feedback, "redact_identifiers"):
         findings.append(
             fail_finding(
-                "booley.toml [feedback].redact_identifiers must be a boolean",
-                "use true or false",
+                "booley.toml [feedback].redact_identifiers must be a boolean", "use true or false"
             )
         )
     return findings
@@ -264,8 +246,7 @@ def audit_stealth_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     stealth = as_dict(raw_stealth)
     if stealth is None:
         return failure(
-            "booley.toml [stealth] must be a table",
-            "rewrite [stealth] as a TOML table",
+            "booley.toml [stealth] must be a table", "rewrite [stealth] as a TOML table"
         )
     if "ignore_native_cores" not in stealth:
         return ConfigTableAudit()
@@ -273,8 +254,7 @@ def audit_stealth_table(data: Mapping[str, Any]) -> ConfigTableAudit:
         ignore_native = require_bool(stealth, "ignore_native_cores")
     except BoundaryError:
         return failure(
-            "booley.toml [stealth].ignore_native_cores must be a boolean",
-            "use true or false",
+            "booley.toml [stealth].ignore_native_cores must be a boolean", "use true or false"
         )
     if ignore_native and not _has_enabled_stealth(stealth):
         return failure(
@@ -307,8 +287,7 @@ def audit_sandbox_table(data: Mapping[str, Any]) -> ConfigTableAudit:
     sandbox = as_dict(raw_sandbox)
     if sandbox is None:
         return failure(
-            "booley.toml [sandbox] must be a table",
-            "rewrite [sandbox] as a TOML table",
+            "booley.toml [sandbox] must be a table", "rewrite [sandbox] as a TOML table"
         )
     if "mode" in sandbox:
         return failure(
@@ -416,10 +395,7 @@ def audit_eda_config(data: Mapping[str, Any]) -> ConfigTableAudit:
         eda_configs = parse_eda_config(data.get("eda"))
         validate_host_provisioning_platform(eda_configs)
     except EdaConfigError as exc:
-        return failure(
-            f"booley.toml {exc}",
-            "fix [eda] provisioning configuration",
-        )
+        return failure(f"booley.toml {exc}", "fix [eda] provisioning configuration")
     return ConfigTableAudit()
 
 

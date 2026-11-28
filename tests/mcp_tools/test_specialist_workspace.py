@@ -15,10 +15,7 @@ import pytest
 
 from booley.core.models import AgentCallParams, AgentResult
 from booley.specialists.reviewer import ReviewerSpecialist
-from booley.specialists.specialist_workspace import (
-    isolated_agent_workspace,
-    restore_result_paths,
-)
+from booley.specialists.specialist_workspace import isolated_agent_workspace, restore_result_paths
 from tests.mcp_tools.reviewer_support import (
     ScriptedAgent,
     guide_of,
@@ -96,11 +93,7 @@ def test_read_only_snapshot_reflects_live_tree_and_discards_writes(tmp_path: Pat
     (repo / "tracked.sv").write_text("current\n", encoding="utf-8")
     (repo / "new.sv").write_text("new\n", encoding="utf-8")
     (repo / "ignored.log").write_text("large output\n", encoding="utf-8")
-    params = AgentCallParams(
-        prompt=f"Review {repo / 'tracked.sv'}",
-        model="test",
-        cwd=repo,
-    )
+    params = AgentCallParams(prompt=f"Review {repo / 'tracked.sv'}", model="test", cwd=repo)
 
     with isolated_agent_workspace(params, "read_only") as (isolated, snapshot):
         assert snapshot is not None
@@ -125,14 +118,10 @@ def test_read_write_uses_original_workspace(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize(
-    ("category", "hidden_dir", "visible_dir"),
-    [("rtl", "tb", "rtl"), ("tb", "rtl", "tb")],
+    ("category", "hidden_dir", "visible_dir"), [("rtl", "tb", "rtl"), ("tb", "rtl", "tb")]
 )
 def test_category_isolation_only_hides_snapshot_sources(
-    tmp_path: Path,
-    category: str,
-    hidden_dir: str,
-    visible_dir: str,
+    tmp_path: Path, category: str, hidden_dir: str, visible_dir: str
 ) -> None:
     """A concurrent tool always retains every source tree in the live worktree."""
     repo = _repo(tmp_path)
@@ -583,11 +572,7 @@ def _cpp_review_project(tmp_path, monkeypatch, layout="flat"):
         "shared/tagged.hxx",
         "shared/helper.CPP",
     ]
-    hidden = [
-        "shared/dut.sv",
-        "shared/rtl.c",
-        "tracked.sv",
-    ]
+    hidden = ["shared/dut.sv", "shared/rtl.c", "tracked.sv"]
     for name in visible + hidden + _UNSCOPED_CPP:
         path = repo / name
         path.parent.mkdir(exist_ok=True)

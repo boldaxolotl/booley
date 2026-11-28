@@ -37,9 +37,7 @@ def test_configured_target_closure_takes_precedence_over_repository_size(tmp_pat
     audit = design_size.analyze_design_size(tmp_path, tmp_path / ".state", ["sim_small"])
 
     assert audit == design_size.DesignSizeAudit(
-        hdl_files=1,
-        lines_of_code=2,
-        scope=design_size.DesignSizeScope.CONFIGURED_TARGETS,
+        hdl_files=1, lines_of_code=2, scope=design_size.DesignSizeScope.CONFIGURED_TARGETS
     )
     assert not audit.exceeds_deep_smoke_budget
 
@@ -65,11 +63,7 @@ def test_unresolvable_target_falls_back_to_repository_scan(tmp_path: Path) -> No
     (tmp_path / "rtl").mkdir()
     (tmp_path / "rtl" / "core.svh").write_text("`define WIDTH 8\n", encoding="utf-8")
 
-    audit = design_size.analyze_design_size(
-        tmp_path,
-        tmp_path / ".state",
-        ["missing_target"],
-    )
+    audit = design_size.analyze_design_size(tmp_path, tmp_path / ".state", ["missing_target"])
 
     assert audit.hdl_files == 1
     assert audit.scope is design_size.DesignSizeScope.REPOSITORY

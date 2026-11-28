@@ -110,12 +110,7 @@ def test_scoped_conversion_removes_partial_output_before_fallback(
 
     monkeypatch.setattr(stores.subprocess, "run", run)
 
-    result = stores.convert_vcd(
-        vcd,
-        destination,
-        scope="tb.missing",
-        allow_unscoped_fallback=True,
-    )
+    result = stores.convert_vcd(vcd, destination, scope="tb.missing", allow_unscoped_fallback=True)
 
     assert result.success is True
     assert len(result.attempts) == 2
@@ -141,11 +136,7 @@ def test_conversion_deadline_bounds_every_build_attempt(tmp_path: Path, monkeypa
     monkeypatch.setattr(stores.subprocess, "run", run)
 
     result = stores.convert_vcd(
-        vcd,
-        destination,
-        scope="tb",
-        allow_unscoped_fallback=True,
-        deadline=1100.0,
+        vcd, destination, scope="tb", allow_unscoped_fallback=True, deadline=1100.0
     )
 
     assert timeouts == [100.0]  # the remaining budget, not the fixed 900 s
@@ -170,11 +161,7 @@ def test_refuse_policy_never_overwrites_even_an_invalid_destination(
     destination.write_bytes(b"partial")
     monkeypatch.setattr(stores, "native_bwave_binary", lambda: "bwave")
 
-    result = stores.convert_vcd(
-        vcd,
-        destination,
-        existing_store=stores.ExistingStorePolicy.REFUSE,
-    )
+    result = stores.convert_vcd(vcd, destination, existing_store=stores.ExistingStorePolicy.REFUSE)
 
     assert result.success is False
     assert result.failure_kind == "existing_store"
@@ -358,9 +345,7 @@ def test_existing_valid_store_is_reused(tmp_path: Path) -> None:
     destination.write_bytes(MINIMAL_FST_BYTES)
 
     result = stores.convert_vcd(
-        source,
-        destination,
-        existing_store=stores.ExistingStorePolicy.REUSE_STRUCTURALLY_VALID,
+        source, destination, existing_store=stores.ExistingStorePolicy.REUSE_STRUCTURALLY_VALID
     )
 
     assert result.success is True

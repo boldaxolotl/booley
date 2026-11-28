@@ -143,15 +143,9 @@ def test_host_doctor_uses_isolated_paths_and_records_evidence(
         == "true"
     )
     assert evidence["schema"] == 1
-    assert evidence["candidate"] == {
-        "sha": "candidate-sha",
-        "image_digest": "sha256:candidate",
-    }
+    assert evidence["candidate"] == {"sha": "candidate-sha", "image_digest": "sha256:candidate"}
     assert evidence["identity"] == {"uid": os.getuid(), "gid": os.getgid()}
-    assert evidence["checks"][-1] == {
-        "id": "host-doctor.plain-issued-image",
-        "status": "pass",
-    }
+    assert evidence["checks"][-1] == {"id": "host-doctor.plain-issued-image", "status": "pass"}
     assert evidence["cleanup"] == {
         "editor_probe_removed": True,
         "agent_cli_probe_removed": True,

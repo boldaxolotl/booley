@@ -169,9 +169,7 @@ def serve_t3_code(
     # argv, so map it to *volume* here. With none, skip: a test run inside a Sandbox must never
     # prune that Sandbox's live T3 state volume.
     monkeypatch.setattr(
-        incontainer_setup,
-        "prune_t3_logs",
-        lambda base: fake.volume and pruned(fake.on_host(base)),
+        incontainer_setup, "prune_t3_logs", lambda base: fake.volume and pruned(fake.on_host(base))
     )
     monkeypatch.setattr(incontainer_setup, "_port_is_serving", fake.serving)
     monkeypatch.setattr(incontainer_setup, "_t3_environment_id", fake.describe, raising=False)

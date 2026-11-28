@@ -92,9 +92,7 @@ def test_default_cache_rejects_config_root_owned_by_another_user(
 
 def test_checksum_failure_never_installs_download(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(
-        nangate_pdk,
-        "FILES",
-        (nangate_pdk.PinnedFile("bad.lib", "cell/lib/bad.lib", "0" * 64),),
+        nangate_pdk, "FILES", (nangate_pdk.PinnedFile("bad.lib", "cell/lib/bad.lib", "0" * 64),)
     )
 
     opener, calls = _flaky_opener([], b"wrong")

@@ -95,12 +95,7 @@ def _shell_bundle_resolution(project_root: Path, bundle_path: Path) -> str:
 
 
 def _build_hook_delegator_body(
-    project_root: Path,
-    bundle_path: Path,
-    bundle_command: str,
-    purpose: str,
-    *,
-    fail_open: bool,
+    project_root: Path, bundle_path: Path, bundle_command: str, purpose: str, *, fail_open: bool
 ) -> str:
     """Build one isolated shell adapter for the managed bundle."""
     owner_marker = "commit_msg_hook.py" if bundle_command == "commit-msg" else "pre_push_hook.py"
@@ -144,22 +139,14 @@ def _build_hook_delegator_body(
 def _build_commit_msg_hook_body(project_root: Path, bundle_path: Path) -> str:
     """Build the fail-open commit-msg adapter."""
     return _build_hook_delegator_body(
-        project_root,
-        bundle_path,
-        "commit-msg",
-        "commit-msg policy adapter",
-        fail_open=True,
+        project_root, bundle_path, "commit-msg", "commit-msg policy adapter", fail_open=True
     )
 
 
 def _build_pre_push_hook_body(project_root: Path, bundle_path: Path) -> str:
     """Build the fail-closed pre-push adapter."""
     return _build_hook_delegator_body(
-        project_root,
-        bundle_path,
-        "pre-push",
-        "pre-push leak-guard adapter",
-        fail_open=False,
+        project_root, bundle_path, "pre-push", "pre-push leak-guard adapter", fail_open=False
     )
 
 
@@ -185,9 +172,7 @@ def _locations(ctx: InitContext) -> _Locations | None:
     booley_dir = resolve_booley_dir(ctx.project_root)
     managed_dir = booley_dir / ".managed"
     return _Locations(
-        booley_dir,
-        managed_dir / BUNDLE_NAME,
-        (ctx.project_root / result.stdout.strip()).resolve(),
+        booley_dir, managed_dir / BUNDLE_NAME, (ctx.project_root / result.stdout.strip()).resolve()
     )
 
 

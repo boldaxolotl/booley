@@ -17,13 +17,7 @@ from pathlib import Path
 from typing import IO, Any
 
 from booley.core.atomic_files import Durability, atomic_write_text
-from booley.core.boundary import (
-    BoundaryError,
-    as_str,
-    require_dict,
-    require_opt_str,
-    require_str,
-)
+from booley.core.boundary import BoundaryError, as_str, require_dict, require_opt_str, require_str
 from booley.runtime import doctor_stamp
 from booley.runtime.changelog import ChangelogError, StableVersion, parse_releases
 from booley.runtime.file_lock import LockContentionError, acquire_file_lock, release_file_lock
@@ -263,24 +257,15 @@ def _status(booley_dir: Path, running: StableVersion, state: ReviewState) -> Rev
 
 
 def _diagnostic_status(
-    booley_dir: Path,
-    running_version: str,
-    condition: ReviewCondition,
-    diagnostic: str,
+    booley_dir: Path, running_version: str, condition: ReviewCondition, diagnostic: str
 ) -> ReviewStatus:
     return ReviewStatus(
-        condition,
-        running_version,
-        str(state_path(booley_dir)),
-        diagnostic=diagnostic,
+        condition, running_version, str(state_path(booley_dir)), diagnostic=diagnostic
     )
 
 
 def observe(
-    booley_dir: Path,
-    *,
-    current_version: str | None = None,
-    now: str | None = None,
+    booley_dir: Path, *, current_version: str | None = None, now: str | None = None
 ) -> ReviewStatus:
     """Monotonically observe *current_version* and return current review status.
 

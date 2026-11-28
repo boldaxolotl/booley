@@ -132,14 +132,7 @@ def test_gui_parser_accepts_repeatable_named_groups():
     from booley.bwave import cli as bwave
 
     args = bwave._build_parser().parse_args(
-        [
-            "gui",
-            "@dut",
-            "--group",
-            "Request=tb.dut.req_*",
-            "-g",
-            "Response=tb.dut.resp_*",
-        ]
+        ["gui", "@dut", "--group", "Request=tb.dut.req_*", "-g", "Response=tb.dut.resp_*"]
     )
 
     assert args.groups == ["Request=tb.dut.req_*", "Response=tb.dut.resp_*"]
@@ -602,8 +595,7 @@ def test_max_signals_raises_the_cap(tmp_path, fake_rust):
 
 
 @pytest.mark.parametrize(
-    ("time", "viewport"),
-    [("10000t:20000t", (10000, 20000)), ("100ns:200ns", (100000, 200000))],
+    ("time", "viewport"), [("10000t:20000t", (10000, 20000)), ("100ns:200ns", (100000, 200000))]
 )
 def test_absolute_time_tokens_resolve_exactly_on_a_clockless_trace(
     tmp_path, fake_rust, time, viewport
@@ -734,11 +726,7 @@ def test_signal_cap_counts_flat_and_grouped_selections_together(tmp_path, fake_r
     fake_rust["signals"] = [f"tb.dut.bus.bit{i}" for i in range(10)]
 
     with pytest.raises(SystemExit) as exc:
-        _gui(
-            signals=["tb.dut.bus.bit0"],
-            groups=["Bus=tb.dut.bus.bit[1-9]"],
-            max_signals=9,
-        )
+        _gui(signals=["tb.dut.bus.bit0"], groups=["Bus=tb.dut.bus.bit[1-9]"], max_signals=9)
 
     assert exc.value.code == 2
     msg = capsys.readouterr().err
@@ -1009,11 +997,7 @@ def test_trigger_arguments_forward_unchanged(command, trigger):
         args += ["-s", "bus"]
     if command == "distance":
         args += ["--to", "bus", trigger]
-    assert bwave._passthrough_subcommand(args, "trace.fst") == [
-        command,
-        "trace.fst",
-        *args[1:],
-    ]
+    assert bwave._passthrough_subcommand(args, "trace.fst") == [command, "trace.fst", *args[1:]]
 
 
 @pytest.mark.parametrize(
@@ -1195,11 +1179,7 @@ def test_issue_1108_invalid_legacy_modes_fail_before_dispatch(
 def test_clock_grid_options_forward_to_registered_store(args):
     from booley.bwave import cli as bwave
 
-    assert bwave._translate_to_subcommand(args, "trace.fst") == [
-        args[0],
-        "trace.fst",
-        *args[1:],
-    ]
+    assert bwave._translate_to_subcommand(args, "trace.fst") == [args[0], "trace.fst", *args[1:]]
 
 
 def test_list_envelope_refuses_native_usage_error(monkeypatch, capsys):

@@ -99,10 +99,7 @@ _NO_ID = f"{_SAMPLE}::_helper"
             id="broken-module",
         ),
         pytest.param(
-            _OWNED,
-            {"state": "closed"},
-            [f"{_CASE}: owner issue #11 is closed"],
-            id="closed-issue",
+            _OWNED, {"state": "closed"}, [f"{_CASE}: owner issue #11 is closed"], id="closed-issue"
         ),
         pytest.param(
             _OWNED,

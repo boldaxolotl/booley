@@ -85,10 +85,7 @@ def test_human_status_rendering_covers_actionable_conditions(
 ) -> None:
     path = "/project/runtime/upgrade_review.json"
     current = upgrade_review.ReviewStatus(
-        upgrade_review.ReviewCondition.CURRENT,
-        "2.0.0",
-        path,
-        reviewed_through="2.0.0",
+        upgrade_review.ReviewCondition.CURRENT, "2.0.0", path, reviewed_through="2.0.0"
     )
     pending = upgrade_review.ReviewStatus(
         upgrade_review.ReviewCondition.PENDING,
@@ -105,10 +102,7 @@ def test_human_status_rendering_covers_actionable_conditions(
         pending_target="2.0.0",
     )
     corrupt = upgrade_review.ReviewStatus(
-        upgrade_review.ReviewCondition.CORRUPT,
-        "2.0.0",
-        path,
-        diagnostic="bad JSON",
+        upgrade_review.ReviewCondition.CORRUPT, "2.0.0", path, diagnostic="bad JSON"
     )
 
     assert "current through 2.0.0" in upgrade_cli.render_status(current)

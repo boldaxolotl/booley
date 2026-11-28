@@ -417,8 +417,7 @@ def dispatch(argv, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "route",
-    ["targets", "doctor", "init", "session", "cleanup", "upgrade", "feedback", "auth"],
+    "route", ["targets", "doctor", "init", "session", "cleanup", "upgrade", "feedback", "auth"]
 )
 def test_handlers_receive_selected_checkout(projects, monkeypatch, route):
     captured = []

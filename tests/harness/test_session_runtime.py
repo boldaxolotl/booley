@@ -34,24 +34,14 @@ from booley.runtime import session_issuance as runtime_spec
 from booley.runtime import session_runtime as sr
 from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import Attachment
-from booley.runtime.session_admission import (
-    admit_start as real_admit_start,
-)
-from booley.runtime.session_admission import (
-    claim_vscode_start as real_claim_vscode_start,
-)
-from booley.runtime.session_admission import (
-    clear_vscode_claim as real_clear_vscode_claim,
-)
-from booley.runtime.session_admission import (
-    has_pending_claim as real_has_pending_claim,
-)
+from booley.runtime.session_admission import admit_start as real_admit_start
+from booley.runtime.session_admission import claim_vscode_start as real_claim_vscode_start
+from booley.runtime.session_admission import clear_vscode_claim as real_clear_vscode_claim
+from booley.runtime.session_admission import has_pending_claim as real_has_pending_claim
 from booley.runtime.session_admission import (
     running_project_sandboxes as real_running_project_sandboxes,
 )
-from booley.runtime.session_admission import (
-    vscode_sandboxes as real_vscode_sandboxes,
-)
+from booley.runtime.session_admission import vscode_sandboxes as real_vscode_sandboxes
 from booley.runtime.session_refresh import RefreshImage
 from tests.devcontainer_spec_support import build_spec
 from tests.harness.booley_dir_support import select_booley_dir
@@ -113,10 +103,7 @@ def test_session_up_waits_for_lifecycle_lock(
     lock_path = tmp_path / "host-config" / "locks" / "docker-lifecycle.lock"
     waiting = observe_lifecycle_contention(monkeypatch)
 
-    with (
-        held_lifecycle_lock(lock_path) as holder,
-        ThreadPoolExecutor(max_workers=1) as executor,
-    ):
+    with held_lifecycle_lock(lock_path) as holder, ThreadPoolExecutor(max_workers=1) as executor:
         result = executor.submit(sr.up, workspace)
         assert waiting.wait(hang_guard_s())
         # Without a spec `up` refuses at once, so only a held lock keeps it pending.
@@ -134,10 +121,7 @@ def test_doctor_start_checks_recovery_after_taking_lifecycle_lock(
     lock_path = tmp_path / "host-config" / "locks" / "docker-lifecycle.lock"
     waiting = observe_lifecycle_contention(monkeypatch)
 
-    with (
-        held_lifecycle_lock(lock_path) as holder,
-        ThreadPoolExecutor(max_workers=1) as executor,
-    ):
+    with held_lifecycle_lock(lock_path) as holder, ThreadPoolExecutor(max_workers=1) as executor:
         result = executor.submit(sr.up_without_recovery, workspace)
         assert waiting.wait(hang_guard_s())
         issuance_invalidation.prepare(str(tmp_path / "another-project"))
@@ -303,10 +287,7 @@ def _test_issuance(workspace: Path) -> SimpleNamespace:
 
 
 def _vscode_labels(
-    workspace: Path,
-    issuance: SimpleNamespace,
-    *,
-    spec_digest: str = "current-spec",
+    workspace: Path, issuance: SimpleNamespace, *, spec_digest: str = "current-spec"
 ) -> dict[str, str]:
     labels = dict(label.split("=", 1) for label in runtime_spec.labels(issuance))
     labels.update(
@@ -823,10 +804,7 @@ def _argv_of(call) -> list[str]:
 
 
 def _refresh_state(
-    *,
-    running: bool = False,
-    networks: dict | None = None,
-    labels: dict | None = None,
+    *, running: bool = False, networks: dict | None = None, labels: dict | None = None
 ) -> dict:
     return {
         "Config": {
@@ -843,10 +821,7 @@ def _refresh_state(
 
 
 _LICENSE_PROFILE = SimpleNamespace(
-    server_ipv4="10.20.30.40",
-    server_hostid="license-server-01",
-    lmgrd_port=2100,
-    vendor_port=2101,
+    server_ipv4="10.20.30.40", server_hostid="license-server-01", lmgrd_port=2100, vendor_port=2101
 )
 
 
@@ -1375,12 +1350,7 @@ class TestUp:
         ],
     )
     def test_failed_refresh_rolls_back(
-        self,
-        workspace: Path,
-        up_docker: SandboxDocker,
-        parked: bool,
-        created: str,
-        message: str,
+        self, workspace: Path, up_docker: SandboxDocker, parked: bool, created: str, message: str
     ) -> None:
         name = sr.session_container_name(workspace)
         backup = f"{name}-pre-refresh"
@@ -1469,11 +1439,7 @@ class TestUp:
         ],
     )
     def test_docker_run_failure_raises(
-        self,
-        workspace: Path,
-        up_docker: SandboxDocker,
-        reply: tuple[str, str] | None,
-        detail: str,
+        self, workspace: Path, up_docker: SandboxDocker, reply: tuple[str, str] | None, detail: str
     ) -> None:
         if reply is None:
             up_docker.failing.add("run")
@@ -2156,11 +2122,7 @@ class TestT3CodeRelay:
             assert echo.closed.wait(hang_guard_s())
 
     def test_the_relay_never_imports_from_its_working_directory(
-        self,
-        workspace: Path,
-        tmp_path: Path,
-        relay_ports: range,
-        monkeypatch: pytest.MonkeyPatch,
+        self, workspace: Path, tmp_path: Path, relay_ports: range, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         t3_relay = self.relay_module(monkeypatch, relay_ports)
         shadow, marker = tmp_path / "shadow", tmp_path / "ran"
@@ -2605,11 +2567,7 @@ _DASH_UNKNOWN_VSCODE = (*_DASH_UNKNOWN[:2], f"{_REBUILD_IN_VSCODE}, then rerun `
             id="relay-died",
         ),
         pytest.param(
-            "headless",
-            "off running",
-            "DEAD",
-            [_SERVER_OFF, _RELAY_DOWN, _DASH_OK],
-            id="both-died",
+            "headless", "off running", "DEAD", [_SERVER_OFF, _RELAY_DOWN, _DASH_OK], id="both-died"
         ),
         pytest.param(
             "headless",
@@ -3121,10 +3079,7 @@ class TestRunProjectCommand:
         assert not any(call[1] == "run" for call in attached.docker.calls)
 
     def test_parallel_enters_wait_then_execute_concurrently(
-        self,
-        workspace: Path,
-        up_docker: SandboxDocker,
-        monkeypatch: pytest.MonkeyPatch,
+        self, workspace: Path, up_docker: SandboxDocker, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.runtime import lifecycle_lock, session_admission
 
@@ -3242,8 +3197,7 @@ class TestSessionRefresh:
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
     @pytest.mark.parametrize(
-        "command",
-        ["up", "enter", "down", "status", "validate", "prepare", "refresh"],
+        "command", ["up", "enter", "down", "status", "validate", "prepare", "refresh"]
     )
     def test_public_session_commands_report_unsafe_private_store(
         self,
@@ -3270,10 +3224,7 @@ class TestSessionRefresh:
         assert cli_project.calls == []  # unsafe recovery must precede Docker mutation
 
     def test_refresh_configures_progress_before_reconciling_image(
-        self,
-        workspace: Path,
-        cli_project: SandboxDocker,
-        monkeypatch: pytest.MonkeyPatch,
+        self, workspace: Path, cli_project: SandboxDocker, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from booley.harness import session_refresh
         from booley.harness.setup import common as setup_common

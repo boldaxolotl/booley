@@ -8,18 +8,13 @@ from pathlib import Path
 from typing import cast
 
 from booley.core.file_lock import LockContentionError
-from booley.flows.sim.record_layout import (
-    RECORD_DIRECTORY,
-    refuse_older_manifest_path,
-)
+from booley.flows.sim.record_layout import RECORD_DIRECTORY, refuse_older_manifest_path
 from booley.flows.simulation_record_results import (
     DurableSimulationRecordResults,
     SimulationRecordBusyError,
 )
 
-from .codec import (
-    SimulationRecordIntegrityError,
-)
+from .codec import SimulationRecordIntegrityError
 from .coordinator import collected_result_facts
 from .model import SimulationRecordManifest, SimulationResult
 from .planning import manifest_digest
@@ -72,12 +67,7 @@ def authenticate_work_item(
     result = recovered[0].result
     assert result is not None
     return SimulationRecordWorkItemEvidence(
-        store.manifest_path,
-        digest,
-        manifest,
-        work_item_id,
-        selected[0],
-        result,
+        store.manifest_path, digest, manifest, work_item_id, selected[0], result
     )
 
 

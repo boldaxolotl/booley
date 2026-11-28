@@ -176,10 +176,7 @@ def test_interactive_auth_command_prints_a_freshly_claimed_token(
 
     def run_helper() -> str:
         result = run_bounded_child(
-            [auth["command"], *auth["args"]],
-            cwd=auth["cwd"],
-            env=dict(os.environ),
-            check=True,
+            [auth["command"], *auth["args"]], cwd=auth["cwd"], env=dict(os.environ), check=True
         )
         return result.stdout
 

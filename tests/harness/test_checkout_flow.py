@@ -48,8 +48,7 @@ if TYPE_CHECKING:
 
 # The runner is imported inside each test, so its absence fails that test, not collection.
 linux_only = pytest.mark.skipif(
-    sys.platform != "linux",
-    reason="checkout Flows are observed through /proc and POSIX sessions",
+    sys.platform != "linux", reason="checkout Flows are observed through /proc and POSIX sessions"
 )
 
 # Generous bound for a child process or a marker file; only a hang ever reaches it.
@@ -326,10 +325,7 @@ def record_of(world: World, result: CheckoutFlowResult) -> job_records.JobRecord
 @linux_only
 @pytest.mark.parametrize(
     ("target", "status", "exit_code"),
-    [
-        pytest.param("pass", "passed", 0, id="pass"),
-        pytest.param("fail", "failed", 1, id="fail"),
-    ],
+    [pytest.param("pass", "passed", 0, id="pass"), pytest.param("fail", "failed", 1, id="fail")],
 )
 def test_checkout_flow_returns_outcome_and_reports(
     world: World, target: str, status: str, exit_code: int
@@ -1046,8 +1042,7 @@ def assert_refused_before_any_run(world: World) -> None:
 
 @linux_only
 @pytest.mark.parametrize(
-    "case",
-    ["core", "booley-toml", "symlink", "core-symlink", "config-symlink", "booley-dir-env"],
+    "case", ["core", "booley-toml", "symlink", "core-symlink", "config-symlink", "booley-dir-env"]
 )
 def test_checkout_flow_refuses_live_paths_in_inputs(
     make_world: WorldBuilder, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, case: str

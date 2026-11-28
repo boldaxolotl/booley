@@ -14,13 +14,7 @@ from booley.core.atomic_files import atomic_replace_bytes
 
 def _run(command: list[str], *, project: Path, env: dict[str, str]) -> str:
     result = subprocess.run(
-        command,
-        cwd=project,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=300,
+        command, cwd=project, env=env, capture_output=True, text=True, check=False, timeout=300
     )
     if result.returncode != 0:
         output = result.stdout + result.stderr

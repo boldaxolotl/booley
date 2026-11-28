@@ -277,10 +277,7 @@ def test_default_payload_has_no_reachable_files(
             resolved, {}, out_of_context=False, reachable_dirs=()
         )
     assert plain != fpga_cache.input_fingerprint(
-        resolved,
-        {},
-        out_of_context=False,
-        reachable_dirs=(resolved.build_root / "src" / "inc",),
+        resolved, {}, out_of_context=False, reachable_dirs=(resolved.build_root / "src" / "inc",)
     )
 
 

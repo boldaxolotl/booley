@@ -168,9 +168,7 @@ def _tty_sink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, rows: int, now
     return screen, sink
 
 
-def test_overlapping_lanes_show_each_pre_sim_line_once_under_its_own_lane(
-    tmp_path: Path,
-) -> None:
+def test_overlapping_lanes_show_each_pre_sim_line_once_under_its_own_lane(tmp_path: Path) -> None:
     sink = TerminalProgress("sim", "sim_demo", tmp_path, stream=Screen(), clock=lambda: 0.0)
     labels: dict[str, str] = {}
     alpha_first_done = threading.Event()
@@ -334,10 +332,7 @@ def test_tty_lanes_are_summarised_once_after_an_intermediate_drain(
             assert label not in results, f"{label} summarised twice"
             current = label
             results[label] = []
-    assert results == {
-        labels["alpha"]: ["alpha out"],
-        labels["beta"]: ["beta one", "beta two"],
-    }
+    assert results == {labels["alpha"]: ["alpha out"], labels["beta"]: ["beta one", "beta two"]}
 
 
 def test_silent_heartbeat_reports_the_output_lines_it_has_not_shown_yet(tmp_path: Path) -> None:

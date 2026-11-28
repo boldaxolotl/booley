@@ -12,10 +12,7 @@ from booley.config.settings import SubmoduleConfigError, load_submodule_config
 from booley.runtime import platform_paths
 from booley.runtime.booley_dir import checkout_booley_dir_relative_to
 from booley.runtime.filesystem_utils import safe_rmtree
-from booley.runtime.project_repositories import (
-    RepositoryCheckoutError,
-    project_topology,
-)
+from booley.runtime.project_repositories import RepositoryCheckoutError, project_topology
 
 _TIMEOUT_S = 300
 _GIT_CONFIG = ("-c", "protocol.allow=never", "-c", "submodule.recurse=false")
@@ -26,10 +23,7 @@ class SubmoduleMaterializationError(RuntimeError):
 
 
 def materialize_submodules(
-    source_root: Path,
-    destination_root: Path,
-    *,
-    excluded_top_level: frozenset[str] = frozenset(),
+    source_root: Path, destination_root: Path, *, excluded_top_level: frozenset[str] = frozenset()
 ) -> None:
     """Populate destination gitlinks from initialized same-path source repositories.
 
@@ -127,9 +121,7 @@ def materialize_project_submodules(
             f"Paired Checkout destination is unavailable: {project_destination}"
         )
     materialize_submodules(
-        source_root,
-        destination_root,
-        excluded_top_level=frozenset({project_relative.as_posix()}),
+        source_root, destination_root, excluded_top_level=frozenset({project_relative.as_posix()})
     )
     _materialize_selection(
         project_source.resolve(),
@@ -344,12 +336,7 @@ def _create_repository(source: Path, destination: Path, commit: str, relative: P
         _run_git(destination.parent, "init", "-q", f"--template={template}", str(destination))
     _transfer_objects(source, destination, commit, relative)
     check = _run_git(
-        destination,
-        "fsck",
-        "--connectivity-only",
-        "--no-dangling",
-        commit,
-        check=False,
+        destination, "fsck", "--connectivity-only", "--no-dangling", commit, check=False
     )
     if check.returncode != 0:
         _raise_git(f"verifying local objects for {relative.as_posix()}", check)
@@ -426,11 +413,7 @@ def _is_junction(path: Path) -> bool:
     return bool(checker and checker())
 
 
-def _run_git(
-    cwd: Path,
-    *args: str,
-    check: bool = True,
-) -> subprocess.CompletedProcess[str]:
+def _run_git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
     result = platform_paths.run_captured_bounded(
         _git_command(cwd, *args), timeout=_TIMEOUT_S, env=_offline_env(), errors="strict"
     )

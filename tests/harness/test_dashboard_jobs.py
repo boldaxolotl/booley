@@ -45,13 +45,7 @@ def layout(tmp_path, monkeypatch):
 
 
 def snapshot_jobs(
-    booley_dir,
-    *,
-    interactive_root=None,
-    slots_root=None,
-    proc_root=None,
-    reader=None,
-    now=None,
+    booley_dir, *, interactive_root=None, slots_root=None, proc_root=None, reader=None, now=None
 ):
     options = {} if proc_root is None else {"proc_root": proc_root}
     reader = reader or JobReader(booley_dir, slots_root=slots_root, **options)

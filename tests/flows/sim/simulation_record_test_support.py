@@ -56,9 +56,7 @@ from booley.flows.sim.record.coordinator import (
     SimulationRecordRecoveryStatus,
     WorkExecutionRequest,
 )
-from booley.flows.sim.record.coverage_execution import (
-    CoverageAggregateExecutor,
-)
+from booley.flows.sim.record.coverage_execution import CoverageAggregateExecutor
 from booley.flows.sim.record.facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
 from booley.flows.sim.record.flow_planning import plan_coarse_simulation_record
 from booley.flows.sim.record.model import (
@@ -67,24 +65,13 @@ from booley.flows.sim.record.model import (
     create_simulation_record_plan,
 )
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
-from booley.flows.sim.record.scheduler import (
-    ScheduledAttempt,
-)
-from booley.flows.sim.record.serial_execution import (
-    OrdinaryHdlSerialExecutor,
-)
+from booley.flows.sim.record.scheduler import ScheduledAttempt
+from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.flows.test_runs import TestRun, build_test_run, discovered_test_run
-from booley.runtime.execution_records import (
-    ExecutionId,
-)
-from booley.runtime.job_slots import (
-    CLASS_MEMORY,
-    MemoryClaim,
-    SlotStore,
-    SlotToken,
-)
+from booley.runtime.execution_records import ExecutionId
+from booley.runtime.job_slots import CLASS_MEMORY, MemoryClaim, SlotStore, SlotToken
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 from tests.flows.sim.test_coverage_invocation import project
@@ -99,11 +86,7 @@ from tests.time_budget import hang_guard_s
 
 def _recovery_status(tmp_path: Path) -> SimulationRecordRecoveryStatus:
     return SimulationRecordRecoveryStatus(
-        tmp_path / "manifest.json",
-        "sha256:" + "1" * 64,
-        (),
-        (),
-        (),
+        tmp_path / "manifest.json", "sha256:" + "1" * 64, (), (), ()
     )
 
 
@@ -324,10 +307,7 @@ def _named_manifest(names: tuple[str, ...]) -> object:
         "kind": "templated",
         "placeholders": ["test", "attempt"],
     }
-    runtime_identity = {
-        "source_artifact_path": "input.bin",
-        "destination": "inputs/input.bin",
-    }
+    runtime_identity = {"source_artifact_path": "input.bin", "destination": "inputs/input.bin"}
     document["workload"]["runtime_inputs"] = [  # type: ignore[index]
         {
             "declaration_id": "sha256:"
@@ -427,10 +407,7 @@ def _work_item(ordinal: int, name: str, target: object, variant_id: object) -> d
 
 def _handle(project: Path) -> SimpleNamespace:
     return SimpleNamespace(
-        identity="acme:lib:dut:1#sim",
-        project_root=project,
-        selector="sim",
-        eda_tool="icarus",
+        identity="acme:lib:dut:1#sim", project_root=project, selector="sim", eda_tool="icarus"
     )
 
 
@@ -975,11 +952,7 @@ def _hook_publication_request(root, names=("alpha", "beta"), invocation=1):
     store = SimulationRecordStore(root / "record")
     store.publish_manifest(plan.manifest)
     request = _request(
-        store,
-        plan.manifest,
-        plan.manifest.document["work_items"][0],
-        root,
-        invocation=invocation,
+        store, plan.manifest, plan.manifest.document["work_items"][0], root, invocation=invocation
     )
     _executor(root / "build", {}).prepare_attempt(request)
     return request
@@ -1379,10 +1352,7 @@ def _parallel_environment(tmp_path):
     run_log = build_root / "run.log"
     run_log.write_text("PASS\n", encoding="utf-8")
     handle = SimpleNamespace(
-        identity="acme:lib:dut:1#sim",
-        project_root=project,
-        selector="sim",
-        eda_tool="icarus",
+        identity="acme:lib:dut:1#sim", project_root=project, selector="sim", eda_tool="icarus"
     )
     return project, _ParallelState(build_root, run_log, handle)
 
@@ -1520,8 +1490,7 @@ def _coverage_simulation_record_plan(
     project_data = root / ".booley"
     project_data.mkdir()
     (project_data / "booley.toml").write_text(
-        "[flows.sim]\npre_run_commands = " + json.dumps(pre_sim_commands) + "\n",
-        encoding="utf-8",
+        "[flows.sim]\npre_run_commands = " + json.dumps(pre_sim_commands) + "\n", encoding="utf-8"
     )
     (project_data / "tests.toml").write_text(
         '[sim_0]\ntests = ["reset", "wrap"]\n', encoding="utf-8"
@@ -1579,8 +1548,7 @@ def _run_coverage_simulation_record(
         return native
 
     executor = CoverageAggregateExecutor(
-        plans={target.handle.identity: target},
-        execution_factory=execution_factory,
+        plans={target.handle.identity: target}, execution_factory=execution_factory
     )
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
@@ -1785,10 +1753,7 @@ def _common(request: WorkExecutionRequest) -> dict[str, object]:
 
 
 def _retained_invocation(
-    tmp_path: Path,
-    *,
-    reports: Path | None = None,
-    booley_dir: Path | None = None,
+    tmp_path: Path, *, reports: Path | None = None, booley_dir: Path | None = None
 ) -> tuple[Path, Path, SimulationRecordStore]:
     source = tmp_path / "source"
     source.mkdir()

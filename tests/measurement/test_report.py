@@ -30,12 +30,7 @@ from tests.measurement.test_run_store import (
     make_run,
     no_ambient_booley_dir,  # noqa: F401  autouse: no ambient Booley Directory in these tests
 )
-from tests.measurement.test_run_view import (
-    feature_repo,
-    synth_entries,
-    tree_of,
-    view_of,
-)
+from tests.measurement.test_run_view import feature_repo, synth_entries, tree_of, view_of
 from tests.runtime.test_commit_export import add_gitlink, commit_all, git, write
 
 
@@ -242,10 +237,7 @@ def test_identical_tree_commit_reports_measured_as_and_its_own_base(tmp_path: Pa
     assert (change["old"], change["new"], change["kind"]) == (70, 80, "maximum raised")
     assert mine["commit"]["measured_as"] is None
     assert mine["base"]["commit"] == base_a
-    assert sorted(f["path"] for f in mine["changed"]["files"]) == [
-        ".booley/metrics.toml",
-        "rtl.v",
-    ]
+    assert sorted(f["path"] for f in mine["changed"]["files"]) == [".booley/metrics.toml", "rtl.v"]
     (own_change,) = mine["rules_diff"]["changes"]
     assert (own_change["old"], own_change["new"]) == (60, 80)
 
@@ -293,10 +285,7 @@ def test_loosened_rule_turns_header_amber_and_lists_its_note(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo, _ = in_tree_repository(tmp_path / "repo")
-    write(
-        repo / ".booley" / "metrics.toml",
-        SYNTH + "area_kge_max = 60\ncell_count_max = 100\n",
-    )
+    write(repo / ".booley" / "metrics.toml", SYNTH + "area_kge_max = 60\ncell_count_max = 100\n")
     commit_all(repo, "rules")
     git(repo, "checkout", "-q", "-b", "feature")
     write(

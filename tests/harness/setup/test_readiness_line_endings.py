@@ -128,25 +128,13 @@ _CASES = [
         "status-unreadable-with-detail",
         (LineEndingObservation(Code.STATUS_UNREADABLE, detail="git diff timed out"),),
         (),
-        (
-            Severity.WARN,
-            "line endings: {id}: git diff timed out",
-            "",
-            _UNREADABLE,
-            _ROLE,
-        ),
+        (Severity.WARN, "line endings: {id}: git diff timed out", "", _UNREADABLE, _ROLE),
     ),
     (
         "status-unreadable-without-detail",
         (LineEndingObservation(Code.STATUS_UNREADABLE),),
         (),
-        (
-            Severity.WARN,
-            "line endings: {id}: inspection was incomplete",
-            "",
-            _UNREADABLE,
-            _ROLE,
-        ),
+        (Severity.WARN, "line endings: {id}: inspection was incomplete", "", _UNREADABLE, _ROLE),
     ),
     (
         "pass",

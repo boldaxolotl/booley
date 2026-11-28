@@ -135,9 +135,7 @@ def test_root_help_fits_the_width_without_cutting(
 def test_cli_reference_has_the_same_public_inventory() -> None:
     reference = Path(__file__).parents[2] / "docs/user/CLI-REFERENCE.md"
     rows = re.findall(
-        r"^\| (Sandbox|Either|Host-only) \| ([^|]+) \|$",
-        reference.read_text(),
-        re.M,
+        r"^\| (Sandbox|Either|Host-only) \| ([^|]+) \|$", reference.read_text(), re.M
     )
     assert [(location, re.findall(r"`(\w+)`", commands)) for location, commands in rows] == [
         ("Sandbox", PUBLIC_COMMANDS[:5]),

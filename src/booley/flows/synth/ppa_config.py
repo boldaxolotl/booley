@@ -25,12 +25,7 @@ from booley.flows.synth.request import SynthRequest
 
 from .recipe_migrations import retired_option_message
 
-_YOSYS_KEYS = {
-    "abc_recipe",
-    "abc_script",
-    "generic_abc_before_mapping",
-    "abc_delay_ps",
-}
+_YOSYS_KEYS = {"abc_recipe", "abc_script", "generic_abc_before_mapping", "abc_delay_ps"}
 _OPENROAD_KEYS = {
     "utilization_pct",
     "placement_density",
@@ -149,15 +144,10 @@ def append_ppa_args(
     cmd.extend(["--ppa-profile", profile])
     if getattr(args, "ppa_profile", None) is None:
         _append_yosys_config(
-            cmd,
-            yosys_cfg,
-            args,
-            section=f"{field_prefix}.advanced_settings_yosys",
+            cmd, yosys_cfg, args, section=f"{field_prefix}.advanced_settings_yosys"
         )
         _append_openroad_config(
-            cmd,
-            openroad_cfg,
-            section=f"{field_prefix}.advanced_settings_openroad",
+            cmd, openroad_cfg, section=f"{field_prefix}.advanced_settings_openroad"
         )
     _append_cli_overrides(cmd, args)
 
@@ -208,12 +198,7 @@ def _append_yosys_config(
     _append_positive_int_config(cmd, cfg, "abc_delay_ps", field="abc_delay_ps")
 
 
-def _append_openroad_config(
-    cmd: list[str],
-    cfg: Mapping[str, Any],
-    *,
-    section: str,
-) -> None:
+def _append_openroad_config(cmd: list[str], cfg: Mapping[str, Any], *, section: str) -> None:
     """Validate and append OpenROAD expert overrides."""
     _append_number_config(
         cmd, cfg, "utilization_pct", positive=True, field=f"{section}.utilization_pct"
@@ -275,19 +260,9 @@ def _append_cli_overrides(cmd: list[str], args: SynthRequest | argparse.Namespac
     """Append explicit per-call expert overrides after the selected profile."""
     for name in ("abc_recipe", "abc_script", "abc_delay_ps"):
         _append_cli_value(cmd, args, name)
-    for name in (
-        "generic_abc_before_mapping",
-        "repair_setup",
-        "repair_hold",
-        "gate_cloning",
-    ):
+    for name in ("generic_abc_before_mapping", "repair_setup", "repair_hold", "gate_cloning"):
         _append_cli_bool(cmd, args, name)
-    for name in (
-        "utilization_pct",
-        "placement_density",
-        "setup_margin_ns",
-        "repair_tns_percent",
-    ):
+    for name in ("utilization_pct", "placement_density", "setup_margin_ns", "repair_tns_percent"):
         _append_cli_value(cmd, args, name)
 
 

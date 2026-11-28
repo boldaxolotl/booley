@@ -19,10 +19,7 @@ import pytest
 from tests.time_budget import hang_guard_s
 
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
-from booley.flows.sim.adapter_transport import (
-    AdapterTransportIdentity,
-    read_adapter_result,
-)
+from booley.flows.sim.adapter_transport import AdapterTransportIdentity, read_adapter_result
 from booley.flows.sim.backends import icarus as ir
 from booley.flows.sim.backends.shared import find_icarus_image
 from booley.flows.sim.backends.supervision import SimulatorLaunch
@@ -144,8 +141,7 @@ def test_run_icarus_image_writes_run_log_end_to_end(tmp_path: Path, tool_stub):
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="run-half execs a POSIX vvp stub; real sims run in-container",
+    sys.platform == "win32", reason="run-half execs a POSIX vvp stub; real sims run in-container"
 )
 def test_bad_build_fixture_keeps_runtime_asset_and_grades_design_failure(
     tmp_path: Path, tool_stub
@@ -193,8 +189,7 @@ def test_bad_build_fixture_keeps_runtime_asset_and_grades_design_failure(
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32",
-    reason="run-half execs a POSIX vvp stub; real sims run in-container",
+    sys.platform == "win32", reason="run-half execs a POSIX vvp stub; real sims run in-container"
 )
 def test_disk_kill_is_published_as_aborted_infrastructure(
     tmp_path: Path, monkeypatch, tool_stub

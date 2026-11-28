@@ -19,11 +19,7 @@ from booley.flows.sim.coverage_record_store import (
     LoadedCoverageRecord,
     load_coverage_record_bytes,
 )
-from booley.flows.sim.record_files import (
-    canonical_json,
-    parse_json_object,
-    read_bounded,
-)
+from booley.flows.sim.record_files import canonical_json, parse_json_object, read_bounded
 from booley.flows.sim.record_layout import (
     COVERAGE_RECORD_DIRECTORY,
     RECORD_DIRECTORY,

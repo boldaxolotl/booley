@@ -62,8 +62,7 @@ def test_plan_lookup_defaults_to_the_target_paired_with_itself(tmp_path: Path) -
 
 
 def test_resolution_uses_the_planned_selector(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _project(tmp_path)
     candidate = select_target(tmp_path, "synth_after", for_flow="synth")

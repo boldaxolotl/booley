@@ -74,11 +74,7 @@ def test_generator_and_test_owned_markdown_is_not_checked(repo: Path) -> None:
     """Generated, fixture and changelog-fragment Markdown is owned elsewhere."""
     _commit(repo, {"keep.md": "x\n"}, "base")
     git(repo, "switch", "-q", "-c", "codex/feature")
-    owned = [
-        "CHANGELOG.md",
-        "changelog.d/1.fix.md",
-        "tests/fixtures/ticket_guidance/x.md",
-    ]
+    owned = ["CHANGELOG.md", "changelog.d/1.fix.md", "tests/fixtures/ticket_guidance/x.md"]
     _commit(repo, dict.fromkeys(owned, _LONG + "\n"), "owned")
     assert _run(repo)[0] == 0
 

@@ -172,10 +172,7 @@ def inspect_http_server(request: HttpServerInspectionRequest) -> DiagnosticRepor
             "MCP configuration"
         )
         return findings.report()
-    findings.fail(
-        f"Sandbox MCP server not serving on 127.0.0.1:{port}",
-        _not_serving_fix(),
-    )
+    findings.fail(f"Sandbox MCP server not serving on 127.0.0.1:{port}", _not_serving_fix())
     for line in _server_log_tail(request.log_path):
         findings.detail(line, verbose_only=False)
     return findings.report()
@@ -200,9 +197,7 @@ def _server_log_tail(path: Path) -> list[str]:
 
 
 def ensure_http_server(
-    *,
-    timeout_seconds: float = _SERVER_START_TIMEOUT_SECONDS,
-    log_path: str = _SERVER_LOG_PATH,
+    *, timeout_seconds: float = _SERVER_START_TIMEOUT_SECONDS, log_path: str = _SERVER_LOG_PATH
 ) -> str:
     """Start the Developer Agent's HTTP MCP server unless one is already serving.
 
@@ -217,11 +212,7 @@ def ensure_http_server(
         return "running"
     child_env = os.environ.copy()
     child_env[DEVELOPER_AGENT_ENV] = "1"
-    for variable in (
-        "BOOLEY_NESTED_AGENT",
-        "BOOLEY_NESTED_MCP_TOOLS",
-        "BOOLEY_MCP_TOOLS",
-    ):
+    for variable in ("BOOLEY_NESTED_AGENT", "BOOLEY_NESTED_MCP_TOOLS", "BOOLEY_MCP_TOOLS"):
         child_env.pop(variable, None)
     try:
         with Path(log_path).open("ab") as log:
@@ -692,10 +683,7 @@ def upsert_claude(path: Path) -> bool:
 # Per-app skills dir mirrors the host model (host skill reconciliation):
 # Claude Code reads ``~/.claude/skills``; the Codex CLI reads the generic
 # cross-agent ``~/.agents/skills``.
-_SKILLS_REL = {
-    "claude": Path(".claude") / "skills",
-    "codex": Path(".agents") / "skills",
-}
+_SKILLS_REL = {"claude": Path(".claude") / "skills", "codex": Path(".agents") / "skills"}
 
 # Sidecar where the devcontainer spec binds the user's HOST agent skills
 # ([sandbox] mount_host_skills), one read-only child dir per skill. Kept in sync

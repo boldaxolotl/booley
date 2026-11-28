@@ -84,10 +84,7 @@ class ChildExecutionRegistry:
         return registry
 
     def _configure(
-        self,
-        manifest: SimulationRecordManifest,
-        project_data: Path,
-        booley_dir: Path | None,
+        self, manifest: SimulationRecordManifest, project_data: Path, booley_dir: Path | None
     ) -> None:
         self._manifest = manifest
         self._project_data_root = project_data
@@ -135,11 +132,7 @@ class ChildExecutionRegistry:
             atomic_write_json(paths.record, _waiting_record())
         return PreparedChild(execution_id, paths.context)
 
-    def mark_terminal(
-        self,
-        prepared: PreparedChild,
-        terminal_cause: str,
-    ) -> None:
+    def mark_terminal(self, prepared: PreparedChild, terminal_cause: str) -> None:
         def change(terminal: dict[str, object] | None) -> dict[str, object] | None:
             if terminal is None:
                 raise SimulationRecordIntegrityError("child execution record disappeared")

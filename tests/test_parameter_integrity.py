@@ -28,21 +28,11 @@ def _resolved(
 ) -> ResolvedTarget:
     rtl = tmp_path / "dut.sv"
     rtl.write_text(source, encoding="utf-8")
-    files = [
-        ResolvedFile(
-            name="dut.sv",
-            file_type="systemVerilogSource",
-            tags=("tb",),
-        )
-    ]
+    files = [ResolvedFile(name="dut.sv", file_type="systemVerilogSource", tags=("tb",))]
     if include is not None:
         (tmp_path / "defs.svh").write_text(include, encoding="utf-8")
         files.append(
-            ResolvedFile(
-                name="defs.svh",
-                file_type="systemVerilogSource",
-                is_include=True,
-            )
+            ResolvedFile(name="defs.svh", file_type="systemVerilogSource", is_include=True)
         )
     return ResolvedTarget(
         name="configured",

@@ -4,11 +4,7 @@ import subprocess
 import types
 from pathlib import Path
 
-from booley.flows.mutation.flow import (
-    MutationFlow,
-    MutationSpec,
-    MutationTestRun,
-)
+from booley.flows.mutation.flow import MutationFlow, MutationSpec, MutationTestRun
 
 
 def _process(returncode: int, output: str = "") -> subprocess.CompletedProcess[str]:

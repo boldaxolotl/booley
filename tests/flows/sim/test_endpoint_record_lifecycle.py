@@ -123,9 +123,7 @@ def _successful_pre_sim_record(
     invocation_directory: Path | None = None,
     observer=None,
 ):
-    from booley.flows.sim.record.coordinator import (
-        SimulationRecord,
-    )
+    from booley.flows.sim.record.coordinator import SimulationRecord
     from tests.flows.sim.simulation_record_test_support import _handle
 
     project = _hook_project(tmp_path, commands, live_commands)
@@ -294,19 +292,13 @@ def test_infrastructure_simulation_record_reaches_persisted_endpoint_reports(
     execution.termination = termination
     execution.failure_kind = "infrastructure"
     executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None,
-        execution_factory=lambda _options: execution,
+        invoke=lambda *_args, **_kwargs: None, execution_factory=lambda _options: execution
     )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)
     simulation_record = SimulationRecord(executor).run(
         NewSimulationRecordRunRequest(
-            plan,
-            tmp_path,
-            invocation.parent,
-            SimulationRecordPolicy(),
-            invocation,
-            _admission(),
+            plan, tmp_path, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
     flow = SimulateFlow()
@@ -577,10 +569,7 @@ def test_ordinary_cli_manifest_and_card_paths(
         work_dir=str(tmp_path),
         report_dir=str(tmp_path / "reports"),
         target="sim",
-        test=(
-            "count",
-            "reset",
-        ),
+        test=("count", "reset"),
     )
     if grade == "interrupt":
         with pytest.raises(KeyboardInterrupt):
@@ -949,12 +938,7 @@ def _unnamed_cycle_simulation_record(tmp_path, monkeypatch):
     )
     return SimulationRecord(executor).run(
         NewSimulationRecordRunRequest(
-            plan,
-            project,
-            invocation.parent,
-            SimulationRecordPolicy(),
-            invocation,
-            _admission(),
+            plan, project, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
         )
     )
 
@@ -1355,10 +1339,7 @@ _UNADMITTED = {
 
 @pytest.mark.parametrize("kind", ["ordinary", "coverage", "resume"])
 def test_simulation_record_kinds_refuse_without_admission(tmp_path: Path, kind: str) -> None:
-    from booley.flows.sim.flow import (
-        OrdinarySimulationRecordPlanning,
-        PreparedSimulationEndpoint,
-    )
+    from booley.flows.sim.flow import OrdinarySimulationRecordPlanning, PreparedSimulationEndpoint
     from booley.flows.sim.request import SimRequest
 
     flow = SimulateFlow()
@@ -1558,9 +1539,7 @@ def test_simulation_record_kind_failure_cards_name_published_manifests(
 
 @pytest.mark.parametrize("access", ["immutable", "legacy-per-test"])
 def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    access: str,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, access: str
 ) -> None:
     from booley.flows.sim.request import SimRequest
 
@@ -1602,8 +1581,7 @@ def test_prepared_ordinary_invoker_observes_owned_attempt_before_launch(
 
 @pytest.mark.timeout(180)
 def test_prepared_simulation_record_active_write_failure_preserves_durable_success(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from booley.flows.sim import live_progress
     from booley.flows.sim.request import SimRequest

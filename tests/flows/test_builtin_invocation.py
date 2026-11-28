@@ -166,10 +166,7 @@ def test_builtin_timeout_rejects_non_positive_or_non_integer_values(value: str) 
 
 @pytest.mark.parametrize(("_flow_type", "name", "default_ms"), BUILTINS)
 def test_timeout_precedence_is_call_then_config_then_default(
-    _flow_type: type[BooleyFlow],
-    name: str,
-    default_ms: int,
-    tmp_path: Path,
+    _flow_type: type[BooleyFlow], name: str, default_ms: int, tmp_path: Path
 ) -> None:
     configured = default_ms + 1
     _write_config(tmp_path, f"[flows.{name}]\ntimeout_ms = {configured}\n")
@@ -198,16 +195,11 @@ def test_malformed_configured_timeout_is_a_boundary_error(value: str, tmp_path: 
     ],
 )
 def test_builtin_pre_state_gate_validates_timeout_before_dry_run(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    knob: str,
-    line: str,
-    message: str,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, knob: str, line: str, message: str
 ) -> None:
     _write_config(tmp_path, f"[flows.lint]\n{line}\n")
     monkeypatch.setattr(
-        "booley.flows.base.runtime_context.container_only_error",
-        lambda _command: None,
+        "booley.flows.base.runtime_context.container_only_error", lambda _command: None
     )
 
     result = LintFlow().execute_cli(["--target", "demo", "--work-dir", str(tmp_path), "--dry-run"])
@@ -251,9 +243,7 @@ def _unusable_report_dir(kind: str, root: Path) -> Path | None:
 
 
 def test_unusable_report_dir_is_refused_before_any_job_work(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     runtime = tmp_path / "runtime"
@@ -329,8 +319,7 @@ def test_custom_flow_target_repetition_normalizes_to_scalar() -> None:
 
 
 def test_cli_report_preserves_authored_repeated_target_argv(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     flow = LintFlow()
     report_dir = tmp_path / "reports"
@@ -346,9 +335,7 @@ def test_cli_report_preserves_authored_repeated_target_argv(
     ]
     place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     replace_run(
-        monkeypatch,
-        flow,
-        lambda: EndpointOutcome(detail={"targets": flow.args.target.split(",")}),
+        monkeypatch, flow, lambda: EndpointOutcome(detail={"targets": flow.args.target.split(",")})
     )
 
     with mock.patch.object(EndpointState, "admission", return_value=nullcontext(None)):
@@ -459,8 +446,7 @@ def test_state_backed_flow_verdict_reaches_one_stream_once(
 
 
 def test_typed_flow_execution_does_not_publish_to_process_streams(
-    tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     flow = _VerdictLifecycleFlow(EndpointOutcome(report_text="Simulation verdict: PASS"))
 
@@ -473,9 +459,7 @@ def test_typed_flow_execution_does_not_publish_to_process_streams(
 
 
 def test_state_backed_simulation_coverage_verdict_reaches_stdout(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     flow = SimulateFlow()
     prepared_simulation_record = PreparedSimulationEndpoint((), None, (), {})
@@ -485,8 +469,7 @@ def test_state_backed_simulation_coverage_verdict_reaches_stdout(
         flow,
         "run_prepared_simulation",
         lambda prepared, admission: EndpointOutcome(
-            report_text="Coverage verdict: PASS",
-            detail={"coverage": True},
+            report_text="Coverage verdict: PASS", detail={"coverage": True}
         ),
     )
 
@@ -579,8 +562,7 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
 
 
 def test_direct_dry_run_uses_project_data_default_without_numbering(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
     flow = _DryLifecycleFlow()

@@ -59,9 +59,7 @@ class ValidatedResumeManifest:
 
 
 def validate_resume_manifest(
-    manifest_path: Path,
-    *,
-    project_root: Path,
+    manifest_path: Path, *, project_root: Path
 ) -> ValidatedResumeManifest:
     """Decode one manifest exactly once and bind its Target at the recorded revision."""
     try:
@@ -114,10 +112,7 @@ def _origin_invocation(path: Path) -> Path:
 def _load_node(path: Path, booley_dir: Path | None) -> ValidatedManifestNode:
     discard_published_staging(path)
     raw = read_bounded(
-        path,
-        limit=MANIFEST_MAX_BYTES,
-        error=SimulationRecordIntegrityError,
-        booley_dir=booley_dir,
+        path, limit=MANIFEST_MAX_BYTES, error=SimulationRecordIntegrityError, booley_dir=booley_dir
     )
     try:
         manifest = decode_simulation_record_manifest(raw)
@@ -126,8 +121,4 @@ def _load_node(path: Path, booley_dir: Path | None) -> ValidatedManifestNode:
     return ValidatedManifestNode(path, manifest, manifest_digest(manifest))
 
 
-__all__ = [
-    "ValidatedManifestNode",
-    "ValidatedResumeManifest",
-    "validate_resume_manifest",
-]
+__all__ = ["ValidatedManifestNode", "ValidatedResumeManifest", "validate_resume_manifest"]

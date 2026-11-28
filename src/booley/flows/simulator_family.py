@@ -19,12 +19,7 @@ def normalize_eda_tool(eda_tool: str | None) -> str:
     raise ValueError(f"unknown simulator EDA tool {eda_tool!r}")
 
 
-def matching_eda_tool(
-    declared: str | None,
-    configured: str | None,
-    *,
-    target: str,
-) -> str:
+def matching_eda_tool(declared: str | None, configured: str | None, *, target: str) -> str:
     """Return one canonical family when declared and configured tools agree."""
     declared_family = normalize_eda_tool(declared)
     configured_family = normalize_eda_tool(configured)

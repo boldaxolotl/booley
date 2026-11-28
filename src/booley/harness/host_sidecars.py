@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from booley.config.host_config import SandboxHostPolicy
+from booley.core import docker_cli
 from booley.core.boundary import (
     BoundaryError,
     as_str,
@@ -20,6 +21,7 @@ from booley.core.boundary import (
     require_dict,
     require_list,
     require_str,
+    require_str_value,
 )
 from booley.core.differences import format_differences
 from booley.core.egress_modes import EGRESS_MODES
@@ -42,7 +44,6 @@ LABEL_SIDECAR_KIND = "io.booley.sidecar.kind"
 LABEL_SOURCE_FINGERPRINT = "io.booley.sidecar.source-fingerprint"
 LABEL_BOOLEY_VERSION = "io.booley.sidecar.booley-version"
 LABEL_POLICY_FINGERPRINT = "io.booley.sidecar.policy-fingerprint"
-ROLE_LABEL = "booley.role"
 SESSION_ROLE = "interactive"
 _DEVCONTAINER_FOLDER_LABEL = "devcontainer.local_folder"
 _WORKSPACE_MOUNT_TARGET = "/work"
@@ -206,9 +207,7 @@ def reconcile_sidecars(
 
 
 def inspect_sidecars(
-    policy: SandboxHostPolicy | None,
-    *,
-    booley_root: Path | None = None,
+    policy: SandboxHostPolicy | None, *, booley_root: Path | None = None
 ) -> SidecarResult:
     """Inspect every independent sidecar resource for Bootstrap CLI only."""
     docker = _docker_adapter()
@@ -266,9 +265,7 @@ def _reconcile_unproxied(
 
 
 def _inspect_unproxied(
-    policy: SandboxHostPolicy,
-    booley_root: Path | None,
-    docker: _DockerPort,
+    policy: SandboxHostPolicy, booley_root: Path | None, docker: _DockerPort
 ) -> SidecarResult:
     """Inspect every unproxied-mode sidecar row for check-only Bootstrap."""
     findings = _inspect_images(booley_root, _UNPROXIED, docker)
@@ -346,10 +343,7 @@ def _require_no_egress_blockers(network: _NetworkState, docker: _DockerPort) -> 
     active = _active_sessions(docker)
     parked = _parked_refresh_predecessors(docker)
     if active or parked:
-        summaries = (
-            _active_session_summary(active),
-            _parked_predecessor_summary(parked),
-        )
+        summaries = (_active_session_summary(active), _parked_predecessor_summary(parked))
         described = ", ".join(summary for summary in summaries if summary)
         raise SidecarError(
             f"cannot remove unused {legacy.PROXY_CONTAINER} and {legacy.EGRESS_NETWORK} "
@@ -417,6 +411,23 @@ def _reaper_spec(policy: SandboxHostPolicy, docker: _DockerPort) -> _ContainerSp
     )
 
 
+def _runner(docker: _DockerPort) -> docker_cli.Runner:
+    return lambda args, timeout: docker.run(args, timeout=timeout)
+
+
+def _inspect(kind: str, name: str, docker: _DockerPort) -> dict[str, Any] | None:
+    """Return one object's inspection document, or ``None`` when Docker has no such object."""
+    try:
+        return docker_cli.inspect(_runner(docker), kind, name, timeout=15)
+    except docker_cli.InspectError as exc:
+        result = exc.result
+        if result is None:
+            raise SidecarError(f"Docker returned invalid {kind} {name} JSON") from exc
+        if _is_missing(result):
+            return None
+        raise SidecarError(f"cannot inspect {kind} {name}: {_failure_detail(result)}") from exc
+
+
 def _docker_text(docker: _DockerPort, args: list[str], description: str) -> str:
     """Run one read-only Docker query and return its stripped output."""
     result = docker.run(args, timeout=15)
@@ -425,13 +436,25 @@ def _docker_text(docker: _DockerPort, args: list[str], description: str) -> str:
     return result.stdout.strip()
 
 
+def _docker_endpoint(docker: _DockerPort) -> str:
+    """Return the endpoint of the active Docker context."""
+    try:
+        return docker_cli.inspect_value(
+            _runner(docker),
+            "context",
+            None,
+            timeout=15,
+            template="{{json .Endpoints.docker.Host}}",
+            require=require_str_value,
+        )
+    except docker_cli.InspectError as exc:
+        detail = str(exc) if exc.result is None else _failure_detail(exc.result)
+        raise SidecarError(f"cannot read the active Docker endpoint: {detail}") from exc
+
+
 def _reaper_socket_source(docker: _DockerPort) -> str:
     """Return the host path the reaper mounts as the Docker socket of Booley's daemon."""
-    endpoint = _docker_text(
-        docker,
-        ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
-        "the active Docker endpoint",
-    )
+    endpoint = _docker_endpoint(docker)
     version = _docker_text(
         docker,
         ["version", "--format", "{{.Client.Os}}\t{{.Server.Platform.Name}}"],
@@ -507,10 +530,7 @@ def _reaper_finding(
         return SidecarFinding("reaper", SidecarState.ERROR, str(exc))
 
 
-def _inspect_bootstrap_container(
-    spec: _ContainerSpec,
-    docker: _DockerPort,
-) -> SidecarFinding:
+def _inspect_bootstrap_container(spec: _ContainerSpec, docker: _DockerPort) -> SidecarFinding:
     try:
         state = _inspect_container(spec.name, docker)
         _verify_container_ownership(spec.name, spec.role, state)
@@ -528,9 +548,7 @@ def _inspect_bootstrap_container(
         if current and state.running and network_ready:
             return SidecarFinding(spec.resource, SidecarState.CURRENT, f"{spec.name} is current")
         return SidecarFinding(
-            spec.resource,
-            SidecarState.PENDING,
-            _container_pending_detail(spec, state, image[0]),
+            spec.resource, SidecarState.PENDING, _container_pending_detail(spec, state, image[0])
         )
     except SidecarError as exc:
         return SidecarFinding(spec.resource, SidecarState.ERROR, str(exc))
@@ -572,9 +590,7 @@ def _inspect_bootstrap_network(docker: _DockerPort) -> SidecarFinding:
 
 
 def _reconcile_containers(
-    policy: SandboxHostPolicy,
-    intent: Intent,
-    docker: _DockerPort,
+    policy: SandboxHostPolicy, intent: Intent, docker: _DockerPort
 ) -> tuple[SidecarFinding, ...]:
     """Reconcile the proxy/reaper container suffix after images and network."""
     proxy = _reconcile_container(_proxy_spec(policy), intent, docker)
@@ -726,10 +742,7 @@ def _reconcile_image(
         return SidecarFinding(spec.resource, SidecarState.ERROR, str(exc))
 
 
-def _verify_image_ownership(
-    spec: _ImageSpec,
-    current: tuple[str, dict[str, str]] | None,
-) -> None:
+def _verify_image_ownership(spec: _ImageSpec, current: tuple[str, dict[str, str]] | None) -> None:
     """Reject a fixed-name image unless all Booley provenance fields are present."""
     if current is None:
         return
@@ -776,12 +789,9 @@ def _build_image(
 
 
 def _inspect_image(reference: str, docker: _DockerPort) -> tuple[str, dict[str, str]] | None:
-    result = docker.run(["image", "inspect", reference, "--format", "{{json .}}"], timeout=15)
-    if result.returncode:
-        if _is_missing(result):
-            return None
-        raise SidecarError(f"cannot inspect image {reference}: {_failure_detail(result)}")
-    document = _json_object(result.stdout, f"image {reference}")
+    document = _inspect("image", reference, docker)
+    if document is None:
+        return None
     try:
         image_id = require_str(document, "Id")
         config = require_dict(document.get("Config"), field=f"image {reference}.Config")
@@ -862,24 +872,16 @@ def _replace_stale_network(state: _NetworkState, docker: _DockerPort) -> None:
 
 
 def _inspect_network(docker: _DockerPort) -> _NetworkState:
-    result = docker.run(
-        ["network", "inspect", legacy.EGRESS_NETWORK, "--format", "{{json .}}"], timeout=15
-    )
-    if result.returncode:
-        if _is_missing(result):
-            return _NetworkState(False)
-        raise SidecarError(
-            f"cannot inspect network {legacy.EGRESS_NETWORK}: {_failure_detail(result)}"
-        )
-    document = _json_object(result.stdout, f"network {legacy.EGRESS_NETWORK}")
+    document = _inspect("network", legacy.EGRESS_NETWORK, docker)
+    if document is None:
+        return _NetworkState(False)
     try:
         internal = _required_bool(document, "Internal")
         options = require_dict(
             document.get("Options"), field=f"network {legacy.EGRESS_NETWORK}.Options"
         )
         containers = require_dict(
-            document.get("Containers"),
-            field=f"network {legacy.EGRESS_NETWORK}.Containers",
+            document.get("Containers"), field=f"network {legacy.EGRESS_NETWORK}.Containers"
         )
         attached_names = _network_container_names(containers)
     except BoundaryError as exc:
@@ -902,9 +904,7 @@ def _network_container_names(containers: dict[Any, Any]) -> tuple[str, ...]:
 
 
 def _reconcile_container(
-    spec: _ContainerSpec,
-    intent: Intent,
-    docker: _DockerPort,
+    spec: _ContainerSpec, intent: Intent, docker: _DockerPort
 ) -> SidecarFinding:
     try:
         state = _inspect_container(spec.name, docker)
@@ -934,12 +934,12 @@ def _reconcile_container(
 def _verify_container_ownership(name: str, role: str, state: _ContainerState) -> None:
     if not state.exists:
         return
-    actual_role = (state.labels or {}).get(ROLE_LABEL)
+    actual_role = (state.labels or {}).get(docker_cli.ROLE_LABEL)
     if actual_role == role:
         return
     shown = actual_role if actual_role is not None else "missing"
     raise SidecarError(
-        f"foreign name collision: container {name} has {ROLE_LABEL}={shown!r}, "
+        f"foreign name collision: container {name} has {docker_cli.ROLE_LABEL}={shown!r}, "
         f"expected {role!r}; it was not modified"
     )
 
@@ -953,9 +953,7 @@ def _container_matches(state: _ContainerState, image_id: str, fingerprint: str) 
 
 
 def _container_pending_detail(
-    spec: _ContainerSpec,
-    state: _ContainerState,
-    image_identity: str,
+    spec: _ContainerSpec, state: _ContainerState, image_identity: str
 ) -> str:
     expected = {
         "exists": True,
@@ -976,11 +974,7 @@ def _container_pending_detail(
 
 
 def _apply_container(
-    name: str,
-    state: _ContainerState,
-    current: bool,
-    run_args: list[str],
-    docker: _DockerPort,
+    name: str, state: _ContainerState, current: bool, run_args: list[str], docker: _DockerPort
 ) -> None:
     if not state.exists:
         _run_container(name, run_args, docker)
@@ -1021,12 +1015,9 @@ def _ensure_container_network(
 
 
 def _inspect_container(name: str, docker: _DockerPort) -> _ContainerState:
-    result = docker.run(["container", "inspect", name, "--format", "{{json .}}"], timeout=15)
-    if result.returncode:
-        if _is_missing(result):
-            return _ContainerState(False)
-        raise SidecarError(f"cannot inspect container {name}: {_failure_detail(result)}")
-    document = _json_object(result.stdout, f"container {name}")
+    document = _inspect("container", name, docker)
+    if document is None:
+        return _ContainerState(False)
     try:
         config = require_dict(document.get("Config"), field=f"container {name}.Config")
         state = require_dict(document.get("State"), field=f"container {name}.State")
@@ -1042,14 +1033,7 @@ def _inspect_container(name: str, docker: _DockerPort) -> _ContainerState:
         project_root = _project_root_from_inspection(document, labels, name)
     except BoundaryError as exc:
         raise SidecarError(f"Docker returned incomplete inspection for container {name}") from exc
-    return _ContainerState(
-        True,
-        image_id,
-        running,
-        labels,
-        frozenset(attached),
-        project_root,
-    )
+    return _ContainerState(True, image_id, running, labels, frozenset(attached), project_root)
 
 
 def _project_root_from_inspection(
@@ -1110,7 +1094,7 @@ def _active_sessions(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
         [
             "ps",
             "--filter",
-            f"label={ROLE_LABEL}={SESSION_ROLE}",
+            f"label={docker_cli.ROLE_LABEL}={SESSION_ROLE}",
             "--format",
             "{{.ID}}\t{{.Names}}",
         ],
@@ -1130,7 +1114,7 @@ def _active_sessions(docker: _DockerPort) -> tuple[_ActiveSession, ...]:
         if (
             not state.exists
             or not state.running
-            or (state.labels or {}).get(ROLE_LABEL) != SESSION_ROLE
+            or (state.labels or {}).get(docker_cli.ROLE_LABEL) != SESSION_ROLE
         ):
             raise SidecarError(f"cannot prove active Session ownership for {name}")
         if state.project_root is None:
@@ -1147,7 +1131,7 @@ def _parked_refresh_predecessors(docker: _DockerPort) -> tuple[_ActiveSession, .
             "ps",
             "-a",
             "--filter",
-            f"label={ROLE_LABEL}={SESSION_ROLE}",
+            f"label={docker_cli.ROLE_LABEL}={SESSION_ROLE}",
             "--format",
             "{{.ID}}\t{{.Names}}\t{{.State}}",
         ],
@@ -1167,7 +1151,7 @@ def _parked_refresh_predecessors(docker: _DockerPort) -> tuple[_ActiveSession, .
         if not name.endswith(legacy.REFRESH_BACKUP_SUFFIX) or status in _ACTIVE_STATES:
             continue
         state = _inspect_container(container_id, docker)
-        if not state.exists or (state.labels or {}).get(ROLE_LABEL) != SESSION_ROLE:
+        if not state.exists or (state.labels or {}).get(docker_cli.ROLE_LABEL) != SESSION_ROLE:
             raise SidecarError(f"cannot prove parked Sandbox ownership for {name}")
         if state.project_root is None:
             raise SidecarError(f"cannot identify owning Project for parked Sandbox {name}")
@@ -1205,7 +1189,7 @@ def _base_run_args(name: str, role: str, fingerprint: str) -> list[str]:
         "--restart",
         "unless-stopped",
         "--label",
-        f"{ROLE_LABEL}={role}",
+        f"{docker_cli.ROLE_LABEL}={role}",
         "--label",
         f"{LABEL_POLICY_FINGERPRINT}={fingerprint}",
     ]
@@ -1217,27 +1201,11 @@ def _run_container(name: str, args: list[str], docker: _DockerPort) -> None:
         raise SidecarError(f"failed to start {name}: {_failure_detail(result)}")
 
 
-def _json_object(raw: str, description: str) -> dict[str, Any]:
-    try:
-        value = json.loads(raw)
-        return require_dict(value, field=description)
-    except (json.JSONDecodeError, BoundaryError) as exc:
-        raise SidecarError(f"Docker returned invalid {description} JSON") from exc
-
-
 def _string_labels(value: object, description: str) -> dict[str, str]:
     if value is None:
         return {}
     try:
-        labels = require_dict(value, field=f"labels for {description}")
-        result = {}
-        for key, item in labels.items():
-            string_key = as_str(key)
-            string_item = as_str(item)
-            if string_key is None or string_item is None:
-                raise BoundaryError("label names and values must be strings")
-            result[string_key] = string_item
-        return result
+        return docker_cli.labels(value, allow_empty=True)
     except BoundaryError as exc:
         raise SidecarError(f"Docker returned invalid labels for {description}") from exc
 
@@ -1250,13 +1218,13 @@ def _required_bool(value: dict[Any, Any], key: str) -> bool:
 
 
 def _is_missing(result: subprocess.CompletedProcess[str]) -> bool:
-    detail = (result.stderr or result.stdout).lower()
+    detail = docker_cli.failure_detail(result).lower()
     return "no such" in detail or "not found" in detail
 
 
 def _failure_detail(result: subprocess.CompletedProcess[str]) -> str:
-    detail = (result.stderr or result.stdout).strip()
-    return detail or f"Docker exited {result.returncode} without diagnostic output"
+    fallback = f"Docker exited {result.returncode} without diagnostic output"
+    return docker_cli.failure_detail(result, fallback)
 
 
 def _docker_adapter() -> _DockerPort:

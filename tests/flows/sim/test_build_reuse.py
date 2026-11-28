@@ -151,9 +151,7 @@ def test_recipe_gate_declines_uncontained_search_and_toolchain_overrides(
     assert stock_verilator_recipe(tmp_path / "b") is None
 
 
-def test_recipe_reports_libraries_the_linker_finds_outside_the_generation(
-    tmp_path: Path,
-) -> None:
+def test_recipe_reports_libraries_the_linker_finds_outside_the_generation(tmp_path: Path) -> None:
     build = tmp_path / "b"
     _stock_recipe(build, _CONTAINED_VC + '-LDFLAGS "-Llib -lstaged -lz -l m -l:libspecial.so.1"\n')
     (build / "lib").mkdir()
@@ -529,8 +527,7 @@ def test_toolchain_identity_covers_install_compiler_and_system_headers(tmp_path:
         lambda: (root / "include" / "verilated.h").write_text("// v2\n", encoding="utf-8"),
         lambda: (tmp_path / "sysinclude" / "bits" / "new.h").write_text("", encoding="utf-8"),
         lambda: (tmp_path / "bin" / "fakecxx").write_text(
-            (tmp_path / "bin" / "fakecxx").read_text(encoding="utf-8") + "# v2\n",
-            encoding="utf-8",
+            (tmp_path / "bin" / "fakecxx").read_text(encoding="utf-8") + "# v2\n", encoding="utf-8"
         ),
     ):
         before = verilator_identity(environment)

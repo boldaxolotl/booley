@@ -15,11 +15,7 @@ from booley.audit.diagnostic_results import Severity
 from booley.config.host_config import SandboxHostPolicy
 from booley.core.host_shell import quote_arg
 from booley.harness import host_diagnostics
-from booley.runtime import (
-    issuance_invalidation,
-    session_admission,
-    session_issuance,
-)
+from booley.runtime import issuance_invalidation, session_admission, session_issuance
 from booley.runtime.host_install import HostInstallationIdentity
 from booley.runtime.private_store import session_store_repair
 from booley.runtime.runtime_context import RuntimeLocation
@@ -153,11 +149,7 @@ def test_in_runtime_host_diagnosis_does_not_prepare_or_probe_host(monkeypatch, t
 def test_host_diagnosis_reports_canonical_installation(monkeypatch):
     report = host_diagnostics.Findings()
     identity = replace(_identity(), payload_fingerprint="abcdef0123456789")
-    monkeypatch.setattr(
-        host_diagnostics,
-        "load_host_installation",
-        lambda: identity,
-    )
+    monkeypatch.setattr(host_diagnostics, "load_host_installation", lambda: identity)
     monkeypatch.setattr(host_diagnostics, "current_host_installation", lambda _source: identity)
 
     host_diagnostics._inspect_host_installation(report)

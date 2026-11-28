@@ -477,11 +477,7 @@ def test_submit_starts_a_standalone_job_listed_under_now_as_yours(
     run_id, handle = answer.json()["run_id"], answer.json()["handle"]
     record = job_records.read_record(run_id, standalone_jobs_dir(world.booley))
     assert record is not None
-    assert (record.work_dir, record.client, record.argv) == (
-        str(world.wt.resolve()),
-        None,
-        argv,
-    )
+    assert (record.work_dir, record.client, record.argv) == (str(world.wt.resolve()), None, argv)
     assert handle.startswith("J-")
     assert handle.endswith("?") == (handles == "malformed")
     assert len(spawned) == 1

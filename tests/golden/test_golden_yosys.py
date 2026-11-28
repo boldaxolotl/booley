@@ -36,16 +36,11 @@ _PDK = OpenRoadPdk(
 
 
 def _timing_config(
-    *,
-    utilization_pct: float = 40.0,
-    repair_timing: bool = True,
+    *, utilization_pct: float = 40.0, repair_timing: bool = True
 ) -> StaTimingConfig:
     """A fully pinned timing config (defaults spelled out for stability)."""
     return StaTimingConfig(
-        mode="physical",
-        sdc=(),
-        utilization_pct=utilization_pct,
-        repair_timing=repair_timing,
+        mode="physical", sdc=(), utilization_pct=utilization_pct, repair_timing=repair_timing
     )
 
 
@@ -68,16 +63,10 @@ def _timing_config(
     ],
 )
 def test_openroad_script_golden(
-    tmp_path: Path,
-    golden_name: str,
-    utilization_pct: float,
-    repair_timing: bool,
+    tmp_path: Path, golden_name: str, utilization_pct: float, repair_timing: bool
 ) -> None:
     """Snapshot the complete OpenROAD placement+repair+timing TCL."""
-    config = _timing_config(
-        utilization_pct=utilization_pct,
-        repair_timing=repair_timing,
-    )
+    config = _timing_config(utilization_pct=utilization_pct, repair_timing=repair_timing)
     # The netlist/SDC/report paths live in the work dir in production; keeping
     # them under tmp_path here means one normalization pass covers them all.
     script_path = write_openroad_script(

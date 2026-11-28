@@ -257,8 +257,7 @@ class TestWriteBuildStamp:
         assert not stamp_path(repo).exists()
         assert not development_context_path(repo).exists()
         status = run_bounded_child(
-            ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"],
-            check=True,
+            ["git", "-C", str(repo), "status", "--porcelain", "--untracked-files=all"], check=True
         )
         assert status.stdout == ""
 

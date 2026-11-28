@@ -10,8 +10,5 @@ def retired_option_message(key: str, field_prefix: str) -> str:
             f"{field_prefix}.timing_engine is retired; replace it "
             "with flow_options.synth_mode = physical or logical"
         )
-    replacements = {
-        "yosys": "advanced_settings_yosys",
-        "openroad": "advanced_settings_openroad",
-    }
+    replacements = {"yosys": "advanced_settings_yosys", "openroad": "advanced_settings_openroad"}
     return f"{field_prefix}.{key} is retired; rename it to {field_prefix}.{replacements[key]}"

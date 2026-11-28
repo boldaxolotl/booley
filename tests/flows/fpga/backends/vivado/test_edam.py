@@ -275,20 +275,14 @@ def test_configure_writes_project_files(tmp_path: Path):
     project_tcl = work_root / "fpga_cfgA.tcl"
     assert "WIDTH=8" in project_tcl.read_text(encoding="utf-8")
     fpga_edam.validate_vivado_parameter_contract(
-        work_root,
-        "fpga_cfgA",
-        {"WIDTH": 8, "FLAG": True},
+        work_root, "fpga_cfgA", {"WIDTH": 8, "FLAG": True}
     )
 
     original = project_tcl.read_bytes()
     fpga_edam.apply_ppa_profile(work_root, "fpga_cfgA", VIVADO_PROFILES["balanced"])
     assert project_tcl.read_bytes() == original
 
-    fpga_edam.apply_ppa_profile(
-        work_root,
-        "fpga_cfgA",
-        VIVADO_PROFILES["max_frequency"],
-    )
+    fpga_edam.apply_ppa_profile(work_root, "fpga_cfgA", VIVADO_PROFILES["max_frequency"])
     fpga_edam.enable_out_of_context(work_root, "fpga_cfgA")
     patched = project_tcl.read_text(encoding="utf-8")
     assert "STEPS.POST_ROUTE_PHYS_OPT_DESIGN.TCL.POST" in patched

@@ -27,9 +27,6 @@ def openroad_profile(profile: str) -> OpenRoadPpaSettings:
     return _PROFILES[validate_ppa_profile(profile)]
 
 
-def with_openroad_overrides(
-    base: OpenRoadPpaSettings,
-    **overrides: Any,
-) -> OpenRoadPpaSettings:
+def with_openroad_overrides(base: OpenRoadPpaSettings, **overrides: Any) -> OpenRoadPpaSettings:
     """Apply already boundary-validated OpenROAD expert overrides."""
     return replace(base, **{key: value for key, value in overrides.items() if value is not None})

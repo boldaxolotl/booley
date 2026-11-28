@@ -88,10 +88,7 @@ def test_authenticated_build_publishes_execution_before_blocking_invoker(tmp_pat
             ),
         )
         outcome = run_prepared_group(
-            execution,
-            handle,
-            attempt_root=handle.project_root / "attempt",
-            copy_build_root=True,
+            execution, handle, attempt_root=handle.project_root / "attempt", copy_build_root=True
         )
     assert outcome.passed
     assert len(observations) == 2
@@ -331,10 +328,7 @@ def test_active_writer_uses_short_lock_timeout_and_mandatory_keeps_default(tmp_p
 
 @pytest.mark.parametrize("origin_phase", ["running", "starting"])
 def test_reap_removes_active_pointers(tmp_path, origin_phase):
-    from booley.flows.progress_lifecycle import (
-        repair_progress_after_reap,
-        write_progress_json,
-    )
+    from booley.flows.progress_lifecycle import repair_progress_after_reap, write_progress_json
 
     root = tmp_path / "reports"
     path = root / "sim/1/progress.json"
@@ -526,8 +520,7 @@ def test_symlinked_project_uses_canonical_owned_evidence_root(tmp_path, monkeypa
 
 
 def test_baseline_under_symlinked_temporary_root_uses_exact_canonical_pointer(
-    tmp_path,
-    monkeypatch,
+    tmp_path, monkeypatch
 ):
 
     project = tmp_path / "project"

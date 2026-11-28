@@ -22,7 +22,8 @@ from pathlib import Path
 from typing import Any
 
 from booley.config.project_config import project_name
-from booley.runtime import auth_token
+from booley.core import docker_cli
+from booley.runtime import auth_token, host_docker
 from booley.runtime.platform_paths import docker_mount_path as _docker_mount_path
 from booley.runtime.platform_paths import run_captured_bounded
 
@@ -86,8 +87,7 @@ class DockerSandboxConfig:
             return "docker not found on PATH"
 
         try:
-            result = run_captured_bounded(["docker", "image", "inspect", self.image], timeout=15)
-            if result.returncode != 0:
+            if not docker_cli.exists(host_docker.relay_docker, "image", self.image, timeout=15):
                 return (
                     f"Docker image '{self.image}' not found. "
                     f"Build it with: booley init (or docker build)"
@@ -123,18 +123,10 @@ def _append_persistent_volumes(docker_cmd: list[str]) -> None:
     copied in): with no cargo in the image there was nothing to populate them.
     Pre-existing ``booley-cargo-*`` volumes on a host are simply left orphaned.
     """
-    docker_cmd.extend(
-        [
-            "-v",
-            "booley-pip-local:/home/agent/.local",
-        ]
-    )
+    docker_cmd.extend(["-v", "booley-pip-local:/home/agent/.local"])
 
 
-def _append_extra_mounts(
-    docker_cmd: list[str],
-    extra_mounts: list[tuple[str, str]],
-) -> None:
+def _append_extra_mounts(docker_cmd: list[str], extra_mounts: list[tuple[str, str]]) -> None:
     """Append configured extra mounts (dedup by container path, last wins)."""
     seen_targets: dict[str, str] = {}
     for host_path, container_path in extra_mounts:
@@ -144,9 +136,7 @@ def _append_extra_mounts(
 
 
 def _append_env_vars(
-    docker_cmd: list[str],
-    extra_env: dict[str, str],
-    proxy_url: str | None,
+    docker_cmd: list[str], extra_env: dict[str, str], proxy_url: str | None
 ) -> None:
     """Append environment variable flags: config and proxy."""
     for k, v in extra_env.items():
@@ -189,10 +179,7 @@ class DockerRunner:
         # loopback bind is insufficient. Authenticate the exceptional
         # all-interface bind with a fresh high-entropy credential: unrelated
         # LAN clients can see the ephemeral port but cannot use the relay.
-        self._proxy = EgressProxy(
-            host="0.0.0.0",
-            auth_token=secrets.token_urlsafe(32),
-        )
+        self._proxy = EgressProxy(host="0.0.0.0", auth_token=secrets.token_urlsafe(32))
         self._proxy.start()
         logger.debug("Egress proxy started for Docker sandbox on port %d", self._proxy.port)
         return self._proxy.url
@@ -226,12 +213,7 @@ class DockerRunner:
         docker_cmd.extend(self._with_worktree_preflight(cmd))
         return docker_cmd
 
-    def ephemeral_argv(
-        self,
-        payload: list[str],
-        *,
-        tty: bool,
-    ) -> list[str]:
+    def ephemeral_argv(self, payload: list[str], *, tty: bool) -> list[str]:
         """Build a ``docker run --rm`` argv for a throwaway sandbox container.
 
         Backs ``booley shell``: a fresh container with the worktree at ``/work``
@@ -274,7 +256,7 @@ class DockerRunner:
             "--init",
             "--rm",
             "--label",
-            f"booley.project={project_name(self.worktree)}",
+            f"{docker_cli.PROJECT_NAME_LABEL}={project_name(self.worktree)}",
             "--mount",
             mount_spec,
             "-w",

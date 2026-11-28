@@ -24,10 +24,7 @@ _HISTORY_PREFIXES = (
 )
 # The only lines allowed to name them, counted per file: the checks that the image no
 # longer carries the hook.
-_ALLOWED_HITS = {
-    ".github/contracts/session-runtime.toml": 1,
-    "tests/ci/test_image_contract.py": 1,
-}
+_ALLOWED_HITS = {".github/contracts/session-runtime.toml": 1, "tests/ci/test_image_contract.py": 1}
 
 
 @pytest.mark.parametrize(

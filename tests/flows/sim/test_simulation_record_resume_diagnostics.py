@@ -9,10 +9,7 @@ import pytest
 
 from booley.flows.builtin_cli import parse_request
 from booley.flows.sim.flow import SimulateFlow
-from booley.flows.sim.record.codec import (
-    canonical_json_bytes,
-    decode_simulation_record_manifest,
-)
+from booley.flows.sim.record.codec import canonical_json_bytes, decode_simulation_record_manifest
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
 from booley.flows.sim.request import SimRequest
 from tests.flows.sim.simulation_record_test_support import prerequisite_documents
@@ -340,9 +337,7 @@ def test_legacy_interrupted_simulation_record_new_source_mapping_refuses_before_
 def test_legacy_record_resumes_only_against_an_unchanged_suite(tmp_path, monkeypatch, case, areas):
     unnamed = case == "unnamed-tests-added"
     reports, manifest, executions = _interrupted_simulation_record(
-        tmp_path,
-        monkeypatch,
-        **({"tests_toml": "# no Tests for sim_0\n"} if unnamed else {}),
+        tmp_path, monkeypatch, **({"tests_toml": "# no Tests for sim_0\n"} if unnamed else {})
     )
     _rewrite_manifest(manifest, lambda document: document["required_suite"].pop("target_tests"))
     path = tmp_path / ".booley/tests.toml"

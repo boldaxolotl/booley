@@ -87,9 +87,7 @@ def register_custom(monkeypatch: pytest.MonkeyPatch, endpoint_type: type[McpTool
 
 
 def test_literal_help_after_separator_cannot_bypass_host_guard(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cli_exit,
+    project: Path, monkeypatch: pytest.MonkeyPatch, cli_exit
 ) -> None:
     register_custom(monkeypatch, Custom)
     # Argparse and the dispatcher each consume one leading separator.
@@ -107,9 +105,7 @@ def assert_number_error(captured):
 
 
 def test_parser_error_is_reported_once(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cli_exit,
+    project: Path, monkeypatch: pytest.MonkeyPatch, cli_exit
 ) -> None:
     register_custom(monkeypatch, Custom)
     captured = cli_exit(["booley", "flow", "custom", "--number", "bad", "--help"], code=2)
@@ -118,10 +114,7 @@ def test_parser_error_is_reported_once(
 
 @pytest.mark.parametrize("exit_code", [0, 2, 7])
 def test_custom_exit_is_not_help(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cli_exit,
-    exit_code: int,
+    project: Path, monkeypatch: pytest.MonkeyPatch, cli_exit, exit_code: int
 ) -> None:
     calls = []
 
@@ -150,9 +143,7 @@ def test_custom_exit_is_not_help(
 
 
 def test_named_help_retains_metadata_admission(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cli_exit,
+    project: Path, monkeypatch: pytest.MonkeyPatch, cli_exit
 ) -> None:
     import booley.runtime.layout_consumers as consumers
 
@@ -174,9 +165,7 @@ def test_named_help_retains_metadata_admission(
 
 
 def test_override_cannot_run_through_host_help(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    project: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     class Override(Custom):
         def main(self, argv: list[str] | None = None) -> int:
@@ -189,18 +178,14 @@ def test_override_cannot_run_through_host_help(
 
 
 def test_combined_quiet_help_preserves_flow_options(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cli_exit,
+    project: Path, monkeypatch: pytest.MonkeyPatch, cli_exit
 ) -> None:
     captured = cli_exit(["booley", "flow", "lint", "-qh"], code=0)
     assert "--quiet" in captured.out
 
 
 def test_help_named_option_is_not_a_help_action(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cli_exit,
+    project: Path, monkeypatch: pytest.MonkeyPatch, cli_exit
 ) -> None:
     class HelpLike(Custom):
         @property
@@ -247,8 +232,7 @@ def hinted_endpoint(endpoint_type, calls, *, nested):
 
 
 def test_help_looking_data_is_parsed_once_in_sandbox(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    project: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls = []
 
@@ -278,9 +262,7 @@ def test_inert_probe_skips_conversion_of_unseen_string_defaults() -> None:
 
 
 def test_missing_project_error_precedes_host_venue_error(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     reset_cache()
     monkeypatch.chdir(tmp_path)
@@ -303,10 +285,7 @@ class Nested(Custom):
 
 @pytest.mark.parametrize("name", ["nested", "n"])
 def test_nested_help_uses_the_dispatched_parser(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cli_exit,
-    name: str,
+    project: Path, monkeypatch: pytest.MonkeyPatch, cli_exit, name: str
 ) -> None:
     register_custom(monkeypatch, Nested)
     captured = cli_exit(["booley", "flow", "custom", name, "--help"], code=0)
@@ -316,9 +295,7 @@ def test_nested_help_uses_the_dispatched_parser(
 
 
 def test_nested_syntax_error_is_reported_once(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cli_exit,
+    project: Path, monkeypatch: pytest.MonkeyPatch, cli_exit
 ) -> None:
     register_custom(monkeypatch, Nested)
     captured = cli_exit(
@@ -328,9 +305,7 @@ def test_nested_syntax_error_is_reported_once(
 
 
 def test_nested_custom_action_runs_once_before_help(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cli_exit,
+    project: Path, monkeypatch: pytest.MonkeyPatch, cli_exit
 ) -> None:
     calls = []
 
@@ -425,10 +400,7 @@ def test_extension_help_matches_direct_parser(
 
 @pytest.mark.parametrize("command", ["flow", "specialist"])
 def test_unknown_endpoint_help_cannot_list_from_host(
-    project: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    cli_exit,
-    command: str,
+    project: Path, monkeypatch: pytest.MonkeyPatch, cli_exit, command: str
 ) -> None:
     captured = cli_exit(["booley", command, "unknown-endpoint", "--help"], code=2)
     assert captured.out == ""

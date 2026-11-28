@@ -85,8 +85,7 @@ def test_source_feedback_uses_shared_git_metadata(tmp_path):
     source = tmp_path / "booley-source"
     source.mkdir()
     (source / "pyproject.toml").write_text(
-        "[tool.booley]\nsource_checkout = true\n",
-        encoding="utf-8",
+        "[tool.booley]\nsource_checkout = true\n", encoding="utf-8"
     )
     run_bounded_child(["git", "init", "-q", str(source)], check=True)
     parser = argparse.ArgumentParser()
@@ -105,8 +104,7 @@ def test_source_feedback_is_shared_by_linked_worktree(tmp_path):
     source = tmp_path / "booley-source"
     source.mkdir()
     (source / "pyproject.toml").write_text(
-        "[tool.booley]\nsource_checkout = true\n",
-        encoding="utf-8",
+        "[tool.booley]\nsource_checkout = true\n", encoding="utf-8"
     )
     run_bounded_child(["git", "init", "-q", "-b", "main", str(source)], check=True)
     run_bounded_child(

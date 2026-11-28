@@ -53,9 +53,7 @@ class MutationArguments(BuiltinArguments):
                     "files may be named explicitly",
                 ),
                 HelpOption(
-                    "count",
-                    "Default: 10.",
-                    "Number of Mutants: a positive integer or 'auto'",
+                    "count", "Default: 10.", "Number of Mutants: a positive integer or 'auto'"
                 ),
                 HelpOption(
                     "min_detected",

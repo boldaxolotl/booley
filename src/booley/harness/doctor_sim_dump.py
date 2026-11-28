@@ -25,10 +25,7 @@ _MAX_SCANNED_BYTES = 1 << 20
 _TRACER_RE = re.compile(r"\bVerilated(?:Vcd|Fst)C\b")
 # Keep string literals whole, drop comments (so "//" inside a string survives).
 _TOKEN_RE = re.compile(r'"(?:\\.|[^"\\\n])*"|/\*.*?\*/|//[^\n]*', re.DOTALL)
-_OPEN_RE = re.compile(
-    r'(?:->|\.)\s*open\s*\(\s*"([^"\\\n]+\.(?:vcd|fst))"\s*[,)]',
-    re.IGNORECASE,
-)
+_OPEN_RE = re.compile(r'(?:->|\.)\s*open\s*\(\s*"([^"\\\n]+\.(?:vcd|fst))"\s*[,)]', re.IGNORECASE)
 
 
 def _strip_comments(text: str) -> str:

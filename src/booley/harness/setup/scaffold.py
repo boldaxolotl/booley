@@ -37,13 +37,7 @@ import tomlkit
 
 from booley.core.booley_dir import BOOLEY_DIR_NAME, own_booley_dir
 from booley.core.booley_dir_parts import in_linked_worktree
-from booley.harness.setup.common import (
-    InitContext,
-    err,
-    info,
-    ok,
-    warn,
-)
+from booley.harness.setup.common import InitContext, err, info, ok, warn
 from booley.harness.setup.plan import (
     FilesystemMutation,
     InitFilesystemRequest,
@@ -130,8 +124,7 @@ def _plan_scaffold_files(ctx: InitContext, files: dict[str, str]) -> InitPlan:
             )
         )
     return plan_init_filesystem(
-        InitFilesystemRequest(root=ctx.project_root, targets=tuple(targets)),
-        _ScaffoldHostProbe(),
+        InitFilesystemRequest(root=ctx.project_root, targets=tuple(targets)), _ScaffoldHostProbe()
     )
 
 

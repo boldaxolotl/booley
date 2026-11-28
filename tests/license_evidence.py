@@ -22,9 +22,7 @@ class FlexnetStatus:
 
 
 def parse_flexnet_lmstat(
-    text: str,
-    expected_feature: str,
-    expected_client_host: str,
+    text: str, expected_feature: str, expected_client_host: str
 ) -> FlexnetStatus:
     """Parse an exact client row from host-captured vendor server status.
 
@@ -56,9 +54,7 @@ def parse_flexnet_lmstat(
     end = start + next_header.start() if next_header is not None else len(text)
     block = text[start:end]
     quoted_feature = re.search(
-        rf'^\s*"{re.escape(expected_feature)}"\s+v\S+,\s+vendor:\s*\S+',
-        block,
-        re.M,
+        rf'^\s*"{re.escape(expected_feature)}"\s+v\S+,\s+vendor:\s*\S+', block, re.M
     )
     if quoted_feature is None:
         raise LicenseEvidenceError("FlexNet feature block lacks vendor metadata")
@@ -75,10 +71,7 @@ def parse_flexnet_lmstat(
 
 
 def require_checkout_then_release(
-    active_status: str,
-    released_status: str,
-    expected_feature: str,
-    expected_client_host: str,
+    active_status: str, released_status: str, expected_feature: str, expected_client_host: str
 ) -> None:
     """Require the exact client during the Flow and its absence afterward."""
     active = parse_flexnet_lmstat(active_status, expected_feature, expected_client_host)

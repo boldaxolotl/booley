@@ -9,12 +9,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from booley.core.boundary import as_float, as_int
-from booley.core.exit_codes import (
-    EXIT_CANCELLED,
-    EXIT_ERROR,
-    EXIT_FAILURE,
-    EXIT_SUCCESS,
-)
+from booley.core.exit_codes import EXIT_CANCELLED, EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
 
 _ROW_LIMIT = 24
 _ITEM_LIMIT = 5

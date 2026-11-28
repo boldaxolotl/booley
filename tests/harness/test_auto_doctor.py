@@ -276,12 +276,7 @@ def test_execute_persists_structured_report_and_transcript(tmp_path: Path, monke
     monkeypatch.setattr(doctor, "run_doctor_result", run_doctor)
     progress = []
 
-    payload = auto_doctor._execute(
-        tmp_path,
-        booley_dir,
-        "test",
-        progress=progress.append,
-    )
+    payload = auto_doctor._execute(tmp_path, booley_dir, "test", progress=progress.append)
 
     assert payload["clean"] is False
     assert payload["trigger"] == "test"
@@ -378,14 +373,7 @@ def test_run_if_due_records_once_then_stays_current(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(auto_doctor, "_execute", execute)
 
     progress = []
-    assert (
-        auto_doctor.run_if_due(
-            tmp_path,
-            trigger="test",
-            progress=progress.append,
-        )
-        is not None
-    )
+    assert auto_doctor.run_if_due(tmp_path, trigger="test", progress=progress.append) is not None
     assert auto_doctor.run_if_due(tmp_path, trigger="test") is None
     assert calls == ["test"]
     assert deliveries == []

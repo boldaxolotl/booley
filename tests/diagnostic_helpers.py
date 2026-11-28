@@ -163,14 +163,7 @@ def _issued_runtime_state(tmp_path: Path):
             "Memory": 0,
         },
         "NetworkSettings": {"Networks": {"booley-egress": {}}},
-        "Mounts": [
-            {
-                "Destination": "/work",
-                "Source": str(tmp_path),
-                "Type": "bind",
-                "RW": True,
-            }
-        ],
+        "Mounts": [{"Destination": "/work", "Source": str(tmp_path), "Type": "bind", "RW": True}],
     }
     return issuance, spec, labels, state
 

@@ -10,10 +10,7 @@ from pathlib import Path
 
 from booley.core.atomic_files import Durability, atomic_replace_bytes
 from booley.core.booley_dir_links import is_booley_dir_entry
-from booley.runtime.filesystem_utils import (
-    is_transient_read_error,
-    open_with_sharing_retry,
-)
+from booley.runtime.filesystem_utils import is_transient_read_error, open_with_sharing_retry
 from booley.runtime.regular_file import open_regular_nofollow
 from booley.runtime.timefmt import utc_now_rfc3339
 
@@ -209,11 +206,7 @@ def write_run_log_progress(
     return path
 
 
-def write_run_log(
-    work_dir: str | Path,
-    text: str,
-    max_bytes: int | None = 10_000_000,
-) -> Path:
+def write_run_log(work_dir: str | Path, text: str, max_bytes: int | None = 10_000_000) -> Path:
     """Atomically persist Flow output, preserving an existing ownership header."""
     path = Path(work_dir, RUN_LOG_NAME)
     first, _ = _read_run_log_head(path)

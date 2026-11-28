@@ -28,10 +28,7 @@ def _definition(name: str) -> dict[str, object]:
 def test_probe_entrypoint_builds_real_interactive_catalog(tmp_path: Path, writable: bool) -> None:
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
-    (booley_dir / "booley.toml").write_text(
-        '[project]\nname = "probe"\n',
-        encoding="utf-8",
-    )
+    (booley_dir / "booley.toml").write_text('[project]\nname = "probe"\n', encoding="utf-8")
     env = os.environ.copy()
     env["BOOLEY_DIR"] = str(booley_dir)
     env["BOOLEY_MCP_DEVELOPER_AGENT"] = "1"
@@ -49,9 +46,7 @@ def test_probe_entrypoint_builds_real_interactive_catalog(tmp_path: Path, writab
         if not writable and os.access(booley_dir, os.W_OK):
             pytest.skip("directory permissions are not enforced for this user")
         result = run_bounded_child(
-            [sys.executable, "-m", "booley.mcp.probe"],
-            cwd=tmp_path,
-            env=env,
+            [sys.executable, "-m", "booley.mcp.probe"], cwd=tmp_path, env=env
         )
     finally:
         booley_dir.chmod(0o755)
@@ -70,15 +65,7 @@ def test_probe_entrypoint_builds_real_interactive_catalog(tmp_path: Path, writab
     ("definitions", "error_type"),
     [
         ([_definition("synth"), _definition("asic_synthesize")], ValueError),
-        (
-            [
-                {
-                    **_definition("broken"),
-                    "schema": {"type": "not-a-json-schema-type"},
-                }
-            ],
-            SchemaError,
-        ),
+        ([{**_definition("broken"), "schema": {"type": "not-a-json-schema-type"}}], SchemaError),
     ],
     ids=["canonical-name-collision", "invalid-schema"],
 )
@@ -91,11 +78,7 @@ def test_probe_and_live_server_share_catalog_validation(
     # change, so discovery is replaced; the live server's only public entry, `main()`,
     # also serves on stdio, so `_build_server` is called directly. Reconciliation would
     # scan a Job store this test does not have.
-    monkeypatch.setattr(
-        mcp_server,
-        "_discover_booley_mcp_tools",
-        lambda: (definitions, []),
-    )
+    monkeypatch.setattr(mcp_server, "_discover_booley_mcp_tools", lambda: (definitions, []))
     monkeypatch.setattr(mcp_server, "_reconcile_orphaned_jobs", lambda: None)
 
     with pytest.raises(error_type):

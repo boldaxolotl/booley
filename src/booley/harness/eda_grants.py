@@ -18,12 +18,7 @@ class GrantCoordinator:
             raise authority.AuthorityError(str(exc)) from exc
 
     def add(
-        self,
-        project: Path,
-        kind: str,
-        *,
-        installation: str | None,
-        license_profile: str | None,
+        self, project: Path, kind: str, *, installation: str | None, license_profile: str | None
     ) -> authority.ProjectGrant:
         """Withdraw the Sandbox stamp, then store the grant; no journal is needed.
 
@@ -35,10 +30,7 @@ class GrantCoordinator:
                 issuance_invalidation.shared_recovery_blocks_command(read_only=False)
                 identity = authority.grant_project_identity(project)
                 with authority._prepare_add_grant(
-                    identity,
-                    kind,
-                    installation=installation,
-                    license_profile=license_profile,
+                    identity, kind, installation=installation, license_profile=license_profile
                 ) as commit:
                     issuance_invalidation.invalidate(identity)
                     return commit()
