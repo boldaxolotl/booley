@@ -19,7 +19,7 @@ class LintArguments(BuiltinArguments):
     )
 
     @staticmethod
-    def add_args(parser: argparse.ArgumentParser, features: frozenset[str]) -> None:
+    def add_args(parser: argparse.ArgumentParser, features: frozenset[str]) -> None:  # noqa: ARG004 — implements BuiltinArguments.add_args
         parser.add_argument(
             "--scope",
             default="",

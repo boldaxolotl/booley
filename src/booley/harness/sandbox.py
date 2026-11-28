@@ -174,7 +174,7 @@ class DockerRunner:
     architecture.
     """
 
-    def __init__(self, config: DockerSandboxConfig, worktree: Path, label: str = "") -> None:
+    def __init__(self, config: DockerSandboxConfig, worktree: Path) -> None:
         self.config = config
         self.worktree = worktree
         self._env_file: Path | None = None

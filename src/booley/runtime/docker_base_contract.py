@@ -136,7 +136,7 @@ def _require_schema_v2(document: dict, purpose: str) -> None:
         raise ValueError(f"{purpose} requires schema version 2")
 
 
-def _docker(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+def _docker(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:  # noqa: ARG001 — docker_cli.Runner signature; calls are unbounded (see _CI_TIMEOUT)
     return subprocess.run(["docker", *args], capture_output=True, text=True, check=False)
 
 
