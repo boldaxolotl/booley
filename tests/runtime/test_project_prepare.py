@@ -13,7 +13,6 @@ import pytest
 from tests.git_support import git
 from tests.pipe_holding_tree import (
     PARENT_SCRIPT,
-    describe_heartbeat_tree,
     heartbeat_tree,
     start_deadline_after_tree_start,
     wait_for_tree_start,
@@ -278,7 +277,12 @@ def test_logged_hook_background_child_does_not_hold_success(tmp_path: Path) -> N
         assert result.ok
         assert elapsed < _BACKGROUND_CHILD_BOUND_S
         wait_for_tree_start(paths)
-        assert "still alive" in describe_heartbeat_tree(paths), "the background child was stopped"
+        # A child killed at release could still land one beat: wait for several.
+        size = paths["heartbeat"].stat().st_size
+        deadline = time.monotonic() + hang_guard_s()
+        while paths["heartbeat"].stat().st_size < size + 3:
+            assert time.monotonic() < deadline, "the background child was stopped"
+            time.sleep(0.05)
 
 
 def test_logged_hook_is_stopped_with_its_descendants_when_interrupted(

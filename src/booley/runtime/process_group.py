@@ -102,7 +102,10 @@ class _WindowsJobObject:
     value never reaches Windows. A release during a stop is deferred to its end.
     """
 
-    def __init__(self, kernel32: Any, last_error: Callable[[], int], handle: int) -> None:
+    def __init__(
+        self, kernel32: Any, last_error: Callable[[], int], handle: int, pid: int
+    ) -> None:
+        self._pid = pid  # the owned leader, to name the job in logs
         self._kernel32 = kernel32
         self._last_error = last_error
         self._handle: int | None = handle
@@ -149,7 +152,7 @@ class _WindowsJobObject:
             logger.debug("could not assign process %s to a job: error %s", pid, last_error())
             kernel32.CloseHandle(job)
             return None
-        return cls(kernel32, last_error, job)
+        return cls(kernel32, last_error, job, pid)
 
     @contextlib.contextmanager
     def members(self) -> Iterator[list[int]]:
@@ -183,7 +186,7 @@ class _WindowsJobObject:
         if not self._query(_JOB_BASIC_PROCESS_ID_LIST, listed):
             error = self._last_error()
             if error != _ERROR_MORE_DATA:  # a truncated list is still filled
-                logger.debug("could not list the job's processes: error %s", error)
+                logger.debug("could not list the job of process %s: error %s", self._pid, error)
                 return []
         return list(listed.ProcessIdList[: listed.NumberOfProcessIdsInList])
 
@@ -208,7 +211,10 @@ class _WindowsJobObject:
         """Kill every member."""
         with self._lock:
             if self._handle is not None and not self._kernel32.TerminateJobObject(self._handle, 1):
-                logger.debug("could not terminate the job: error %s", self._last_error())
+                error = self._last_error()
+                logger.debug(
+                    "could not terminate the job of process %s: error %s", self._pid, error
+                )
 
     @contextlib.contextmanager
     def stopping(self) -> Iterator[None]:
