@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
+from booley.core import docker_cli
 from booley.runtime.build_stamp import resolve_build_commit
 from booley.runtime.docker_build import DockerBuildResult, run_docker_build
 from booley.runtime.docker_capacity import (
@@ -163,7 +164,7 @@ def _cleanup_migration(references: tuple[str, ...], primary: BaseException | Non
         try:
             result = run_captured_bounded(["docker", "image", "rm", reference], timeout=30)
             if result.returncode and "no such image" not in (result.stderr or "").lower():
-                failures.append(f"{reference}: {result.stderr or result.returncode}")
+                failures.append(f"{reference}: {docker_cli.failure_detail(result)}")
         except (OSError, subprocess.SubprocessError) as exc:
             failures.append(f"{reference}: {exc}")
     if failures:
