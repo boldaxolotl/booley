@@ -15,6 +15,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
 from booley.core import docker_cli
+from booley.core.atomic_files import atomic_replace_bytes, fsync_directory
 from booley.core.booley_layout import (
     BOOLEY_DIR_NAME,
     RETIRED_DIR_NAME,
@@ -28,7 +29,6 @@ from booley.core.booley_layout import (
 )
 from booley.core.checkout_role import require_project_checkout
 from booley.core.project_identity import matches_project_label
-from booley.runtime.atomic_files import atomic_replace_bytes, fsync_directory
 from booley.runtime.directory_migration_git import (
     edit,
     mapped,

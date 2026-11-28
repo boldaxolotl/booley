@@ -56,10 +56,10 @@ class TestWriteRunLog:
         assert body.splitlines()[0].startswith("line ")
 
     def test_atomic_leaves_no_tmp_file(self, tmp_path):
-        # Atomic tmp+rename: the PID-suffixed staging file must be gone.
+        # Atomic tmp+rename: the staging file must be gone.
         run_log.write_run_log(tmp_path, "output")
         assert (tmp_path / "run.log").exists()
-        assert list(tmp_path.glob("run.log.*.tmp")) == []
+        assert list(tmp_path.glob(".run.log.*.tmp")) == []
 
     def test_undecodable_text_never_raises(self, tmp_path):
         # A lone surrogate (undecoded byte smuggled through errors="replace"

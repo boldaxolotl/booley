@@ -13,7 +13,7 @@ from typing import Any, TypeVar
 
 import pytest
 
-from booley.core import file_lock
+from booley.core import atomic_files, file_lock
 from booley.runtime import execution_records, execution_recovery
 from booley.runtime.execution_records import (
     RUNTIME_EXECUTION_ENV,
@@ -134,7 +134,7 @@ class _RecoveryInterleaving:
             target=self._recover, args=(execution_id, booley_dir), daemon=True
         )
         self.real_read = execution_records.read_file_bytes
-        self.real_replace = execution_records.replace_file
+        self.real_replace = atomic_files.replace_file
         self.real_acquire = file_lock.acquire_file_lock
 
     def _recover(self, execution_id: ExecutionId, booley_dir: Path) -> None:
@@ -187,7 +187,7 @@ def run_with_recovery_between_read_and_write(
     """
     hooks = _RecoveryInterleaving(execution_id, booley_dir)
     monkeypatch.setattr(execution_records, "read_file_bytes", hooks.read)
-    monkeypatch.setattr(execution_records, "replace_file", hooks.replace)
+    monkeypatch.setattr(atomic_files, "replace_file", hooks.replace)
     monkeypatch.setattr(file_lock, "acquire_file_lock", hooks.acquire)
     interrupted()
     hooks.thread.join(hang_guard_s())

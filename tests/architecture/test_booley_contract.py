@@ -137,6 +137,7 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D19", "booley.eda.policy", "booley.flows.execution", "seed.py"),
         ("D20", "booley.eda.policy", "booley.runtime.session_issuance", "seed.py"),
         ("D20", "booley.eda.policy", "booley.runtime.issuance_invalidation", "seed.py"),
+        ("D25", "booley.core.atomic_files", "booley.runtime.timefmt", "seed.py"),
         ("D23", "booley.config.seed", "booley.eda.provisioning.authority", "seed.py"),
         ("D24", "booley.eda.seed", "booley.runtime.agent", "seed.py"),
         ("D31", "booley.flows.sim.rogue", "booley.flows.sim.record.store", "seed.py"),

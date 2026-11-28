@@ -55,12 +55,12 @@ import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
+from booley.core.atomic_files import atomic_write_json
 from booley.core.file_hash import file_sha256
 from booley.flows.synth.backends import pipeline
 from booley.flows.synth.backends.openroad import sdc_grammar
 from booley.flows.synth.backends.openroad import timing as openroad_timing
 from booley.runtime.build_metadata import current_build_metadata
-from booley.runtime.execution_records import atomic_write_json
 from booley.runtime.filesystem_utils import make_directories
 
 logger = logging.getLogger(__name__)

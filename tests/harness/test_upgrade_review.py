@@ -348,7 +348,7 @@ def test_repeat_acknowledgment_is_locked_no_write(tmp_path, monkeypatch):
         booley_dir, "2.0.0", current_version="2.0.0", packaged_changelog=_changelog(tmp_path)
     )
     before = upgrade_review.state_path(booley_dir).read_bytes()
-    monkeypatch.setattr(upgrade_review, "_atomic_write", lambda *_args: pytest.fail("retry wrote"))
+    monkeypatch.setattr(upgrade_review, "_store_state", lambda *_args: pytest.fail("retry wrote"))
     repeated = upgrade_review.acknowledge(
         booley_dir, "2.0.0", current_version="2.0.0", packaged_changelog=tmp_path / "missing"
     )
@@ -363,7 +363,7 @@ def test_no_pending_requires_exact_current_baseline(tmp_path, monkeypatch, revie
     booley_dir = _project(tmp_path)
     upgrade_review.observe(booley_dir, current_version=reviewed)
     before = upgrade_review.state_path(booley_dir).read_bytes()
-    monkeypatch.setattr(upgrade_review, "_atomic_write", lambda *_args: pytest.fail("wrote"))
+    monkeypatch.setattr(upgrade_review, "_store_state", lambda *_args: pytest.fail("wrote"))
     if reviewed == "2.0.0":
         assert upgrade_review.acknowledge(
             booley_dir, "2.0.0", current_version="2.0.0"

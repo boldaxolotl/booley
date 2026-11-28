@@ -30,10 +30,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.file_hash import file_sha256
 from booley.core.file_lock import acquire_file_lock
 from booley.core.process_identity import ProcessIdentity
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.pid import DEAD_PROCESS_STATES, capture_process_identity, observe_process
 

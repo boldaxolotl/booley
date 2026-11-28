@@ -11,8 +11,8 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from pathlib import Path
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.boundary import require_dict, require_list
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.timefmt import format_human_date, parse_timestamp, utc_now_rfc3339
 
 DEEP_STAMP_FILENAME = "doctor_deep_stamp.json"

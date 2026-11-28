@@ -9,7 +9,7 @@ import zipfile
 from pathlib import Path
 from xml.etree import ElementTree
 
-from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.runtime.paths import package_data_dir
 
 VSIX_PATH = "/usr/local/libexec/booley/dashboard.vsix"

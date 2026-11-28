@@ -12,8 +12,8 @@ import pytest
 from tests.mount_change_support import respell_registration, simulate_mount_change
 from tests.subprocess_budget import run_bounded_child
 
-from booley.core import booley_dir
-from booley.runtime import atomic_files, mount_history, worktree_mount_repair
+from booley.core import atomic_files, booley_dir
+from booley.runtime import mount_history, worktree_mount_repair
 from booley.runtime.worktree_mount_repair import repair_mount_registrations
 
 pytestmark = pytest.mark.skipif(os.name == "nt", reason="Sandbox-only; POSIX paths")
