@@ -61,6 +61,8 @@ from booley.runtime.supervised_execution import (
     SupervisedProcessSet,
     supervised_execution_scope,
 )
+from booley.runtime.worktree_evidence import untracked_common_paths
+from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _capacity,
@@ -477,12 +479,25 @@ def test_shutdown_deadline_does_not_fail_when_every_worker_already_exited(
     scheduler._await_lanes([], _ExitsDuringFinalWait())
 
 
+@pytest.mark.parametrize(
+    "checkout",
+    [None, *itertools.product(LAYOUTS, RUNTIMES)],
+    ids=lambda c: "-".join(c or ["main"]),
+)
 def test_managed_simulation_record_publishes_lane_results_in_plan_order_and_cleans_child_claims(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slots
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, slots, checkout: tuple[str, str] | None
 ) -> None:
     manifest = _three_item_manifest()
     plan = create_simulation_record_plan(manifest)
     project, state = _parallel_environment(tmp_path)
+    common = project / ".booley"
+    if checkout is not None:
+        main, project = linked_worktree(
+            tmp_path, monkeypatch, layout=checkout[0], runtime=checkout[1]
+        )
+        monkeypatch.chdir(project)
+        state.handle.project_root = project
+        common = main / ".booley"
     # Nothing orders the items: the lane step machine checks the interleavings.
     state.barrier = threading.Barrier(1)
     state.first_finished.set()
@@ -493,7 +508,13 @@ def test_managed_simulation_record_publishes_lane_results_in_plan_order_and_clea
     assert outcome.complete is True
     assert outcome.aggregate_grade == "fail"
     assert state.compile_count == 1
-    _assert_child_claim_integrity(invocation, slot_store, plan, project / ".booley")
+    lanes = _assert_child_claim_integrity(invocation, slot_store, plan, common)
+    if checkout is not None:
+        for lane in lanes:  # Job status and cancel take the default location
+            assert SlotRecovery().execution_is_terminal(lane.root.name)
+            SlotRecovery().cancel_execution(lane.root.name)
+            assert (common / ".runtime" / "executions" / lane.root.name / "cancel.json").is_file()
+        assert untracked_common_paths(project, project / ".booley") == []
 
 
 def _parallel_executor(monkeypatch: pytest.MonkeyPatch, state) -> OrdinaryHdlSerialExecutor:
@@ -526,7 +547,7 @@ def _run_parallel_simulation_record(tmp_path, manifest, plan, project, executor,
     return outcome, slot_store, invocation
 
 
-def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) -> None:
+def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) -> list:
     store = SimulationRecordStore(invocation / "targets/sim/record")
     summary = json.loads(store.summary_path.read_text())
     assert summary["completed"] == list(plan.work_item_ids)
@@ -539,13 +560,16 @@ def _assert_child_claim_integrity(invocation, slot_store, plan, project_data) ->
         if document["child_execution_id"] is not None
     ]
     assert attempts, "the parallel run scheduled no lane attempt"
+    lanes = []
     for attempt in attempts:
         assert attempt["child_entry_sha256"] is None
         lane = execution_paths(ExecutionId(attempt["child_execution_id"]), booley_dir=project_data)
         assert lane.context.is_file()
         record = read_json(lane.record)
         assert record["state"] == "terminal" and record["tree_terminal"] is True
+        lanes.append(lane)
     _assert_only_the_outer_claim_remains(slot_store)
+    return lanes
 
 
 @pytest.mark.parametrize("error", ["truncated", "schema", "missing"])

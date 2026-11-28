@@ -15,7 +15,7 @@ from typing import Any
 
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
 from booley.runtime.atomic_files import STAGED_SUFFIX
-from booley.runtime.booley_dir import resolve_booley_dir
+from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.runtime.filesystem_utils import (
     is_transient_read_error,
     make_directories,
@@ -82,7 +82,7 @@ def execution_paths(
 ) -> ExecutionPaths:
     """Resolve protocol paths for one validated opaque execution ID."""
     validated_id = ExecutionId(execution_id)
-    resolved = booley_dir if booley_dir is not None else resolve_booley_dir()
+    resolved = booley_dir if booley_dir is not None else resolve_common_booley_dir()
     root = resolved / ".runtime" / "executions" / validated_id
     return ExecutionPaths(
         root=root,

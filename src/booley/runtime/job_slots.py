@@ -824,15 +824,12 @@ def _default_inherited_execution_verifier(
     candidate: object, root: Path, owner_pid: int
 ) -> ExecutionId | None:
     try:
-        from booley.runtime.booley_dir import resolve_booley_dir, resolve_common_booley_dir
+        from booley.runtime.booley_dir import resolve_common_booley_dir
 
-        canonical_root = resolve_common_booley_dir() / "runtime" / "jobs" / "slots"
-        if root.resolve() != canonical_root.resolve():
+        common = resolve_common_booley_dir()
+        if root.resolve() != (common / "runtime" / "jobs" / "slots").resolve():
             return None
-        # Execution records stay with their writers' checkout resolver (see #2603).
-        return verify_inherited_execution_id(
-            candidate, booley_dir=resolve_booley_dir(), owner_pid=owner_pid
-        )
+        return verify_inherited_execution_id(candidate, booley_dir=common, owner_pid=owner_pid)
     except (OSError, RuntimeError, ValueError):
         return None
 
