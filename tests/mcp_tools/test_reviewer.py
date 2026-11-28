@@ -14,6 +14,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.specialists.reviewer import (
     REVIEW_GUIDES,
     RTL_FOCUS_CATEGORIES,
@@ -36,6 +37,7 @@ from tests.mcp_tools.reviewer_support import (
     issue,
     run_review,
 )
+from tests.sandbox_venue_fake import place
 
 # ---------------------------------------------------------------------------
 # Fixtures and helpers
@@ -170,7 +172,9 @@ class _Wrapper(NamedTuple):
     "case",
     [
         _Wrapper(
-            json.dumps({"issues": [issue(severity="CRITICAL"), issue(severity="MINOR")]}), 2, True
+            json.dumps({"issues": [issue(severity="CRITICAL"), issue(severity="MINOR")]}),
+            2,
+            True,
         ),
         _Wrapper(
             "Here is my review:\n```json\n"
@@ -274,7 +278,7 @@ def test_parse_review_output_drops_malformed_entries() -> None:
                 {"severity": "MAJOR"},  # missing required fields
                 issue(severity="MINOR"),
                 bad_severity,
-            ]
+            ],
         }
     )
 
@@ -542,7 +546,9 @@ _VERDICTS: dict[str, Verdict] = {
         0,
     ),
     "confirmed_finding_rated_minor_agrees": Verdict(
-        _canonical(finding(severity="MINOR")), [[_mirror(42, "x", verdict="CONFIRMED")]], 0
+        _canonical(finding(severity="MINOR")),
+        [[_mirror(42, "x", verdict="CONFIRMED")]],
+        0,
     ),
     "split_report_that_resends_a_finding_agrees": Verdict(
         _canonical(
@@ -556,11 +562,15 @@ _VERDICTS: dict[str, Verdict] = {
         0,
     ),
     "mirror_severity_above_canonical_still_fails": Verdict(
-        _canonical(finding(severity="MAJOR")), [[_mirror(42, "x", severity="CRITICAL")]], 2
+        _canonical(finding(severity="MAJOR")),
+        [[_mirror(42, "x", severity="CRITICAL")]],
+        2,
     ),
     # A severe canonical issue elsewhere in the file must not hide an omitted finding.
     "mirror_finding_missing_beside_a_more_severe_canonical_issue_fails": Verdict(
-        _canonical(finding(severity="CRITICAL")), [[_mirror(7, "x", verdict="PLAUSIBLE")]], 2
+        _canonical(finding(severity="CRITICAL")),
+        [[_mirror(7, "x", verdict="PLAUSIBLE")]],
+        2,
     ),
 }
 
@@ -594,7 +604,8 @@ def test_tied_channels_preserve_canonical_ticket_metadata(agent: ScriptedAgent) 
     canonical = finding(summary="latch")
     agent.answer(
         agent.reported(
-            {"findings": [_mirror(42, "latch", verdict="CONFIRMED")]}, output=_canonical(canonical)
+            {"findings": [_mirror(42, "latch", verdict="CONFIRMED")]},
+            output=_canonical(canonical),
         )
     )
 
@@ -785,7 +796,12 @@ _GUIDE_CASES = [
 
 @pytest.mark.parametrize(("category", "focus", "scope", "names"), _GUIDE_CASES)
 def test_each_focus_loads_its_declared_guides(
-    agent: ScriptedAgent, ticket_md: Path, category: str, focus: str, scope: str, names: list[str]
+    agent: ScriptedAgent,
+    ticket_md: Path,
+    category: str,
+    focus: str,
+    scope: str,
+    names: list[str],
 ) -> None:
     system, _ = prompts(agent, _argv(category, focus, scope, "--spec", str(ticket_md)))
 
@@ -1543,7 +1559,6 @@ def test_unbound_done_findings_do_not_claim_goal_approval(
     agent: ScriptedAgent, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, transport: bool
 ) -> None:
     from booley.flows.cli_selection import CliInvocation
-    from booley.runtime import runtime_context
     from booley.runtime.booley_dir import reset_cache
 
     directory = tmp_path / ".booley"
@@ -1551,7 +1566,7 @@ def test_unbound_done_findings_do_not_claim_goal_approval(
     (directory / "booley.toml").write_text("[project]\n", encoding="utf-8")
     monkeypatch.setenv("BOOLEY_DIR", str(directory))
     reset_cache()
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     agent.answer({"issues": [finding(severity="CRITICAL")]})
     argv = ["--work-dir", str(tmp_path), *BUGS]
     for _ in range(2):

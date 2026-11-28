@@ -1,8 +1,13 @@
-"""Test-only helpers that issue Runtime specs through ``preview``/``issue_prepared``."""
+"""Test-only helpers that issue Runtime specs through ``preview``/``issue_prepared``.
+
+``serve_host_docker`` fakes the Docker CLI boundary; ``install_trusted_validator``
+fakes the Runtime spec validator prefix seam.
+"""
 
 from __future__ import annotations
 
 import copy
+import json
 import os
 import subprocess
 from collections.abc import Callable
@@ -74,7 +79,9 @@ def fixed(spec: dict[str, Any]) -> runtime_spec.SpecBuilder:
 
 
 def issue_built(
-    project: Path, build: runtime_spec.SpecBuilder, monkeypatch: pytest.MonkeyPatch
+    project: Path,
+    build: runtime_spec.SpecBuilder,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[runtime_spec.PreparedSessionSpec, Path, runtime_spec.Issuance]:
     """Preview *build* and issue it, as production does; return prepared, path and stamp."""
     stub_keeper(monkeypatch)
@@ -135,6 +142,8 @@ class HostDocker:
         verb = " ".join(args[:2])
         if verb == "image inspect":
             found, out = self.image is not None, self.image or ""
+            if "{{json .Id}}" in args:
+                out = json.dumps(out)
         elif args[0] == "run":  # the Sandbox Image's Booley Directory layout probe
             found, out = True, "directory"
         elif verb == "container inspect":

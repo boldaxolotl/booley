@@ -9,7 +9,10 @@ from pathlib import Path
 import pytest
 
 from booley.evidence.recipe import recipe_changes
-from booley.flows.fpga.recipe import fpga_recipe_snapshot, fpga_recipe_snapshot_fingerprint
+from booley.flows.fpga.recipe import (
+    fpga_recipe_snapshot,
+    fpga_recipe_snapshot_fingerprint,
+)
 from booley.fusesoc.fusesoc_registry import ResolvedFile, ResolvedTarget
 
 
@@ -103,6 +106,10 @@ def test_schema_one_snapshot_is_not_silently_equivalent_to_profile_evidence(
     changes = recipe_changes(legacy, current)
 
     assert changes == [
-        {"path": "ppa_profile", "before": None, "after": current["ppa_profile"]},
+        {
+            "path": "ppa_profile",
+            "before": None,
+            "after": current["ppa_profile"],
+        },
         {"path": "schema", "before": 1, "after": current["schema"]},
     ]

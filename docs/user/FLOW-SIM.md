@@ -60,7 +60,7 @@ booley flow sim --target sim_soc --mode elab-only       # compile only
 | `--no-waivers` | With `--coverage`, report coverage without applying approved waivers. See [Coverage](COVERAGE.md). |
 | `--mode <simulate\|elab-only\|elab-only-standalone>` | Run the tests (default), or only [compile](#elaboration-checks). |
 | `--resume-from <manifest.json>` | [Resume](#resuming-an-interrupted-run) an interrupted run. |
-| `--verbose` | With `--resume-from`, show every detail of why the manifest doesn't match the current Project. |
+| `--verbose` | Deprecated: has no effect. The next minor release removes it. |
 | `--no-kill` | Don't kill leftover simulator processes before the run. For diagnosis only. |
 
 ### Adding a Test
@@ -456,8 +456,7 @@ define along with it.
 ## Elaboration checks
 
 `--mode elab-only` compiles, elaborates and links the simulator without running
-any tests: a fast "does it still build?" check. A later full run can reuse the
-build.
+any tests: a fast "does it still build?" check.
 
 `--mode elab-only-standalone` also elaborates each reusable RTL module on its
 own. This catches a module that compiles only thanks to a define or include
@@ -484,7 +483,7 @@ starts,
 and the verdict card repeats it. Ask the agent to resume the run, or:
 
 ```bash
-booley flow sim --resume-from <manifest.json> --dry-run   # show what is left
+booley flow sim --resume-from <manifest.json> --dry-run   # list the Test Runs still to run; runs nothing
 booley flow sim --resume-from <manifest.json>
 ```
 
@@ -495,15 +494,18 @@ booley flow sim --resume-from <manifest.json>
 - One resume continues one Target. For a run of several Targets, resume each
   unfinished Target's manifest.
 - Only Test Runs without a result run again.
-- A `--coverage` run resumes only if it was interrupted while publishing its
-  results. Otherwise Booley refuses (exit `2`). Start a new `booley flow sim --coverage` run instead:
-  the refusal prints the command, with the same Test Runs and seeds.
+- A `--coverage` run never resumes: Booley refuses (exit `2`).
+  Start a new `booley flow sim --coverage` run instead: the refusal prints the
+  command, with the same Test Runs, seeds and report directory.
 - A test with a recorded result is finished, even if it failed. Resume never
   re-runs failures; start a new run for that.
-- Resume refuses when the Target's sources, Tests or simulation settings have
-  changed since the original run. Don't edit Simulation Record files by hand:
-  resume
-  checks that they are intact.
+- Resume refuses (exit `2`) after a new commit, or when the Target's sources,
+  Tests or simulation settings have changed since the original run: start a new
+  run. For uncommitted changes the refusal names what changed and, like the
+  coverage refusal above, prints the command. A moved checkout or a changed
+  simulator refuses too.
+- Don't edit Simulation Record files by hand: resume checks that they are
+  intact.
 
 <details markdown>
 <summary>With a cocotb testbench</summary>
@@ -613,19 +615,10 @@ available.
 
 ## Build reuse
 
-A repeat run skips the build when nothing that goes into it has changed:
-sources, cores, toolchain, flags and environment. Each Target's result says
-why a build was or wasn't reused.
-
-<details markdown>
-<summary>With Icarus</summary>
-
-Booley reuses an Icarus build only for a run without `--trace`, on a Target
-built from one local `.core` with no dependency cores, generators, VPI
-modules or `user` files, whose sources are plain Verilog or SystemVerilog
-files without `` `include ``. Any other Icarus build is rebuilt on every run.
-
-</details>
+A repeat Verilator run skips the build when nothing that goes into it has
+changed: sources, cores, toolchain, flags and environment. Icarus builds
+again on every run. Each Target's result says why a build was or wasn't
+reused.
 
 <details markdown>
 <summary>With a cocotb testbench</summary>

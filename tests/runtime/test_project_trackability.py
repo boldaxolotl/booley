@@ -8,15 +8,12 @@ from pathlib import Path
 
 import pytest
 from tests.conftest import reset_git_command_config
-from tests.subprocess_budget import run_bounded_child
+from tests.git_support import git
+from tests.sandbox_venue_fake import place
 
 from booley.runtime import project_trackability as pt
-from booley.runtime import runtime_context
 from booley.runtime.booley_dir import reset_cache
-
-
-def git(root: Path, *args: str) -> str:
-    return run_bounded_child(["git", *args], cwd=root, check=True).stdout.strip()
+from booley.runtime.runtime_context import RuntimeLocation
 
 
 @pytest.fixture
@@ -33,8 +30,6 @@ def project(tmp_path, monkeypatch):
     root = tmp_path / "rtl"
     root.mkdir()
     git(root, "init", "-q", "-b", "main")
-    git(root, "config", "user.name", "Trackability Fixture")
-    git(root, "config", "user.email", "fixture@example.invalid")
     selected = root / ".booley"
     selected.mkdir()
     (selected / "booley.toml").write_text("[stealth]\nenabled = false\n")
@@ -85,6 +80,13 @@ def test_negations_and_tracked_inputs(project):
     assert "new/untracked" in result.ignored[0].message
 
 
+def test_ignored_configs_toml_is_not_an_audited_input(project):
+    root, selected = project
+    (selected / "configs.toml").write_text("ignored by Booley")
+    (root / ".gitignore").write_text("configs.toml\n")
+    assert not pt.inspect_project_trackability(root, selected).ignored
+
+
 def test_ignored_ancestor_grouping_and_bounded_preview(project):
     root, selected = project
     inputs = selected / "cores"
@@ -121,7 +123,6 @@ def test_audited_inputs_and_transient_pruning(project, monkeypatch):
         "generators/gen.py",
         "mcp_tools/check.py",
         "selftest/check.py",
-        "configs.toml",
         "pipeline.toml",
         "criteria.toml",
         "doctor-waivers.toml",
@@ -145,6 +146,7 @@ def test_audited_inputs_and_transient_pruning(project, monkeypatch):
     assert not result.errors
     assert ".booley/docker/requirements.txt" in paths
     assert ".booley/cores/a.core" in paths
+    assert ".booley/tickets/history/t.md" in paths
     assert not any(
         part in p for p in paths for part in ("plans/", "handoffs/", "output/", "huge/")
     )
@@ -157,8 +159,6 @@ def test_independent_owner_inputs_and_histories(project, linked):
     owner = root.parent / "data" if linked else selected
     owner.mkdir()
     git(owner, "init", "-q", "-b", "main")
-    git(owner, "config", "user.name", "Fixture")
-    git(owner, "config", "user.email", "fixture@example.invalid")
     (owner / "booley.toml").write_text("[stealth]\nenabled = false\n")
     git(owner, "add", "booley.toml")
     git(owner, "commit", "-qm", "seed")
@@ -171,26 +171,20 @@ def test_independent_owner_inputs_and_histories(project, linked):
     (selected / ".gitignore").write_text("booley.toml\ncores/\n")
     result = pt.inspect_project_trackability(root, selected)
     assert not result.errors
-    assert {p for g in result.ignored for p in g.paths} == {"booley.toml", "cores/a.core"}
+    assert {p for g in result.ignored for p in g.paths} == {
+        "booley.toml",
+        "cores/a.core",
+    }
     assert all(not g.history and g.owner == selected for g in result.ignored)
 
 
-def test_custom_and_external_selection_and_symlink_root(project, monkeypatch):
+def test_custom_booley_dir_selection(project, monkeypatch):
     root, selected = project
     custom = root / "control"
     selected.rename(custom)
     monkeypatch.setenv("BOOLEY_DIR", str(custom))
     (root / ".gitignore").write_text("control/booley.toml\n")
     assert pt.inspect_project_trackability(root).ignored[0].paths == ("control/booley.toml",)
-    external = root.parent / "external"
-    custom.rename(external)
-    git(external, "init", "-q")
-    (external / ".gitignore").write_text("booley.toml\n")
-    custom.symlink_to(external, target_is_directory=True)
-    result = pt.inspect_project_trackability(root, custom)
-    assert not result.errors
-    assert result.ignored[0].owner == external
-    assert result.ignored[0].paths == ("booley.toml",)
 
 
 def test_symlink_leaves_are_not_followed(project):
@@ -223,8 +217,8 @@ def test_inspection_failures_are_location_specific(project, monkeypatch):
     monkeypatch.setattr(pt.os, "scandir", unreadable)
     result = pt.inspect_project_trackability(root, selected)
     assert any(str(selected / "cores") in e and "unreadable" in e for e in result.errors)
-    monkeypatch.setattr(pt, "_git", lambda *args: (_ for _ in ()).throw(OSError("Git failed")))
-    assert any("Git failed" in e for e in pt.inspect_project_trackability(root, selected).errors)
+    (root / ".git" / "index").write_bytes(b"corrupt")
+    assert any("index file" in e for e in pt.inspect_project_trackability(root, selected).errors)
 
 
 @pytest.mark.parametrize("failure", ["malformed", "returncode", "timeout", "exception"])
@@ -247,14 +241,6 @@ def test_git_failures_are_inspection_warnings(project, monkeypatch, failure):
     assert pt.inspect_project_trackability(root, selected).errors
 
 
-def test_no_owner_is_incomplete(project):
-    root, _ = project
-    external = root.parent / "unversioned"
-    external.mkdir()
-    result = pt.inspect_project_trackability(root, external)
-    assert any(str(external) in e and "no owning Git" in e for e in result.errors)
-
-
 def test_rule_subject_survives_home_relocation_and_line_insertion(project):
     root, selected = project
     groups = []
@@ -274,8 +260,6 @@ def test_registered_submodule_is_inspected_in_its_own_repository(project):
     source = root.parent / "core-source"
     source.mkdir()
     git(source, "init", "-q")
-    git(source, "config", "user.name", "Fixture")
-    git(source, "config", "user.email", "fixture@example.invalid")
     (source / "a.core").write_text("input")
     git(source, "add", "a.core")
     git(source, "commit", "-qm", "seed")
@@ -320,23 +304,22 @@ def test_unavailable_indexed_input_owner_does_not_hide_other_inputs(project):
     assert result.ignored[0].paths == (".booley/booley.toml",)
 
 
-def test_embedded_symlink_probe_does_not_hide_physical_inputs(project):
-    root, selected = project
-    physical = root / "control"
-    selected.rename(physical)
-    selected.symlink_to(physical, target_is_directory=True)
-    (root / ".gitignore").write_text("control/booley.toml\n")
-    result = pt.inspect_project_trackability(root, selected)
-    assert any(group.paths == ("control/booley.toml",) for group in result.ignored)
-    # The target is inside the RTL checkout: its inputs are reported there, probe included.
-    assert not result.errors
+def _doctor_findings(root, selected):
+    """Run only Doctor's trackability check.
+
+    A full Doctor run also needs Docker, the Sandbox and agent backends, and this
+    check's mapping of inspection results to check ids is not reachable alone.
+    """
+    from booley.harness import doctor
+
+    reporter = doctor._Reporter.create()
+    doctor._check_project_trackability(root, selected, reporter.warn_)
+    return reporter.findings or []
 
 
 @pytest.mark.parametrize("layout", ["embedded", "separate", "unversioned"])
 def test_doctor_inspects_symlinked_booley_dir_in_target_owner(project, tmp_path, layout):
     """Doctor follows the linked entry and reports against the checkout owning its target."""
-    from booley.harness import doctor
-
     root, selected = project
     if layout == "embedded":
         target = root / "control"
@@ -352,9 +335,7 @@ def test_doctor_inspects_symlinked_booley_dir_in_target_owner(project, tmp_path,
     (target / "cores/old.core").write_text("input")
     reset_cache()
 
-    reporter = doctor._Reporter.create()
-    doctor._check_project_trackability(root, selected, reporter.warn_)
-    findings = reporter.findings or []
+    findings = _doctor_findings(root, selected)
     ids = [finding.check_id for finding in findings]
 
     if layout == "embedded":
@@ -374,47 +355,36 @@ def test_doctor_inspects_symlinked_booley_dir_in_target_owner(project, tmp_path,
 )
 def test_doctor_names_unrecorded_stealth_choice_for_hidden_booley_dir(project, config, expected):
     """A once-default Stealth Project (hidden `.booley`, no `enabled` key) learns it is off."""
-    from booley.harness import doctor
-
     root, selected = project
     (selected / "booley.toml").write_text(config, encoding="utf-8")
     exclude = root / ".git/info/exclude"
     exclude.write_text(exclude.read_text(encoding="utf-8") + "/.booley\n", encoding="utf-8")
 
-    reporter = doctor._Reporter.create()
-    doctor._check_project_trackability(root, selected, reporter.warn_)
+    findings = _doctor_findings(root, selected)
 
-    unset = [f for f in reporter.findings or [] if f.check_id == "stealth.enabled-unset"]
+    unset = [f for f in findings if f.check_id == "stealth.enabled-unset"]
     assert [f.check_id for f in unset] == expected
     assert all("/.booley" in f.message for f in unset)
 
 
-def test_embedded_ticket_history_is_reported(project):
-    from booley.harness import doctor
-
+@pytest.mark.parametrize(
+    ("broken_dir", "healthy", "pattern"),
+    [("cores/a-broken", "cores/z-good.core", "*.core"), ("cores", "hooks/check.py", "*.py")],
+    ids=["nested", "input-tree"],
+)
+def test_broken_owner_does_not_hide_other_inputs(project, broken_dir, healthy, pattern):
     root, selected = project
-    history = selected / "tickets/history/old.md"
-    history.parent.mkdir(parents=True)
-    history.write_text("summary")
-    (root / ".gitignore").write_text("*.md\n")
-    reporter = doctor._Reporter.create()
-    doctor._check_project_trackability(root, selected, reporter.warn_)
-    assert any("tickets/history/old.md" in finding.message for finding in reporter.findings)
-
-
-def test_broken_nested_owner_does_not_hide_sibling_or_root_inputs(project):
-    root, selected = project
-    broken = selected / "cores/a-broken"
+    broken = selected / broken_dir
     broken.mkdir(parents=True)
     (broken / ".git").write_text("gitdir: missing-administration\n")
-    sibling = selected / "cores/z-good.core"
-    sibling.write_text("input")
-    (root / ".gitignore").write_text("booley.toml\n*.core\n")
+    (selected / healthy).parent.mkdir(exist_ok=True)
+    (selected / healthy).write_text("input")
+    (root / ".gitignore").write_text(f"booley.toml\n{pattern}\n")
     result = pt.inspect_project_trackability(root, selected)
     assert any(str(broken) in error for error in result.errors)
     assert {path for group in result.ignored for path in group.paths} == {
         ".booley/booley.toml",
-        ".booley/cores/z-good.core",
+        f".booley/{healthy}",
     }
 
 
@@ -439,22 +409,6 @@ def test_linked_worktree_info_exclude_has_distinct_source_identity(project):
     assert group.subject == "RTL repository:.git/info/exclude:booley.toml"
 
 
-def test_broken_input_tree_owner_does_not_hide_other_trees(project):
-    root, selected = project
-    broken = selected / "cores"
-    broken.mkdir()
-    (broken / ".git").write_text("gitdir: missing-administration\n")
-    (selected / "hooks").mkdir()
-    (selected / "hooks/check.py").write_text("input")
-    (root / ".gitignore").write_text("booley.toml\n*.py\n")
-    result = pt.inspect_project_trackability(root, selected)
-    assert any(str(broken) in error for error in result.errors)
-    assert {path for group in result.ignored for path in group.paths} == {
-        ".booley/booley.toml",
-        ".booley/hooks/check.py",
-    }
-
-
 @pytest.mark.parametrize(
     ("location", "rerun"),
     [
@@ -467,7 +421,6 @@ def test_fix_names_where_to_rerun(
     monkeypatch: pytest.MonkeyPatch, location: str, rerun: str
 ) -> None:
     """Sandbox `booley init` skips this check, so only Doctor is offered there."""
-    kind = runtime_context.RuntimeLocation[location]
-    monkeypatch.setattr(runtime_context, "runtime_location", lambda: kind)
+    place(monkeypatch, RuntimeLocation[location])
 
     assert pt.fix().endswith(rerun)

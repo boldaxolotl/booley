@@ -14,12 +14,17 @@ import pytest
 
 from booley.runtime import execution_records, job_slots, runtime_attachment
 from booley.runtime.pid import RUNNING, UNKNOWN, ProcessIdentity, observe_process
-from tests.harness.session_docker_fake import install_sandbox_exec
+from tests.harness.session_docker_fake import (
+    headless_session_entry,
+    install_sandbox_exec,
+    serve_sandbox_docker,
+)
 from tests.sharing_error_support import hold_opens
 from tests.time_budget import hang_guard_s
 
 pytestmark = pytest.mark.skipif(
-    sys.platform != "linux", reason="Sandbox Attachment execution supervision requires Linux"
+    sys.platform != "linux",
+    reason="Sandbox Attachment execution supervision requires Linux",
 )
 
 
@@ -352,3 +357,70 @@ def test_record_poll_survives_sharing_error(
     result = _drive_with_held_record(tmp_path, monkeypatch, held)
     assert (result.exit_code, result.terminal_cause) == (7, "exited")
     assert ("Cannot read execution record" in caplog.text) is logged
+
+
+# In-Sandbox script tails that lose the command; killing the supervisor also ends the
+# transport, as a Sandbox stop does.
+_KILL = "os.kill(os.getppid(), signal.SIGKILL)\n"
+_CANCEL = "r.request_cancellation(paths, signum=signal.SIGTERM, reason={!r})\ntime.sleep(60)\n"
+_RECOVERED = (
+    # Wait out the supervisor's own `running` write, so it cannot replace this record.
+    f"end = time.monotonic() + {hang_guard_s()}\n"
+    "while (r.read_json(paths.record) or {}).get('state') != 'running' and time.monotonic() < end:\n"
+    "    time.sleep(0.01)\n"
+    "r.atomic_write_json(paths.record, dict(schema_version=r.PROTOCOL_VERSION, state='terminal',"
+    " exit_code=125, tree_terminal=True, terminal_cause='orphan_recovered'))\n"
+) + _KILL
+_TRANSPORT = "transport_lost"
+_LEASE = "lease_recovery"
+# case: (the Sandbox afterwards, script tail, exit code, recorded cause, message facts)
+_LOSSES = {
+    "stopped": ("stopped", _KILL, 125, "recovery_timeout", ["stopped", "`booley session up`"]),
+    "replaced": ("replaced", _KILL, 125, "recovery_timeout", ["was replaced"]),
+    "still-running": (
+        "same",
+        _KILL,
+        125,
+        "recovery_timeout",
+        ["still running", "recovery timeout"],
+    ),
+    "cannot-inspect": ("unknown", _KILL, 125, "recovery_timeout", ["cannot inspect"]),
+    "transport-lost": ("same", _CANCEL.format(_TRANSPORT), 143, _TRANSPORT, ["`docker exec`"]),
+    "unknown-cause": ("same", _CANCEL.format(_LEASE), 143, _LEASE, ["cause lease_recovery"]),
+    "orphan-recovered": ("same", _RECOVERED, 125, "orphan_recovered", ["supervisor died"]),
+}
+
+
+@pytest.mark.parametrize("case", list(_LOSSES))
+def test_lost_execution_names_its_cause(
+    project: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, case: str
+) -> None:
+    after, tail, exit_code, cause, facts = _LOSSES[case]
+    docker = serve_sandbox_docker(monkeypatch)
+    entry = docker.containers["lost-box"] = headless_session_entry("lost-box", project)
+    started_id = entry["Id"] = "c" * 64
+    # What the Project's Sandbox looks like once the command has been lost.
+    entry["State"]["Running"] = after != "stopped"
+    if after == "replaced":
+        entry["Id"] = "d" * 64
+    docker.failing = {"ps"} if after == "unknown" else set()
+    monkeypatch.setattr(  # boundary: the recovery deadline (clock); no setting shortens the 12 s
+        runtime_attachment, "_RECOVERY_LIMIT_SECONDS", 0.5
+    )
+    interrupt = signal.getsignal(signal.SIGINT)
+    inspecting: list[object] = []
+    docker.on_call = lambda _argv: inspecting.append(signal.getsignal(signal.SIGINT))
+    script = (
+        "import os,signal,time\nfrom booley.runtime import execution_records as r\n"
+        "paths = r.execution_paths(os.environ[r.RUNTIME_EXECUTION_ENV])\n"
+    ) + tail
+
+    result = runtime_attachment.run_command(
+        project, started_id, [sys.executable, "-c", script], tty=False, sandbox_name="lost-box"
+    )
+
+    assert (result.exit_code, result.terminal_cause) == (exit_code, cause)
+    [message] = [record.getMessage() for record in caplog.records]
+    assert all(fact in message for fact in ["'lost-box'", *facts]), message
+    # A hung inspection after the loss must stay interruptible by Ctrl-C.
+    assert set(inspecting) == ({interrupt} if cause == "recovery_timeout" else set())

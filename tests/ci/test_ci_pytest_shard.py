@@ -35,7 +35,7 @@ def test_timing_output_separates_collection_and_execution(tmp_path: Path, monkey
     monkeypatch.setattr(shard_plugin.time, "perf_counter", lambda: next(clock))
 
     shard_plugin.pytest_configure(config)
-    shard_plugin.pytest_sessionstart(session)
+    shard_plugin.pytest_sessionstart()
     shard_plugin.pytest_collection_finish(session)
     shard_plugin.pytest_runtest_logstart("test_example.py::test_case", ("", 1, ""))
     for when, duration in (("setup", 0.5), ("call", 1.25), ("teardown", 0.1)):

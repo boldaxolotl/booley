@@ -82,7 +82,9 @@ def forget_project(
         with host_lifecycle_lock("projects forget"):
             _require_recovered_host()
             forgotten = inventory.forget_project(
-                project, before_forget=release_and_withdraw, allow_forgotten=purge
+                project,
+                before_forget=release_and_withdraw,
+                allow_forgotten=purge,
             )
             if purge:  # purge collects recorded images itself, after releasing tags
                 purged = project_resources.purge(str(forgotten))

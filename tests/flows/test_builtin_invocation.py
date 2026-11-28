@@ -30,11 +30,12 @@ from booley.flows.sim.record_invocation import SimulationRecordInvocation
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.synth.request import SynthRequest
 from booley.mcp.base import EXIT_ERROR
-from booley.runtime import runtime_context
 from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import DuplicateTargetError
 from tests.flows.invocation_doubles import prepare_as, replace_run
+from tests.sandbox_venue_fake import place
 
 BUILTINS = (
     (SimulateFlow, "sim", 600_000),
@@ -114,7 +115,7 @@ def test_duplicate_target_fails_before_admission(
                 "which was already selected by 'a'"
             )
 
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "runtime"))
     monkeypatch.setattr(
         TargetCatalog, "build", classmethod(lambda _cls, _root: DuplicateCatalog())
@@ -165,7 +166,10 @@ def test_builtin_timeout_rejects_non_positive_or_non_integer_values(value: str) 
 
 @pytest.mark.parametrize(("_flow_type", "name", "default_ms"), BUILTINS)
 def test_timeout_precedence_is_call_then_config_then_default(
-    _flow_type: type[BooleyFlow], name: str, default_ms: int, tmp_path: Path
+    _flow_type: type[BooleyFlow],
+    name: str,
+    default_ms: int,
+    tmp_path: Path,
 ) -> None:
     configured = default_ms + 1
     _write_config(tmp_path, f"[flows.{name}]\ntimeout_ms = {configured}\n")
@@ -186,18 +190,31 @@ def test_malformed_configured_timeout_is_a_boundary_error(value: str, tmp_path: 
         resolve_timeout_ms("lint", tmp_path, None)
 
 
+@pytest.mark.parametrize(
+    ("knob", "line", "message"),
+    [
+        ("timeout_ms", 'timeout_ms = "invalid"', "timeout_ms must be an integer"),
+        ("enabled", 'enabled = "false"', "must be a boolean"),
+    ],
+)
 def test_builtin_pre_state_gate_validates_timeout_before_dry_run(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    knob: str,
+    line: str,
+    message: str,
 ) -> None:
-    _write_config(tmp_path, '[flows.lint]\ntimeout_ms = "invalid"\n')
+    _write_config(tmp_path, f"[flows.lint]\n{line}\n")
     monkeypatch.setattr(
-        "booley.flows.base.runtime_context.container_only_error", lambda _command: None
+        "booley.flows.base.runtime_context.container_only_error",
+        lambda _command: None,
     )
 
     result = LintFlow().execute_cli(["--target", "demo", "--work-dir", str(tmp_path), "--dry-run"])
 
     assert result.exit_code == 2
-    assert "timeout_ms must be an integer" in result.outcome.report_text
+    assert f"[flows.lint].{knob}" in result.outcome.report_text
+    assert message in result.outcome.report_text
 
 
 class _CustomTimeoutFlow(BooleyFlow):
@@ -234,9 +251,11 @@ def _unusable_report_dir(kind: str, root: Path) -> Path | None:
 
 
 def test_unusable_report_dir_is_refused_before_any_job_work(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     runtime = tmp_path / "runtime"
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime))
     for flow_type in (LintFlow, _CustomTimeoutFlow):
@@ -310,7 +329,8 @@ def test_custom_flow_target_repetition_normalizes_to_scalar() -> None:
 
 
 def test_cli_report_preserves_authored_repeated_target_argv(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     flow = LintFlow()
     report_dir = tmp_path / "reports"
@@ -324,9 +344,11 @@ def test_cli_report_preserves_authored_repeated_target_argv(
         "--report-dir",
         str(report_dir),
     ]
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     replace_run(
-        monkeypatch, flow, lambda: EndpointOutcome(detail={"targets": flow.args.target.split(",")})
+        monkeypatch,
+        flow,
+        lambda: EndpointOutcome(detail={"targets": flow.args.target.split(",")}),
     )
 
     with mock.patch.object(EndpointState, "admission", return_value=nullcontext(None)):
@@ -437,7 +459,8 @@ def test_state_backed_flow_verdict_reaches_one_stream_once(
 
 
 def test_typed_flow_execution_does_not_publish_to_process_streams(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     flow = _VerdictLifecycleFlow(EndpointOutcome(report_text="Simulation verdict: PASS"))
 
@@ -450,17 +473,20 @@ def test_typed_flow_execution_does_not_publish_to_process_streams(
 
 
 def test_state_backed_simulation_coverage_verdict_reaches_stdout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     flow = SimulateFlow()
     prepared_simulation_record = PreparedSimulationEndpoint((), None, (), {})
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     prepare_as(monkeypatch, flow, SimulationRecordInvocation(flow, prepared_simulation_record))
     monkeypatch.setattr(
         flow,
         "run_prepared_simulation",
         lambda prepared, admission: EndpointOutcome(
-            report_text="Coverage verdict: PASS", detail={"coverage": True}
+            report_text="Coverage verdict: PASS",
+            detail={"coverage": True},
         ),
     )
 
@@ -553,7 +579,8 @@ def test_builtin_dry_run_skips_admission_and_normal_persistence(
 
 
 def test_direct_dry_run_uses_project_data_default_without_numbering(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("BOOLEY_RUNTIME_DIR", raising=False)
     flow = _DryLifecycleFlow()

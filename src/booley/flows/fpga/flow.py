@@ -26,7 +26,12 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar
 
-from booley.core.boundary import as_float, as_int, as_str, require_bool
+from booley.core.boundary import (
+    as_float,
+    as_int,
+    as_str,
+    require_bool,
+)
 from booley.core.build_paths import work_root_for
 from booley.evidence.timing import per_clock_from_json, worst_clock
 from booley.flows.cli_help import CliHelp
@@ -55,7 +60,12 @@ from booley.flows.plan import (
     stable_unit_id,
 )
 from booley.flows.reservation_phases import report_phase_end
-from booley.flows.result_table import MISSING, TARGET_WIDTH, note_line, status_cell
+from booley.flows.result_table import (
+    MISSING,
+    TARGET_WIDTH,
+    note_line,
+    status_cell,
+)
 from booley.flows.source_paths import ProjectSourcePaths
 from booley.flows.target_parameters import vlogparam_specs
 from booley.flows.terminal_progress import ProgressText, observe_source_names
@@ -72,14 +82,20 @@ from booley.targets.parameter_integrity import validate_top_parameter_intent
 from .. import artifacts, run_evidence
 from .. import edam as edam_layer
 from ..base import SubprocessResult
-from ..baseline_worktree import BaselineWorktreeError, baseline_worktree, git_full_sha
+from ..baseline_worktree import (
+    BaselineWorktreeError,
+    baseline_worktree,
+    git_full_sha,
+)
 from ..implementation_comparison import (
     ImplementationComparisonError,
     baseline_execution_context,
     resolve_target_execution_ref,
 )
 from ..implementation_flow import ImplementationFlow
-from ..implementation_publication import target_report_slug
+from ..implementation_publication import (
+    target_report_slug,
+)
 from ..implementation_report import (
     ImplementationAggregate,
     ImplementationContext,
@@ -98,9 +114,15 @@ from .backends.vivado.metrics import (
     _unique_strings,
     _vlogdefine_args,
 )
-from .implementation_report import build_fpga_implementation_report
+from .implementation_report import (
+    build_fpga_implementation_report,
+)
 from .profiles import VIVADO_PROFILES, VivadoProfile, resolve_fpga_profile
-from .recipe import ResolvedFpgaRecipe, fpga_recipe_snapshot, fpga_recipe_snapshot_fingerprint
+from .recipe import (
+    ResolvedFpgaRecipe,
+    fpga_recipe_snapshot,
+    fpga_recipe_snapshot_fingerprint,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -215,9 +237,9 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         self,
         targets: list[str],
         current: dict[str, FpgaMetrics],
-        baseline: dict[str, FpgaMetrics],
-        short_sha: str | None,
-        reports: dict[str, ImplementationReport],
+        baseline: dict[str, FpgaMetrics],  # noqa: ARG002 — overrides ImplementationFlow._result_detail
+        short_sha: str | None,  # noqa: ARG002 — overrides ImplementationFlow._result_detail
+        reports: dict[str, ImplementationReport],  # noqa: ARG002 — overrides ImplementationFlow._result_detail
         aggregate: ImplementationAggregate,
         /,
     ) -> dict[str, Any]:
@@ -227,14 +249,25 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         return _first_valid_display(targets, current)
 
     def _fpga_work_unit(
-        self, target: str, recipe: ResolvedFpgaRecipe, *, role: WorkUnitRole, revision: str | None
+        self,
+        target: str,
+        recipe: ResolvedFpgaRecipe,
+        *,
+        role: WorkUnitRole,
+        revision: str | None,
     ) -> WorkUnitPlan:
         """Project one resolved FPGA recipe into the shared plan contract."""
         root = Path(self.args.work_dir)
         work_root = work_root_for(root, "fpga", target)
         handle = self._target_handle(target)
         return WorkUnitPlan(
-            unit_id=stable_unit_id("fpga", target, (target,), role=role, revision=revision),
+            unit_id=stable_unit_id(
+                "fpga",
+                target,
+                (target,),
+                role=role,
+                revision=revision,
+            ),
             role=role,
             revision=revision,
             selector=target,
@@ -253,14 +286,20 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             recipe=recipe.recipe_snapshot,
             commands=(
                 CommandPlan(
-                    ("make", "-C", normalize_plan_path(work_root, root)), cwd=".", template=True
+                    ("make", "-C", normalize_plan_path(work_root, root)),
+                    cwd=".",
+                    template=True,
                 ),
             ),
             expected_artifacts=(normalize_plan_path(work_root / "run.log", root),),
         )
 
     @staticmethod
-    def _fpga_plan_input_path(path: Path, recipe: ResolvedFpgaRecipe, root: Path) -> str:
+    def _fpga_plan_input_path(
+        path: Path,
+        recipe: ResolvedFpgaRecipe,
+        root: Path,
+    ) -> str:
         """Render staged inputs by their stable Target-owned relative names."""
         try:
             return path.resolve().relative_to(recipe.resolved.build_root.resolve()).as_posix()
@@ -284,7 +323,10 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
                     candidate_recipes[target] = recipe
                 candidate_units.append(
                     self._fpga_work_unit(
-                        target, recipe, role="candidate", revision=candidate_revision
+                        target,
+                        recipe,
+                        role="candidate",
+                        revision=candidate_revision,
                     )
                 )
             except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
@@ -306,7 +348,10 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             ),
         )
 
-    def _plan_fpga_baselines(self, baseline_ref: str) -> tuple[list[WorkUnitPlan], list[str]]:
+    def _plan_fpga_baselines(
+        self,
+        baseline_ref: str,
+    ) -> tuple[list[WorkUnitPlan], list[str]]:
         """Resolve each unique baseline Target in a disposable checkout."""
         units: list[WorkUnitPlan] = []
         errors: list[str] = []
@@ -316,11 +361,14 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         candidate_refs = self._target_execution_refs
         try:
             with baseline_worktree(
-                project_root, baseline_ref, paired_project=self._paired_project_baseline
+                project_root,
+                baseline_ref,
+                paired_project=self._paired_project_baseline,
             ) as worktree:
                 self.args.work_dir = worktree
                 self._target_handles, self._target_execution_refs = baseline_execution_context(
-                    self._target_pairs, worktree
+                    self._target_pairs,
+                    worktree,
                 )
                 for pair in self._target_pairs:
                     target = pair.baseline.selector
@@ -328,7 +376,10 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
                         recipe = self._resolve_fpga_recipe(target)
                         units.append(
                             self._fpga_work_unit(
-                                target, recipe, role="baseline", revision=revision
+                                target,
+                                recipe,
+                                role="baseline",
+                                revision=revision,
                             )
                         )
                     except (fusesoc_registry.FuseSocError, OSError, ValueError) as exc:
@@ -342,7 +393,10 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         return units, errors
 
     def _resolve_fpga_recipe(
-        self, target: str, *, build_root: Path | None = None
+        self,
+        target: str,
+        *,
+        build_root: Path | None = None,
     ) -> ResolvedFpgaRecipe:
         """Resolve and validate every Target input shared with a real dispatch."""
         work_dir = Path(self.args.work_dir)
@@ -363,7 +417,9 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             field=f"Target {target!r} flow_options.out_of_context",
         )
         ppa_profile = resolve_fpga_profile(
-            resolved.flow_options, override=getattr(self.args, "ppa_profile", None), target=target
+            resolved.flow_options,
+            override=getattr(self.args, "ppa_profile", None),
+            target=target,
         )
         snapshot = fpga_recipe_snapshot(resolved, target=target, profile=ppa_profile)
         return ResolvedFpgaRecipe(
@@ -385,7 +441,11 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         )
 
     def _reachable_dirs(
-        self, target: str, resolved: Any, sources: Sequence[EdamFile], include_dirs: Sequence[Path]
+        self,
+        target: str,
+        resolved: Any,
+        sources: Sequence[EdamFile],
+        include_dirs: Sequence[Path],
     ) -> tuple[Path, ...]:
         """Folders whose files must join the cache key; empty outside isolated Projects.
 
@@ -404,7 +464,12 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
     def _resolve_fpga_target(self, target: str, *, build_root: Path | None) -> Any:
         """Resolve one Target at the selected candidate or baseline revision."""
         work_dir = Path(self.args.work_dir)
-        selected_root = build_root or work_root_for(work_dir, self.name, target, variant="fusesoc")
+        selected_root = build_root or work_root_for(
+            work_dir,
+            self.name,
+            target,
+            variant="fusesoc",
+        )
         handle = self._target_handle(target)
         runner = setup_runner(self.name, target, "fpga_prepare")
         ref = getattr(self, "_target_execution_refs", {}).get(target)
@@ -423,7 +488,10 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
                 runner=runner,
             )
 
-    def _prepare_fpga_command(self, target: str) -> _PreparedFpgaCommand:
+    def _prepare_fpga_command(
+        self,
+        target: str,
+    ) -> _PreparedFpgaCommand:
         """Materialize the validated Vivado recipe and return its executable command."""
         from booley.flows.terminal_progress import announce_unit
 
@@ -475,7 +543,9 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         return self._resolve_fpga_recipe(target)
 
     def _materialize_fpga_project(
-        self, recipe: ResolvedFpgaRecipe, work_root: Path
+        self,
+        recipe: ResolvedFpgaRecipe,
+        work_root: Path,
     ) -> dict[str, Any]:
         """Generate Vivado Tcl, then apply profile and out-of-context patches in order."""
         edam = fpga_edam.build_fpga_edam(
@@ -486,7 +556,11 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         )
         project_name = str(edam["name"])
         edam_layer.configure("vivado", edam, work_root)
-        fpga_edam.validate_vivado_parameter_contract(work_root, project_name, recipe.vlogparams)
+        fpga_edam.validate_vivado_parameter_contract(
+            work_root,
+            project_name,
+            recipe.vlogparams,
+        )
         # Vivado resets synthesis step properties when a strategy is assigned.
         # Apply the profile first so the OOC patch below remains authoritative.
         fpga_edam.apply_ppa_profile(work_root, project_name, recipe.ppa_profile)
@@ -508,7 +582,11 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             )
         return part
 
-    def _resolve_xdc_files(self, resolved: Any, target: str) -> list[Path]:
+    def _resolve_xdc_files(
+        self,
+        resolved: Any,
+        target: str,
+    ) -> list[Path]:
         """Resolve the per-target XDC constraint files (ADR 0031).
 
         An XDC carries pin placement *and* ``create_clock``/false-paths — a
@@ -584,7 +662,10 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         require_bitstream = getattr(prepared, "require_bitstream", False)
         if fingerprint and not getattr(self.args, "no_cache", False):
             cached = self._load_cached_metrics(
-                target, work_root, fingerprint, require_bitstream=require_bitstream
+                target,
+                work_root,
+                fingerprint,
+                require_bitstream=require_bitstream,
             )
             if cached is not None:
                 return self._attach_recipe_evidence(cached, prepared)
@@ -672,7 +753,10 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         return self._attach_recipe_evidence(metrics, prepared)
 
     @staticmethod
-    def _attach_recipe_evidence(metrics: FpgaMetrics, prepared: Any) -> FpgaMetrics:
+    def _attach_recipe_evidence(
+        metrics: FpgaMetrics,
+        prepared: Any,
+    ) -> FpgaMetrics:
         """Attach the recipe materialized for this run to its metrics."""
         metrics.recipe_snapshot = getattr(prepared, "recipe_snapshot", {})
         metrics.recipe_fingerprint = getattr(prepared, "recipe_fingerprint", "")
@@ -779,10 +863,19 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         return False, ""
 
     def _load_cached_metrics(
-        self, target: str, work_root: Path, fingerprint: str, *, require_bitstream: bool
+        self,
+        target: str,
+        work_root: Path,
+        fingerprint: str,
+        *,
+        require_bitstream: bool,
     ) -> FpgaMetrics | None:
         """Re-parse a byte-validated hit so current verdict logic still applies."""
-        hit = fpga_cache.load(work_root, fingerprint, require_bitstream=require_bitstream)
+        hit = fpga_cache.load(
+            work_root,
+            fingerprint,
+            require_bitstream=require_bitstream,
+        )
         if hit is None:
             return None
         route_completed, report_error = self._route_evidence(work_root)
@@ -881,7 +974,11 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         live in (:meth:`_artifact_dirs`) and lets the reader list them, which
         cannot go stale as Vivado's report set changes between versions.
         """
-        patterns = ("*_utilization_placed.rpt", "*_timing_summary_routed.rpt", "*_drc_routed.rpt")
+        patterns = (
+            "*_utilization_placed.rpt",
+            "*_timing_summary_routed.rpt",
+            "*_drc_routed.rpt",
+        )
         parts: list[str] = []
         for impl_dir in sorted(work_root.glob("*.runs/impl_1")):
             for pattern in patterns:
@@ -919,7 +1016,9 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
             oom_killed=result.oom_killed,
         )
         infrastructure = classify_eda_failure(
-            combined, expected_stage="vivado", expected_executable="vivado"
+            combined,
+            expected_stage="vivado",
+            expected_executable="vivado",
         )
         if infrastructure is not None:
             return infrastructure
@@ -1183,7 +1282,10 @@ class FpgaImplFlow(ImplementationFlow[FpgaRequest, FpgaMetrics]):
         return f"{cfg}: failed"
 
     def _build_implementation_report(
-        self, context: ImplementationContext, current: FpgaMetrics, baseline: FpgaMetrics | None
+        self,
+        context: ImplementationContext,
+        current: FpgaMetrics,
+        baseline: FpgaMetrics | None,
     ) -> ImplementationReport:
         """Adapt native FPGA evidence to the shared canonical schema."""
         return build_fpga_implementation_report(context, current, baseline)

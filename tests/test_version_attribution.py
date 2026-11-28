@@ -36,7 +36,10 @@ def _write_source_tree(root: Path, version: str = "9.9.9\n") -> Path:
     package_file = root / "src" / "booley" / "__init__.py"
     package_file.parent.mkdir(parents=True)
     package_file.write_text("", encoding="utf-8")
-    (root / "pyproject.toml").write_text('[project]\nname = "booley-rtl"\n', encoding="utf-8")
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "booley-rtl"\n',
+        encoding="utf-8",
+    )
     (root / "VERSION").write_text(version, encoding="utf-8")
     return package_file
 
@@ -69,7 +72,9 @@ def test_source_tree_version_wins_without_distribution_lookup(tmp_path, monkeypa
     monkeypatch.setattr(importlib.metadata, "distributions", unexpected_distributions)
 
     assert resolve_version_attribution(package_file) == VersionAttribution(
-        version="9.9.9", origin=VersionOrigin.SOURCE, source_root=tmp_path
+        version="9.9.9",
+        origin=VersionOrigin.SOURCE,
+        source_root=tmp_path,
     )
 
 
@@ -82,22 +87,29 @@ def test_installed_wheel_uses_owning_current_distribution(
     monkeypatch.setattr(importlib.metadata, "distributions", _only_for_current_name(*stale, owner))
 
     assert resolve_version_attribution(_imported_package(site_packages)) == VersionAttribution(
-        version="4.5.6", origin=VersionOrigin.DISTRIBUTION, distribution_name="booley-rtl"
+        version="4.5.6",
+        origin=VersionOrigin.DISTRIBUTION,
+        distribution_name="booley-rtl",
     )
 
 
 def _write_metadata(
-    root: Path, distribution: str, version: str, owned_files: tuple[str, ...] = ()
+    root: Path,
+    distribution: str,
+    version: str,
+    owned_files: tuple[str, ...] = (),
 ) -> None:
     normalized = distribution.replace("-", "_")
     dist_info = root / f"{normalized}-{version}.dist-info"
     dist_info.mkdir(parents=True)
     (dist_info / "METADATA").write_text(
-        f"Metadata-Version: 2.4\nName: {distribution}\nVersion: {version}\n", encoding="utf-8"
+        f"Metadata-Version: 2.4\nName: {distribution}\nVersion: {version}\n",
+        encoding="utf-8",
     )
     records = "".join(f"{path},,\n" for path in owned_files)
     (dist_info / "RECORD").write_text(
-        f"{records}{dist_info.name}/METADATA,,\n{dist_info.name}/RECORD,,\n", encoding="utf-8"
+        f"{records}{dist_info.name}/METADATA,,\n{dist_info.name}/RECORD,,\n",
+        encoding="utf-8",
     )
 
 
@@ -125,7 +137,11 @@ def test_imported_checkout_ignores_stale_current_and_legacy_metadata(tmp_path) -
     env["PYTHONPATH"] = os.pathsep.join((str(checkout / "src"), str(metadata_root)))
 
     result = subprocess.run(
-        [sys.executable, "-c", "import booley; print(booley.__version__, booley.__dist_name__)"],
+        [
+            sys.executable,
+            "-c",
+            "import booley; print(booley.__version__, booley.__dist_name__)",
+        ],
         capture_output=True,
         text=True,
         env=env,
@@ -162,10 +178,15 @@ def test_source_git_metadata_uses_only_attributed_root(tmp_path, monkeypatch) ->
 
     monkeypatch.setattr(platform_paths, "run_captured_bounded", run)
     attribution = VersionAttribution(
-        version="4.5.6", origin=VersionOrigin.SOURCE, source_root=source_root
+        version="4.5.6",
+        origin=VersionOrigin.SOURCE,
+        source_root=source_root,
     )
 
-    assert attribution.source_git_metadata() == ("abc123+dirty", "2026-08-30T10:39:40Z")
+    assert attribution.source_git_metadata() == (
+        "abc123+dirty",
+        "2026-08-30T10:39:40Z",
+    )
     assert all(command[2] == str(source_root) for command in commands)
 
 
@@ -180,7 +201,9 @@ def test_source_git_metadata_does_not_search_enclosing_repository(tmp_path, monk
         lambda *_args, **_kwargs: pytest.fail("must not inspect an enclosing repository"),
     )
     attribution = VersionAttribution(
-        version="4.5.6", origin=VersionOrigin.SOURCE, source_root=source_root
+        version="4.5.6",
+        origin=VersionOrigin.SOURCE,
+        source_root=source_root,
     )
 
     assert attribution.source_git_metadata() == ("", "")
@@ -188,7 +211,12 @@ def test_source_git_metadata_does_not_search_enclosing_repository(tmp_path, monk
 
 def test_real_wheel_metadata_owns_the_imported_package(monkeypatch, site_packages) -> None:
     package_file = _imported_package(site_packages)
-    _write_metadata(site_packages, "booley-rtl", "4.5.6", owned_files=("booley/__init__.py",))
+    _write_metadata(
+        site_packages,
+        "booley-rtl",
+        "4.5.6",
+        owned_files=("booley/__init__.py",),
+    )
     monkeypatch.syspath_prepend(str(site_packages))
 
     attribution = resolve_version_attribution(package_file)
@@ -225,7 +253,8 @@ def test_unowned_or_unverifiable_metadata_falls_back_to_dev(tmp_path, monkeypatc
     monkeypatch.setattr(importlib.metadata, "distributions", lambda **_kwargs: [unverifiable])
 
     assert resolve_version_attribution(package_file) == VersionAttribution(
-        version="0.0.0-dev", origin=VersionOrigin.FALLBACK
+        version="0.0.0-dev",
+        origin=VersionOrigin.FALLBACK,
     )
 
 

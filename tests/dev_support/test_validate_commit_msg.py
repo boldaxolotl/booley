@@ -242,12 +242,15 @@ def test_main_validates_only_configured_repositories(
     assert stderr_fragment in capsys.readouterr().err
 
 
-def test_absolute_source_script_recovers_canonical_package_under_isolation(tmp_path: Path) -> None:
+def test_absolute_source_script_recovers_canonical_package_under_isolation(
+    tmp_path: Path,
+) -> None:
     _init_repo(tmp_path)
     script = Path(__file__).resolve().parents[2] / "src/booley/dev_support/validate_commit_msg.py"
 
     result = run_bounded_child(
-        [sys.executable, "-I", "-S", str(script), "Update ALU"], cwd=tmp_path
+        [sys.executable, "-I", "-S", str(script), "Update ALU"],
+        cwd=tmp_path,
     )
 
     assert result.returncode == 0, result.stderr

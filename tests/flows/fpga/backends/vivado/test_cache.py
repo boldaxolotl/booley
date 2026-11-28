@@ -167,7 +167,7 @@ def test_cached_reports_cannot_replace_missing_route_witness(
     """A cache whose run log lost the route witness runs Vivado again (#1075)."""
     run_fpga(project)
     work_root = work_root_for(project, "fpga", "fpga")
-    impl = work_root / "fake.runs" / "impl_1"
+    impl = work_root / "top.runs" / "impl_1"
     (impl / "runme.log").write_bytes(b"no route occurred\n")
     (impl / "top_drc_routed.rpt").write_bytes(b"route_design completed successfully\n")
     stored = json.loads((work_root / fpga_cache.CACHE_FILE).read_text(encoding="utf-8"))
@@ -197,7 +197,7 @@ def test_cached_reports_cannot_replace_missing_route_witness(
 def test_post_route_completion_gates_success_and_cache(
     project: Path, vivado: FakeVivado, completion_log: str, returncode: int, passes: bool
 ) -> None:
-    vivado.answer(stdout=completion_log + "\n", returncode=returncode)
+    vivado.answer(stdout=completion_log + "\n", returncode=returncode, route=True)
 
     outcome, _ = run_fpga(project, "--ppa-profile", "max_frequency")
 
@@ -277,7 +277,10 @@ def test_default_payload_has_no_reachable_files(
             resolved, {}, out_of_context=False, reachable_dirs=()
         )
     assert plain != fpga_cache.input_fingerprint(
-        resolved, {}, out_of_context=False, reachable_dirs=(resolved.build_root / "src" / "inc",)
+        resolved,
+        {},
+        out_of_context=False,
+        reachable_dirs=(resolved.build_root / "src" / "inc",),
     )
 
 
@@ -333,16 +336,16 @@ def test_reachable_file_unreadable_is_keyed_as_missing(
     without_file = fpga_cache.input_fingerprint(
         resolved, {}, out_of_context=False, reachable_dirs=(empty,)
     )
-    # Private: no portable file is listed as a regular file yet fails to open
+    # No portable file is listed as a regular file yet fails to open
     # (root and Windows ignore a chmod 000), so the one hashing call is replaced.
-    real_hash = fpga_cache._hash_file
+    real_hash = fpga_cache.file_sha256_and_size
 
     def _locked_only(path: Path) -> tuple[str, int]:
         if path.name == "locked.vh":
             raise OSError("permission denied")
         return real_hash(path)
 
-    monkeypatch.setattr(fpga_cache, "_hash_file", _locked_only)
+    monkeypatch.setattr(fpga_cache, "file_sha256_and_size", _locked_only)
     with_locked = fpga_cache.input_fingerprint(
         resolved, {}, out_of_context=False, reachable_dirs=(user,)
     )

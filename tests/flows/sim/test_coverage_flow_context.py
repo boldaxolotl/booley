@@ -25,7 +25,11 @@ def test_context_uses_checkout_local_legacy_config_over_cached_override(
     monkeypatch.setenv("BOOLEY_DIR", str(override))
     reset_cache()
     assert resolve_booley_dir() == override
-    monkeypatch.setattr(coverage_flow_context, "load_test_configuration_field", lambda *_args: {})
+    monkeypatch.setattr(
+        coverage_flow_context,
+        "load_test_configuration_field",
+        lambda *_args: {},
+    )
 
     context = coverage_flow_context.coverage_project_context(root)
 

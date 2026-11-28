@@ -13,7 +13,11 @@ from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.targets.domain import TargetHandle
 
 from .staged_input_ledger import StagedInputLedger
-from .trace_overlay import DEFAULT_TRACE_DEPTH, _with_trace_options, _write_overlay_core_file
+from .trace_overlay import (
+    DEFAULT_TRACE_DEPTH,
+    _with_trace_options,
+    _write_overlay_core_file,
+)
 from .trace_recipe import TraceMode, TraceRecipeError, resolve_verilator_trace_mode
 
 logger = logging.getLogger(__name__)
@@ -148,7 +152,10 @@ def write_coverage_overlay(
         mode = TraceMode.VCD_FIFO
         if trace:
             authored_options = _with_trace_options(authored_options, trace_depth)
-    flow_options["verilator_options"] = _with_coverage_options(authored_options, instrumentation)
+    flow_options["verilator_options"] = _with_coverage_options(
+        authored_options,
+        instrumentation,
+    )
     if _needs_coverage_bridge(flow_options):
         _inject_coverage_bridge(document, handle.name)
 

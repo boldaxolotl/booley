@@ -19,13 +19,19 @@ from booley.runtime import job_slots
 from booley.runtime.job_slots import HOLDING, QUEUED, TokenState
 from booley.runtime.resource_history import SCHEMA
 from booley.targets.catalog import TargetCatalog
+from tests.memory_budget_support import fail_budget, pin_budget
 from tests.test_job_slots import FakeWorld, make_store, spawn
 
 BUDGET_MIB = 1200.0
 
 
 def _record(
-    target: str, phase: str, peak_mib: float, *, test_run: str = "", wall_s: float | None = 1.0
+    target: str,
+    phase: str,
+    peak_mib: float,
+    *,
+    test_run: str = "",
+    wall_s: float | None = 1.0,
 ) -> dict[str, Any]:
     """A history record with only the fields the estimator reads."""
     return {
@@ -243,10 +249,7 @@ def test_unreadable_history_reads_as_empty_and_the_job_runs_alone(
 
 
 def test_unreadable_memory_runs_alone_with_a_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    def unreadable(**_: object) -> object:
-        raise OSError("MemTotal unreadable")
-
-    monkeypatch.setattr(admission, "compute_memory_budget", unreadable)
+    fail_budget(monkeypatch)
 
     plan = _measure(None, _synth("a"))
 
@@ -460,7 +463,9 @@ def test_settled_work_item_reserves_sim_prepare_with_its_run() -> None:
     assert without_setup.run_alone
 
 
-def test_work_item_request_resolves_each_target_plan_once(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_work_item_request_resolves_each_target_plan_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     flow = _sim_flow()
     flow.begin_invocation()
     plans: list[str] = []
@@ -547,26 +552,20 @@ def test_specialist_claim_without_history_reserves_the_default() -> None:
 
 
 @pytest.mark.parametrize(
-    ("swap_bytes", "synth_mib", "specialist_mib"),
+    ("swap_mib", "synth_mib", "specialist_mib"),
     [
-        pytest.param(4 * 1024**3, 1100.0, 440.0, id="swap"),
+        pytest.param(4096, 1100.0, 440.0, id="swap"),
         pytest.param(0, 1250.0, 500.0, id="no-swap"),
     ],
 )
 def test_estimate_margin_follows_the_sandbox_swap_allowance(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    swap_bytes: int,
+    swap_mib: int,
     synth_mib: float,
     specialist_mib: float,
 ) -> None:
-    from tests.memory_budget_support import budget_of
-
-    monkeypatch.setattr(
-        admission,
-        "compute_memory_budget",
-        lambda **_: budget_of(8000 * 1024**2, swap_bytes=swap_bytes),
-    )
+    pin_budget(monkeypatch, 8000, swap_mib=swap_mib)
     booley_dir = _booley_dir(tmp_path)
     specialist = _specialist_record("reviewer", 346)
     specialist["peak_memory_with_swap_mb"] = 400.0  # swapped 54 MiB out

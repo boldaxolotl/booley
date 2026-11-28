@@ -19,13 +19,13 @@ from collections.abc import Callable
 from typing import Protocol
 
 import pytest
+from tests.bwave.native_binary import fake_native_binary
 from tests.conftest import MINIMAL_FST_BYTES
 from tests.time_budget import hang_guard_s, scaled
 
 from booley.bwave.waveform_store import ConversionAttempt, ConversionResult, inspect_store
 from booley.flows.sim.trace_session import TraceSession
-from booley.runtime import platform_paths
-from booley.runtime.platform_paths import popen_new_group_kwargs
+from booley.runtime import platform_paths, process_group
 
 #: Bound on one stall kill, from monitor start to every process dead: ``stop_monitor``'s
 #: docstring puts the kill path at about 30 s on Windows (about 10 s on POSIX). Kept below
@@ -49,8 +49,7 @@ def _spawn_sleeper() -> subprocess.Popen:
     enough to outlast any wait here, so the only way it exits is if the monitor
     kills it.
 
-    Spawned in its *own* process group (via popen_new_group_kwargs, matching
-    how real sim/bwave procs are launched) so that the monitor's
+    Spawned in its *own* process group (as real sim/bwave procs are) so that the monitor's
     kill_process_tree → killpg targets only this child. Without it, the
     sleeper shares pytest's group and the SIGTERM takes the test runner down
     with it.
@@ -59,7 +58,7 @@ def _spawn_sleeper() -> subprocess.Popen:
         [sys.executable, "-c", f"import time; time.sleep({_SLEEPER_LIFETIME_S})"],
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        **popen_new_group_kwargs(),
+        **process_group.new_group_kwargs(),
     )
 
 
@@ -212,7 +211,10 @@ class TestStallKill:
                 kill_after_stalls=2,
             )
             _await_monitor_kill(
-                ts, sim_proc, bwave_proc, deadline_s=_MONITOR_KILL_DEADLINE_S + _SLOW_TREE_KILL_S
+                ts,
+                sim_proc,
+                bwave_proc,
+                deadline_s=_MONITOR_KILL_DEADLINE_S + _SLOW_TREE_KILL_S,
             )
             assert ts.stall_killed is True
             assert ts.stall_message is not None
@@ -392,9 +394,9 @@ def _declared_stream(tmp_path):
 
 
 @_posix_only
-def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeypatch):
+def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, monkeypatch):
     """No unread bytes means no stall, however long the converter sits idle."""
-    monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
+    fake_native_binary(tmp_path / "bwave", monkeypatch).answer("build", hang_s=hang_guard_s())
     conversion = _declared_stream(tmp_path)
     sim_proc = _spawn_sleeper()
     session = TraceSession(tmp_path / "work")
@@ -427,9 +429,9 @@ def test_spare_simulator_monitor_ignores_idle_pipe(tmp_path, fake_bwave, monkeyp
 
 
 @_posix_only
-def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, fake_bwave, monkeypatch):
+def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, monkeypatch):
     """A converter that stopped reading is killed; the blocked writer is then drained."""
-    monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
+    fake_native_binary(tmp_path / "bwave", monkeypatch).answer("build", hang_s=hang_guard_s())
     conversion = _declared_stream(tmp_path)
     sim_proc = _spawn_sleeper()
     session = TraceSession(tmp_path / "work")
@@ -453,7 +455,9 @@ def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, fake_bwa
             spare_simulator=True,
         )
         _await_monitor_kill(
-            session, conversion, reported=lambda: _declared_stream_stalled_recorded(session)
+            session,
+            conversion,
+            reported=lambda: _declared_stream_stalled_recorded(session),
         )
         writer.join(timeout=_MONITOR_KILL_DEADLINE_S)
         assert not writer.is_alive(), "the writer must be drained, not left blocked"
@@ -463,6 +467,7 @@ def test_spare_simulator_monitor_kills_only_stalled_converter(tmp_path, fake_bwa
         sim_proc.kill()
         sim_proc.wait(timeout=hang_guard_s())
         _stop_monitor_within(session, _CLEANUP_STOP_S)
+        conversion.kill()
         conversion.finish(timeout_s=hang_guard_s())
 
 
@@ -552,7 +557,9 @@ class TestTraceStatusManifest:
             assert status["trace_metadata"]["total_ticks"] == total_ticks
 
     def test_postprocess_retries_unscoped_when_scoped_build_writes_no_cache(
-        self, tmp_path, monkeypatch
+        self,
+        tmp_path,
+        monkeypatch,
     ):
         from booley.bwave import waveform_store
 
@@ -571,7 +578,10 @@ class TestTraceStatusManifest:
             if "--scope" in cmd:
                 bwave.write_bytes(b"")
                 return subprocess.CompletedProcess(
-                    cmd, 0, stdout=b"", stderr=b"WARNING: --scope matched 0 signals"
+                    cmd,
+                    0,
+                    stdout=b"",
+                    stderr=b"WARNING: --scope matched 0 signals",
                 )
             bwave.write_bytes(MINIMAL_FST_BYTES)
             return subprocess.CompletedProcess(cmd, 0, stdout=b"", stderr=b"")
@@ -580,7 +590,10 @@ class TestTraceStatusManifest:
         monkeypatch.setattr(waveform_store.subprocess, "run", fake_run)
 
         result = waveform_store.convert_vcd(
-            vcd, bwave, scope="tb.missing_dut", allow_unscoped_fallback=True
+            vcd,
+            bwave,
+            scope="tb.missing_dut",
+            allow_unscoped_fallback=True,
         )
 
         assert result.success is True

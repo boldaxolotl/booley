@@ -11,7 +11,9 @@ from pathlib import Path
 import pytest
 
 from booley.flows.sim.acceptance import publish_simulation_record_projections
-from booley.flows.sim.record.codec import SimulationRecordIntegrityError
+from booley.flows.sim.record.codec import (
+    SimulationRecordIntegrityError,
+)
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
     SimulationRecord,

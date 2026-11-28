@@ -33,10 +33,17 @@ def test_policy_positive_controls_have_distinct_documented_values():
 
 @pytest.mark.parametrize(
     "name, cap, timeout, egress",
-    [("legacy", 2, 600, ("qa-allowed.example.invalid",)), ("both-tables", 1, 7200, ())],
+    [
+        ("legacy", 2, 600, ("qa-allowed.example.invalid",)),
+        ("both-tables", 1, 7200, ()),
+    ],
 )
 def test_authored_migration_cases_have_expected_policy_and_warning(
-    tmp_path: Path, name: str, cap: int, timeout: int, egress: tuple[str, ...]
+    tmp_path: Path,
+    name: str,
+    cap: int,
+    timeout: int,
+    egress: tuple[str, ...],
 ) -> None:
     path = tmp_path / "config.toml"
     original = (ROOT / f"{name}.toml").read_bytes()

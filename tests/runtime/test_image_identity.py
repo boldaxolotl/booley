@@ -184,7 +184,9 @@ _SELECTION_CASES = {
 
 
 @pytest.mark.parametrize(
-    "changes,stamps,flavor,expected", _SELECTION_CASES.values(), ids=_SELECTION_CASES
+    "changes,stamps,flavor,expected",
+    _SELECTION_CASES.values(),
+    ids=_SELECTION_CASES,
 )
 def test_final_selection_rules(changes, stamps, flavor, expected):
     fields = {
@@ -310,7 +312,7 @@ class _Layout:
 
     def publish(self) -> None:
         """Rewrite the fake's replies from the records and histories, then forget proofs."""
-        replies = {f"image {i}": (0, json.dumps([record])) for i, record in self.records.items()}
+        replies = {f"image {i}": (0, json.dumps(record)) for i, record in self.records.items()}
         replies |= {f"history {i}": (0, "\n".join(lines)) for i, lines in self.histories.items()}
         self.docker.replies_path.write_bytes(json.dumps(replies | self.extra).encode("utf-8"))
         project_image.verify_layout_parent_identity.cache_clear()
@@ -381,7 +383,7 @@ def test_proven_layout_derivative_preserves_parent_logical_selection(layout: _La
     assert layout.status() is Status.MATCH
     # Every call went through the configured executable: ``docker`` resolves to nothing.
     calls = layout.docker.calls
-    assert [(call[0], call[-1]) for call in calls[:4]] == [
+    assert [(call[0], call[2] if call[0] == "image" else call[-1]) for call in calls[:4]] == [
         ("image", layout.parent_id),
         ("image", layout.child_id),
         ("history", layout.parent_id),
@@ -536,16 +538,25 @@ def test_layout_docker_transport_failure_is_controlled(layout: _Layout, tmp_path
         project_image._probe_layout_directory("image", executable=missing)
 
 
+_INVALID_LAYOUT = "invalid Booley Directory layout image inspection: candidate"
+
+
 @pytest.mark.parametrize(
-    "code,output",
-    [(0, "not json"), (0, "{}"), (0, "[]"), (0, "[{}, {}]"), (0, "[null]"), (1, "no such image")],
+    "code,output,message",
+    [
+        pytest.param(0, "not json", _INVALID_LAYOUT, id="not-json"),
+        pytest.param(0, "[]", _INVALID_LAYOUT, id="list"),
+        pytest.param(0, "null", _INVALID_LAYOUT, id="null"),
+        pytest.param(0, '"text"', _INVALID_LAYOUT, id="string"),
+        pytest.param(1, "no such image", "layout image candidate: no such image", id="non-zero"),
+    ],
 )
 def test_layout_inspection_rejects_unusable_docker_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int, output: str
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, code: int, output: str, message: str
 ) -> None:
     docker = install_fake_docker(tmp_path, monkeypatch, {"image": (code, output)})
 
-    with pytest.raises(RuntimeError, match="layout image"):
+    with pytest.raises(RuntimeError, match=message):
         project_image.inspect_layout_image("candidate", executable=str(docker.path))
 
 
@@ -553,11 +564,11 @@ def test_layout_inspection_preserves_exact_docker_record(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     record = {"Id": "sha256:" + "a" * 64, "Config": {"User": "1000"}}
-    docker = install_fake_docker(tmp_path, monkeypatch, {"image": (0, json.dumps([record]))})
+    docker = install_fake_docker(tmp_path, monkeypatch, {"image": (0, json.dumps(record))})
     monkeypatch.setenv("PATH", str(tmp_path / "empty"))  # a call that drops the executable fails
 
     assert project_image.inspect_layout_image("candidate", executable=str(docker.path)) == record
-    assert docker.calls == [["image", "inspect", "candidate"]]
+    assert docker.calls == [["image", "inspect", "candidate", "--format", "{{json .}}"]]
 
 
 @pytest.mark.parametrize(

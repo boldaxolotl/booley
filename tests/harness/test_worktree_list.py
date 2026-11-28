@@ -88,7 +88,14 @@ def test_list_reports_branch_kind_changes_and_unmerged_work(repo: Path) -> None:
         a.paired_uncommitted,
         a.unmerged,
         a.paired_unmerged,
-    ) == ("booley/a", "Snapshot", 2, None, 1, None)
+    ) == (
+        "booley/a",
+        "Snapshot",
+        2,
+        None,
+        1,
+        None,
+    )
     assert (
         p.branch,
         p.kind,
@@ -96,7 +103,14 @@ def test_list_reports_branch_kind_changes_and_unmerged_work(repo: Path) -> None:
         p.paired_uncommitted,
         p.unmerged,
         p.paired_unmerged,
-    ) == ("booley/p", "Paired Checkout", 0, 1, 0, 1)
+    ) == (
+        "booley/p",
+        "Paired Checkout",
+        0,
+        1,
+        0,
+        1,
+    )
 
 
 def test_squash_merged_branch_counts_as_merged(repo: Path) -> None:

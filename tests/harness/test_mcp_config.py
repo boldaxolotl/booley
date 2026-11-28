@@ -248,7 +248,12 @@ def test_generator_rejects_invalid_explicit_preference(value, layout):
 
 @pytest.mark.parametrize(
     "source",
-    [f'{WARNING_KEY}="', "features={\n x=true,", "x={\n a=1,\n a=2,\n}", "features={\n x=???\n}"],
+    [
+        f'{WARNING_KEY}="',
+        "features={\n x=true,",
+        "x={\n a=1,\n a=2,\n}",
+        "features={\n x=???\n}",
+    ],
 )
 def test_generator_heals_interrupted_scratch_config(source, caplog):
     result = tomllib.loads(generate_codex_config(existing_config=source))

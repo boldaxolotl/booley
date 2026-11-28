@@ -35,7 +35,10 @@ _WAIVE_SCHEMA: dict[str, Any] = {
     "description": "With 'verify': a justified waiver for each open finding it names.",
     "items": {
         "type": "object",
-        "properties": {"finding_id": {"type": "string"}, "justification": {"type": "string"}},
+        "properties": {
+            "finding_id": {"type": "string"},
+            "justification": {"type": "string"},
+        },
         "required": ["finding_id", "justification"],
         "additionalProperties": False,
     },

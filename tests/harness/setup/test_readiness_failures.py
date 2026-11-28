@@ -8,34 +8,37 @@ import pytest
 from booley.audit.diagnostic_results import Severity
 from booley.fusesoc import core_projection
 from booley.harness.setup import readiness
-from tests.harness.test_doctor import _write_project
+from tests.harness.doctor_run_support import write_project
 
 
 @pytest.mark.parametrize(
     ("filename", "text", "message"),
     [
         ("booley.toml", "[broken", "booley.toml does not parse"),
-        ("configs.toml", "[broken", "configs.toml does not parse"),
         ("booley.toml", None, "unsupported EDA"),
     ],
-    ids=["malformed-booley-toml", "malformed-configs-toml", "unsupported-eda"],
+    ids=["malformed-booley-toml", "unsupported-eda"],
 )
 def test_project_load_fails_on_bad_configuration_and_keeps_the_directory(
     tmp_path, filename, text, message
 ):
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     config = booley_dir / filename
     config.write_text(text or config.read_text() + "\n[eda.unknown]\n")
+    (booley_dir / "configs.toml").write_text("[broken", encoding="utf-8")
     result = readiness.load_project(tmp_path)
     assert result.project is None
     assert result.booley_dir == booley_dir
     assert any(
         f.severity is Severity.FAIL and message in f.message for f in result.report.findings
     )
+    assert [f.check_id for f in result.report.findings if "configs.toml" in f.message] == [
+        "config.configs-toml-ignored"
+    ]
 
 
 def test_project_load_reports_unreadable_configuration(tmp_path, monkeypatch):
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     original = Path.open
 
     def open_file(path, *args, **kwargs):
@@ -52,16 +55,16 @@ def test_project_load_reports_unreadable_configuration(tmp_path, monkeypatch):
     )
 
 
-def test_project_load_keeps_legacy_target_fallback_when_no_core_is_available(tmp_path):
-    _write_project(tmp_path)
+def test_project_load_has_no_first_target_when_no_core_is_available(tmp_path):
+    write_project(tmp_path)
     (tmp_path / "unit.core").unlink()
     result = readiness.load_project(tmp_path)
     assert result.project is not None
-    assert result.project.first_target == "fast"
+    assert result.project.first_target == ""
 
 
 def test_guidance_read_error_retains_scope_warning_identity(tmp_path, monkeypatch):
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     canon = booley_dir / "AGENTS.md"
     canon.write_text("booley_status\n")
     project = readiness.load_project(tmp_path).project
@@ -81,7 +84,7 @@ def test_guidance_read_error_retains_scope_warning_identity(tmp_path, monkeypatc
 
 
 def test_stealth_inspection_reports_stale_projection_without_creating_it(tmp_path):
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     with (booley_dir / "booley.toml").open("a") as stream:
         stream.write("\n[stealth]\nenabled = true\n")
     cores = booley_dir / "cores"
@@ -114,7 +117,7 @@ def test_stealth_inspection_reports_stale_projection_without_creating_it(tmp_pat
 
 
 def test_non_utf8_stealth_core_fails_as_unreadable(tmp_path):
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     with (booley_dir / "booley.toml").open("a") as stream:
         stream.write("\n[stealth]\nenabled = true\n")
     core = booley_dir / "cores" / "a.core"
@@ -132,7 +135,7 @@ def test_non_utf8_stealth_core_fails_as_unreadable(tmp_path):
 
 
 def test_uninspectable_projections_are_not_current(tmp_path, monkeypatch):
-    _write_project(tmp_path)
+    write_project(tmp_path)
     project = readiness.load_project(tmp_path).project
     assert project is not None
     assert readiness.stealth_projections_current(project)  # stealth is off: nothing to project
@@ -154,7 +157,7 @@ def test_uninspectable_projections_are_not_current(tmp_path, monkeypatch):
     ],
 )
 def test_legacy_notifications_do_not_block_project_readiness(tmp_path, settings):
-    booley_dir = _write_project(tmp_path)
+    booley_dir = write_project(tmp_path)
     config = booley_dir / "booley.toml"
     baseline = readiness.load_project(tmp_path)
     config.write_text(config.read_text() + "\n" + settings)

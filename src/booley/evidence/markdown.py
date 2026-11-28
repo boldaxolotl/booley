@@ -25,7 +25,8 @@ def parse_yaml_frontmatter(text: str) -> dict[str, Any]:
         return {}
     try:
         return require_dict(
-            yaml.safe_load(match.group("yaml")) or {}, field="Markdown frontmatter"
+            yaml.safe_load(match.group("yaml")) or {},
+            field="Markdown frontmatter",
         )
     except (yaml.YAMLError, BoundaryError) as exc:
         raise MarkdownDocumentError(str(exc)) from exc

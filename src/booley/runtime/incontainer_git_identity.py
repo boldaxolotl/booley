@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from booley.core.boundary import BoundaryError, as_str, require_dict
-from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
+from booley.core.sandbox_layout import BOOLEY_DIR_TARGET
 
 _DEFAULT_NAME = "Dev"
 _DEFAULT_EMAIL = "dev@localhost"
@@ -74,7 +74,8 @@ def load_git_identity(booley_dir: Path) -> GitIdentity:
     agent = _table(data.get("agent", {}), "[agent]")
     git = _table(agent.get("git", {}), "[agent.git]")
     return GitIdentity(
-        _identity_field(git, "name", _DEFAULT_NAME), _identity_field(git, "email", _DEFAULT_EMAIL)
+        _identity_field(git, "name", _DEFAULT_NAME),
+        _identity_field(git, "email", _DEFAULT_EMAIL),
     )
 
 

@@ -21,6 +21,7 @@ from booley.config.sandbox import SANDBOX_IMAGE, project_sandbox_image
 from booley.core.booley_dir import own_booley_dir, resolve_checkout_booley_dir
 from booley.core.boundary import as_dict
 from booley.core.config_paths import resolve_toml
+from booley.core.sandbox_detection import inside_session_runtime
 from booley.targets.flow_names import RETIRED_SPECIALIST_TO_FLOW
 
 if TYPE_CHECKING:
@@ -153,11 +154,6 @@ class BackendConfigError(RuntimeError):
     for (the old codex default surfaced as a mystery 401 from an
     unauthenticated Codex call).
     """
-
-
-def _inside_container() -> bool:
-    """Detect if we're running inside a Docker container."""
-    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
 
 
 def cli_for_model(model: str) -> str | None:
@@ -364,7 +360,7 @@ def parse_agent_section(
     Doctor) keep it so they can name the replacement.
 
     Environment-free, so every reader agrees on it; the checks that need the effective
-    CLI set (an environment hand-off can change it) live in :func:`settings_from_data`.
+    CLI set (an environment hand-off can change it) live in :func:`resolve_agent_clis`.
     """
     raw_clis, clis = agent.get("clis"), None
     if raw_clis is not None:
@@ -458,12 +454,14 @@ def resolve_default_cli(declared: DeclaredAgent | None) -> tuple[str, str] | Non
 def visitor_mode_honoured() -> bool:
     """Whether a recorded ``visitor`` runs the visitor mode here.
 
-    True in a hand-written Sandbox: a container with no decodable ``BOOLEY_AGENT_CLIS``
+    True in a hand-written Sandbox: a Sandbox with no decodable ``BOOLEY_AGENT_CLIS``
     record whose spec sets ``BOOLEY_AGENT_APP`` or ``BOOLEY_PRIMARY_AUTH``. Elsewhere (the
     host, an issued Sandbox, a CI runner) ``visitor`` reads as ``subscription``.
     """
     handoff = os.environ.get("BOOLEY_AGENT_APP") or os.environ.get("BOOLEY_PRIMARY_AUTH")
-    return _inside_container() and not _recorded_cli_policies() and bool((handoff or "").strip())
+    return (
+        inside_session_runtime() and not _recorded_cli_policies() and bool((handoff or "").strip())
+    )
 
 
 def policy_in_force(recorded: str | None) -> str:
@@ -530,7 +528,7 @@ def _auth_policies(
             policies["codex"] = GATEWAY_AUTH
     elif lazy and env_auth_handoff() is not None:
         policies[default_cli] = _env_auth()  # a hand-written spec without the CLI record
-    if not _inside_container():  # the gateway is honored in a Sandbox only
+    if not inside_session_runtime():  # the gateway is honored in a Sandbox only
         policies = {cli: DEFAULT_AUTH if p == GATEWAY_AUTH else p for cli, p in policies.items()}
     return policies
 
@@ -637,6 +635,31 @@ def parse_models_section(
     return pins
 
 
+def resolve_agent_clis(
+    data: Mapping[str, Any], *, lazy: bool, keep_retired_auth: bool = False
+) -> tuple[str, tuple[str, ...], dict[str, str]]:
+    """The default Agent CLI, the allowed Agent CLIs and each one's auth policy.
+
+    The ``[agent]`` half of :func:`settings_from_data` (same arguments, same
+    ``BackendConfigError``), without ``[models]`` or the gateway pin, so Doctor
+    audits what the runtime resolves.
+    """
+    agent = data.get("agent", {})
+    declared = parse_agent_section(
+        agent if isinstance(agent, dict) else {}, keep_retired_auth=keep_retired_auth
+    )
+    resolved = resolve_default_cli(declared)
+    if resolved is None and lazy and inside_session_runtime():
+        raise _unresolved_provider_error()
+    default_cli, source = resolved or (_DEFAULT_PROVIDER, "default")
+    clis = declared.clis or (default_cli,)
+    if default_cli not in clis:
+        raise BackendConfigError(
+            f"{source} names {default_cli!r}, which is not in booley.toml [agent] clis."
+        )
+    return default_cli, clis, _auth_policies(declared, clis, default_cli, lazy=lazy)
+
+
 def settings_from_data(
     data: Mapping[str, Any], *, lazy: bool, keep_retired_auth: bool = False
 ) -> AgentSettings:
@@ -646,20 +669,9 @@ def settings_from_data(
     hand-off and refuses to guess an unresolved CLI inside a Sandbox. *keep_retired_auth*
     is :func:`parse_agent_section`'s flag, for Doctor's audits.
     """
-    agent = data.get("agent", {})
-    declared = parse_agent_section(
-        agent if isinstance(agent, dict) else {}, keep_retired_auth=keep_retired_auth
+    default_cli, clis, policies = resolve_agent_clis(
+        data, lazy=lazy, keep_retired_auth=keep_retired_auth
     )
-    resolved = resolve_default_cli(declared)
-    if resolved is None and lazy and _inside_container():
-        raise _unresolved_provider_error()
-    default_cli, source = resolved or (_DEFAULT_PROVIDER, "default")
-    clis = declared.clis or (default_cli,)
-    if default_cli not in clis:
-        raise BackendConfigError(
-            f"{source} names {default_cli!r}, which is not in booley.toml [agent] clis."
-        )
-    policies = _auth_policies(declared, clis, default_cli, lazy=lazy)
     models = data.get("models", {})
     if not isinstance(models, dict):
         logger.warning("booley.toml [models] is not a table; ignoring")
@@ -758,7 +770,7 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
         # limit when one is derivable, but tell the user to migrate.
         logger.warning(
             "[sandbox] memory tier table is retired (Booley runs one container "
-            'with one memory limit); use a single string, e.g. memory = "8g"'
+            'with one memory limit); use a single string, e.g. memory = "8g"',
         )
         legacy_default = mem_val.get("default", "")
         if isinstance(legacy_default, str):
@@ -768,7 +780,7 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
     if "memory_tiers" in section:
         logger.warning(
             "[sandbox] memory_tiers is retired (Booley runs one container with "
-            'one memory limit); use memory = "8g" — ignoring'
+            'one memory limit); use memory = "8g" — ignoring',
         )
 
     swap = ""
@@ -781,7 +793,10 @@ def _parse_sandbox_config(data: dict) -> SandboxConfig:
     mount_host_skills = bool(section.get("mount_host_skills", False))
 
     return SandboxConfig(
-        image=image, memory=memory, swap=swap, mount_host_skills=mount_host_skills
+        image=image,
+        memory=memory,
+        swap=swap,
+        mount_host_skills=mount_host_skills,
     )
 
 
@@ -880,12 +895,12 @@ def sandbox_agent_clis() -> tuple[str, ...]:
 def gateway_handoff_active() -> bool:
     """Whether Codex is routed through the gateway in this Sandbox.
 
-    Honored only inside a container: an export on the host must not silently change
+    Honored only inside a Sandbox: an export on the host must not silently change
     what a host-side run bills. A hand-written spec turns it on with the Sandbox-wide
     ``BOOLEY_PRIMARY_AUTH=gateway``; a Booley-issued spec only when its per-CLI record
     puts ``codex`` on the gateway, whichever CLI is the default.
     """
-    return sandbox_cli_policy("codex") == GATEWAY_AUTH and _inside_container()
+    return sandbox_cli_policy("codex") == GATEWAY_AUTH and inside_session_runtime()
 
 
 def issued_codex_gateway() -> bool:
@@ -894,7 +909,7 @@ def issued_codex_gateway() -> bool:
     The condition under which every Claude process Booley starts or configures has the
     gateway settings scrubbed; a hand-written spec (no record) keeps its environment.
     """
-    return _inside_container() and _recorded_cli_policies().get("codex") == GATEWAY_AUTH
+    return inside_session_runtime() and _recorded_cli_policies().get("codex") == GATEWAY_AUTH
 
 
 def _env_auth() -> str:
@@ -903,10 +918,10 @@ def _env_auth() -> str:
     The env var is a harness hand-off, not user config, so an unknown value is
     degraded to the default with a warning rather than raised (mirrors how
     ``resolve_default_cli`` treats an unknown ``BOOLEY_PRIMARY_PROVIDER``).
-    ``gateway`` on a host (outside a container) is treated as unknown.
+    ``gateway`` on a host (outside a Sandbox) is treated as unknown.
     """
     raw = env_auth_handoff() or VISITOR_AUTH
-    if raw not in _ENV_AUTH_MODES or (raw == GATEWAY_AUTH and not _inside_container()):
+    if raw not in _ENV_AUTH_MODES or (raw == GATEWAY_AUTH and not inside_session_runtime()):
         logger.warning("Ignoring BOOLEY_PRIMARY_AUTH %r; using %s", raw, VISITOR_AUTH)
         return VISITOR_AUTH
     return raw

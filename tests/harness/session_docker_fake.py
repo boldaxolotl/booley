@@ -1,10 +1,11 @@
-"""Stateful Docker fake for headless Sessions whose Project directory may be gone."""
+"""Stateful fake of the Docker CLI boundary for headless Sessions whose Project directory may be gone."""
 
 from __future__ import annotations
 
 import copy
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -18,8 +19,16 @@ import pytest
 from booley.core.project_identity import project_label_id
 from booley.harness import booley as cli
 from booley.harness import sandbox_stop_warning
-from booley.runtime import booley_dir as booley_dir_module
-from booley.runtime import host_docker, runtime_attachment, session_admission, session_runtime
+from booley.runtime import (
+    booley_dir as booley_dir_module,
+)
+from booley.runtime import (
+    booley_dir_migration,
+    host_docker,
+    runtime_attachment,
+    session_runtime,
+)
+from tests.docker_cli_guard_plugin import allow_docker_cli
 
 _SRC_ROOT = Path(__file__).parents[2] / "src"
 
@@ -53,6 +62,22 @@ def headless_session_entry(name: str, root: Path, *, running: bool = True) -> di
         "NetworkSettings": {"Networks": {}},
         "Mounts": [{"Type": "bind", "Destination": "/work", "Source": canonical}],
     }
+
+
+def container_inspect_output(state: dict[str, Any], template: str | None) -> str:
+    """Render what `docker container inspect <name> [--format template]` prints for *state*."""
+    if template is None:
+        return json.dumps([state])
+    if template == "{{.State.Running}}":
+        return "true" if state["State"]["Running"] else "false"
+    if template == "{{json .Image}}":
+        return json.dumps(state.get("Image", ""))
+    if ".Config.Labels" not in template:
+        return json.dumps(state)
+    labels = state.get("Config", {}).get("Labels", {})
+    if template.startswith("{{json (index "):
+        return json.dumps(labels.get(template.split('"')[1]))
+    return json.dumps(labels)
 
 
 class SessionDockerFake:
@@ -181,7 +206,7 @@ class SandboxDocker:
         rows = []
         for name, state in self.containers.items():
             if not isinstance(state, dict) or not (
-                "-a" in args or state["State"].get("Running") is True
+                {"-a", "-aq"} & set(args) or state["State"].get("Running") is True
             ):
                 continue
             labels = state["Config"]["Labels"]
@@ -207,7 +232,9 @@ class SandboxDocker:
         record = self.images.get(args[1])
         if args[0] != "inspect" or record is None:
             return subprocess.CompletedProcess(argv, 1, "", f"No such image: {args[-1]}")
-        out = record["Id"] if "--format" in args else json.dumps([record])
+        template = args[args.index("--format") + 1] if "--format" in args else None
+        documents = {None: [record], "{{json .}}": record, "{{json .Id}}": record["Id"]}
+        out = json.dumps(documents[template]) if template in documents else record["Id"]
         return subprocess.CompletedProcess(argv, 0, out, "")
 
     def _network(self, argv: list[str], args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -247,15 +274,8 @@ class SandboxDocker:
         if name is None:
             return subprocess.CompletedProcess(argv, 1, "", "No such container")
         state = self.containers[name]
-        if "{{.State.Running}}" in args and isinstance(state, dict):
-            return subprocess.CompletedProcess(
-                argv, 0, "true" if state["State"]["Running"] else "false", ""
-            )
-        out = (
-            state
-            if isinstance(state, str)
-            else json.dumps(state if "--format" in args else [state])
-        )
+        template = args[args.index("--format") + 1] if "--format" in args else None
+        out = state if isinstance(state, str) else container_inspect_output(state, template)
         return subprocess.CompletedProcess(argv, 0, out, "")
 
     def _run(self, argv: list[str], args: list[str]) -> subprocess.CompletedProcess[str]:
@@ -327,6 +347,25 @@ def serve_sandbox_docker(monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
     return docker
 
 
+def route_docker_commands(
+    monkeypatch: pytest.MonkeyPatch, docker: SandboxDocker, *, executable: str = "docker"
+) -> SandboxDocker:
+    """Answer every *executable* argv that reaches ``subprocess.run`` from *docker*; run others for real.
+
+    Pairs with the routing fixtures of ``tests/docker_cli_guard.py``, which send each
+    host-side Docker capture through ``subprocess.run``.
+    """
+    real_run = subprocess.run
+
+    def run(argv: Any, *args: Any, **kwargs: Any) -> Any:
+        if isinstance(argv, list) and argv and argv[0] == executable:
+            return docker.run(argv, **kwargs)
+        return real_run(argv, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return docker
+
+
 def attach_commands(
     monkeypatch: pytest.MonkeyPatch,
     *,
@@ -362,6 +401,13 @@ def isolate_session_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
     monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", lambda: False)
 
 
+def docker_runner(
+    run: Callable[..., subprocess.CompletedProcess[str]],
+) -> Callable[[list[str], int], subprocess.CompletedProcess[str]]:
+    """Serve admission's ``docker_cli.Runner`` from a full-argv Session fake."""
+    return lambda args, timeout: run(["docker", *args], timeout=timeout)
+
+
 def route_session_commands(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -377,9 +423,8 @@ def route_session_commands(
     no running Job); returns the `(argv, kwargs)` of each probe call.
     """
     isolate_session_cli(monkeypatch, tmp_path)
-    # `_run` is each module's one Docker CLI runner and no public entry takes a runner.
+    # `_run` is the Session's one Docker CLI runner and no public entry takes a runner.
     monkeypatch.setattr(session_runtime, "_run", run)
-    monkeypatch.setattr(session_admission, "_run", run)
     monkeypatch.setattr(host_docker, "container_exists", lambda name: name in existing)
     monkeypatch.setattr(host_docker, "network_exists", lambda _name: False)
     probed: list[tuple[list[str], dict[str, Any]]] = []
@@ -404,7 +449,9 @@ def install_sandbox_exec(
     *protocol* false it runs only `python3 -I` commands (the cwd and Standalone Job
     probes) and exits 127 for the execution supervisor, a Sandbox without an execution
     protocol. Linux only: the shim has a shebang and the Sandbox processes read `/proc`.
+    Installing it lets the test start `docker`: see `tests/docker_cli_guard_plugin.py`.
     """
+    allow_docker_cli()
     guard = "" if protocol else "if args[start+1]!='-I':sys.exit(127)\n"
     binary = tmp_path / "docker"
     binary.write_text(
@@ -431,3 +478,24 @@ def run_cli(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> int:
     """Run `booley <argv>` in-process and return its exit code."""
     monkeypatch.setattr(sys, "argv", ["booley", *argv])
     return cli.main()
+
+
+def serve_migration_docker(monkeypatch: pytest.MonkeyPatch) -> SandboxDocker:
+    """Answer the Booley Directory migration's Docker inventory from a new fake.
+
+    The fake's ``missing`` also hides ``docker`` from command lookup.
+    """
+    docker = SandboxDocker()
+    which = shutil.which
+
+    def lookup(name: str, *args: Any, **kwargs: Any) -> str | None:
+        if name == "docker":
+            return None if docker.missing else "docker"
+        return which(name, *args, **kwargs)
+
+    # The migration's two Docker seams: command lookup and its bounded capture.
+    monkeypatch.setattr(shutil, "which", lookup)
+    monkeypatch.setattr(
+        booley_dir_migration, "run_captured_bounded", lambda argv, **_kw: docker.run(argv)
+    )
+    return docker

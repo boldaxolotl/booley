@@ -75,8 +75,9 @@ _FLOW_KEY_CONTROLS: dict[str, str] = {
         "A Developer Agent's MCP tool call passes the same suite as a `test` array. "
         "Resume one exact durable "
         "Simulation Record with `--resume-from <exact-manifest.json>` (optionally with "
-        "`--dry-run`): Cocotb retries the whole batch; a coverage Simulation Record resumes only "
-        "after its collection finished (otherwise exit 2: start a new `--coverage` run). "
+        "`--dry-run`): Cocotb retries the whole batch; a coverage Simulation Record never "
+        "resumes (exit 2: the refusal prints the new `booley flow sim --coverage` run that "
+        "repeats its Test Runs, seeds and report directory). "
         "`--coverage` / `--cov` collects a native Coverage Record, "
         "and `--trace` captures waveforms for the simulation run. Focused Cocotb "
         "output summarizes unselected skips; the complete XML and JSON results are always retained"
@@ -139,7 +140,10 @@ def _summarize(text: str) -> str:
     return cleaned.replace("|", "\\|")
 
 
-def render_flow_reference(*, project_mcp_tools_dir: Path | None = None) -> str:
+def render_flow_reference(
+    *,
+    project_mcp_tools_dir: Path | None = None,
+) -> str:
     """Render the Booley Flows Markdown block from the MCP endpoint registry.
 
     The table is followed by the common and per-Flow control summaries.
@@ -154,7 +158,10 @@ def render_flow_reference(*, project_mcp_tools_dir: Path | None = None) -> str:
     endpoints = discover_mcp_tools(project_mcp_tools_dir=project_mcp_tools_dir)
     flows = sorted(
         (endpoint for endpoint in endpoints if endpoint.kind == "flow"),
-        key=lambda t: (_FLOW_DISPLAY_RANK.get(t.name, len(_FLOW_DISPLAY_RANK)), t.name),
+        key=lambda t: (
+            _FLOW_DISPLAY_RANK.get(t.name, len(_FLOW_DISPLAY_RANK)),
+            t.name,
+        ),
     )
     lines: list[str] = []
     lines.append("Deterministic end-to-end orchestration; no LLM:")
@@ -356,7 +363,7 @@ def _main(argv: list[str] | None = None) -> int:
     import argparse
 
     parser = argparse.ArgumentParser(
-        description="Render the canonical Booley Flows and Specialists blocks."
+        description="Render the canonical Booley Flows and Specialists blocks.",
     )
     parser.add_argument(
         "paths",

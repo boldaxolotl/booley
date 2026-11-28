@@ -107,7 +107,10 @@ WaivablePointProblem = Literal["missing", "ambiguous", "source", "ineligible", "
 
 
 def waivable_point_problem(
-    matches: Sequence[CoveragePoint], sources: Container[str], *, zero_hits: bool = False
+    matches: Sequence[CoveragePoint],
+    sources: Container[str],
+    *,
+    zero_hits: bool = False,
 ) -> WaivablePointProblem | None:
     """Why the points sharing one requested id cannot be waived, or None.
 
@@ -168,7 +171,11 @@ def _configured_directory_finding(error: SecurePathError) -> CoverageFinding:
 
 
 def _read_evidence(
-    tree: SecureTree, relative: str, pointer: str, *, label: str
+    tree: SecureTree,
+    relative: str,
+    pointer: str,
+    *,
+    label: str,
 ) -> tuple[bytes | None, CoverageFinding | None]:
     try:
         return tree.read_file(relative), None
@@ -228,7 +235,10 @@ def _proof_findings(proof: object, pointer: str) -> list[CoverageFinding]:
 
 
 def _proof_evidence_finding(
-    tree: SecureTree, approval_directory: str, record: Mapping[str, object], pointer: str
+    tree: SecureTree,
+    approval_directory: str,
+    record: Mapping[str, object],
+    pointer: str,
 ) -> CoverageFinding | None:
     proof = record.get("proof")
     if record.get("reason") != "unreachable" or _proof_findings(proof, pointer):
@@ -238,7 +248,9 @@ def _proof_evidence_finding(
     relative = reference.split("#", 1)[0]
     if not is_safe_relative_posix(relative) or relative.endswith(".toml"):
         return _error(
-            "COV_WAIVER_PROOF_INVALID", pointer, "Proof reference must be a safe non-TOML path."
+            "COV_WAIVER_PROOF_INVALID",
+            pointer,
+            "Proof reference must be a safe non-TOML path.",
         )
     resolved = f"{approval_directory}/{relative}"
     raw, finding = _read_evidence(tree, resolved, pointer, label="PROOF")
@@ -325,7 +337,10 @@ def _record_reason_findings(record: Mapping[str, object], pointer: str) -> list[
 
 
 def _record_findings(
-    record: object, pointer: str, source: str, known_targets: frozenset[str]
+    record: object,
+    pointer: str,
+    source: str,
+    known_targets: frozenset[str],
 ) -> list[CoverageFinding]:
     try:
         document = require_dict(record, field="approval")
@@ -346,7 +361,11 @@ def _record_findings(
 
 
 def _approval_from_document(
-    document: Mapping[str, object], *, source: str, waiver_file: str, waiver_fingerprint: str
+    document: Mapping[str, object],
+    *,
+    source: str,
+    waiver_file: str,
+    waiver_fingerprint: str,
 ) -> ApprovedWaiver:
     provenance = {
         "justification": document["justification"],
@@ -369,7 +388,8 @@ def _approval_from_document(
 
 
 def _document_shape_findings(
-    document: Mapping[str, object], pointer: str
+    document: Mapping[str, object],
+    pointer: str,
 ) -> list[CoverageFinding]:
     findings: list[CoverageFinding] = []
     if document.get("schema") != "booley.coverage-waivers/v1":
@@ -416,7 +436,9 @@ def _document_shape_findings(
 
 
 def _load_approval_file(
-    raw: bytes, document: Mapping[str, object], relative_path: str
+    raw: bytes,
+    document: Mapping[str, object],
+    relative_path: str,
 ) -> tuple[dict[str, object], list[ApprovedWaiver]]:
     source = require_str(document, "source")
     source_fingerprint = require_str(document, "source_sha256")
@@ -429,7 +451,10 @@ def _load_approval_file(
     )
     approvals = [
         _approval_from_document(
-            approval, source=source, waiver_file=relative_path, waiver_fingerprint=file_fingerprint
+            approval,
+            source=source,
+            waiver_file=relative_path,
+            waiver_fingerprint=file_fingerprint,
         )
         for approval in approval_documents
     ]
@@ -467,7 +492,10 @@ def _read_approval_document(
 
 
 def _source_file_findings(
-    document: Mapping[str, object], relative: str, pointer: str, rtl_tree: SecureTree
+    document: Mapping[str, object],
+    relative: str,
+    pointer: str,
+    rtl_tree: SecureTree,
 ) -> list[CoverageFinding]:
     source = require_str(document, "source")
     findings: list[CoverageFinding] = []
@@ -513,7 +541,10 @@ def _approval_record_findings(
         except BoundaryError:
             continue
         proof = _proof_evidence_finding(
-            approval_tree, approval_directory, record_document, f"{record_pointer}/proof"
+            approval_tree,
+            approval_directory,
+            record_document,
+            f"{record_pointer}/proof",
         )
         if proof is not None:
             findings.append(proof)
@@ -542,7 +573,11 @@ def _approval_file_findings(
         else:
             findings.extend(
                 _approval_record_findings(
-                    document, pointer, known_targets, approval_tree, approval_directory
+                    document,
+                    pointer,
+                    known_targets,
+                    approval_tree,
+                    approval_directory,
                 )
             )
     return tuple(findings)
@@ -566,7 +601,13 @@ def _try_load_approval_file(
     if document is None or raw is None:
         return None, read_findings, None, ()
     findings = _approval_file_findings(
-        document, relative, pointer, rtl_tree, known_targets, approval_tree, approval_directory
+        document,
+        relative,
+        pointer,
+        rtl_tree,
+        known_targets,
+        approval_tree,
+        approval_directory,
     )
     source = as_str(document.get("source"))
     referenced_proofs = proof_references(document)
@@ -576,7 +617,9 @@ def _try_load_approval_file(
     return _load_approval_file(raw, document, relative), (), source, referenced_proofs
 
 
-def _duplicate_source_findings(claims: list[tuple[str, str]]) -> tuple[CoverageFinding, ...]:
+def _duplicate_source_findings(
+    claims: list[tuple[str, str]],
+) -> tuple[CoverageFinding, ...]:
     seen: set[str] = set()
     findings: list[CoverageFinding] = []
     for source, relative in claims:
@@ -682,7 +725,8 @@ def _unreferenced_artifact_findings(
 
 
 def _approved_waiver_set(
-    config: CoverageWaiverConfig, loaded: list[tuple[dict[str, object], list[ApprovedWaiver]]]
+    config: CoverageWaiverConfig,
+    loaded: list[tuple[dict[str, object], list[ApprovedWaiver]]],
 ) -> ApprovedWaiverSet:
     waivers = tuple(
         sorted(
@@ -721,7 +765,11 @@ def _load_scanned_set(
     approval_files, proof_artifacts = _classify_scanned_files(scan)
     for file in approval_files:
         result, file_findings, source, references = _try_load_approval_file(
-            file, rtl_tree, known, approval_tree, config.directory
+            file,
+            rtl_tree,
+            known,
+            approval_tree,
+            config.directory,
         )
         parse_findings.extend(file_findings)
         proof_references.update(references)
@@ -740,7 +788,8 @@ def _load_scanned_set(
 
 
 def discover_approved_waiver_inputs(
-    config: CoverageWaiverConfig | None, roots: CoverageRepositoryRoots
+    config: CoverageWaiverConfig | None,
+    roots: CoverageRepositoryRoots,
 ) -> tuple[Path, ...]:
     """Discover lexical approval policy inputs without following filesystem links."""
     if config is None:
@@ -760,7 +809,11 @@ def load_approved_waiver_set(
 ) -> ApprovedWaiverSet:
     """Load the immutable project-wide approved waiver set."""
     if config is None:
-        projection = {"schema": _SET_SCHEMA, "config": {"enabled": False}, "files": []}
+        projection = {
+            "schema": _SET_SCHEMA,
+            "config": {"enabled": False},
+            "files": [],
+        }
         return ApprovedWaiverSet(
             configuration=MappingProxyType({"enabled": False}),
             digest=content_digest(WAIVER_SET_JSON.encode(projection)),

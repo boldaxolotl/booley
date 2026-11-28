@@ -17,7 +17,10 @@ from booley.fusesoc.fusesoc_registry import FuseSocError, classified_sources
 
 
 def _write_core(
-    work_dir: Path, *, rtl_dirs: list[str] | None = None, tb_dirs: list[str] | None = None
+    work_dir: Path,
+    *,
+    rtl_dirs: list[str] | None = None,
+    tb_dirs: list[str] | None = None,
 ) -> Path:
     """Author a flat ``.core`` under *work_dir* whose filesets place RTL sources
     under *rtl_dirs* and tb-tagged sources under *tb_dirs*.

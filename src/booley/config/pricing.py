@@ -31,7 +31,10 @@ class ModelPricing:
 
 
 def _anthropic(
-    inp: float, out: float, context_window: int | None, cache_read_multiplier: float = 0.1
+    inp: float,
+    out: float,
+    context_window: int | None,
+    cache_read_multiplier: float = 0.1,
 ) -> ModelPricing:
     """Build an Anthropic price row from the two published rates.
 

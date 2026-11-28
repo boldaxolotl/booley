@@ -60,14 +60,19 @@ class SimulationBuildPreparationError(RuntimeError):
     """An expected Target/configuration failure before the build can run."""
 
 
-def _validated_simulator(handle: TargetHandle, resolved: fusesoc_registry.ResolvedTarget) -> str:
+def _validated_simulator(
+    handle: TargetHandle,
+    resolved: fusesoc_registry.ResolvedTarget,
+) -> str:
     """Return the configured simulator after authenticating it against the Target."""
     declaration_help = (
         "declare either `flow: sim` with `flow_options.tool`, or legacy `default_tool`"
     )
     try:
         eda_tool = matching_eda_tool(
-            handle.eda_tool, resolved.configured_eda_tool, target=handle.selector
+            handle.eda_tool,
+            resolved.configured_eda_tool,
+            target=handle.selector,
         )
     except ValueError as exc:
         raise SimulationBuildPreparationError(
@@ -247,7 +252,10 @@ def _prepare_simulation_build(
         )
         core_closure = capture_core_closure(resolved.edam_path, root, generation=work_root)
     _stage_doctor_overlay(root, resolved.build_root)
-    fileset = {"rtl": tuple(inspection.rtl_files), "tb": tuple(inspection.tb_files)}
+    fileset = {
+        "rtl": tuple(inspection.rtl_files),
+        "tb": tuple(inspection.tb_files),
+    }
     rel = edam_layer.relpath_for_make(resolved.build_root, root)
     return PreparedSimulationBuild(
         target=target,
@@ -266,7 +274,10 @@ def _prepare_simulation_build(
 
 
 def _verilator_cache_environment(
-    root: Path, environment: Mapping[str, str], build_root: Path, inspection: TargetInspection
+    root: Path,
+    environment: Mapping[str, str],
+    build_root: Path,
+    inspection: TargetInspection,
 ) -> tuple[CompilerCachePolicy, dict[str, str]]:
     """Resolve the compiler-cache policy and its managed build environment.
 
@@ -282,12 +293,18 @@ def _verilator_cache_environment(
 
 
 def _simulation_recipe_inputs(
-    handle: TargetHandle, *, lane_kind: LaneKind, inspection: TargetInspection | None = None
+    handle: TargetHandle,
+    *,
+    lane_kind: LaneKind,
+    inspection: TargetInspection | None = None,
 ) -> tuple[Path, TargetInspection, tuple[str, ...]]:
     """Return validated Project, Target facts, and backend setup arguments."""
     root = fusesoc_registry.require_current_target_handle(handle)
     selected = inspection or TargetCatalog.build(root).inspect(handle)
-    backend_arguments = verilator_backend_arguments(selected, lane_kind=lane_kind)
+    backend_arguments = verilator_backend_arguments(
+        selected,
+        lane_kind=lane_kind,
+    )
     return root, selected, backend_arguments
 
 
@@ -302,7 +319,9 @@ def simulation_setup_command(
     """Preview the exact FuseSoC setup command used by Simulation preparation."""
     try:
         root, _, backend_arguments = _simulation_recipe_inputs(
-            handle, lane_kind=lane_kind, inspection=inspection
+            handle,
+            lane_kind=lane_kind,
+            inspection=inspection,
         )
         # Isolated Projects name the private mirror the run will render.
         library_plan = fusesoc_registry.describe_build_library_plan(root, build_root)
@@ -386,18 +405,26 @@ def simulation_build_environment(prepared: PreparedSimulationBuild) -> dict[str,
     return execution_environment(prepared.compiler_cache, prepared.environment, ambient=os.environ)
 
 
-def simulation_build_script(prepared: PreparedSimulationBuild, token: str) -> str:
+def simulation_build_script(
+    prepared: PreparedSimulationBuild,
+    token: str,
+) -> str:
     """Render one build to execute now; finalizes compiler-cache availability.
 
     Only call this when the script will run: it may create cache storage.
     """
     return build_stage_script(
-        prepared.make_argv, token, build_environment=simulation_build_environment(prepared)
+        prepared.make_argv,
+        token,
+        build_environment=simulation_build_environment(prepared),
     )
 
 
 def classify_build_outcome(
-    result: SubprocessResult, token: str, *, timeout_s: int | None = None
+    result: SubprocessResult,
+    token: str,
+    *,
+    timeout_s: int | None = None,
 ) -> BuildOutcome:
     """Classify current-attempt build evidence, failing closed on ambiguity."""
     output = result.stdout + ("\n" + result.stderr if result.stderr else "")
@@ -409,7 +436,11 @@ def classify_build_outcome(
             result, timeout_s, "missing or duplicate authenticated terminal build record"
         )
         return _infrastructure_outcome(
-            result, output, ran=bool(records), reason=reason, terminal_record=False
+            result,
+            output,
+            ran=bool(records),
+            reason=reason,
+            terminal_record=False,
         )
     record = records[0]
     build_rc = int(record["rc"])
@@ -422,7 +453,13 @@ def classify_build_outcome(
         build_output += "\n" + result.stderr
     if build_rc == 0:
         return _successful_build_outcome(build_result, output, build_rc)
-    return _failed_build_outcome(build_result, output, build_output, build_rc, timeout_s=timeout_s)
+    return _failed_build_outcome(
+        build_result,
+        output,
+        build_output,
+        build_rc,
+        timeout_s=timeout_s,
+    )
 
 
 def setup_timeout_s(build_timeout_s: int) -> int:
@@ -524,7 +561,9 @@ def _abnormal_build_reason(result: SubprocessResult, timeout_s: int | None, gene
 
 
 def _successful_build_outcome(
-    result: SubprocessResult, output: str, build_rc: int
+    result: SubprocessResult,
+    output: str,
+    build_rc: int,
 ) -> BuildOutcome:
     """Return authenticated success while retaining later run-stage evidence."""
     return BuildOutcome(
@@ -553,7 +592,11 @@ def _failed_build_outcome(
     if result.timed_out or result.oom_blamed or build_rc < 0 or build_rc >= 128:
         reason = _abnormal_build_reason(result, timeout_s, "abnormal build termination")
         return _infrastructure_outcome(
-            result, output, ran=True, returncode=build_rc, reason=reason
+            result,
+            output,
+            ran=True,
+            returncode=build_rc,
+            reason=reason,
         )
     failure = classify_eda_failure(
         replace(result, returncode=build_rc, stdout=build_output, stderr=""),
@@ -561,7 +604,11 @@ def _failed_build_outcome(
     )
     if failure is not None and failure.kind == "infrastructure":
         return _infrastructure_outcome(
-            result, output, ran=True, returncode=build_rc, reason=failure.reason
+            result,
+            output,
+            ran=True,
+            returncode=build_rc,
+            reason=failure.reason,
         )
     if _recognized_design_diagnostic(build_output):
         return BuildOutcome(

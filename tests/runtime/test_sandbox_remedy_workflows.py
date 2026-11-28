@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import ntpath
 import os
 import time
@@ -10,19 +9,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from tests.sandbox_venue_fake import place
 from tests.time_budget import scaled
 
 from booley.core.booley_dir_pin import BooleyDirPinError
 from booley.core.project_identity import project_label_id
 from booley.runtime import (
     image_lifecycle,
-    runtime_context,
     sandbox_apply,
     session_admission,
     session_issuance,
     session_runtime,
 )
 from booley.runtime.project_image import project_image_name
+from booley.runtime.runtime_context import RuntimeLocation
 
 VSCODE_INIT = "on the host run `booley init`, then use Dev Containers: Rebuild Container"
 VSCODE_SEED = "on the host run `booley init --seed`, then use Dev Containers: Rebuild Container"
@@ -48,12 +48,12 @@ def _write_image(root: Path, image: str | None) -> None:
     (booley / "booley.toml").write_bytes(text.encode())
 
 
-def _inspect(root: Path, *, vscode: bool, running: bool) -> str:
+def _inspect(root: Path, *, vscode: bool, running: bool) -> dict:
     labels = {"booley.project-id": project_label_id(str(root.resolve()))}
     if vscode:
         labels["devcontainer.local_folder"] = str(root)
     state = {"Id": "abc", "State": {"Running": running}, "Config": {"Labels": labels}}
-    return json.dumps([state])
+    return state
 
 
 @pytest.fixture
@@ -62,7 +62,7 @@ def host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     root = tmp_path / "proj"
     root.mkdir()
     fake = SimpleNamespace(root=root, running=None, stopped=[])
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(session_issuance, "load_issued_snapshot", lambda _root: object())
     monkeypatch.setattr(session_runtime, "resolve_running_sandbox", lambda _root: fake.running)
     monkeypatch.setattr(
@@ -133,7 +133,8 @@ def test_sandbox_remedy_unknown_owner_when_both_kinds_exist(host: SimpleNamespac
 
 
 @pytest.mark.parametrize(
-    ("owner", "expected"), [("vscode", VSCODE_INIT), ("headless", HEADLESS_RESEED)]
+    ("owner", "expected"),
+    [("vscode", VSCODE_INIT), ("headless", HEADLESS_RESEED)],
 )
 def test_corrupt_stamp_keeps_headless_reseed_and_vscode_init(
     host: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, owner: str, expected: str
@@ -149,7 +150,8 @@ def test_corrupt_stamp_keeps_headless_reseed_and_vscode_init(
 
 
 @pytest.mark.parametrize(
-    ("owner", "expected"), [("vscode", VSCODE_INIT), ("headless", HEADLESS_REFRESH)]
+    ("owner", "expected"),
+    [("vscode", VSCODE_INIT), ("headless", HEADLESS_REFRESH)],
 )
 def test_withdrawn_stamp_is_what_refresh_repairs(
     host: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, owner: str, expected: str
@@ -165,14 +167,15 @@ def test_withdrawn_stamp_is_what_refresh_repairs(
 
 
 @pytest.mark.parametrize(
-    ("owner", "steps"), [("vscode", VSCODE_INIT), ("headless", HEADLESS_RESEED)]
+    ("owner", "steps"),
+    [("vscode", VSCODE_INIT), ("headless", HEADLESS_RESEED)],
 )
 def test_misnamed_stamp_starts_with_removing_it(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, owner: str, steps: str
 ) -> None:
     root = tmp_path / "MixedCase"
     root.mkdir()
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
     store = session_issuance.stamp_store()
     old = store.paths(str(root.resolve()))[1]
@@ -196,12 +199,13 @@ def test_own_image_named_like_the_generated_one_is_external(host: SimpleNamespac
 def test_inside_the_sandbox_lists_both_workflows(
     host: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
-    request: pytest.FixtureRequest,
     location: str,
 ) -> None:
-    if location == "hand-written":
-        request.getfixturevalue("hand_written_sandbox")
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    hand_written = location == "hand-written"
+    place(
+        monkeypatch,
+        RuntimeLocation.HAND_WRITTEN_SANDBOX if hand_written else RuntimeLocation.ISSUED_SANDBOX,
+    )
 
     expected = (
         UNKNOWN_MANAGED if location == "issued" else sandbox_apply.HAND_WRITTEN_SANDBOX_STEPS
@@ -221,6 +225,7 @@ def test_unreachable_docker_asks_for_connectivity(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="the hanging docker stub is a POSIX shell script")
+@pytest.mark.docker_cli
 def test_hung_docker_inventory_times_out_to_the_connectivity_remedy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -239,7 +244,7 @@ def test_hung_docker_inventory_times_out_to_the_connectivity_remedy(
     stub.chmod(0o755)
     monkeypatch.setenv("PATH", f"{stub.parent}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setattr(session_admission, "_DOCKER_TIMEOUT_S", scaled(2))
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(session_issuance, "load_issued_snapshot", lambda _root: object())
 
     start = time.monotonic()

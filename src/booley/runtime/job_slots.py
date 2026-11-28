@@ -73,6 +73,7 @@ from typing import cast
 
 from booley.core.boundary import as_int, require_finite_number
 from booley.core.file_lock import LockContentionError, acquire_file_lock, release_file_lock
+from booley.core.sharing_retry import link_file, write_file_text
 from booley.runtime.execution_records import (
     RUNTIME_EXECUTION_ENV,
     ExecutionId,
@@ -84,7 +85,11 @@ from booley.runtime.execution_records import (
 )
 from booley.runtime.execution_recovery import recover_execution, recover_process_owner
 from booley.runtime.filesystem_utils import replace_file, unlink_file
-from booley.runtime.job_records import DEADLINE_SLACK_SECONDS, _proc_cmdline, parse_stamp
+from booley.runtime.job_records import (
+    DEADLINE_SLACK_SECONDS,
+    _proc_cmdline,
+    parse_stamp,
+)
 from booley.runtime.pid import (
     DEAD_PROCESS_STATES,
     ProcessIdentity,
@@ -901,7 +906,10 @@ class SlotStore:
 
     All clock/PID/proc access, including this process's own PID, is injected so
     tests can simulate multi-process interleavings deterministically; production
-    callers use the defaults.
+    callers use the defaults. The renewal thread's interval wait reads the clock
+    outside ``now`` and ``sleep``: ``renewal_wait`` injects it (it returns True
+    to end the thread), and without it renewal threads run only when ``now`` and
+    ``sleep`` are the real ones.
     """
 
     def __init__(
@@ -919,6 +927,7 @@ class SlotStore:
         inherited_execution_verifier: Callable[
             [object, Path, int], ExecutionId | None
         ] = _default_inherited_execution_verifier,
+        renewal_wait: Callable[[threading.Event, float], bool] | None = None,
     ) -> None:
         self.root = root
         self._is_pid_alive = is_pid_alive
@@ -930,7 +939,9 @@ class SlotStore:
         self._recovery = recovery or SlotRecovery()
         self._getpid = getpid
         self._inherited_execution_verifier = inherited_execution_verifier
-        self._auto_renew = now is time.time and sleep is time.sleep
+        real_clock = now is time.time and sleep is time.sleep
+        self._auto_renew = renewal_wait is not None or real_clock
+        self._renewal_wait = renewal_wait or threading.Event.wait
         self._renewals: dict[str, tuple[threading.Event, threading.Thread]] = {}
         self._deferred_releases: dict[str, threading.Event] = {}
         self._deferred_gate = threading.Lock()
@@ -1097,19 +1108,21 @@ class SlotStore:
             payload = dict(payload_base, seq=seq)
             tmp = request.cls_dir / f".{name}.{lease_id}.tmp"
             try:
-                tmp.write_text(json.dumps(payload) + "\n", encoding="utf-8")
-                path.hardlink_to(tmp)
+                write_file_text(tmp, json.dumps(payload) + "\n", sleep=self._sleep)
+                link_file(path, tmp, sleep=self._sleep)
             except FileExistsError:
                 continue
             finally:
                 with contextlib.suppress(OSError):
-                    tmp.unlink(missing_ok=True)
+                    unlink_file(tmp, missing_ok=True, sleep=self._sleep)
             return self._new_waiter_token(path, payload, request)
         raise RuntimeError("could not allocate a unique Memory Reservation entry")
 
     @staticmethod
     def _new_waiter_payload(
-        request: _WaiterRequest, lease_id: str, owner_identity: ProcessIdentity | None
+        request: _WaiterRequest,
+        lease_id: str,
+        owner_identity: ProcessIdentity | None,
     ) -> dict:
         payload: dict = {
             "schema_version": SLOT_SCHEMA_VERSION,
@@ -1133,7 +1146,12 @@ class SlotStore:
             payload["job"] = request.job.to_payload()
         return payload
 
-    def _new_waiter_token(self, path: Path, payload: dict, request: _WaiterRequest) -> SlotToken:
+    def _new_waiter_token(
+        self,
+        path: Path,
+        payload: dict,
+        request: _WaiterRequest,
+    ) -> SlotToken:
         published = _parse_entry_name(path.name)
         if published is None:
             raise ValueError(f"invalid published waiter entry name: {path.name}")
@@ -1246,7 +1264,10 @@ class SlotStore:
         return self._retry_entry_io(lambda: source.rename(target))
 
     def _retry_entry_io(
-        self, operation: Callable[[], object], *, on_exhausted: Callable[[], None] | None = None
+        self,
+        operation: Callable[[], object],
+        *,
+        on_exhausted: Callable[[], None] | None = None,
     ) -> bool:
         """Run *operation*, retrying any ``PermissionError`` within the entry-I/O bound.
 
@@ -1313,14 +1334,15 @@ class SlotStore:
         """
         tmp = token.path.with_name(f".{token.path.name}.{self._getpid()}.rewrite.tmp")
         try:
-            tmp.write_text(json.dumps(self._token_payload(token)) + "\n", encoding="utf-8")
+            text = json.dumps(self._token_payload(token)) + "\n"
+            write_file_text(tmp, text, sleep=self._sleep)
             if not token.path.exists():
-                tmp.unlink(missing_ok=True)
+                unlink_file(tmp, missing_ok=True, sleep=self._sleep)
                 return False
             replace_file(tmp, token.path, sleep=self._sleep)
         except OSError:
             with contextlib.suppress(OSError):
-                tmp.unlink(missing_ok=True)
+                unlink_file(tmp, missing_ok=True, sleep=self._sleep)
             return False
         return True
 
@@ -1643,7 +1665,7 @@ class SlotStore:
         stop = threading.Event()
 
         def maintain() -> None:
-            while not stop.wait(LEASE_RENEW_INTERVAL_SECONDS):
+            while not self._renewal_wait(stop, LEASE_RENEW_INTERVAL_SECONDS):
                 self.renew(token)
                 if token.lease_health.lost.is_set():
                     return
@@ -1697,8 +1719,7 @@ class SlotStore:
                 with contextlib.suppress(OSError):
                     unlink_file(gate, missing_ok=True, sleep=self._sleep)
 
-    @staticmethod
-    def _create_gate(gate: Path, owner: _GateOwner) -> bool:
+    def _create_gate(self, gate: Path, owner: _GateOwner) -> bool:
         """Publish *gate* with *owner* already written; False when another gate holds the name.
 
         Windows denies the link while a released gate's delete is still
@@ -1709,7 +1730,7 @@ class SlotStore:
         """
         tmp = gate.with_name(f".{gate.name}.{uuid.uuid4().hex}.tmp")
         try:
-            tmp.write_text(owner.to_text(), encoding="utf-8")
+            write_file_text(tmp, owner.to_text(), sleep=self._sleep)
             try:
                 gate.hardlink_to(tmp)
             except (FileExistsError, PermissionError):

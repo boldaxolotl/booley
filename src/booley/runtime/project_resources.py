@@ -13,12 +13,17 @@ from pathlib import Path
 from typing import NamedTuple
 
 from booley.config.sandbox import project_image_name_for_identity
-from booley.core.boundary import require_dict, require_list, require_str
+from booley.core import docker_cli
+from booley.core.boundary import require_dict, require_int, require_list, require_str
 from booley.core.project_identity import accepted_project_labels, project_name_id
 from booley.projects.image_keepers import Leftover, LeftoverKind, LeftoverReason, PurgeResult
 from booley.runtime import host_docker
 from booley.runtime.devcontainer import state_volume_names
-from booley.runtime.image_lifecycle import ImageReference, OwnedImages, cleanup_owned_images
+from booley.runtime.image_lifecycle import (
+    ImageReference,
+    OwnedImages,
+    cleanup_owned_images,
+)
 from booley.runtime.session_issuance import keeper_image_for_identity
 
 # Docker prints a missing repository or tag as this placeholder.
@@ -151,7 +156,13 @@ def _labelled(identity: str) -> tuple[Leftover, ...]:
             name
             for label in accepted_project_labels(identity)
             for name in _lines(
-                [*args, "--filter", f"label=booley.project-id={label}", "--format", name_field]
+                [
+                    *args,
+                    "--filter",
+                    f"label={docker_cli.PROJECT_ID_LABEL}={label}",
+                    "--format",
+                    name_field,
+                ]
             )
         }
         result.extend(Leftover(kind, name, "labelled") for name in sorted(names))
@@ -164,7 +175,9 @@ def leftovers(identity: str) -> tuple[Leftover, ...]:
 
 
 def _layer_count(image: str) -> int:
-    return int("".join(_lines(["image", "inspect", "--format", "{{len .RootFS.Layers}}", image])))
+    return host_docker.strict_inspect(
+        "image", image, "{{len .RootFS.Layers}}", require_int, context="docker image inspect"
+    )
 
 
 def _release_own_tags(identity: str, removed: list[str]) -> set[str]:

@@ -40,7 +40,14 @@ class McpToolInfo:
 # module is skipped automatically. This set is only for modules that WOULD
 # pass that check but must stay unregistered, plus endpoint infrastructure that
 # should never be considered a candidate in the first place.
-SKIP_MODULES = frozenset({"__init__", "base", "specialist", "registry"})
+SKIP_MODULES = frozenset(
+    {
+        "__init__",
+        "base",
+        "specialist",
+        "registry",
+    }
+)
 
 BUILTIN_FLOW_PACKAGES = ("sim", "lint", "synth", "fpga", "mutation")
 _FLOW_BASE_NAMES = frozenset({"BooleyFlow", "BuiltinFlow", "ImplementationFlow"})
@@ -125,7 +132,11 @@ def _scan_builtin_flows(flows_dir: Path) -> list[McpToolInfo]:
         if not flow_file.is_file():
             logger.warning("Built-in Flow implementation missing: %s", flow_file)
             continue
-        info = extract_mcp_tool_info(flow_file, builtin=True, package=f"flows/{package_name}")
+        info = extract_mcp_tool_info(
+            flow_file,
+            builtin=True,
+            package=f"flows/{package_name}",
+        )
         if info is None:
             logger.warning("Built-in Flow metadata missing: %s", flow_file)
             continue
@@ -133,7 +144,12 @@ def _scan_builtin_flows(flows_dir: Path) -> list[McpToolInfo]:
     return results
 
 
-def _scan_directory(endpoint_dir: Path, *, builtin: bool, package: str = "") -> list[McpToolInfo]:
+def _scan_directory(
+    endpoint_dir: Path,
+    *,
+    builtin: bool,
+    package: str = "",
+) -> list[McpToolInfo]:
     """Scan a directory for MCP endpoint subclasses via AST."""
     results: list[McpToolInfo] = []
     if not endpoint_dir.is_dir():
@@ -154,7 +170,10 @@ def _scan_directory(endpoint_dir: Path, *, builtin: bool, package: str = "") -> 
 
 
 def extract_mcp_tool_info(
-    py_file: Path, *, builtin: bool, package: str = ""
+    py_file: Path,
+    *,
+    builtin: bool,
+    package: str = "",
 ) -> McpToolInfo | None:
     """Extract endpoint metadata from a Python file via AST (no import).
 
@@ -179,7 +198,11 @@ def extract_mcp_tool_info(
         attrs = _extract_endpoint_metadata_attrs(node)
         if attrs["name"] and attrs["description"]:
             return _build_mcp_tool_info(
-                py_file, builtin=builtin, package=package, base_names=base_names, attrs=attrs
+                py_file,
+                builtin=builtin,
+                package=package,
+                base_names=base_names,
+                attrs=attrs,
             )
 
     return None
@@ -211,11 +234,20 @@ def _extract_endpoint_metadata_attrs(node: ast.ClassDef) -> dict[str, Any]:
         elif attr_name == "code_modifying" and isinstance(val, bool):
             code_modifying = val
 
-    return {"name": name, "description": description, "code_modifying": code_modifying}
+    return {
+        "name": name,
+        "description": description,
+        "code_modifying": code_modifying,
+    }
 
 
 def _build_mcp_tool_info(
-    py_file: Path, *, builtin: bool, package: str, base_names: set[str], attrs: dict[str, Any]
+    py_file: Path,
+    *,
+    builtin: bool,
+    package: str,
+    base_names: set[str],
+    attrs: dict[str, Any],
 ) -> McpToolInfo:
     """Assemble MCP endpoint metadata from extracted class attributes."""
     rel_path = f"{package}/{py_file.name}" if builtin and package else str(py_file)

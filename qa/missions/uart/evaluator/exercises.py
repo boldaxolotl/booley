@@ -641,7 +641,9 @@ async def control_invalid_addresses(driver: Driver, _: dict) -> None:
         driver,
         [
             ControlStep(
-                f"a{address:08x}-w{int(write)}", invalid, {"address": address, "write": write}
+                f"a{address:08x}-w{int(write)}",
+                invalid,
+                {"address": address, "write": write},
             )
             for address in sorted(addresses)
             for write in [False, True]
@@ -653,7 +655,11 @@ async def control_loopback(driver: Driver, _: dict) -> None:
     await control_sweep(
         driver,
         [
-            ControlStep(mode, loop, {"mode": mode, "payload": [0x55, 0xAA], "nco": 0x4000})
+            ControlStep(
+                mode,
+                loop,
+                {"mode": mode, "payload": [0x55, 0xAA], "nco": 0x4000},
+            )
             for mode in ["system", "line"]
         ],
     )

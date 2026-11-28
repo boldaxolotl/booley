@@ -128,7 +128,8 @@ def test_catalog_rejects_duplicate_canonical_target_identities(project: Path) ->
     with pytest.raises(DuplicateTargetError, match=r"'lint_a'.*already selected by 'lint_a'"):
         catalog.select_many("lint_a,lint_a", for_flow="lint")
     with pytest.raises(
-        DuplicateTargetError, match=r"'alpha#lint_a'.*acme:ip:alpha:1.0#lint_a.*'lint_a'"
+        DuplicateTargetError,
+        match=r"'alpha#lint_a'.*acme:ip:alpha:1.0#lint_a.*'lint_a'",
     ):
         catalog.select_many("lint_a,alpha#lint_a", for_flow="lint")
 
@@ -173,7 +174,8 @@ def test_catalog_rejects_same_root_drift(project: Path) -> None:
     catalog = TargetCatalog.build(project)
     handle = catalog.select("lint_a")
     (project / "alpha.core").write_text(
-        (project / "alpha.core").read_text(encoding="utf-8") + "\n# changed\n", encoding="utf-8"
+        (project / "alpha.core").read_text(encoding="utf-8") + "\n# changed\n",
+        encoding="utf-8",
     )
 
     with pytest.raises(StaleTargetCatalogError):
@@ -191,7 +193,8 @@ def test_catalog_rejects_same_root_drift(project: Path) -> None:
 def test_trace_overlay_rejects_stale_handle_before_writing(project: Path) -> None:
     handle = TargetCatalog.build(project).select("alpha#sim", for_flow="sim")
     (project / "alpha.core").write_text(
-        (project / "alpha.core").read_text(encoding="utf-8") + "\n# drifted\n", encoding="utf-8"
+        (project / "alpha.core").read_text(encoding="utf-8") + "\n# drifted\n",
+        encoding="utf-8",
     )
 
     with pytest.raises(StaleTargetCatalogError):
@@ -221,7 +224,8 @@ def test_catalog_rejects_unknown_flow_filter(project: Path) -> None:
 
 
 def test_catalog_fails_loudly_when_frozen_document_is_missing(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     catalog = TargetCatalog.build(project)
     # private: discovery and the snapshot read the same cores, so no Project
@@ -233,7 +237,8 @@ def test_catalog_fails_loudly_when_frozen_document_is_missing(
 
 
 def test_catalog_reuses_condition_safe_inspection(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     managers = 0
     resolutions = 0
@@ -286,7 +291,11 @@ def test_cached_inspection_mappings_are_deeply_immutable(project: Path) -> None:
             ("OPT_FAST=-O3",),
             (),
         ),
-        ("default_tool: verilator\ntools:\n  verilator:\n    make_options: [-j7]", (), ("-j7",)),
+        (
+            "default_tool: verilator\ntools:\n  verilator:\n    make_options: [-j7]",
+            (),
+            ("-j7",),
+        ),
     ),
     ids=("modern-flow-api", "legacy-tool-api"),
 )
@@ -360,7 +369,8 @@ def test_real_baseline_worktree_receives_an_independent_catalog(tmp_path: Path) 
     baseline_sha = _git(root, "rev-parse", "HEAD")
     core = root / "design.core"
     core.write_text(
-        core.read_text(encoding="utf-8").replace("baseline_top", "active_top"), encoding="utf-8"
+        core.read_text(encoding="utf-8").replace("baseline_top", "active_top"),
+        encoding="utf-8",
     )
     _git(root, "add", "design.core")
     _git(root, "commit", "-m", "active")
@@ -378,7 +388,8 @@ def test_real_baseline_worktree_receives_an_independent_catalog(tmp_path: Path) 
             active_catalog.inspect(baseline)
         with pytest.raises(ForeignTargetHandleError):
             fusesoc_registry.require_current_target_handle(
-                active, project_root=baseline.project_root
+                active,
+                project_root=baseline.project_root,
             )
 
 
@@ -547,7 +558,8 @@ def test_inspection_resolves_parameter_supplied_by_dependency(tmp_path: Path) ->
 
 
 def test_handle_setup_does_not_resolve_selector_again(
-    project: Path, monkeypatch: pytest.MonkeyPatch
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv(selftest_overlay.INTERNAL_KIND_ENV, selftest_overlay.BAD_KIND)
     handle = TargetCatalog.build(project).select("lint_private", for_flow="lint")
@@ -697,7 +709,7 @@ def test_authored_flag_selects_parameter_and_dependency(tmp_path):
                     "rtl": {
                         "files": ["top.sv", {"owned ? (conditional_tb.sv)": {"tags": ["tb"]}}],
                         "depend": ["owned ? (proof:param:dependency:1)"],
-                    }
+                    },
                 },
                 "targets": {
                     "sim": {

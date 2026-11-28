@@ -11,10 +11,10 @@ from pathlib import Path
 import pytest
 from tests.sharing_error_support import hold_opens, no_retry_delay, sharing_error
 
+from booley.core.atomic_files import atomic_write_json
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
-    atomic_write_json,
     child_context_matches,
     execution_paths,
     gc_terminal_executions,
@@ -105,7 +105,9 @@ def test_verified_inherited_execution_accepts_descendant_and_supervisor_itself(
     ) == ExecutionId(execution_id)
 
 
-def test_verified_inherited_execution_rejects_record_from_another_project(tmp_path: Path) -> None:
+def test_verified_inherited_execution_rejects_record_from_another_project(
+    tmp_path: Path,
+) -> None:
     execution_id = "e" * 32
     foreign = tmp_path / "foreign"
     current = tmp_path / "current"
@@ -149,7 +151,11 @@ def test_verified_inherited_execution_rejects_non_ancestor(tmp_path: Path) -> No
 
 def test_verified_inherited_execution_rejects_invalid_id(tmp_path: Path) -> None:
     assert (
-        verify_inherited_execution_id("not-an-execution", booley_dir=tmp_path, owner_pid=20)
+        verify_inherited_execution_id(
+            "not-an-execution",
+            booley_dir=tmp_path,
+            owner_pid=20,
+        )
         is None
     )
 

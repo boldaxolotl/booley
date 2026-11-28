@@ -111,7 +111,16 @@ _ALLOWED_FLOW_OPTIONS: dict[str, frozenset[str]] = {
         }
     ),
     "lint": frozenset({"tool", "verilator_options"}),
-    "vivado": frozenset({"tool", "part", "pnr", "synth", "jobs", "vivado-settings"}),
+    "vivado": frozenset(
+        {
+            "tool",
+            "part",
+            "pnr",
+            "synth",
+            "jobs",
+            "vivado-settings",
+        }
+    ),
     # Yosys ASIC-synth has no dedicated flow in edalize 0.6.8 → generic flow
     # with a custom node graph (Phase-0 residual). Kept permissive but bounded.
     "generic": frozenset(
@@ -142,7 +151,11 @@ def _validate_flow_options(flow: str, flow_options: dict[str, Any]) -> dict[str,
     return dict(flow_options)
 
 
-def _confined_path(path: Path, workspace_root: Path, relative_to: Path | None) -> str:
+def _confined_path(
+    path: Path,
+    workspace_root: Path,
+    relative_to: Path | None,
+) -> str:
     """Confine *path* to *workspace_root* and return its Edalize ``name``.
 
     The path is always ``resolve()``-d and required to live under the
@@ -195,8 +208,16 @@ def _define_param(define: str) -> tuple[str, dict[str, Any]]:
     if "=" in define:
         name, value = define.split("=", 1)
         datatype, val = _infer_datatype(value)
-        return name.strip(), {"datatype": datatype, "paramtype": "vlogdefine", "default": val}
-    return define.strip(), {"datatype": "bool", "paramtype": "vlogdefine", "default": True}
+        return name.strip(), {
+            "datatype": datatype,
+            "paramtype": "vlogdefine",
+            "default": val,
+        }
+    return define.strip(), {
+        "datatype": "bool",
+        "paramtype": "vlogdefine",
+        "default": True,
+    }
 
 
 def _vlogparam(value: Any) -> dict[str, Any]:
@@ -292,7 +313,12 @@ def build_edam(
 
     file_entries: list[dict[str, Any]] = []
     for f in files:
-        file_entries.append({"name": _confined_path(f.path, root, rel), "file_type": f.file_type})
+        file_entries.append(
+            {
+                "name": _confined_path(f.path, root, rel),
+                "file_type": f.file_type,
+            }
+        )
     for inc in include_dirs or []:
         inc_name = _confined_path(Path(inc), root, rel)
         file_entries.append(
@@ -387,7 +413,8 @@ def _work_root_lock_path(work_root: Path) -> Path:
 
 @contextmanager
 def _work_root_lease_context(
-    work_root: Path | str, acquire: Callable[[IO[Any]], bool]
+    work_root: Path | str,
+    acquire: Callable[[IO[Any]], bool],
 ) -> Iterator[Path | None]:
     """Apply one acquisition policy to a safely managed work-root lock."""
     root = Path(work_root).resolve()
@@ -431,7 +458,10 @@ def try_work_root_lease(work_root: Path | str) -> Iterator[Path | None]:
 
 @contextmanager
 def work_root_lease(
-    work_root: Path | str, *, timeout_s: float, on_wait: Callable[[], None] | None = None
+    work_root: Path | str,
+    *,
+    timeout_s: float,
+    on_wait: Callable[[], None] | None = None,
 ) -> Iterator[Path]:
     """Own one mutable Edalize work root for the protected operation."""
 

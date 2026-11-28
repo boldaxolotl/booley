@@ -194,7 +194,11 @@ def test_scc_subset_gate_allows_splits_and_rejects_joining_or_merging() -> None:
     assert "booley.alpha, booley.beta, booley.zeta" in joined_rendered
     assert "seed.py:1:1: booley.zeta.edge -> booley.alpha.edge" in joined_rendered
 
-    merged = (*_cycle("alpha", "beta"), *_cycle("delta", "epsilon"), *_both_ways("beta", "delta"))
+    merged = (
+        *_cycle("alpha", "beta"),
+        *_cycle("delta", "epsilon"),
+        *_both_ways("beta", "delta"),
+    )
     merged_problems = evaluate_contract(merged, contract)
     assert len(merged_problems) == 1
     assert merged_problems[0].kind == "scc"
@@ -218,7 +222,10 @@ def _dependency(source: str, target: str, *, line: int = 1) -> Dependency:
 
 def _cycle(*owners: str) -> tuple[Dependency, ...]:
     return tuple(
-        _dependency(f"booley.{source}.edge", f"booley.{owners[(index + 1) % len(owners)]}.edge")
+        _dependency(
+            f"booley.{source}.edge",
+            f"booley.{owners[(index + 1) % len(owners)]}.edge",
+        )
         for index, source in enumerate(owners)
     )
 

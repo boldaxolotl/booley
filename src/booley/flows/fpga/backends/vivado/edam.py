@@ -103,7 +103,9 @@ def build_fpga_edam(
 
 
 def validate_vivado_parameter_contract(
-    work_root: Path, name: str, vlogparams: dict[str, Any]
+    work_root: Path,
+    name: str,
+    vlogparams: dict[str, Any],
 ) -> None:
     """Prove Edalize rendered every top parameter into Vivado's project Tcl."""
     if not vlogparams:
@@ -117,7 +119,9 @@ def validate_vivado_parameter_contract(
             f"project Tcl is unavailable: {project_tcl}"
         ) from exc
     generic_blocks = re.findall(
-        r"set_property\s+generic\s+\{(.*?)\}\s+\[get_filesets\s+sources_1\]", text, re.DOTALL
+        r"set_property\s+generic\s+\{(.*?)\}\s+\[get_filesets\s+sources_1\]",
+        text,
+        re.DOTALL,
     )
     rendered = _vivado_generic_assignments(generic_blocks, set(vlogparams))
     expected = {name: _vivado_parameter_value(value) for name, value in vlogparams.items()}
@@ -151,7 +155,9 @@ def _vivado_generic_assignments(blocks: list[str], names: set[str]) -> dict[str,
     for block in blocks:
         for name in names:
             match = re.search(
-                rf"(?:^|\s){re.escape(name)}=(.*?)(?=\s+(?:{marker})=|\s*$)", block, re.DOTALL
+                rf"(?:^|\s){re.escape(name)}=(.*?)(?=\s+(?:{marker})=|\s*$)",
+                block,
+                re.DOTALL,
             )
             if match is not None:
                 assignments[name] = match.group(1).strip()
@@ -394,7 +400,8 @@ _MULTI_DRIVEN_RE = re.compile(r"MDRV-1")
 # QoR flow stops at route — a boardless soft IP cannot write a bitstream, so
 # bitstream success is deliberately *not* required; see fpga_impl).
 _IMPL_OK_RE = re.compile(
-    r"Implementation completed successfully|route_design completed successfully", re.IGNORECASE
+    r"Implementation completed successfully|route_design completed successfully",
+    re.IGNORECASE,
 )
 
 
@@ -419,7 +426,10 @@ def _extract_timing(text: str) -> tuple[float | None, float | None]:
         return _safe_float(table.group("wns")), _safe_float(table.group("whs"))
     wns = _WNS_COLON_RE.search(text)
     whs = _WHS_COLON_RE.search(text)
-    return (_safe_float(wns.group(1)) if wns else None, _safe_float(whs.group(1)) if whs else None)
+    return (
+        _safe_float(wns.group(1)) if wns else None,
+        _safe_float(whs.group(1)) if whs else None,
+    )
 
 
 def parse_fpga_reports(text: str) -> dict[str, Any]:

@@ -20,6 +20,12 @@ _KILLED = 57
 _LEADER = {"pid": 1, "identity_scope": "windows", "start_token": 1}
 
 
+class _FakeHook(SimpleNamespace):
+    """A spawned hook that, like a ``Popen``, is hashed by identity."""
+
+    __hash__ = object.__hash__
+
+
 class _Processes:
     def __init__(self) -> None:
         self.registered = []
@@ -36,6 +42,7 @@ def _fire_supervised(tmp_path: Path, monkeypatch, scope, popen):
     """Run one Pre-Sim Command through the public entry under *scope* with a fake spawn."""
     monkeypatch.setattr(pre_sim, "current_supervised_execution", lambda: scope)
     monkeypatch.setattr(pre_sim, "MeasuredPopen", popen)
+    monkeypatch.setattr(pre_sim, "own_process_group", id)  # boundary: no OS process to own
     handle = SimpleNamespace(project_root=tmp_path.resolve(), selector="lite")
     return run_pre_sim_commands(
         handle,
@@ -51,7 +58,7 @@ def _fire_supervised(tmp_path: Path, monkeypatch, scope, popen):
 def test_supervised_pre_sim_process_propagates_identity_and_unregisters(
     tmp_path: Path, monkeypatch
 ) -> None:
-    process = SimpleNamespace(
+    process = _FakeHook(
         pid=4_194_305,
         returncode=0,
         reaped_peak_bytes=None,
@@ -59,7 +66,9 @@ def test_supervised_pre_sim_process_propagates_identity_and_unregisters(
     )
     processes = _Processes()
     scope = SimpleNamespace(
-        cancelled=lambda: False, execution_id=ExecutionId("e" * 32), processes=processes
+        cancelled=lambda: False,
+        execution_id=ExecutionId("e" * 32),
+        processes=processes,
     )
     popen_envs: list[dict[str, str]] = []
 
@@ -89,7 +98,7 @@ def test_supervised_pre_sim_process_kills_after_communication_failure(
             raise RuntimeError("failed")
         return "", ""
 
-    process = SimpleNamespace(
+    process = _FakeHook(
         pid=4_194_305, returncode=1, reaped_peak_bytes=None, communicate=communicate
     )
     processes = _Processes()

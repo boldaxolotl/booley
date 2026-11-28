@@ -161,7 +161,8 @@ def test_max_body_lines_reads_an_optional_cap(
 def test_retired_convention_key_is_ignored(tmp_path: Path) -> None:
     """The retired subject-convention key is ignored, never an error."""
     write_project(
-        tmp_path, b"[stealth]\nenabled = true\nenforce_convention = true\nmax_body_lines = 2\n"
+        tmp_path,
+        b"[stealth]\nenabled = true\nenforce_convention = true\nmax_body_lines = 2\n",
     )
 
     policy = stealth_policy(tmp_path)
@@ -449,7 +450,10 @@ def test_reserved_substring_is_named_with_the_reason() -> None:
 
 def test_matching_contract() -> None:
     policy = StealthPolicy(
-        True, ("agent", "cursor", "per review findings", "booley", "anthropic", "claude"), None, ()
+        True,
+        ("agent", "cursor", "per review findings", "booley", "anthropic", "claude"),
+        None,
+        (),
     )
     for text in ("axi_agent", "XMLAgent", "reAgent", "Agent4", "éagentΩ"):
         assert "agent" in policy.find_banned(text)

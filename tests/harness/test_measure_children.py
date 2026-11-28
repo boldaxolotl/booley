@@ -474,7 +474,10 @@ def test_requeued_children_are_not_refused_and_report_their_final_attempt(
         store.release(child.token)  # type: ignore[arg-type]
         claim = job_slots.MemoryClaim(budget_mb=budget, run_alone=True)
         requeued[str(child.pid)] = store.submit(
-            job_slots.CLASS_MEMORY, pid=child.pid, memory=claim, queue_reason=OOM_REQUEUE_REASON
+            job_slots.CLASS_MEMORY,
+            pid=child.pid,
+            memory=claim,
+            queue_reason=OOM_REQUEUE_REASON,
         )
     scheduler.step(cancel=False)
     assert first.settles == 0 and second.settles == 0  # neither is finished while it waits

@@ -84,7 +84,10 @@ def default_recipe_args() -> argparse.Namespace:
 
 
 def synthesis_recipe_args(
-    flow_options: Mapping[str, Any], args: SynthRequest | argparse.Namespace, *, target: str
+    flow_options: Mapping[str, Any],
+    args: SynthRequest | argparse.Namespace,
+    *,
+    target: str,
 ) -> list[str]:
     """Return normalized effective recipe argv for one resolved Target."""
     recipe = dict(flow_options)
@@ -93,13 +96,20 @@ def synthesis_recipe_args(
         bool(cli_flatten)
         if cli_flatten is not None
         else require_bool(
-            recipe, "flatten", default=True, field=f"Target {target!r} flow_options.flatten"
+            recipe,
+            "flatten",
+            default=True,
+            field=f"Target {target!r} flow_options.flatten",
         )
     )
     out = ["--flatten" if flatten else "--no-flatten"]
     synth_mode = resolve_synth_mode(recipe, target=target)
     append_ppa_args(
-        out, recipe, args, synth_mode=synth_mode, field_prefix=f"Target {target!r} flow_options"
+        out,
+        recipe,
+        args,
+        synth_mode=synth_mode,
+        field_prefix=f"Target {target!r} flow_options",
     )
     out.extend(["--synth-mode", synth_mode])
 
@@ -113,13 +123,18 @@ def synthesis_recipe_args(
     )
     out.extend(["--frontend", frontend])
     for option in resolve_slang_options(
-        recipe, field=f"Target {target!r} flow_options.slang_options"
+        recipe,
+        field=f"Target {target!r} flow_options.slang_options",
     ):
         out.append(f"--slang-option={option}")
     return out
 
 
-def resolve_synth_mode(flow_options: Mapping[str, Any], *, target: str) -> SynthMode:
+def resolve_synth_mode(
+    flow_options: Mapping[str, Any],
+    *,
+    target: str,
+) -> SynthMode:
     """Resolve the Target's synthesis intent at the public configuration seam."""
     if "timing_engine" in flow_options:
         raise BoundaryError(
@@ -127,7 +142,9 @@ def resolve_synth_mode(flow_options: Mapping[str, Any], *, target: str) -> Synth
         )
     mode = (
         require_opt_str(
-            flow_options, "synth_mode", field=f"Target {target!r} flow_options.synth_mode"
+            flow_options,
+            "synth_mode",
+            field=f"Target {target!r} flow_options.synth_mode",
         )
         or _DEFAULT_SYNTH_MODE.value
     )
@@ -172,7 +189,10 @@ def _effective_ppa_settings(recipe_args: list[str], synth_mode: SynthMode) -> di
 
 
 def synthesis_recipe_snapshot(
-    resolved: Any, args: SynthRequest | argparse.Namespace, *, target: str
+    resolved: Any,
+    args: SynthRequest | argparse.Namespace,
+    *,
+    target: str,
 ) -> dict[str, Any]:
     """Return the normalized recipe and design constraints for a Target."""
     constraints = []
@@ -232,7 +252,10 @@ def synthesis_recipe_snapshot_fingerprint(snapshot: Mapping[str, Any]) -> str:
 
 
 def synthesis_recipe_fingerprint(
-    resolved: Any, args: SynthRequest | argparse.Namespace, *, target: str
+    resolved: Any,
+    args: SynthRequest | argparse.Namespace,
+    *,
+    target: str,
 ) -> str:
     """Hash the normalized complete recipe and design constraints for a Target."""
     snapshot = synthesis_recipe_snapshot(resolved, args, target=target)
@@ -240,7 +263,8 @@ def synthesis_recipe_fingerprint(
 
 
 def synthesis_recipe_changes(
-    baseline: Mapping[str, Any], current: Mapping[str, Any]
+    baseline: Mapping[str, Any],
+    current: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     """Return deterministic leaf-level changes between two recipe snapshots."""
     return recipe_changes(baseline, current)

@@ -1,7 +1,7 @@
 """#2929: declared ``trace_files`` VCDs stream through named pipes on POSIX.
 
 Each case runs a real adapter (Verilator or Icarus) whose simulator is a small
-Python script acting on the declared path, with the ``fake_bwave`` converter
+Python script acting on the declared path, with the native B-Wave binary fake
 standing in for the native ``bwave build``. #4233: every launch, traced or not,
 first sweeps the pipes a killed run's ownership record names; the Cocotb launch is covered too.
 """
@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 import pytest
+from tests.bwave.native_binary import answer_vcd_build, fake_native_binary
 from tests.conftest import MINIMAL_FST_BYTES
 from tests.flows.sim.test_simulation_record_crash_matrix import _KILLED, _run_killed
 from tests.flows.sim.test_trace_overlay import _needs_kill, _records
@@ -108,15 +109,21 @@ class Outcome(NamedTuple):
 
 
 @pytest.fixture(autouse=True)
-def _streaming_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fake_bwave: Path) -> None:
+def _streaming_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Re-enable streaming (the sim conftest disables it) and keep the cache local."""
     monkeypatch.setattr(waveform_store, "can_stream_waveform", lambda: True)
+    answer_vcd_build(fake_native_binary(tmp_path / "bwave", monkeypatch))
     cache = tmp_path / "cache"
     monkeypatch.setattr(
         trace_session,
         "waveform_cache_dir",
         lambda *_args, **_kwargs: cache.mkdir(exist_ok=True) or cache,
     )
+
+
+def _refusing_bwave(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = fake_native_binary(tmp_path / "refusing", monkeypatch)
+    fake.answer("build", stderr="fake bwave refused the input\n", returncode=1)
 
 
 def _stage(adapter: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, steps: str) -> Dirs:
@@ -335,7 +342,10 @@ def test_failed_supervision_still_releases_held_fifo_diagnostics(monkeypatch):
         ),
     )
     trace = SimpleNamespace(
-        session=session, current=None, mode=verilator_adapter.TraceMode.VCD_FIFO, conversion=None
+        session=session,
+        current=None,
+        mode=verilator_adapter.TraceMode.VCD_FIFO,
+        conversion=None,
     )
 
     def _boom(_launch):
@@ -445,7 +455,7 @@ def _finished_streams(tmp_path: Path, budget_s: float) -> DeclaredTraceStreams:
 
 
 def test_budget_exhausted_stream_keeps_its_text(tmp_path, monkeypatch):
-    monkeypatch.setenv("FAKE_BWAVE_MODE", "never_read")
+    fake_native_binary(tmp_path / "idle", monkeypatch).answer("build", hang_s=hang_guard_s())
     streams = _finished_streams(tmp_path, 0)
 
     assert streams.failures == {
@@ -464,7 +474,7 @@ def test_never_opened_pipe_keeps_verdict_and_reports_incident(tmp_path, monkeypa
 
 def test_converter_exit_does_not_block_writer(tmp_path, monkeypatch):
     """A converter that died is drained, so a simulator writing 1 MiB still finishes."""
-    monkeypatch.setenv("FAKE_BWAVE_MODE", "exit_early")
+    _refusing_bwave(tmp_path, monkeypatch)
     out = _run(
         "verilator", tmp_path, monkeypatch, "flood:fpu.vcd", ["fpu.vcd"], timeout=hang_guard_s()
     )
@@ -494,7 +504,7 @@ def _killed_stream(tmp_path: Path, *, name: str = "fpu.vcd", before_confirmation
     (tmp_path / "run").mkdir(exist_ok=True)
 
     def worker() -> None:
-        os.environ["FAKE_BWAVE_MODE"] = "exit_early"
+        _refusing_bwave(tmp_path, pytest.MonkeyPatch())
         if before_confirmation:
 
             def dying(*_args: object) -> None:
@@ -580,7 +590,6 @@ def test_unremovable_staged_pipe_stays_recorded_for_the_next_sweep(tmp_path, mon
 
 def test_failed_converter_start_leaves_no_pipe_and_no_descriptor(tmp_path, monkeypatch):
     """A failure after the pipe exists removes it and closes what was opened."""
-    monkeypatch.setattr(waveform_store, "native_bwave_binary", lambda: "/bin/true")
     real_open, opened = os.open, []
 
     def open_once(path: str, flags: int, *args: int) -> int:

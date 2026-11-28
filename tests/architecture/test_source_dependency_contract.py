@@ -264,7 +264,11 @@ _LOW_LEVEL_MODULES = frozenset(
     }
 )
 _TARGET_ADAPTER_PATHS = frozenset(
-    {"fusesoc/fusesoc_registry.py", "fusesoc/target_inspection.py", "targets/catalog.py"}
+    {
+        "fusesoc/fusesoc_registry.py",
+        "fusesoc/target_inspection.py",
+        "targets/catalog.py",
+    }
 )
 
 

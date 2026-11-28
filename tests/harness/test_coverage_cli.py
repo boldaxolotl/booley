@@ -13,8 +13,10 @@ from booley.flows.sim.coverage_provenance import coverage_digest
 from booley.flows.sim.coverage_record import DurableTargetIdentity, encode_coverage_point_id
 from booley.flows.sim.coverage_record_store import publish_coverage_record
 from booley.harness import booley as cli
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.flows.sim.coverage_record_test_support import decode_document
 from tests.flows.sim.test_coverage_record import _valid_document
+from tests.sandbox_venue_fake import place
 
 pytestmark = pytest.mark.usefixtures("host_command")
 
@@ -25,7 +27,7 @@ _HINT = "Pass sim/<N>/targets/<target>/coverage.json of a retained coverage run.
 @pytest.fixture
 def host_command(monkeypatch: pytest.MonkeyPatch) -> None:
     """Run the CLI as a host terminal, where no Sandbox or Project is present."""
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
 
 
 def _point(
@@ -176,7 +178,8 @@ def test_uncovered_prints_one_line_per_point_and_a_summary(
     tmp_path, monkeypatch, capsys, inside: bool
 ) -> None:
     path = persist_record(tmp_path)
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if inside else RuntimeLocation.HOST)
+    monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")  # no proxy restoration into os.environ
 
     code, out, err = _run(monkeypatch, capsys, str(path))
 
@@ -223,7 +226,11 @@ def test_summary_counts_uncovered_and_waived_points(
     [
         (["--metric", "line"], [1, 2, 7, 8], "4 uncovered points; 1 waived point not listed"),
         (["--source", "rtl/b.sv"], [6, 7, 8], "3 uncovered points; 1 waived point not listed"),
-        (["--metric", "branch", "--source", "rtl/a.sv"], [0], "1 uncovered point"),
+        (
+            ["--metric", "branch", "--source", "rtl/a.sv"],
+            [0],
+            "1 uncovered point",
+        ),
         (
             ["--metric", "branch", "--source", "rtl/b.sv"],
             [6],

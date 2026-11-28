@@ -364,7 +364,10 @@ def test_run_report_lines(
 
 
 def _rerun_lines(
-    selector: str, rows: Sequence[Mapping[str, object]], limit: int, batches: Mapping[str, TestRun]
+    selector: str,
+    rows: Sequence[Mapping[str, object]],
+    limit: int,
+    batches: Mapping[str, TestRun],
 ) -> list[str]:
     """The rerun block of the failed *rows*: a command each, one per shared batch."""
     failed = [row for row in rows if row["grade"] == "fail"]

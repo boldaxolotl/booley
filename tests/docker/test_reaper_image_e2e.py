@@ -198,11 +198,19 @@ def test_candidate_entrypoint_reaps_owned_topology(tmp_path: Path) -> None:
             assert _exists(daemon.client, "network", topology.outbound)
             assert_ok(
                 daemon.client.run(
-                    "exec", topology.session, "sh", "-c", "kill $(cat /tmp/attachment.pid)"
+                    "exec",
+                    topology.session,
+                    "sh",
+                    "-c",
+                    "kill $(cat /tmp/attachment.pid)",
                 )
             )
             _wait_for_cleanup(daemon.client, topology)
-            logs = _wait_for_log(daemon.client, topology.reaper, "reaped Sandbox instances (1)")
+            logs = _wait_for_log(
+                daemon.client,
+                topology.reaper,
+                "reaped Sandbox instances (1)",
+            )
             assert logs.count("reaped Sandbox instances (1)") == 1
         finally:
             _cleanup(daemon.client, topology)

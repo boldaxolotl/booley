@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import tempfile
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -13,8 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.atomic_files import STAGED_SUFFIX, atomic_write_json
 from booley.core.file_lock import release_file_lock, wait_for_file_lock
-from booley.runtime.atomic_files import STAGED_SUFFIX
 from booley.runtime.booley_dir import resolve_booley_dir
 from booley.runtime.filesystem_utils import (
     is_transient_read_error,
@@ -96,27 +95,9 @@ def execution_paths(
     )
 
 
-def atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
-    """Durably replace one protocol JSON file with canonical content."""
-    make_directories(path.parent)
-    descriptor, name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    # *name* as *path*'s own path class: a replace and its cleanup are then calls on that
-    # type, which a test can schedule step by step.
-    temporary = type(path)(name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            json.dump(payload, stream, sort_keys=True)
-            stream.write("\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        replace_file(temporary, path)
-        _fsync_directory(path.parent)
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
 def update_execution_record(
-    paths: ExecutionPaths, change: Callable[[dict[str, Any] | None], dict[str, Any] | None]
+    paths: ExecutionPaths,
+    change: Callable[[dict[str, Any] | None], dict[str, Any] | None],
 ) -> None:
     """Read, change and replace one execution record under its cross-process lock.
 
@@ -137,16 +118,6 @@ def update_execution_record(
                 atomic_write_json(paths.record, updated)
         finally:
             release_file_lock(handle)
-
-
-def _fsync_directory(path: Path) -> None:
-    if os.name == "nt":
-        return
-    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
 
 
 def _read_protocol_bytes(path: Path) -> bytes | None:
@@ -180,7 +151,9 @@ def read_json(path: Path) -> dict[str, Any] | None:
 
 
 def read_slot_entry(
-    path: Path, *, sleep: Callable[[float], None] = time.sleep
+    path: Path,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> dict[str, Any] | None:
     """Read one Memory Reservation entry, keeping "missing" apart from "unreadable".
 
@@ -342,7 +315,11 @@ def read_attachment_heartbeat(paths: ExecutionPaths) -> int | None:
 
 
 def request_cancellation(
-    paths: ExecutionPaths, *, force: bool = False, signum: int = 2, reason: str = "cancelled"
+    paths: ExecutionPaths,
+    *,
+    force: bool = False,
+    signum: int = 2,
+    reason: str = "cancelled",
 ) -> None:
     """Durably and idempotently request cancellation of one execution."""
     if force:
@@ -359,7 +336,12 @@ def request_cancellation(
         return
     atomic_write_json(
         paths.cancel,
-        {"force": force, "reason": reason, "signum": signum, "requested_at": utc_now_rfc3339()},
+        {
+            "force": force,
+            "reason": reason,
+            "signum": signum,
+            "requested_at": utc_now_rfc3339(),
+        },
     )
 
 

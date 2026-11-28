@@ -103,7 +103,11 @@ class TestHasAncestor:
 
     @pytest.mark.parametrize(
         ("tree", "pid", "ancestor"),
-        [({20: 10}, 20, 10), ({30: 20, 20: 10}, 30, 10), ({10: 5}, 10, 10)],
+        [
+            ({20: 10}, 20, 10),
+            ({30: 20, 20: 10}, 30, 10),
+            ({10: 5}, 10, 10),
+        ],
     )
     def test_proves_direct_multigeneration_and_self_ancestry(self, tree, pid, ancestor):
         assert process_tree.has_ancestor(pid, ancestor, read_ppid=self.reader(tree))
@@ -114,18 +118,28 @@ class TestHasAncestor:
         )
 
     @pytest.mark.parametrize(
-        ("pid", "ancestor", "max_hops"), [(0, 10, 1), (10, 0, 1), (10, 20, 0)]
+        ("pid", "ancestor", "max_hops"),
+        [(0, 10, 1), (10, 0, 1), (10, 20, 0)],
     )
     def test_invalid_inputs_fail_closed(self, pid, ancestor, max_hops):
         assert not process_tree.has_ancestor(
-            pid, ancestor, read_ppid=self.reader({}), max_hops=max_hops
+            pid,
+            ancestor,
+            read_ppid=self.reader({}),
+            max_hops=max_hops,
         )
 
     def test_pid_one_cannot_have_an_ancestor(self):
         assert not process_tree.has_ancestor(1, 2, read_ppid=self.reader({}))
 
     @pytest.mark.parametrize(
-        "tree", [{30: 1}, {30: None}, {30: 20, 20: 30}, {30: 20, 20: 10, 10: 5}]
+        "tree",
+        [
+            {30: 1},
+            {30: None},
+            {30: 20, 20: 30},
+            {30: 20, 20: 10, 10: 5},
+        ],
     )
     def test_pid_one_unreadable_cycle_and_hop_limit_fail_closed(self, tree):
         assert not process_tree.has_ancestor(30, 5, read_ppid=self.reader(tree), max_hops=2)

@@ -9,15 +9,16 @@ from pathlib import Path
 
 import pytest
 
-from booley.config import agent as agent_config
+from booley.core import sandbox_detection
 from booley.harness import booley as cli
 from booley.harness import init_cmd
 from booley.harness.setup.common import InitContext
-from booley.runtime import auth_token, dashboard_tasks, runtime_context
+from booley.runtime import auth_token, dashboard_tasks
 from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache
-from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.git_command_fake import GitCommandFake
 from tests.harness.test_project_initialization import HOST_PRIVATE_ENVIRONMENT, _repository_state
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 # A Sandbox is always Linux; the fixtures rely on symlink guidance links and POSIX Git checkouts.
@@ -32,7 +33,10 @@ TASKS_JSON = b'{"version": "2.0.0", "tasks": [{"label": "build", "command": "mak
 
 def _git(repository: Path, *args: str) -> str:
     """Run git in *repository* and return stdout."""
-    completed = run_bounded_child(["git", *GIT_IDENTITY, "-C", str(repository), *args], check=True)
+    completed = run_bounded_child(
+        ["git", *GIT_IDENTITY, "-C", str(repository), *args],
+        check=True,
+    )
     return completed.stdout
 
 
@@ -77,7 +81,7 @@ def sandbox_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
     mountinfo = tmp_path / "mountinfo"
     mountinfo.write_text(PLAIN_MOUNTINFO, encoding="utf-8", newline="\n")
     # Private: the kernel's mountinfo path, which nothing public redirects.
-    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo, raising=False)
+    monkeypatch.setattr(sandbox_detection, "_MOUNTINFO", mountinfo)
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
     for variable in (
@@ -90,12 +94,10 @@ def sandbox_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iter
         *auth_token.CREDENTIAL_ENV_KEYS,
     ):
         monkeypatch.delenv(variable, raising=False)
-    forbid_docker_cli(monkeypatch)
     for name in HOST_PRIVATE_ENVIRONMENT:
         monkeypatch.setenv(name, str(tmp_path / "absent" / name))
     reset_cache()
     yield
-    assert_docker_cli_unused()
 
 
 @pytest.fixture
@@ -200,8 +202,7 @@ def test_sandbox_init_keeps_agent_settings_or_replaces_visitor(
     original = _set_booley_toml(project, f'[agent]\ndefault = "codex"\nauth = "{auth}"\n')
     if agent_app is not None:
         monkeypatch.setenv("BOOLEY_AGENT_APP", agent_app)
-    # Private: reads `/.dockerenv` at the filesystem root, which no test can create.
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
 
     assert _booley_init(project, monkeypatch) == 0
 

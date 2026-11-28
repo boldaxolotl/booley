@@ -330,7 +330,8 @@ These keys are host-only: `booley.toml` rejects them, and Booley stops on an
 unknown key or an invalid value.
 
 - **`idle_timeout_seconds`**: a Sandbox stops after this long with no Booley
-  activity and no open editor or terminal session in it.
+  activity and no open editor or terminal session in it. A Job started from the
+  Dashboard counts as activity while it is running or queued.
 - **`max_sessions`**: counts every Booley Sandbox on the Docker daemon, across
   all Projects. At the limit, starting another one fails with a list of the
   running Sandboxes; Booley never stops existing work to make room. Free a
@@ -380,7 +381,9 @@ edits before you apply them.
 Opening the Sandbox in VS Code can forward your host Git credentials into it,
 so any process in the Sandbox, the Developer Agent included, can use them.
 `booley doctor` run inside the Sandbox warns `sandbox.git-credential-helper`
-and names each helper and the file it is in.
+once for each helper and names the file it is in. The warning's subject is the
+helper's `<key>=<value>`, with URL user names and passwords and `username=` and
+`password=` values masked.
 
 To keep host Git credentials out of the Sandbox:
 
@@ -389,9 +392,18 @@ To keep host Git credentials out of the Sandbox:
    `dev.containers.copyGitConfig` to `false`.
 2. In the Sandbox, delete the `helper` lines from each file Doctor names.
 
-If you accept the forwarding,
-[waive](DOCTOR.md#doctor-waivers-doctor-waiverstoml)
-`sandbox.git-credential-helper`.
+If you accept one helper,
+[waive](DOCTOR.md#doctor-waivers-doctor-waiverstoml) it by its subject:
+
+```toml
+version = 1
+
+[[waiver]]
+check = "sandbox.git-credential-helper"
+subject = "credential.helper=/.codespaces/bin/gitcredential_github.sh"
+reason = "Codespaces GitHub access"
+permanent = true
+```
 
 ## Applying Sandbox changes
 

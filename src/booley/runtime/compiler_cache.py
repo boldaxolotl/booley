@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET
+from booley.core.sandbox_layout import BOOLEY_DIR_TARGET
 
 COMPILER_CACHE_ROOT_ENV = "BOOLEY_COMPILER_CACHE_ROOT"
 # Cache directory below the Booley Directory mount.

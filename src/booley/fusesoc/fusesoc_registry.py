@@ -86,8 +86,12 @@ from booley.targets.domain import (
     TargetRef,
     TargetResolutionError,
 )
-from booley.targets.selection import resolve as _resolve_selector
-from booley.targets.selection import vlnv_key as _vlnv_key
+from booley.targets.selection import (
+    resolve as _resolve_selector,
+)
+from booley.targets.selection import (
+    vlnv_key as _vlnv_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1180,7 +1184,8 @@ def _core_depend_entries(core_doc: Mapping[str, Any]) -> set[tuple[str, str]]:
 
 
 def _index_core_documents(
-    project_root: Path, documents: Mapping[Path, Mapping[str, Any]] | None = None
+    project_root: Path,
+    documents: Mapping[Path, Mapping[str, Any]] | None = None,
 ) -> tuple[dict[Path, Mapping[str, Any]], dict[str, list[Path]]]:
     """Capture/index core documents, or index a catalog's frozen capture."""
     by_key: dict[str, list[Path]] = {}
@@ -1364,7 +1369,9 @@ def all_referenced_files(project_root: Path | str) -> list[str]:
     return sorted(files)
 
 
-def _fileset_file_attrs(fileset: Mapping[str, Any]) -> Iterator[tuple[str, Mapping[str, Any]]]:
+def _fileset_file_attrs(
+    fileset: Mapping[str, Any],
+) -> Iterator[tuple[str, Mapping[str, Any]]]:
     """Yield ``(path, attrs)`` for each file entry in a ``.core`` fileset.
 
     Normalizes the three accepted entry forms — a bare string (no attrs), the
@@ -1386,7 +1393,9 @@ def _fileset_file_attrs(fileset: Mapping[str, Any]) -> Iterator[tuple[str, Mappi
             yield str(name), raw_attrs if isinstance(raw_attrs, Mapping) else {}
 
 
-def _fileset_entries(fileset: Mapping[str, Any]) -> Iterator[tuple[str, tuple[str, ...], bool]]:
+def _fileset_entries(
+    fileset: Mapping[str, Any],
+) -> Iterator[tuple[str, tuple[str, ...], bool]]:
     """Yield ``(path, tags, is_include)`` for each file in a ``.core`` fileset.
 
     Fileset-level ``tags`` are the per-file default; a file given as a
@@ -1600,7 +1609,8 @@ def target_source_files_for_ref(
     # Preserve first-seen order while dropping duplicates: a file reachable
     # through two dependency paths must not be mutated or counted twice.
     return CoreSources(
-        rtl_source_files=tuple(dict.fromkeys(rtl)), tb_files=tuple(dict.fromkeys(tb))
+        rtl_source_files=tuple(dict.fromkeys(rtl)),
+        tb_files=tuple(dict.fromkeys(tb)),
     )
 
 
@@ -1750,7 +1760,10 @@ _NON_LITERAL_PATH_CHARS = frozenset("*?[")
 _WORKTREE_DIR_NAME = "worktrees"
 
 
-def _literal_target_source_paths(core_doc: Mapping[str, Any], target: str) -> list[str]:
+def _literal_target_source_paths(
+    core_doc: Mapping[str, Any],
+    target: str,
+) -> list[str]:
     """Literal source paths a Target's own filesets declare, in ``.core`` order.
 
     Walks the Target's filesets exactly like :func:`target_source_files` does —
@@ -1793,7 +1806,10 @@ def _worktree_root_of(path: str) -> str | None:
     return None
 
 
-def missing_target_sources_for_ref(project_root: Path | str, ref: TargetRef) -> list[str]:
+def missing_target_sources_for_ref(
+    project_root: Path | str,
+    ref: TargetRef,
+) -> list[str]:
     """Return missing literal paths for an already-selected Target declaration."""
     try:
         doc = read_core(ref.core_file)
@@ -1834,7 +1850,7 @@ def _raise_missing_target_sources(target: str, ref: TargetRef, missing: list[str
     lines = [
         f"cannot resolve Target '{target}': {len(missing)} source path(s) "
         f"declared by {ref.core_file} do not exist on disk "
-        f"(paths are relative to the .core's directory):"
+        f"(paths are relative to the .core's directory):",
     ]
     lines.extend(f"  - {path}" for path in missing)
     # One hint per distinct worktrees/<name> root, in first-seen order.
@@ -1987,7 +2003,9 @@ def classified_sources(project_root: Path | str, *, strict: bool = False) -> Cor
     return CoreSources(rtl_source_files=tuple(sorted(rtl)), tb_files=tuple(sorted(tb)))
 
 
-def source_dirs_from_core(project_root: Path | str) -> tuple[list[str], list[str], list[str]]:
+def source_dirs_from_core(
+    project_root: Path | str,
+) -> tuple[list[str], list[str], list[str]]:
     """Derive ``(rtl_dirs, tb_dirs, tb_include_dirs)`` from ``.core`` filesets.
 
     The directory-granularity view of :func:`classified_sources`, for consumers
@@ -2293,7 +2311,10 @@ def parse_edam(edam_path: Path | str, *, target: str, vlnv: str) -> ResolvedTarg
 
 
 def _restore_tb_tags(
-    resolved: ResolvedTarget, *, project_root: Path, source_ref: TargetRef
+    resolved: ResolvedTarget,
+    *,
+    project_root: Path,
+    source_ref: TargetRef,
 ) -> ResolvedTarget:
     """Restore TB tags omitted by FuseSoC 2.4.7's EDAM writer."""
     tb_paths = {
@@ -2375,7 +2396,9 @@ def setup_command_for_handle(
 
 
 def require_current_target_handle(
-    handle: TargetHandle, *, project_root: Path | str | None = None
+    handle: TargetHandle,
+    *,
+    project_root: Path | str | None = None,
 ) -> Path:
     """Validate a handle's Project and snapshot before operational preparation."""
     root = handle.project_root
@@ -2446,7 +2469,13 @@ def _run_setup_command(
         with contextlib.suppress(OSError, RuntimeError, ValueError):
             child_env["BOOLEY_DIR"] = str(resolve_checkout_booley_dir(project_root))
     try:
-        proc = runner(cmd, cwd=str(project_root), env=child_env, capture_output=True, text=True)
+        proc = runner(
+            cmd,
+            cwd=str(project_root),
+            env=child_env,
+            capture_output=True,
+            text=True,
+        )
     except OSError as exc:
         diagnostic = str(exc).strip()
         detail = f": {diagnostic}" if diagnostic else " with no diagnostic output"
@@ -2506,7 +2535,10 @@ def resolve_target_handle(
         doctor_selftest=handle.doctor_private,
         lint_flow_eda_tool_missing=handle.lint_flow_eda_tool_missing,
     )
-    preflight_target_sources_for_ref(root, source_ref)
+    preflight_target_sources_for_ref(
+        root,
+        source_ref,
+    )
     return _run_setup_command(
         cmd,
         project_root=root,

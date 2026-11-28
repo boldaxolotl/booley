@@ -22,7 +22,11 @@ from booley.runtime._codex_backend import (
     _codex_run_subprocess,
 )
 from booley.runtime.agent import announce_agent_dispatch, call_agent, extract_json
-from booley.runtime.agent_errors import AgentProviderError, AgentTimeoutError, UsageLimitError
+from booley.runtime.agent_errors import (
+    AgentProviderError,
+    AgentTimeoutError,
+    UsageLimitError,
+)
 from tests.claude_cli_fake import replay_sdk_stream, sdk_message, sdk_result
 from tests.codex_cli_fake import replay_codex_run
 from tests.path_tool_fake import PathToolFake
@@ -211,7 +215,12 @@ class TestCodexBackend:
 
     @pytest.mark.asyncio
     async def test_wall_clock_deadline_raises_agent_timeout(self, tmp_path: Path):
-        params = AgentCallParams(prompt="task", model="gpt-5", cwd=tmp_path, timeout_seconds=7200)
+        params = AgentCallParams(
+            prompt="task",
+            model="gpt-5",
+            cwd=tmp_path,
+            timeout_seconds=7200,
+        )
         process = MagicMock()
         process.returncode = None
         process.wait = AsyncMock(return_value=-9)
@@ -343,41 +352,6 @@ class TestCodexMarkdownTranscript:
         # Edit-only tools still get the full-access sandbox mode.
         assert "--dangerously-bypass-approvals-and-sandbox" in launches[0]["cmd"]
 
-    @pytest.mark.asyncio
-    async def test_codex_runtime_markdown_goes_to_human_logs(self, monkeypatch, tmp_path: Path):
-        from booley.runtime.agent_backend import CodexBackend
-        from booley.runtime.agent_execution import resolve_agent_artifacts
-
-        command = {
-            "type": "item.completed",
-            "item": {
-                "type": "command_execution",
-                "command": "review",
-                "exit_code": 0,
-                "aggregated_output": "review complete",
-            },
-        }
-        replay_codex_run(monkeypatch, events=[{"type": "turn.started"}, command])
-        transcript = (
-            tmp_path / ".runtime" / "transcripts" / "reviewer" / "1" / "review-tb-quality.jsonl"
-        )
-
-        await CodexBackend(auth_mode="visitor").call(
-            AgentCallParams(
-                prompt="review tb",
-                model="gpt-5",
-                cwd=tmp_path,
-                transcript_path=transcript,
-                artifact_paths=resolve_agent_artifacts,
-            )
-        )
-
-        assert not transcript.with_suffix(".md").exists()
-        rendered = (
-            tmp_path / "human-logs" / "transcripts" / "reviewer" / "1" / "review-tb-quality.md"
-        )
-        assert "review complete" in rendered.read_text(encoding="utf-8")
-
 
 def _params(**overrides) -> AgentCallParams:
     overrides.setdefault("timeout_seconds", 60)
@@ -404,7 +378,10 @@ def _assistant(**fields):
 
 def _rate_limit(status: str, resets_at=None, utilization=None):
     info = SimpleNamespace(
-        status=status, resets_at=resets_at, rate_limit_type="seven_day", utilization=utilization
+        status=status,
+        resets_at=resets_at,
+        rate_limit_type="seven_day",
+        utilization=utilization,
     )
     return sdk_message("RateLimitEvent", rate_limit_info=info)
 
@@ -422,7 +399,8 @@ class TestCallAgent:
         from booley.runtime.agent_config import BackendConfig, set_backend_config
 
         cfg = BackendConfig(
-            settings=AgentSettings(), active_backend=ClaudeSDKBackend(auth_mode="visitor")
+            settings=AgentSettings(),
+            active_backend=ClaudeSDKBackend(auth_mode="visitor"),
         )
         set_backend_config(cfg)
         yield

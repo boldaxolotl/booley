@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from booley.config.eda import PROVISIONING_HOST, EdaConfig, EdaConfigError
+from booley.core import docker_cli
+from booley.core.file_hash import file_sha256
 from booley.eda.provisioning import authority
 from booley.eda.provisioning.configuration import load_eda_config
 from booley.eda.provisioning.licensing.flexnet_docker import (
     RelayDockerError,
-    Runner,
     ensure_relay_image,
     resolve_relay_image_id,
     resources_for_session,
@@ -44,7 +44,9 @@ class SessionEdaRequirements:
 
 
 def inspect_build_requirements(
-    project_root: Path, *, vivado_enabled: bool
+    project_root: Path,
+    *,
+    vivado_enabled: bool,
 ) -> SessionEdaRequirements:
     """Resolve prospective Runtime inputs without creating authority state."""
     project = project_root.resolve(strict=True)
@@ -53,7 +55,8 @@ def inspect_build_requirements(
         return _requirements(project, None, None)
     try:
         installation, profile = authority.resolve_for_inspection(
-            project, config.provisioning == PROVISIONING_HOST
+            project,
+            config.provisioning == PROVISIONING_HOST,
         )
     except authority.AuthorityError as exc:
         raise SessionRequirementsError(str(exc)) from exc
@@ -62,7 +65,10 @@ def inspect_build_requirements(
 
 @contextmanager
 def lease_requirements(
-    project_root: Path, *, vivado_enabled: bool, prior_eda: bool = False
+    project_root: Path,
+    *,
+    vivado_enabled: bool,
+    prior_eda: bool = False,
 ) -> Iterator[SessionEdaRequirements]:
     """Hold one coherent EDA authority snapshot through Runtime persistence.
 
@@ -80,7 +86,10 @@ def lease_requirements(
         config is not None and vivado_enabled and config.provisioning == PROVISIONING_HOST
     )
     try:
-        with authority.resolve_for_issuance(project, host_provisioning) as (installation, profile):
+        with authority.resolve_for_issuance(project, host_provisioning) as (
+            installation,
+            profile,
+        ):
             yield _requirements(project, installation, profile)
     except authority.AuthorityError as exc:
         raise SessionRequirementsError(str(exc)) from exc
@@ -94,7 +103,7 @@ def _load_vivado_config(project: Path) -> EdaConfig | None:
 
 
 def with_relay_identity(
-    requirements: SessionEdaRequirements, *, runner: Runner
+    requirements: SessionEdaRequirements, *, runner: docker_cli.Runner
 ) -> SessionEdaRequirements:
     """Add the immutable relay image ID to licensed requirements; never builds or pulls."""
     if requirements.license_profile is None:
@@ -103,7 +112,10 @@ def with_relay_identity(
 
 
 def prepare_runtime_dependencies(
-    requirements: SessionEdaRequirements, *, runner: Runner, force_relay: bool = False
+    requirements: SessionEdaRequirements,
+    *,
+    runner: docker_cli.Runner,
+    force_relay: bool = False,
 ) -> SessionEdaRequirements:
     """Prepare mutable dependencies after a caller validates one leased value."""
     try:
@@ -115,7 +127,10 @@ def prepare_runtime_dependencies(
 
 
 def requested_license(
-    project_root: Path, *, vivado_enabled: bool = True, expected_name: str | None = ""
+    project_root: Path,
+    *,
+    vivado_enabled: bool = True,
+    expected_name: str | None = "",
 ) -> authority.LicenseProfile | None:
     """Return the host-selected License Profile when an active Flow requests it."""
     if expected_name is None:
@@ -160,7 +175,11 @@ def _requirements(
 
 def validate_image_observations(root: Path) -> None:
     """Validate Runtime-extracted files against the built-in Vivado contract."""
-    if _file_sha256(root / "vivado-wrapper") != wrapper_sha256():
+    try:
+        observed = file_sha256(root / "vivado-wrapper")
+    except OSError as exc:
+        raise SessionRequirementsError(f"cannot inspect Sandbox Image file: {exc}") from exc
+    if observed != wrapper_sha256():
         raise SessionRequirementsError("Sandbox Image contains the wrong Vivado wrapper digest")
     for name in ("libudev.so.1", "libpixman-1.so.0"):
         try:
@@ -190,17 +209,10 @@ def _optional_license(project: Path) -> authority.LicenseProfile | None:
         raise SessionRequirementsError(str(exc)) from exc
 
 
-def _relay_image_id(runner: Runner) -> str:
+def _relay_image_id(runner: docker_cli.Runner) -> str:
     try:
         return resolve_relay_image_id(runner=runner)
     except RelayDockerError as exc:
         raise SessionRequirementsError(
             f"cannot resolve immutable FlexNet relay image: {exc}"
         ) from exc
-
-
-def _file_sha256(path: Path) -> str:
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
-    except OSError as exc:
-        raise SessionRequirementsError(f"cannot inspect Sandbox Image file: {exc}") from exc

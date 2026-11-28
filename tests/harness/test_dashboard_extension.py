@@ -15,8 +15,8 @@ from xml.etree import ElementTree
 
 import pytest
 
-from booley.runtime import dashboard_extension, devcontainer
-from booley.runtime.platform_paths import kill_process_tree, popen_new_group_kwargs
+from booley.runtime import dashboard_extension, devcontainer, process_group
+from booley.runtime.platform_paths import kill_process_tree
 from tests.devcontainer_spec_support import build_spec
 from tests.time_budget import hang_guard_s, scaled
 
@@ -91,10 +91,9 @@ _NODE_SUITE_BOUND_S = hang_guard_s() + math.ceil(scaled(5))
 #   is 97 s at factor 2 (the Windows CI factor), under 180 s, so a stall fails
 #   through the bound with node's output rather than through a pytest-timeout
 #   thread kill of the worker.
-# - Headroom: the strictest Windows fail limit is `--timeout-headroom=0.5` in
-#   full-python-matrix.yml, i.e. 90 s. The 70 s bound at factor 2 leaves
-#   20 s for setup and teardown, so a run that passes is capped near the
-#   bound, under that limit.
+# - Headroom: Windows CI warns when a passing run uses more than half the
+#   budget, 90 s. The 70 s bound at factor 2 leaves 20 s for setup and
+#   teardown, so a passing run stays under that warning.
 #   (Headroom only judges passing tests; a stall fails through the bound.)
 _NODE_SUITE_PYTEST_TIMEOUT_S = 180
 
@@ -121,7 +120,7 @@ def run_bounded(command: list[str], *, bound_s: float, output_dir: Path) -> tupl
             stdin=subprocess.DEVNULL,
             stdout=stdout_file,
             stderr=stderr_file,
-            **popen_new_group_kwargs(),
+            **process_group.new_group_kwargs(),
         )
         timed_out = False
         try:
@@ -162,7 +161,9 @@ def _run_node_suite(script_name: str, *, suite_label: str, output_dir: Path) -> 
 @pytest.mark.timeout(_NODE_SUITE_PYTEST_TIMEOUT_S)
 def test_workspace_extension_lifecycle_in_node(tmp_path):
     _run_node_suite(
-        "dashboard.test.cjs", suite_label="Dashboard lifecycle suite", output_dir=tmp_path
+        "dashboard.test.cjs",
+        suite_label="Dashboard lifecycle suite",
+        output_dir=tmp_path,
     )
 
 
@@ -172,7 +173,9 @@ def test_workspace_extension_lifecycle_in_node(tmp_path):
 @pytest.mark.timeout(_NODE_SUITE_PYTEST_TIMEOUT_S)
 def test_vaporview_bridge_in_node(tmp_path):
     _run_node_suite(
-        "vaporview_bridge.test.cjs", suite_label="VaporView bridge suite", output_dir=tmp_path
+        "vaporview_bridge.test.cjs",
+        suite_label="VaporView bridge suite",
+        output_dir=tmp_path,
     )
 
 

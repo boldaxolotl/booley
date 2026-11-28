@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import filecmp
-import hashlib
 import shutil
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -11,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import TYPE_CHECKING
 
+from booley.core.file_hash import file_sha256_and_size
 from booley.flows.artifact_durability import durable_copy, durable_directory
 from booley.flows.sim.staged_input_ledger import StagedInputLedger, leftover_message
 from booley.fusesoc.fusesoc_registry import mirrored_source_path
@@ -254,7 +254,11 @@ def _clean_runtime_state(staged: list[tuple[Path, Path]], overlay_root: Path) ->
 
 @contextmanager
 def materialize_runtime_inputs(
-    build_dir: Path, run_cwd: Path, inputs: Iterable[str], *, booley_dir: Path
+    build_dir: Path,
+    run_cwd: Path,
+    inputs: Iterable[str],
+    *,
+    booley_dir: Path,
 ) -> Iterator[None]:
     """Expose declared build-staged inputs in ``run_cwd`` for one run."""
     declared = tuple(inputs)
@@ -362,13 +366,14 @@ def _materialize_simulation_record_input(
     authoritative = copies_root / destination_relative
     make_directories(authoritative.parent)
     durable_copy(source, authoritative)
-    size, digest = _runtime_identity(authoritative)
+    hex_digest, size = file_sha256_and_size(authoritative)
+    digest = "sha256:" + hex_digest
     destination = run_cwd / destination_relative
     _prepare_destination_parent(run_cwd, destination_relative, owned_directories, ledger)
     method, owned = _expose_simulation_record_input(
         authoritative, destination, destination_relative, owned_run_directory, ledger, digest
     )
-    if _runtime_identity(destination) != (size, digest):
+    if file_sha256_and_size(destination) != (hex_digest, size):
         raise RuntimeInputError(f"runtime input authentication failed: {destination_relative}")
     return RuntimeInputBinding(
         declaration["declaration_id"],
@@ -404,7 +409,10 @@ def _expose_simulation_record_input(
 
 
 def _prepare_destination_parent(
-    run_cwd: Path, destination: Path, owned_directories: list[Path], ledger: StagedInputLedger
+    run_cwd: Path,
+    destination: Path,
+    owned_directories: list[Path],
+    ledger: StagedInputLedger,
 ) -> None:
     """Create and remember only missing literal-cwd parent directories."""
     if conflict := destination_parent_conflict(run_cwd, destination):
@@ -434,16 +442,6 @@ def safe_runtime_relative(value: str) -> Path:
     ):
         raise RuntimeInputError(f"invalid runtime input path: {value!r}")
     return path
-
-
-def _runtime_identity(path: Path) -> tuple[int, str]:
-    digest = hashlib.sha256()
-    size = 0
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(64 * 1024), b""):
-            size += len(chunk)
-            digest.update(chunk)
-    return size, "sha256:" + digest.hexdigest()
 
 
 __all__ = [

@@ -13,8 +13,8 @@ from collections.abc import Iterable
 from pathlib import Path, PurePath, PurePosixPath
 from typing import Any
 
-from booley.runtime import sandbox_layout
-from booley.runtime.atomic_files import atomic_replace_bytes
+from booley.core import sandbox_layout
+from booley.core.atomic_files import atomic_replace_bytes
 
 MOUNT_HISTORY = Path(".runtime") / "sandbox-mounts.json"
 _SCHEMA = 1

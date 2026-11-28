@@ -33,7 +33,11 @@ class _DestinationScenario:
 
 
 def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
-    result = run_bounded_child(["git", "-C", str(repo), *args], check=True, env=env)
+    result = run_bounded_child(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        env=env,
+    )
     return result.stdout.strip()
 
 
@@ -75,7 +79,9 @@ def _bare_remote(tmp_path: Path) -> Path:
     return origin
 
 
-def _existing_topic_with_destination_main(tmp_path: Path) -> _DestinationScenario:
+def _existing_topic_with_destination_main(
+    tmp_path: Path,
+) -> _DestinationScenario:
     repo, initial = _repository(tmp_path)
     origin = _bare_remote(tmp_path)
     _git(repo, "remote", "add", "origin", str(origin))
@@ -89,7 +95,10 @@ def _existing_topic_with_destination_main(tmp_path: Path) -> _DestinationScenari
     _git(repo, "checkout", "main")
     (repo / "upstream.txt").write_text("destination history\n", encoding="utf-8")
     destination_main = _commit(
-        repo, "add upstream change", name="Destination User", email="destination@example.test"
+        repo,
+        "add upstream change",
+        name="Destination User",
+        email="destination@example.test",
     )
     _git(repo, "push", "origin", f"{destination_main}:refs/heads/main")
 
@@ -260,7 +269,9 @@ def test_mixed_new_and_existing_updates_apply_destination_exclusions_to_both(
     _expect_exit(result, 0)
 
 
-def test_existing_ref_destination_lookup_failure_uses_remote_sha_fallback(tmp_path: Path) -> None:
+def test_existing_ref_destination_lookup_failure_uses_remote_sha_fallback(
+    tmp_path: Path,
+) -> None:
     repo, _initial = _repository(tmp_path)
     remote_topic = _change(
         repo,
@@ -320,7 +331,9 @@ def test_blob_added_then_deleted_in_outgoing_history_is_blocked(tmp_path: Path) 
     _blocked(_push(repo, _update(head, base)), "confidential term")
 
 
-def test_new_ref_does_not_trust_history_reachable_only_from_another_remote(tmp_path: Path) -> None:
+def test_new_ref_does_not_trust_history_reachable_only_from_another_remote(
+    tmp_path: Path,
+) -> None:
     repo, origin_head = _repository(tmp_path)
     origin = _bare_remote(tmp_path)
     _git(repo, "remote", "add", "origin", str(origin))
@@ -503,7 +516,9 @@ def test_restore_draft_refuses_plaintext_inside_worktree(tmp_path: Path) -> None
     assert not (repo / "private.toml").exists()
 
 
-def test_candidate_encrypted_vocabulary_is_validated_against_trusted_key(tmp_path: Path) -> None:
+def test_candidate_encrypted_vocabulary_is_validated_against_trusted_key(
+    tmp_path: Path,
+) -> None:
     repo, _initial = _repository(tmp_path)
     _seal(repo)
     trusted = _commit(repo, "add valid encrypted vocabulary")
@@ -710,7 +725,11 @@ def test_pr_text_uses_sealed_file_over_private_draft_and_stale_ci_env(tmp_path: 
     ],
 )
 def test_publish_pr_sends_exact_drafts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arguments: str, gh_args: str, stdin: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    arguments: str,
+    gh_args: str,
+    stdin: str,
 ) -> None:
     repo, _base = _repository(tmp_path)
     _seal(repo)
@@ -907,7 +926,7 @@ def test_workflow_trusts_only_the_exact_renovate_app_identity(
     )
     head = _git(repo, "rev-parse", "HEAD")
     env = _seal(repo) | {
-        "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS": _workflow_allowed_authors(step_name, next_step_name)
+        "BOOLEY_LEAK_GUARD_ALLOWED_AUTHORS": _workflow_allowed_authors(step_name, next_step_name),
     }
 
     result = subprocess.run(
@@ -940,7 +959,11 @@ def _self_test(*, pythonpath: Path | None = None) -> subprocess.CompletedProcess
     env = os.environ.copy()
     if pythonpath is not None:
         env["PYTHONPATH"] = str(pythonpath)
-    return run_bounded_child([sys.executable, str(SCANNER), "self-test"], check=False, env=env)
+    return run_bounded_child(
+        [sys.executable, str(SCANNER), "self-test"],
+        check=False,
+        env=env,
+    )
 
 
 def test_self_test_passes_with_the_scanner_dependency() -> None:
@@ -1041,7 +1064,12 @@ def _outside_pull_request_history(repo: Path) -> None:
     _branch_commits(
         repo,
         branch,
-        [((f"Outsider {SENTINEL}", "outsider@example.test"), {f"{SENTINEL}.txt": TERM_TEXT})],
+        [
+            (
+                (f"Outsider {SENTINEL}", "outsider@example.test"),
+                {f"{SENTINEL}.txt": TERM_TEXT},
+            )
+        ],
     )
     _merge_pull_request(repo, branch, owner="outsider", number=1, title=f"fix {SENTINEL}")
     (repo / "after.txt").write_bytes(b"clean maintainer follow-up\n")
@@ -1099,7 +1127,9 @@ def _case_octopus_merge_only_file(repo: Path) -> tuple[str, str]:
 
 def _case_allowlisted_author_in_outside_range(repo: Path) -> tuple[str, str]:
     _branch_commits(
-        repo, "outsider-fix", [(OUTSIDER, {"o.txt": "clean\n"}), (SAFE, {"s.txt": TERM_TEXT})]
+        repo,
+        "outsider-fix",
+        [(OUTSIDER, {"o.txt": "clean\n"}), (SAFE, {"s.txt": TERM_TEXT})],
     )
     _merge_pull_request(repo, "outsider-fix", owner="outsider", number=3, title="fix")
     return REPOSITORY_OWNER, "confidential term"
@@ -2187,7 +2217,12 @@ def _candidate_case(tmp_path: Path, case: str) -> tuple[Path, str, dict, _FakeGh
         (repo / "evil.txt").write_bytes(TERM_TEXT.encode())
         _git(repo, "add", "evil.txt")
         _git(
-            repo, "commit", "--amend", "--no-edit", "--reset-author", env=_identity_env(*OUTSIDER)
+            repo,
+            "commit",
+            "--amend",
+            "--no-edit",
+            "--reset-author",
+            env=_identity_env(*OUTSIDER),
         )
         head = _git(repo, "rev-parse", "HEAD")
     gh = _FakeGh(tmp_path)

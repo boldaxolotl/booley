@@ -44,7 +44,11 @@ def _crash_report(exc: Exception, transcript: Path) -> DiagnosticReport:
 
 
 def _execute(
-    project_root: Path, booley_dir: Path, trigger: str, *, progress: Progress | None = None
+    project_root: Path,
+    booley_dir: Path,
+    trigger: str,
+    *,
+    progress: Progress | None = None,
 ) -> dict[str, Any]:
     """Execute read-only Doctor and persist its structured result."""
     from booley.harness.doctor import run_doctor_result
@@ -83,7 +87,10 @@ def _execute(
 
 
 def run_if_due(
-    project_root: Path, *, trigger: str, progress: Progress | None = None
+    project_root: Path,
+    *,
+    trigger: str,
+    progress: Progress | None = None,
 ) -> dict[str, Any] | None:
     """Run one automatic Doctor attempt when stale; never raises."""
     try:
@@ -101,7 +108,12 @@ def run_if_due(
                     break
                 emit_progress = progress or _ignore_progress
                 emit_progress(f"starting ({reason})")
-                report = _execute(project_root, booley_dir, trigger, progress=emit_progress)
+                report = _execute(
+                    project_root,
+                    booley_dir,
+                    trigger,
+                    progress=emit_progress,
+                )
         return report
     except Exception:  # noqa: BLE001 — lifecycle advisory must never block a session startup
         return None

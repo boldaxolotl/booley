@@ -68,7 +68,11 @@ class SessionObserver:
     """
 
     def __init__(
-        self, *, now: Callable[[], float] = time.time, budget: float = 0.05, writes: bool = True
+        self,
+        *,
+        now: Callable[[], float] = time.time,
+        budget: float = 0.05,
+        writes: bool = True,
     ) -> None:
         self.now = now
         self.budget = budget

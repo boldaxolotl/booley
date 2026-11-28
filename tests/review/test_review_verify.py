@@ -131,7 +131,13 @@ def assert_sections(
             {ENABLE: True, NAMING: False},
             1,
         ),
-        ("clears-all", 0, {RESET: "fixed", ENABLE: "waived", NAMING: "fixed"}, {ENABLE: True}, 0),
+        (
+            "clears-all",
+            0,
+            {RESET: "fixed", ENABLE: "waived", NAMING: "fixed"},
+            {ENABLE: True},
+            0,
+        ),
         (
             "reviewer-error",
             2,

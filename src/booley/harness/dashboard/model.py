@@ -10,7 +10,11 @@ from time import time as wall_clock
 
 from booley.harness import upgrade_review
 from booley.harness.dashboard.jobs import JobReader, JobSnapshot
-from booley.harness.dashboard.measurement import MeasurementLine, checkout_of, measurement_lines
+from booley.harness.dashboard.measurement import (
+    MeasurementLine,
+    checkout_of,
+    measurement_lines,
+)
 from booley.harness.dashboard.resources import ProcessSampler, Resources, ResourceSampler
 from booley.harness.dashboard.reviewed_commit import ReviewLine, review_lines
 from booley.mcp.session_registry import SessionRegistry, SessionRow, namespace

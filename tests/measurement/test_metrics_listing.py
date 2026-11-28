@@ -7,8 +7,18 @@ from pathlib import Path
 import pytest
 
 from booley.core.booley_dir import reset_cache
+from booley.flows.metric_declarations import Better
+from booley.measurement.flow_metrics import metric_declarations
+from booley.measurement.metrics_file import load_metrics_rules
+from booley.measurement.metrics_listing import render_metrics_listing
+from booley.measurement.run_key import KeyedCommit, MeasurementKey
+from booley.measurement.run_store import MeasurementStore
+from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+from booley.targets.catalog import TargetCatalog
+from booley.targets.domain import FuseSocError, StaleTargetCatalogError, TargetHandle
 from tests.measurement.metrics_project_support import fill_listing, write_listing_project
 from tests.measurement.test_run_store import make_run
+from tests.runtime.test_commit_export import commit_all, git, new_repository, write
 
 SYNTH_IDENTITY = "::synth_core:0#synth_core"
 CLOCK_FALLBACK = (
@@ -24,8 +34,6 @@ def no_ambient_booley_dir(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def listing_of(project: Path) -> str:
-    from booley.measurement.metrics_listing import render_metrics_listing
-
     return render_metrics_listing(project)
 
 
@@ -63,8 +71,6 @@ def test_each_target_lists_its_flows_with_every_metric_and_unit(tmp_path: Path) 
     assert synth.splitlines()[0] == "[synth_core.synth]"
     assert synth.count(CLOCK_FALLBACK) == 1
     assert "fmax_mhz_min =  # MHz, per-clock" in synth
-    from booley.flows.metric_declarations import Better
-    from booley.measurement.flow_metrics import metric_declarations
 
     # Every declared synth metric is listed with its bound direction.
     for declaration in metric_declarations("synth"):
@@ -110,7 +116,6 @@ def test_per_test_keys_are_quoted_selectors_of_one_test_run(tmp_path: Path) -> N
     assert '["b:x#shared".sim]' in listing
 
     (project / ".booley" / "metrics.toml").write_bytes(fill_listing(listing).encode())
-    from booley.measurement.metrics_file import load_metrics_rules
 
     rules = load_metrics_rules(project)  # every printed key resolves to one Test Run
     tables = {(table.target, table.flow): table for table in rules.tables}
@@ -127,11 +132,8 @@ def test_per_test_keys_are_quoted_selectors_of_one_test_run(tmp_path: Path) -> N
     }
 
 
-def test_clock_names_come_from_the_stored_measurement_run(tmp_path: Path) -> None:
-    from booley.measurement.run_key import KeyedCommit, MeasurementKey
-    from booley.measurement.run_store import MeasurementStore
-
-    project = write_listing_project(tmp_path)
+def store_synth_run(project: Path) -> None:
+    """Store a synth run of ``synth_core`` that reported two clocks."""
     keyed = KeyedCommit(MeasurementKey("0" * 40, None), "1" * 40, "m", (), None)
     run = make_run(
         keyed,
@@ -142,6 +144,11 @@ def test_clock_names_come_from_the_stored_measurement_run(tmp_path: Path) -> Non
     )
     MeasurementStore(project / ".booley").write(run, [])
 
+
+def test_clock_names_come_from_the_stored_measurement_run(tmp_path: Path) -> None:
+    project = write_listing_project(tmp_path)
+    store_synth_run(project)
+
     synth = block(listing_of(project), "[synth_core.synth]")
 
     assert CLOCK_FALLBACK not in synth
@@ -150,21 +157,11 @@ def test_clock_names_come_from_the_stored_measurement_run(tmp_path: Path) -> Non
     assert "\nfmax_mhz_min" not in synth
 
     # The printed clock-prefixed keys load back as bounds of the synth table.
-    from booley.measurement.metrics_file import load_metrics_rules
-
     (project / ".booley" / "metrics.toml").write_bytes(fill_listing(listing_of(project)).encode())
     table = {(t.target, t.flow): t for t in load_metrics_rules(project).tables}[
         "synth_core", "synth"
     ]
     assert {bound.key for bound in table.bounds} >= {"clk_b.fmax_mhz_min", "clk_i.fmax_mhz_min"}
-
-
-def test_without_stored_clock_names_the_fallback_is_printed(tmp_path: Path) -> None:
-    synth = block(listing_of(write_listing_project(tmp_path)), "[synth_core.synth]")
-
-    assert synth.count(CLOCK_FALLBACK) == 1
-    assert '"clk_i' not in synth
-    assert "\nfmax_mhz_min =  # MHz, per-clock" in synth
 
 
 @pytest.mark.parametrize(
@@ -177,9 +174,6 @@ def test_without_stored_clock_names_the_fallback_is_printed(tmp_path: Path) -> N
 def test_a_target_no_selector_reaches_gets_a_comment_instead_of_blocks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, answer: str | None, reason: str
 ) -> None:
-    from booley.targets.catalog import TargetCatalog
-    from booley.targets.domain import FuseSocError, TargetHandle
-
     project = write_listing_project(tmp_path)
     real_select = TargetCatalog.select
 
@@ -218,10 +212,11 @@ def test_damaged_stored_run_falls_back_to_the_unprefixed_key(tmp_path: Path) -> 
     assert CLOCK_FALLBACK in block(listing_of(project), "[synth_core.synth]")
 
 
+# _table_selector: render_metrics_listing builds its catalog and selects from it in one
+# call, so no public entry point can edit a core file in between, and patching
+# TargetCatalog.select to raise would replace Booley code instead.
 def test_stale_target_catalog_is_not_swallowed(tmp_path: Path) -> None:
     from booley.measurement.metrics_listing import _table_selector
-    from booley.targets.catalog import TargetCatalog
-    from booley.targets.domain import StaleTargetCatalogError
 
     project = write_listing_project(tmp_path)
     catalog = TargetCatalog.build(project)
@@ -233,12 +228,15 @@ def test_stale_target_catalog_is_not_swallowed(tmp_path: Path) -> None:
 
 
 def test_linked_worktree_lists_clock_names_of_the_main_checkouts_store(tmp_path: Path) -> None:
-    from booley.core.booley_dir import main_booley_dir_of
-    from tests.measurement.test_run_store import git, in_tree_repository
-
-    repo, head = in_tree_repository(tmp_path / "repo")
+    repo = write_listing_project(new_repository(tmp_path / "repo"))
+    write(repo / ".booley" / ".gitignore", PROJECT_GITIGNORE)
+    head = commit_all(repo)
     linked = tmp_path / "linked"
     git(repo, "worktree", "add", "-q", "-b", "feature", str(linked), head)
+    store_synth_run(repo)
+    reset_cache()  # in real use the linked worktree is another process
 
-    assert main_booley_dir_of(linked) == repo / ".booley"
-    assert main_booley_dir_of(repo) == repo / ".booley"
+    synth = block(listing_of(linked), "[synth_core.synth]")
+
+    assert CLOCK_FALLBACK not in synth
+    assert '"clk_i.fmax_mhz_min" =  # MHz, per-clock' in synth

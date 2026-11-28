@@ -358,7 +358,10 @@ class ResourceEstimator:
 
     def _phase(self, key: HistoryKey, stand_in: HistoryKey | None = None) -> PhaseEstimate:
         return PhaseEstimate(
-            key, self._memory.estimate(key, stand_in), self._wall.estimate(key, stand_in), stand_in
+            key,
+            self._memory.estimate(key, stand_in),
+            self._wall.estimate(key, stand_in),
+            stand_in,
         )
 
 

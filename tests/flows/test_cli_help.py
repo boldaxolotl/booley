@@ -44,7 +44,13 @@ def builtin_types() -> list[type[BuiltinFlow]]:
 
 
 FLOWS = builtin_types()
-PAIRS = ("flatten", "generic-abc-before-mapping", "repair-setup", "repair-hold", "gate-cloning")
+PAIRS = (
+    "flatten",
+    "generic-abc-before-mapping",
+    "repair-setup",
+    "repair-hold",
+    "gate-cloning",
+)
 # These are the entire human compatibility exception, not a blanket SUPPRESS exemption.
 HIDDEN = {"--work-dir", "--timeout-ms", "--elab-only", "--build-only", "--standalone"}
 
@@ -160,8 +166,10 @@ def test_resume_and_required_target_guidance() -> None:
         actions = parser._option_string_actions
         if cls.name == "sim":
             assert "manifest owns" in actions["--target"].help
+            assert "resume restores the manifest" in actions["--trace"].help
+            for flag in ("--coverage", "--no-waivers"):
+                assert "never resumes" in actions[flag].help
             for flag in ("--coverage", "--trace", "--no-waivers"):
-                assert "resume restores the manifest" in actions[flag].help
                 assert "rejects this flag" in actions[flag].help
             assert "omission is required" in actions["--mode"].help
         elif cls.name == "mutation":
@@ -236,7 +244,9 @@ def test_module_help_outside_project(tmp_path: Path) -> None:
     }
     env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2] / "src")
     result = run_bounded_child(
-        [sys.executable, "-m", "booley.flows.synth", "--help"], cwd=tmp_path, env=env
+        [sys.executable, "-m", "booley.flows.synth", "--help"],
+        cwd=tmp_path,
+        env=env,
     )
     assert result.returncode == 0, result.stderr
     assert "Common:" in result.stdout and "Expert: OpenROAD:" in result.stdout

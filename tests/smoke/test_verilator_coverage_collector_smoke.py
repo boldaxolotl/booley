@@ -28,14 +28,24 @@ def _invoke(command: list[str], *, timeout: int, cwd: Path | None = None) -> Sub
     try:
         # Unbounded child: the test handles the timeout itself and falls back to a timed_out result
         completed = subprocess.run(
-            command, cwd=cwd, timeout=timeout, capture_output=True, text=True, check=False
+            command,
+            cwd=cwd,
+            timeout=timeout,
+            capture_output=True,
+            text=True,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         return SubprocessResult(
-            returncode=-1, stdout=exc.stdout or "", stderr=exc.stderr or "", timed_out=True
+            returncode=-1,
+            stdout=exc.stdout or "",
+            stderr=exc.stderr or "",
+            timed_out=True,
         )
     return SubprocessResult(
-        returncode=completed.returncode, stdout=completed.stdout, stderr=completed.stderr
+        returncode=completed.returncode,
+        stdout=completed.stdout,
+        stderr=completed.stderr,
     )
 
 

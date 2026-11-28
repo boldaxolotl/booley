@@ -39,7 +39,7 @@ def pytest_configure(config: pytest.Config) -> None:
         _EXECUTION_FINISHED_AT = None
 
 
-def pytest_sessionstart(session: pytest.Session) -> None:
+def pytest_sessionstart() -> None:
     global _SESSION_STARTED_AT
     _SESSION_STARTED_AT = time.perf_counter()
 
@@ -102,7 +102,11 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     worker = getattr(config, "workerinput", {}).get("workerid")
     if worker in {None, "gw0"}:
         write_manifest(
-            manifest, group=group, shard_index=shard_index, shards=shards, all_nodeids=nodeids
+            manifest,
+            group=group,
+            shard_index=shard_index,
+            shards=shards,
+            all_nodeids=nodeids,
         )
 
 

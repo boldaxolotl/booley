@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 
 from booley.config.jobs import SeatCapError, required_seats
 from booley.core.boundary import as_float
+from booley.flows.endpoint_reporting import removed_root
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.memory_admission import (
     MemoryAdmissionPlan,
@@ -83,7 +84,9 @@ class AdmissionContext:
         execution_id = _coerce_execution_id(self.execution_id)
         object.__setattr__(self, "execution_id", execution_id)
         object.__setattr__(
-            self, "parent_execution_id", execution_id or ExecutionId(uuid.uuid4().hex)
+            self,
+            "parent_execution_id",
+            execution_id or ExecutionId(uuid.uuid4().hex),
         )
 
     def work_item_label(self, target: str, tests: Sequence[str]) -> job_slots.JobLabel | None:
@@ -261,12 +264,20 @@ def _enter_admission(
     """
     try:
         return held.enter_context(AdmissionGate(endpoint, prepared, requeued=requeued).enter())
-    except (job_slots.ClaimLostError, AdmissionIdentityError, SeatCapError) as exc:
+    except job_slots.ClaimAbortedError as exc:
+        # The queue wait ends only when a run root is removed; the finish names it.
+        raise EndpointRejectedError(EndpointOutcome(exit_code=EXIT_ERROR)) from exc
+    except (
+        job_slots.ClaimLostError,
+        AdmissionIdentityError,
+        SeatCapError,
+    ) as exc:
         raise EndpointRejectedError(_admission_rejection(endpoint, exc)) from exc
 
 
 def _admission_rejection(
-    endpoint: EndpointState, exc: job_slots.ClaimLostError | AdmissionIdentityError | SeatCapError
+    endpoint: EndpointState,
+    exc: job_slots.ClaimLostError | AdmissionIdentityError | SeatCapError,
 ) -> EndpointOutcome:
     """Map one admission failure to the outcome every endpoint reports."""
     if isinstance(exc, job_slots.ClaimLostError):
@@ -393,6 +404,7 @@ def _acquire_memory_reservation(
         memory=claim,
         job=label,
         queue_reason=OOM_REQUEUE_REASON if requeued else None,
+        should_abort=lambda: removed_root(endpoint) is not None,
     )
     if claim.companion:
         # A Specialist or coordinator fixes no thread count and shrinks no Flow's share.

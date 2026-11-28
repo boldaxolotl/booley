@@ -1,4 +1,4 @@
-"""Shared Simulation test fixtures: compile-surface doubles."""
+"""Shared Simulation test fixtures: compile-surface and Target identity doubles, and host named-pipe support."""
 
 from pathlib import Path
 
@@ -13,7 +13,9 @@ from booley.targets.selection import split_selector
 
 
 @pytest.fixture(autouse=True)
-def explicit_surface_for_lightweight_target_handles(monkeypatch: pytest.MonkeyPatch) -> None:
+def explicit_surface_for_lightweight_target_handles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Give legacy handle doubles an explicit empty compile surface."""
     resolve = engine.resolve_target_compile_surface
 

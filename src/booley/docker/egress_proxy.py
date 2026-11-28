@@ -142,7 +142,11 @@ class EgressProxy:
                 return True
         return False
 
-    async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    async def _handle_client(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ):
         """Handle a single proxy connection."""
         peer = writer.get_extra_info("peername", ("?", 0))
         try:
@@ -219,7 +223,9 @@ class EgressProxy:
         writer.close()
 
     async def _open_target(
-        self, hostname: str, port: int
+        self,
+        hostname: str,
+        port: int,
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter] | None:
         """Open connection to target, returning None on failure."""
         try:
@@ -232,7 +238,11 @@ class EgressProxy:
         return result
 
     async def _handle_connect(
-        self, target: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, peer: tuple
+        self,
+        target: str,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        peer: tuple,
     ):
         """Handle CONNECT method (HTTPS tunneling)."""
         hostname, port = self._parse_connect_target(target)
@@ -365,12 +375,18 @@ class EgressProxy:
                 except Exception as e:  # noqa: BLE001 — best-effort tunnel teardown; close failure only logged
                     logger.debug("Failed to close tunnel destination: %s", e)
 
-        await asyncio.gather(forward(r1, w2), forward(r2, w1), return_exceptions=True)
+        await asyncio.gather(
+            forward(r1, w2),
+            forward(r2, w1),
+            return_exceptions=True,
+        )
 
     async def _run_server(self):
         """Start the proxy server."""
         self._server = await asyncio.start_server(
-            self._handle_client, self._host, self._requested_port
+            self._handle_client,
+            self._host,
+            self._requested_port,
         )
         addr = self._server.sockets[0].getsockname()
         self.port = addr[1]

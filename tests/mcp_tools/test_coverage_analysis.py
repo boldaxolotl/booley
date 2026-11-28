@@ -1,6 +1,9 @@
 """Report-driven Analyst behavior at its agreed deep-module seam."""
 
-from booley.flows.sim.coverage_record import DurableTargetIdentity, decode_coverage_point_id
+from booley.flows.sim.coverage_record import (
+    DurableTargetIdentity,
+    decode_coverage_point_id,
+)
 from booley.specialists.coverage_analysis import CoverageAnalyzer
 from tests.flows.sim.coverage_record_test_support import decode_document
 from tests.flows.sim.test_coverage_record import _valid_document
@@ -33,7 +36,10 @@ from fractions import Fraction
 
 import pytest
 
-from booley.flows.sim.coverage_record_store import load_coverage_record, publish_coverage_record
+from booley.flows.sim.coverage_record_store import (
+    load_coverage_record,
+    publish_coverage_record,
+)
 from booley.specialists.coverage_analysis import CoverageAnalysisError
 
 
@@ -407,7 +413,11 @@ def test_non_rtl_and_unscored_native_points_cannot_be_waiver_candidates(kind, ex
 @pytest.mark.parametrize(
     ("hits", "expected", "expected_reason"),
     [
-        ({}, "ready_for_human_review", "A human must accept or reject this candidate"),
+        (
+            {},
+            "ready_for_human_review",
+            "A human must accept or reject this candidate",
+        ),
         ({"run:smoke": 3}, "investigate", "Unreachability is contradicted by observed hits"),
     ],
 )

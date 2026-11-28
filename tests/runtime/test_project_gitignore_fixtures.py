@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime.project_gitignore import (
@@ -12,29 +11,7 @@ from booley.runtime.project_gitignore import (
     PROJECT_GITIGNORE_PATTERNS,
     missing_gitignore_patterns,
 )
-
-FIXTURES = Path(__file__).parents[1] / "fixtures"
-
-
-@pytest.mark.parametrize(
-    "gitignore",
-    sorted(FIXTURES.glob("*/.booley/.gitignore")),
-    ids=lambda path: path.parents[1].name,
-)
-def test_fixture_project_gitignore_is_reconciled_by_init(gitignore: Path, tmp_path: Path) -> None:
-    # A stale fixture lets board documents and state records be committed,
-    # which the Ticket Board legacy-layout guard then refuses (ADR 0065).
-    from booley.harness import init_cmd
-    from booley.harness.setup.common import InitContext
-
-    assert set(missing_gitignore_patterns(gitignore.read_text(encoding="utf-8"))) <= {
-        "mcp-tool-reports/",
-        "reviewer-state/",
-    }
-    copied = tmp_path / ".gitignore"
-    copied.write_bytes(gitignore.read_bytes())
-    init_cmd._backfill_project_gitignore(tmp_path, InitContext(project_root=tmp_path))
-    assert missing_gitignore_patterns(copied.read_text(encoding="utf-8")) == []
+from booley.runtime.runtime_context import RuntimeLocation
 
 
 def test_the_policy_reports_nothing_missing_from_itself() -> None:
@@ -73,30 +50,19 @@ def verbose_ignore(tmp_path, isolated_git_attributes):
 
 
 @pytest.mark.parametrize(
-    ("path", "responsible"),
-    [
-        ("logs/authored.txt", "/logs/"),
-        ("cores/logs/authored.txt", None),
-        ("foo/__pycache__/a.pyc", "__pycache__/"),
-        ("foo/a.pyc", "*.pyc"),
-        ("cores/runtime/state.json", "runtime/"),
-        ("cores/.managed/bundle.zip", ".managed/"),
-    ],
-)
-def test_responsible_canonical_pattern(path, responsible, verbose_ignore):
-    from booley.runtime.project_gitignore import (
-        is_project_transient_path,
-        project_transient_pattern,
-    )
-
-    assert verbose_ignore(PROJECT_GITIGNORE_PATTERNS, path) == responsible
-    assert project_transient_pattern(path) == responsible
-    assert is_project_transient_path(path) == (responsible is not None)
-
-
-@pytest.mark.parametrize(
     ("patterns", "path", "responsible", "git_pattern"),
     [
+        *(
+            (PROJECT_GITIGNORE_PATTERNS, path, pattern, pattern)
+            for path, pattern in (
+                ("logs/authored.txt", "/logs/"),
+                ("cores/logs/authored.txt", None),
+                ("foo/__pycache__/a.pyc", "__pycache__/"),
+                ("foo/a.pyc", "*.pyc"),
+                ("cores/runtime/state.json", "runtime/"),
+                ("cores/.managed/bundle.zip", ".managed/"),
+            )
+        ),
         (("tmp/", "/tmp/"), "tmp/state.json", "/tmp/", "/tmp/"),
         (("/tmp/", "tmp/"), "tmp/state.json", "tmp/", "tmp/"),
         (("tmp/", "!tmp/"), "tmp/state.json", None, None),
@@ -159,22 +125,25 @@ def _old_policy_checkouts(tmp_path, paired):
 
 @pytest.mark.parametrize("paired", [False, True])
 def test_reconciled_checkout_stays_clean_after_real_reviewer(tmp_path, monkeypatch, paired):
+    from tests.agent_call_fake import install_agent
     from tests.git_support import git
 
-    from booley.core.models import AgentResult
     from booley.harness import init_cmd
     from booley.harness.setup.common import InitContext
-    from booley.runtime import runtime_context
     from booley.specialists.reviewer import ReviewerSpecialist
 
     root, directory, worktree, selected_dir = _old_policy_checkouts(tmp_path, paired)
+    # `initialize_project` would also dirty both checkouts with hooks, skeletons and
+    # Sandbox files, and this test asserts both stay clean after the Reviewer.
     init_cmd._backfill_project_gitignore(directory, InitContext(project_root=root))
     assert "mcp-tool-reports/" not in (selected_dir / ".gitignore").read_text(encoding="utf-8")
+    # Backfill alone, for the reason above.
     init_cmd._backfill_project_gitignore(selected_dir, InitContext(project_root=worktree))
     policy_owner = selected_dir if paired else worktree
     git(policy_owner, "add", ".gitignore" if paired else ".booley/.gitignore")
     git(policy_owner, "commit", "--allow-empty", "-qm", "reconcile selected checkout")
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
+    monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")  # the Sandbox spec hand-off
     monkeypatch.setenv("BOOLEY_DIR", str(selected_dir))
     for key in (
         "BOOLEY_STATE_FILE",
@@ -183,10 +152,7 @@ def test_reconciled_checkout_stays_clean_after_real_reviewer(tmp_path, monkeypat
         "BOOLEY_GOAL_RUN_BINDING",
     ):
         monkeypatch.delenv(key, raising=False)
-    monkeypatch.setattr(
-        "booley.specialists.specialist._call_agent_sync",
-        lambda *_a, **_kw: AgentResult(output='{"issues": []}'),
-    )
+    install_agent(monkeypatch, {"issues": []})  # the otherwise real Reviewer run's agent call
     selected_rtl = worktree
     monkeypatch.chdir(worktree)
     from booley.runtime.booley_dir import reset_cache

@@ -33,7 +33,9 @@ def test_authenticated_missing_eda_tool_marker_survives_make_rc_translation() ->
 def test_missing_required_toolchain_file_is_infrastructure() -> None:
     result = classify_eda_failure(
         SubprocessResult(
-            returncode=1, stdout="", stderr="fatal error: verilated.h: No such file or directory"
+            returncode=1,
+            stdout="",
+            stderr="fatal error: verilated.h: No such file or directory",
         ),
         expected_executable="verilator",
         authenticated_build=True,
@@ -48,7 +50,11 @@ def test_missing_required_toolchain_file_is_infrastructure() -> None:
 def test_untrusted_and_ambiguous_markers_are_ignored() -> None:
     token = "0123456789abcdef0123456789abcdef"
     marker = render_failure_marker(token, "missing_eda_tool", "yosys", "yosys")
-    for text in (marker.replace(token, "f" * 32), marker + " trailing", marker + "\n" + marker):
+    for text in (
+        marker.replace(token, "f" * 32),
+        marker + " trailing",
+        marker + "\n" + marker,
+    ):
         result = classify_eda_failure(
             SubprocessResult(returncode=2, stdout=text),
             expected_token=token,
@@ -59,7 +65,10 @@ def test_untrusted_and_ambiguous_markers_are_ignored() -> None:
 
 def test_runtime_missing_file_text_is_not_toolchain_infrastructure() -> None:
     result = classify_eda_failure(
-        SubprocessResult(returncode=1, stdout="DUT: vectors/input.bin: No such file or directory"),
+        SubprocessResult(
+            returncode=1,
+            stdout="DUT: vectors/input.bin: No such file or directory",
+        ),
         authenticated_build=True,
     )
     assert result is None

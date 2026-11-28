@@ -10,6 +10,8 @@ import pytest
 from booley.harness import booley as cli
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.docs_links import SITE_URL
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.sandbox_venue_fake import place
 
 
 def _command_paths(parser, prefix=()):
@@ -61,9 +63,7 @@ def _enter_empty_checkout(root, monkeypatch, *, git_checkout):
 
 
 def test_required_commands_refuse_outside_project(tmp_path, monkeypatch, capsys):
-    monkeypatch.setattr(
-        cli.runtime_context, "runtime_location", lambda: cli.runtime_context.RuntimeLocation.HOST
-    )
+    place(monkeypatch, RuntimeLocation.HOST)
     cases = [(path, git) for path in REQUIRED_PATHS for git in (False, True) if path[0] != "init"]
     for number, (path, git_checkout) in enumerate(cases):
         _enter_empty_checkout(tmp_path / f"case{number}", monkeypatch, git_checkout=git_checkout)
@@ -80,7 +80,7 @@ def test_required_commands_refuse_outside_project(tmp_path, monkeypatch, capsys)
 
 def test_missing_project_hint_names_where_to_run_init(tmp_path, monkeypatch, capsys):
     """Both missing-Project refusals (command and explicit selection) read per location."""
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     hints = {
         "HOST": "run `booley init`.",
         "HAND_WRITTEN_SANDBOX": "run `booley init` in this Sandbox.",
@@ -88,8 +88,7 @@ def test_missing_project_hint_names_where_to_run_init(tmp_path, monkeypatch, cap
     }
     for number, (location, hint) in enumerate(hints.items()):
         _enter_empty_checkout(tmp_path / f"case{number}", monkeypatch, git_checkout=True)
-        kind = cli.runtime_context.RuntimeLocation[location]
-        monkeypatch.setattr(cli.runtime_context, "runtime_location", lambda kind=kind: kind)
+        place(monkeypatch, RuntimeLocation[location])
         for argv in (["targets"], ["targets", "--project", str(tmp_path / f"case{number}")]):
             monkeypatch.setattr(sys, "argv", ["booley", *argv])
             assert cli.main() == 2, (location, argv)
@@ -115,7 +114,7 @@ def test_init_accepts_uninitialized_folder(git_checkout, tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["booley", "init"])
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(cli, "_host_install_authority_error", lambda *_: None)
     roots = []
     monkeypatch.setitem(cli._EARLY_COMMANDS, "init", lambda _args, root: roots.append(root) or 0)
@@ -184,7 +183,7 @@ def test_bare_host_help_precedes_project_and_runtime_work(
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "stale"))
     monkeypatch.setenv("RTL_PROJECT_ROOT", str(tmp_path / "missing"))
     monkeypatch.setattr(sys, "argv", ["booley", *argv])
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(cli, "find_project_root", _unexpected_runtime_work)
     monkeypatch.setattr(cli, "_resolve_cli_selection", _unexpected_runtime_work)
     monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", _unexpected_runtime_work)
@@ -212,7 +211,7 @@ def test_bare_host_help_precedes_project_and_runtime_work(
 )
 def test_invalid_top_level_options_fail_before_dispatch(inside, flag, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["booley", flag])
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if inside else RuntimeLocation.HOST)
     monkeypatch.setattr(cli, "find_project_root", _unexpected_runtime_work)
     monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", _unexpected_runtime_work)
     monkeypatch.setattr(cli, "_handle_early_exits", _unexpected_runtime_work)
@@ -230,7 +229,7 @@ def test_invalid_top_level_options_fail_before_dispatch(inside, flag, monkeypatc
 @pytest.mark.parametrize("flag", ["--help", "--version"])
 def test_information_options_need_no_project(inside, flag, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["booley", flag])
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if inside else RuntimeLocation.HOST)
     monkeypatch.setattr(cli, "find_project_root", _unexpected_runtime_work)
     monkeypatch.setattr(cli.runtime_context, "ensure_proxy_env", _unexpected_runtime_work)
     with pytest.raises(SystemExit) as error:
@@ -265,7 +264,7 @@ def test_bare_sandbox_dispatches_chat_with_selected_project(
         monkeypatch.chdir(tmp_path)
         argv += ["--project", str(cli_project)]
     monkeypatch.setattr(sys, "argv", argv)
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     calls = []
     monkeypatch.setitem(
         cli._EARLY_COMMANDS, "chat", lambda args, root: calls.append((args.command, root)) or 17
@@ -277,7 +276,7 @@ def test_bare_sandbox_dispatches_chat_with_selected_project(
 def test_bare_and_explicit_chat_keep_launch_argv(cli_project, monkeypatch):
     from booley.harness import chat_cmd
 
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda root: root)
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
     monkeypatch.setattr(
@@ -312,18 +311,19 @@ def test_bare_sandbox_preserves_project_guards(source, tmp_path, monkeypatch, ca
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.setattr(sys, "argv", ["booley"])
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setitem(cli._EARLY_COMMANDS, "chat", _unexpected_runtime_work)
     assert cli.main() == 2
     assert capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
-    ("command", "inside"), [("cheat", False), ("cheat", True), ("doctor", False), ("doctor", True)]
+    ("command", "inside"),
+    [("cheat", False), ("cheat", True), ("doctor", False), ("doctor", True)],
 )
 def test_canonical_replacements_dispatch(command, inside, cli_project, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["booley", command])
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: inside)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if inside else RuntimeLocation.HOST)
     calls = []
     monkeypatch.setitem(
         cli._EARLY_COMMANDS, command, lambda args, root: calls.append((args.command, root)) or 19
@@ -336,7 +336,7 @@ def test_canonical_replacements_dispatch(command, inside, cli_project, monkeypat
 @pytest.mark.parametrize("command", ["chat", "dashboard"])
 def test_explicit_sandbox_commands_still_refuse_host(command, cli_project, monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["booley", command])
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setitem(cli._EARLY_COMMANDS, command, _unexpected_runtime_work)
     with pytest.raises(SystemExit) as error:
         cli.main()

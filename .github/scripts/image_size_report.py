@@ -87,7 +87,8 @@ def _compressed_layer_rows(
     entry = _manifest_entry(document, os_name, architecture)
     manifest = entry.get("SchemaV2Manifest", entry.get("OCIManifest", entry))
     layers = require_list(
-        require_dict(manifest, field="image manifest").get("layers"), field="image manifest layers"
+        require_dict(manifest, field="image manifest").get("layers"),
+        field="image manifest layers",
     )
     rows: list[LayerMeasurement] = []
     for raw in layers:
@@ -146,7 +147,8 @@ def _registry_measurement(
     if not digest.startswith("sha256:"):
         raise ValueError(f"manifest did not expose a platform digest for {reference!r}")
     return RegistryMeasurement(
-        digest, _compressed_layer_rows(document, os_name=os_name, architecture=architecture)
+        digest,
+        _compressed_layer_rows(document, os_name=os_name, architecture=architecture),
     )
 
 
@@ -175,7 +177,9 @@ def _history_layer_bytes(reference: str) -> tuple[int, ...]:
     return tuple(sizes)
 
 
-def _filesystem_measurement(reference: str) -> tuple[int, tuple[DirectoryMeasurement, ...]]:
+def _filesystem_measurement(
+    reference: str,
+) -> tuple[int, tuple[DirectoryMeasurement, ...]]:
     raw = _docker_output(
         [
             "run",
@@ -256,7 +260,8 @@ def _component_version(server: dict, name: str) -> str:
 
 def measurement_environment() -> dict[str, object]:
     version = require_dict(
-        json.loads(_docker_output(["version", "--format", "{{json .}}"])), field="Docker version"
+        json.loads(_docker_output(["version", "--format", "{{json .}}"])),
+        field="Docker version",
     )
     client = require_dict(version.get("Client"), field="Docker client version")
     server = require_dict(version.get("Server"), field="Docker server version")
@@ -512,7 +517,9 @@ def main() -> int:
         {name: measure(reference, registry_manifest=False) for name, reference in args.local_image}
     )
     payload = report(
-        measurements, environment=measurement_environment(), measured_at=utc_now_rfc3339()
+        measurements,
+        environment=measurement_environment(),
+        measured_at=utc_now_rfc3339(),
     )
     limits = _load_size_limits(args.limits) if args.limits else {}
     if args.limit_image:

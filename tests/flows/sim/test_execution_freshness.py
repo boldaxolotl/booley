@@ -57,7 +57,10 @@ def test_configured_absolute_artifact_may_be_explicitly_allowed(tmp_path: Path) 
     external.write_bytes(b"wave")
 
     evidence = validate_fresh_artifact(
-        external, roots=(root,), before=None, explicitly_allowed=(external,)
+        external,
+        roots=(root,),
+        before=None,
+        explicitly_allowed=(external,),
     )
 
     assert evidence.path == external.resolve()

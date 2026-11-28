@@ -10,7 +10,10 @@ from booley.core.boundary import as_int
 
 _CPU_MAX = Path("/sys/fs/cgroup/cpu.max")
 _CPU_V1_LAYOUTS = (
-    (Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"), Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")),
+    (
+        Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"),
+        Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us"),
+    ),
     (
         Path("/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_quota_us"),
         Path("/sys/fs/cgroup/cpu,cpuacct/cpu.cfs_period_us"),

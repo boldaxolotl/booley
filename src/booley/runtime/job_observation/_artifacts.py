@@ -143,7 +143,10 @@ class JobArtifactCache:
         return result
 
     def _load(
-        self, entry: tuple[int, int, Path], endpoint: str, result: dict[tuple[str, str], Artifact]
+        self,
+        entry: tuple[int, int, Path],
+        endpoint: str,
+        result: dict[tuple[str, str], Artifact],
     ) -> None:
         stamp, size, path = entry
         cached = self._next.get(path, self._committed.get(path))

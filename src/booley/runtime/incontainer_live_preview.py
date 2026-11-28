@@ -105,7 +105,10 @@ def _is_seeded(path: Path) -> bool:
 
 
 def _wait_for_seeded_settings(
-    home: Path, *, sleep: Callable[[float], None], clock: Callable[[], float]
+    home: Path,
+    *,
+    sleep: Callable[[float], None],
+    clock: Callable[[], float],
 ) -> list[Path]:
     """Wait briefly until every server root's Machine setting is written.
 

@@ -57,7 +57,10 @@ class ReleaseRange:
 
 def parse_stable_version(value: str) -> StableVersion:
     """Parse an exact stable version or raise :class:`ChangelogError`."""
-    match = re.fullmatch(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)", value)
+    match = re.fullmatch(
+        r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)",
+        value,
+    )
     if match is None:
         raise ChangelogError(f"unsupported version {value!r}; expected stable MAJOR.MINOR.PATCH")
     return StableVersion(*(int(part) for part in match.groups()))

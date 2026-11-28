@@ -24,7 +24,12 @@ class GrantMutator(Protocol):
     """Outer-composition interface for coordinated grant mutations."""
 
     def add(
-        self, project: Path, kind: str, *, installation: str | None, license_profile: str | None
+        self,
+        project: Path,
+        kind: str,
+        *,
+        installation: str | None,
+        license_profile: str | None,
     ) -> authority.ProjectGrant: ...
 
     def revoke(self, project: Path, kind: str) -> authority.ProjectGrant: ...
@@ -208,7 +213,10 @@ def _license_action(args: argparse.Namespace, action: str) -> _Result:
 
 
 def _grant_action(
-    args: argparse.Namespace, action: str, *, grant_mutator: GrantMutator
+    args: argparse.Namespace,
+    action: str,
+    *,
+    grant_mutator: GrantMutator,
 ) -> _Result:
     if action == "list" and grant_mutator.recovery_pending():
         raise authority.AuthorityError(

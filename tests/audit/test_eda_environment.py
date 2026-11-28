@@ -12,7 +12,10 @@ _ROOT = Path(__file__).resolve().parents[2]
 
 def test_non_riscv_image_has_no_riscv_probe_surface() -> None:
     findings = eda_environment.audit_riscv_toolchain(
-        "docker", "booley-sandbox", None, run=refusing_runner
+        "docker",
+        "booley-sandbox",
+        None,
+        run=refusing_runner,
     )
 
     assert findings == ()
@@ -22,7 +25,10 @@ def test_riscv_image_probes_every_advertised_tool_and_document() -> None:
     runner = CannedRunner()
 
     findings = eda_environment.audit_riscv_toolchain(
-        "docker", "booley-sandbox-riscv", "riscv", run=runner
+        "docker",
+        "booley-sandbox-riscv",
+        "riscv",
+        run=runner,
     )
 
     assert len(findings) == len(eda_environment.riscv_probe_specs())
@@ -33,7 +39,10 @@ def test_riscv_image_probes_every_advertised_tool_and_document() -> None:
 
 def test_failed_riscv_probe_has_one_stable_rebuild_fix() -> None:
     findings = eda_environment.audit_riscv_toolchain(
-        "docker", "booley-sandbox-riscv", "riscv", run=CannedRunner(1)
+        "docker",
+        "booley-sandbox-riscv",
+        "riscv",
+        run=CannedRunner(1),
     )
 
     assert findings

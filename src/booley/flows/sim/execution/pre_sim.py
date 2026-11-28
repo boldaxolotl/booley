@@ -23,7 +23,12 @@ from booley.flows.test_runs import TestRun
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.endpoint_execution import OOM_STOPPED_MESSAGE, job_stopped_after_oom
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
-from booley.runtime.platform_paths import bash_bin, kill_process_tree, popen_new_group_kwargs
+from booley.runtime.platform_paths import (
+    bash_bin,
+    kill_process_tree,
+    popen_new_group_kwargs,
+)
+from booley.runtime.process_group import own_process_group, release_process_group
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.runtime.supervised_execution import current_supervised_execution
 from booley.targets.domain import TargetHandle
@@ -258,6 +263,7 @@ def _run_pre_sim_process(command, *, cwd, env, timeout, resource, **child_kwargs
     supervised_env = {**env, **monitor.temp_env()}
     if scope is not None and scope.execution_id is not None:
         supervised_env[RUNTIME_EXECUTION_ENV] = str(scope.execution_id)
+    process = None
     try:
         process = MeasuredPopen(
             command,
@@ -271,10 +277,13 @@ def _run_pre_sim_process(command, *, cwd, env, timeout, resource, **child_kwargs
             **popen_new_group_kwargs(),
             **child_kwargs,
         )
+        own_process_group(process)
         return _await_pre_sim(
             process, command, timeout, monitor, (scope, current_progress(), resource)
         )
     finally:
+        if process is not None:
+            release_process_group(process)
         monitor.finish()  # stops the sampling thread, also when the spawn failed
         if monitor.tmp_dir is not None:
             shutil.rmtree(monitor.tmp_dir, ignore_errors=True)

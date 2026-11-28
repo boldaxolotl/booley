@@ -34,7 +34,11 @@ def test_project_commands_refuse_a_goals_section(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     root = _project(tmp_path / "proj")
-    for argv in (("targets",), ("resources",), ("flow", "sim", "--dry-run")):
+    for argv in (
+        ("targets",),
+        ("resources",),
+        ("flow", "sim", "--dry-run"),
+    ):
         assert _run(root, monkeypatch, *argv) == 2, argv
         err = capsys.readouterr().err
         assert "[goals] section (line 4)" in err, argv

@@ -150,7 +150,11 @@ class TargetCatalog:
             )
         frozen = tuple((name, tuple(refs)) for name, refs in sorted(declarations.items()))
         catalog = cls(
-            root, snapshot_id, frozen, doctor_private, _OperationalState(documents=documents)
+            root,
+            snapshot_id,
+            frozen,
+            doctor_private,
+            _OperationalState(documents=documents),
         )
         with cls._cache_lock:
             existing = cls._cache.get(cache_key)
@@ -216,7 +220,10 @@ class TargetCatalog:
         return self._handle(ref, declarations[ref.name])
 
     def select_many(
-        self, target_arg: str | None, *, for_flow: str | None = None
+        self,
+        target_arg: str | None,
+        *,
+        for_flow: str | None = None,
     ) -> tuple[TargetHandle, ...]:
         """Resolve a comma-separated endpoint Target argument."""
         tokens = [token.strip() for token in (target_arg or "").split(",") if token.strip()]
@@ -246,7 +253,10 @@ class TargetCatalog:
             self._state.inspector = _TargetSourceInspector(self.project_root)
         return self._state.inspector.inspect_catalog_handle(handle)
 
-    def core_closure(self, handles: Collection[TargetHandle]) -> frozenset[Path] | None:
+    def core_closure(
+        self,
+        handles: Collection[TargetHandle],
+    ) -> frozenset[Path] | None:
         """Return dependency cores reachable from selected handles."""
         self._require_fresh()
         if not handles:
@@ -256,7 +266,9 @@ class TargetCatalog:
         # Intentional private adapter seam: handles are authorized above and the
         # walker receives only this catalog's frozen declaration documents.
         closure = fusesoc_registry._selectable_core_closure_for_refs(  # pyright: ignore[reportPrivateUsage]
-            self.project_root, handles, documents=self._state.documents
+            self.project_root,
+            handles,
+            documents=self._state.documents,
         )
         self._require_fresh()
         return closure
@@ -277,7 +289,9 @@ class TargetCatalog:
         self._require_fresh()
         # Intentional private adapter seam, as in :meth:`core_closure`.
         missing = fusesoc_registry._unprovided_dependencies(  # pyright: ignore[reportPrivateUsage]
-            self.project_root, (handle,), documents=self._state.documents
+            self.project_root,
+            (handle,),
+            documents=self._state.documents,
         )
         self._require_fresh()
         return missing

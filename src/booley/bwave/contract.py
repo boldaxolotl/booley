@@ -112,7 +112,10 @@ def decode_list_metadata(text: str) -> BWaveListMetadata:
     )
 
 
-def _require_non_negative_int(data: dict, key: str) -> int:
+def _require_non_negative_int(
+    data: dict,
+    key: str,
+) -> int:
     field = "B-Wave list response.data"
     value = require_int(data.get(key), field=f"{field}.{key}")
     if value < 0:

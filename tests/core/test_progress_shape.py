@@ -17,7 +17,9 @@ from booley.core.progress_shape import validate_progress_shape
             {"targets": ["sim_a", "sim_a"]}, "repeats Target identities", id="repeated-targets"
         ),
         pytest.param(
-            {"completed_targets": ["sim_a", "sim_a"]}, "repeats completed", id="repeated-completed"
+            {"completed_targets": ["sim_a", "sim_a"]},
+            "repeats completed",
+            id="repeated-completed",
         ),
         pytest.param({"pending_targets": []}, "do not partition", id="not-partitioned"),
         pytest.param({"targets": [1]}, "list of strings", id="non-string-target"),

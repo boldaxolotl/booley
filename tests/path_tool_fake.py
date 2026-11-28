@@ -9,11 +9,14 @@ A rule matches a call when every word equals some argument; the first matching r
 Answers given with the same words form a sequence: the n-th matching call gets the n-th
 answer and the last one repeats. A call no rule matches exits 127 on stderr, so a stray
 call fails loudly. The fake logs a call only after it wrote its whole answer (a call that
-hangs logs first), so a logged call is a handshake the test can poll.
+hangs logs first), so a logged call is a handshake the test can poll. A ``script``
+computes the answer from ``args`` and the input ``text``, and may reassign ``stdout``,
+``stderr``, ``returncode`` and ``output``.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import sys
@@ -23,8 +26,10 @@ from typing import Any
 
 import pytest
 
+from tests.docker_cli_guard_plugin import allow_docker_cli
+
 _CHILD = """\
-import json, os, sys, time
+import base64, json, os, sys, time
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
@@ -46,13 +51,18 @@ if rule["hang_s"] is not None:
         handle.write(json.dumps(entry) + "\\n")
     time.sleep(rule["hang_s"])
     raise SystemExit(rule["returncode"])
-sys.stdout.write(rule["stdout"])
+output = None if rule["output"] is None else base64.b64decode(rule["output"])
+answer = dict(rule, args=args, text=text, output=output)
+exec(rule["script"] or "", answer)
+if answer["output"] is not None:
+    Path(args[args.index("-o") + 1]).write_bytes(answer["output"])
+sys.stdout.write(answer["stdout"])
 sys.stdout.flush()
-sys.stderr.write(rule["stderr"])
+sys.stderr.write(answer["stderr"])
 sys.stderr.flush()
 with log.open("a", encoding="utf-8", newline="\\n") as handle:
     handle.write(json.dumps(entry) + "\\n")
-raise SystemExit(rule["returncode"])
+raise SystemExit(answer["returncode"])
 """
 
 
@@ -84,6 +94,9 @@ class PathToolFake:
 
     @classmethod
     def install(cls, directory: Path, name: str, monkeypatch: pytest.MonkeyPatch) -> PathToolFake:
+        """Put *name* on ``PATH``; a ``docker`` also opts the test out of the CLI guard."""
+        if name == "docker":
+            allow_docker_cli()
         directory.mkdir(parents=True, exist_ok=True)
         fake = cls(directory, name)
         monkeypatch.setenv("PATH", os.pathsep.join((str(directory), os.environ.get("PATH", ""))))
@@ -100,6 +113,8 @@ class PathToolFake:
         returncode: int = 0,
         reads_input: bool = False,
         hang_s: float | None = None,
+        output: bytes | None = None,  # written to the file after ``-o``
+        script: str | None = None,
     ) -> None:
         self.rules.append(
             {
@@ -109,6 +124,8 @@ class PathToolFake:
                 "returncode": returncode,
                 "reads_input": reads_input,
                 "hang_s": hang_s,
+                "output": None if output is None else base64.b64encode(output).decode("ascii"),
+                "script": script,
             }
         )
         self.save()

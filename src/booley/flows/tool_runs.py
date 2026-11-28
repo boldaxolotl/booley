@@ -28,6 +28,7 @@ from booley.runtime.platform_paths import (
     kill_process_tree,
     popen_new_group_kwargs,
 )
+from booley.runtime.process_group import own_process_group, release_process_group
 
 #: Which out-of-memory kill took a process of a run's own tree: at the Sandbox's
 #: own memory limit, or the host's while the Sandbox stayed below it.
@@ -82,6 +83,23 @@ def _stop(process: MeasuredPopen) -> tuple[str | None, str | None]:
         return None, None
 
 
+def _spawn(
+    cmd: Sequence[str], cwd: str | os.PathLike[str], env: Mapping[str, str]
+) -> MeasuredPopen:
+    """Start *cmd* captured, as a process tree this module owns."""
+    process = MeasuredPopen(
+        list(cmd),
+        cwd=cwd,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        **popen_new_group_kwargs(),
+    )
+    own_process_group(process)
+    return process
+
+
 def run_tool(
     cmd: Sequence[str],
     *,
@@ -106,15 +124,7 @@ def run_tool(
     stdout = stderr = ""
     result: SubprocessResult | None = None
     try:
-        process = MeasuredPopen(
-            list(cmd),
-            cwd=cwd,
-            env={**env, **monitor.temp_env()},
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            **popen_new_group_kwargs(),
-        )
+        process = _spawn(cmd, cwd, {**env, **monitor.temp_env()})
         try:
             stdout, stderr = _communicate(process, monitor, timeout)
             settled = True
@@ -122,6 +132,8 @@ def run_tool(
             hard_timeout = settled = True
             raise
     finally:
+        if process is not None:
+            release_process_group(process)
         measurement = monitor.finish(None if process is None else process.reaped_peak_bytes)
         if monitor.tmp_dir is not None:
             shutil.rmtree(monitor.tmp_dir, ignore_errors=True)

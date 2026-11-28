@@ -10,7 +10,11 @@ import pytest
 
 from booley.core.scope_matching import scope_matches_file
 from booley.runtime.agent_errors import BlockingError
-from booley.runtime.git import commit_scope, expand_scope_globs, scope_matches_dirty_file
+from booley.runtime.git import (
+    commit_scope,
+    expand_scope_globs,
+    scope_matches_dirty_file,
+)
 
 
 @pytest.mark.parametrize("status", ["??", "A ", " M", "M ", "AM", " D", "D ", "MD"])
@@ -34,11 +38,17 @@ class TestCommitScope:
             cmd = args[1] if len(args) > 1 else ""
             if cmd == "diff":
                 return subprocess.CompletedProcess(
-                    args=args, returncode=0, stdout="rtl/foo.sv\0rtl/rogue_file.sv\0", stderr=""
+                    args=args,
+                    returncode=0,
+                    stdout="rtl/foo.sv\0rtl/rogue_file.sv\0",
+                    stderr="",
                 )
             if "reset" in args:
                 return subprocess.CompletedProcess(
-                    args=args, returncode=1, stdout="", stderr="index is locked"
+                    args=args,
+                    returncode=1,
+                    stdout="",
+                    stderr="index is locked",
                 )
             return subprocess.CompletedProcess(args=args, returncode=0)
 

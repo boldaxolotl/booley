@@ -30,7 +30,9 @@ def _entry(architecture: str, layers: list[tuple[str, int]]) -> dict:
 
 
 def _measurement(
-    reference: str, local_size: int, registry_layers: dict[str, int] | None
+    reference: str,
+    local_size: int,
+    registry_layers: dict[str, int] | None,
 ) -> object:
     registry = (
         image_size_report.RegistryMeasurement(
@@ -65,7 +67,10 @@ def test_compressed_layers_selects_linux_amd64_and_deduplicates() -> None:
         _entry("amd64", [("sha256:base", 10), ("sha256:base", 10), ("sha256:app", 20)]),
     ]
 
-    assert image_size_report.compressed_layers(document) == {"sha256:base": 10, "sha256:app": 20}
+    assert image_size_report.compressed_layers(document) == {
+        "sha256:base": 10,
+        "sha256:app": 20,
+    }
     rows = image_size_report._compressed_layer_rows(
         document, os_name="linux", architecture="amd64"
     )
@@ -126,14 +131,20 @@ def test_registry_measurement_resolves_linux_amd64_child_from_oci_index(
         index_reference: {
             "schemaVersion": 2,
             "manifests": [
-                {"digest": "sha256:runtime", "platform": {"os": "linux", "architecture": "amd64"}},
+                {
+                    "digest": "sha256:runtime",
+                    "platform": {"os": "linux", "architecture": "amd64"},
+                },
                 {
                     "digest": "sha256:attestation",
                     "platform": {"os": "unknown", "architecture": "unknown"},
                 },
             ],
         },
-        child_reference: {"schemaVersion": 2, "layers": [{"digest": "sha256:layer", "size": 42}]},
+        child_reference: {
+            "schemaVersion": 2,
+            "layers": [{"digest": "sha256:layer", "size": 42}],
+        },
     }
     calls: list[list[str]] = []
 
@@ -151,7 +162,9 @@ def test_registry_measurement_resolves_linux_amd64_child_from_oci_index(
     assert [call[-1] for call in calls] == [index_reference, child_reference]
 
 
-def test_measure_records_exact_local_history_and_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_measure_records_exact_local_history_and_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     inspect = [
         {
             "Id": "sha256:image",
@@ -181,7 +194,8 @@ def test_measure_records_exact_local_history_and_identity(monkeypatch: pytest.Mo
 
 @pytest.mark.parametrize("config", ({}, {"User": ""}))
 def test_measure_accepts_default_root_runtime_user(
-    monkeypatch: pytest.MonkeyPatch, config: dict[str, str]
+    monkeypatch: pytest.MonkeyPatch,
+    config: dict[str, str],
 ) -> None:
     inspect = [
         {
@@ -341,7 +355,12 @@ def test_runtime_measurement_skips_registry_only_limit() -> None:
 
     errors = image_size_report.apply_size_limits(
         payload,
-        {"sandbox": {"docker_local_size_bytes": 100, "registry_compressed_layer_bytes": 1}},
+        {
+            "sandbox": {
+                "docker_local_size_bytes": 100,
+                "registry_compressed_layer_bytes": 1,
+            }
+        },
     )
 
     assert errors == []
@@ -377,10 +396,13 @@ def test_committed_size_limits_bound_both_runtime_images_below_baseline() -> Non
 
 
 def test_size_limits_can_select_one_image_variant() -> None:
-    limits = {"sandbox": {"docker_local_size_bytes": 10}, "riscv": {"docker_local_size_bytes": 20}}
+    limits = {
+        "sandbox": {"docker_local_size_bytes": 10},
+        "riscv": {"docker_local_size_bytes": 20},
+    }
 
     assert image_size_report.select_limits(limits, ["sandbox"]) == {
-        "sandbox": {"docker_local_size_bytes": 10}
+        "sandbox": {"docker_local_size_bytes": 10},
     }
 
     with pytest.raises(ValueError, match="unknown size-limit image"):

@@ -27,6 +27,7 @@ from booley.commit_policy import stealth_enabled
 from booley.config import agent_app
 from booley.config.agent import RetiredAuthError
 from booley.config.eda import EdaConfig
+from booley.core import docker_cli, sandbox_layout
 from booley.core.boundary import require_dict
 from booley.core.host_shell import quote_arg
 from booley.eda.provisioning.licensing.flexnet_docker import (
@@ -45,7 +46,6 @@ from booley.runtime import (
     image_identity,
     platform_paths,
     runtime_context,
-    sandbox_layout,
     session_runtime,
 )
 from booley.runtime import devcontainer as dc
@@ -476,7 +476,10 @@ def _inspect_current_runtime(request: RuntimeInspectionRequest, report: Findings
         and request.fpga_enabled
         and not mounted
     ):
-        report.fail("host-provisioned Vivado is absent from the Sandbox", _host_authority_remedy())
+        report.fail(
+            "host-provisioned Vivado is absent from the Sandbox",
+            _host_authority_remedy(),
+        )
         return
     if mounted:
         _check_mounted_vivado_runtime(report)
@@ -523,7 +526,10 @@ def _inspect_live_runtime(
         name
         for name in containers
         if not session_runtime.container_matches_issuance(
-            name, issuance, spec=spec, workspace=request.project_root
+            name,
+            issuance,
+            spec=spec,
+            workspace=request.project_root,
         )
     ]
     if result.returncode != 0:
@@ -531,7 +537,11 @@ def _inspect_live_runtime(
     elif drifted:
         report.fail(
             "live Sandbox state differs from current host issuance",
-            session_runtime.issued_runtime_drift_fix(request.project_root, issuance, drifted),
+            session_runtime.issued_runtime_drift_fix(
+                request.project_root,
+                issuance,
+                drifted,
+            ),
         )
     elif containers:
         report.pass_("live Sandbox state matches the current host issuance")
@@ -544,7 +554,9 @@ def _list_issued_containers(
     docker_exe: str, issuance: runtime_spec.Issuance
 ) -> subprocess.CompletedProcess[str]:
     identity = next(
-        label for label in runtime_spec.labels(issuance) if label.startswith("booley.project-id=")
+        label
+        for label in runtime_spec.labels(issuance)
+        if label.startswith(f"{docker_cli.PROJECT_ID_LABEL}=")
     )
     return run_captured_bounded(
         [
@@ -622,7 +634,10 @@ def _check_host_authority_isolation(report: Findings) -> bool:
         Path("/home/agent/.config/booley/eda"),
     )
     if any(_runtime_path_exposed(path) for path in forbidden):
-        report.fail("Sandbox exposes a forbidden host-authority surface", _host_authority_remedy())
+        report.fail(
+            "Sandbox exposes a forbidden host-authority surface",
+            _host_authority_remedy(),
+        )
         return False
     for ssh_dir in (Path("/root/.ssh"), Path("/home/agent/.ssh")):
         entry = _ssh_authority_entry(ssh_dir)
@@ -731,13 +746,17 @@ def _check_issued_license_relay(
         return
     image_id = issuance.relay_image_id
     if not isinstance(image_id, str):
-        report.fail("issued License Profile lacks an immutable relay image", request.remedy)
+        report.fail(
+            "issued License Profile lacks an immutable relay image",
+            request.remedy,
+        )
         return
     relay = resources_for_session(str(project_root.resolve()))
     if not session_runtime._relay_objects_exist(relay):
         if containers:
             report.fail(
-                "licensed Sandbox has no relay topology", _relay_repair(project_root, containers)
+                "licensed Sandbox has no relay topology",
+                _relay_repair(project_root, containers),
             )
         return
     try:
@@ -745,7 +764,10 @@ def _check_issued_license_relay(
             relay,
             containers[0] if len(containers) == 1 else None,
             RelayProfile(
-                profile.server_ipv4, profile.server_hostid, profile.lmgrd_port, profile.vendor_port
+                profile.server_ipv4,
+                profile.server_hostid,
+                profile.lmgrd_port,
+                profile.vendor_port,
             ),
             issuance_labels=runtime_spec.labels(issuance),
             image=image_id,
@@ -775,7 +797,10 @@ def _mounted_vivado_files(report: Findings) -> bool:
     try:
         digest = hashlib.sha256(wrapper.read_bytes()).hexdigest()
     except OSError as exc:
-        report.fail(f"mounted Vivado wrapper is unreadable: {exc}", _host_authority_remedy())
+        report.fail(
+            f"mounted Vivado wrapper is unreadable: {exc}",
+            _host_authority_remedy(),
+        )
         return False
     if digest != wrapper_sha256() or not os.access(executable, os.X_OK):
         report.fail(
@@ -828,7 +853,11 @@ def _probe_mounted_vivado(report: Findings) -> None:
     wrapper = Path("/usr/local/bin/vivado")
     try:
         result = subprocess.run(
-            [str(wrapper), "-version"], capture_output=True, text=True, timeout=90, check=False
+            [str(wrapper), "-version"],
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         report.fail(
@@ -876,7 +905,7 @@ def _check_sandbox_state_volumes(
     if others:
         report.note(
             f"{len(others)} interactive state volume(s) from other projects persist; "
-            "remove unused ones with: docker volume rm <name>"
+            "remove unused ones with: docker volume rm <name>",
         )
         for v in others:
             report.detail(f"    {v}")
@@ -950,7 +979,10 @@ def _check_job_logs_tracked(booley_dir: Path, report: Findings) -> None:
     """
     try:
         result = platform_paths.run_captured_bounded(
-            ["git", "ls-files", "--", "job_logs"], timeout=10, cwd=booley_dir, errors="strict"
+            ["git", "ls-files", "--", "job_logs"],
+            timeout=10,
+            cwd=booley_dir,
+            errors="strict",
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return

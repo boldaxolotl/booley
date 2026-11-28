@@ -51,7 +51,11 @@ def test_streaming_conversion_produces_queryable_store(tmp_path) -> None:
     _require_binary()
     fifo = tmp_path / "trace.fifo"
     store = tmp_path / "trace.fst"
-    conversion = start_streaming_conversion(fifo, store, stderr_path=tmp_path / "trace.fst.stderr")
+    conversion = start_streaming_conversion(
+        fifo,
+        store,
+        stderr_path=tmp_path / "trace.fst.stderr",
+    )
     assert conversion is not None
 
     _write_fifo(fifo, MINIMAL_VCD.encode())

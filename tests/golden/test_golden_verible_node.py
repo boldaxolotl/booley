@@ -46,7 +46,9 @@ def _edam(files: list[dict], eda_tool_options: dict | None = None) -> dict:
         # A vlogdefine parameter must be *tolerated* (the lint flow declares
         # the argtype) but never forwarded — verible-verilog-lint lints
         # unpreprocessed sources and has no define flag.
-        "parameters": {"CFG": {"datatype": "bool", "paramtype": "vlogdefine", "default": True}},
+        "parameters": {
+            "CFG": {"datatype": "bool", "paramtype": "vlogdefine", "default": True},
+        },
         "tool_options": {"verible": eda_tool_options or {}},
     }
 
@@ -84,7 +86,10 @@ def test_verible_node_makefile_golden(tmp_path: Path) -> None:
     )
     makefile = tmp_path / "Makefile"
     node.commands.write(str(makefile))
-    assert_matches_golden("lint/verible_node_makefile.mk", makefile.read_text(encoding="utf-8"))
+    assert_matches_golden(
+        "lint/verible_node_makefile.mk",
+        makefile.read_text(encoding="utf-8"),
+    )
 
 
 def test_verible_node_minimal_makefile_golden(tmp_path: Path) -> None:
@@ -94,7 +99,8 @@ def test_verible_node_minimal_makefile_golden(tmp_path: Path) -> None:
     makefile = tmp_path / "Makefile"
     node.commands.write(str(makefile))
     assert_matches_golden(
-        "lint/verible_node_minimal_makefile.mk", makefile.read_text(encoding="utf-8")
+        "lint/verible_node_minimal_makefile.mk",
+        makefile.read_text(encoding="utf-8"),
     )
 
 

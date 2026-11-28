@@ -93,7 +93,10 @@ def target_section_key(keys: Iterable[str], identity: str) -> str | None:
     return name if name in key_list else None
 
 
-def resolve(declarations: Mapping[str, Sequence[TargetRef]], token: str) -> TargetRef:
+def resolve(
+    declarations: Mapping[str, Sequence[TargetRef]],
+    token: str,
+) -> TargetRef:
     """Resolve one selector against an already-filtered declaration snapshot."""
     qualifier, name = split_selector(token)
     bucket = declarations.get(name)

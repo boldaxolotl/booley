@@ -347,7 +347,12 @@ def test_endpoint_help_is_allowed_on_host(tmp_path, capsys):
         specialist_command(["reviewer", "--help"], tmp_path)
     assert error.value.code == 0
     output = capsys.readouterr().out
-    for flag in ["--project", "--report-dir", "--max-turns", "--timeout"]:
+    for flag in [
+        "--project",
+        "--report-dir",
+        "--max-turns",
+        "--timeout",
+    ]:
         assert flag in output
     assert "--diagnostic" not in output
     assert "--work-dir" not in output

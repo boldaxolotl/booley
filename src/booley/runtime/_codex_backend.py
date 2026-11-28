@@ -25,6 +25,7 @@ from booley.config.gateway import (
     gateway_settings_from_env,
 )
 from booley.core.models import AgentArtifactPaths, AgentCallParams, AgentResult
+from booley.core.sandbox_detection import container_marker_file, inside_session_runtime
 from booley.runtime.filesystem_utils import make_directories
 
 from ._codex_live_usage import CodexLiveUsage
@@ -66,11 +67,6 @@ from .pid import capture_process_identity
 from .prompt_artifacts import adjacent_artifact_paths, write_prompt_artifacts
 
 logger = logging.getLogger(__name__)
-
-
-def _inside_container() -> bool:
-    """Detect if we're already running inside a Docker container."""
-    return Path("/.dockerenv").exists() or Path("/run/.containerenv").exists()
 
 
 def _codex_sandbox_mode(allowed_agent_capabilities: list[str] | None) -> str:
@@ -152,7 +148,9 @@ def _deny_patterns_to_prompt(patterns: list[str]) -> str | None:
 
 
 def _codex_build_prompt(
-    prompt: str, system_prompt: str | None, disallowed_agent_capabilities: list[str] | None = None
+    prompt: str,
+    system_prompt: str | None,
+    disallowed_agent_capabilities: list[str] | None = None,
 ) -> str:
     """Assemble the full prompt with optional system prefix."""
     parts: list[str] = []
@@ -266,12 +264,18 @@ class CodexBackend:
             )
         return None
 
-    async def call(self, params: AgentCallParams, **kwargs: Any) -> AgentResult:
+    async def call(
+        self,
+        params: AgentCallParams,
+        **kwargs: Any,
+    ) -> AgentResult:
         on_event = kwargs.pop("on_event", None)
         on_start = kwargs.pop("on_start", None)
         tag = self._log_start(params)
         full_prompt = _codex_build_prompt(
-            params.prompt, params.system_prompt, params.disallowed_agent_capabilities
+            params.prompt,
+            params.system_prompt,
+            params.disallowed_agent_capabilities,
         )
 
         last_exc: Exception | None = None
@@ -327,7 +331,10 @@ class CodexBackend:
         source = transcript_path_for_label(transcript_path, params.label)
         paths = (params.artifact_paths or adjacent_artifact_paths)(source)
         transcript_path, cmd, schema_file = self._prepare_call(
-            params, full_prompt=full_prompt, transcript_path=transcript_path, paths=paths
+            params,
+            full_prompt=full_prompt,
+            transcript_path=transcript_path,
+            paths=paths,
         )
         try:
             raw_output, raw_stderr, returncode = await _codex_run_subprocess(
@@ -353,7 +360,8 @@ class CodexBackend:
                 error_msg, output, returncode, raw_stderr, raw_output, model=params.model
             )
             structured, structured_fallback = _codex_resolve_structured(
-                params.output_format, output
+                params.output_format,
+                output,
             )
             return AgentResult(
                 output=output,
@@ -441,9 +449,9 @@ def _codex_build_cmd(
     if reasoning_effort:
         cmd.extend(["-c", f'model_reasoning_effort="{reasoning_effort}"'])
 
-    # Inside a Docker container, Codex's bwrap sandbox fails (no user
-    # namespaces). The container IS the sandbox — always bypass.
-    if _inside_container() or sandbox == "danger-full-access":
+    # Codex's bwrap sandbox cannot run in a Sandbox or in any container whose
+    # runtime left a marker file (no user namespaces): always bypass there.
+    if inside_session_runtime() or container_marker_file() or sandbox == "danger-full-access":
         cmd.append("--dangerously-bypass-approvals-and-sandbox")
     elif session_id:
         cmd.extend(["-c", f'sandbox_mode="{sandbox}"'])
@@ -664,11 +672,13 @@ async def _resolve_gateway_command_token() -> str | None:
 
 
 async def _codex_spawn(
-    cmd: list[str], params: AgentCallParams, auth_mode: str = "subscription"
+    cmd: list[str],
+    params: AgentCallParams,
+    auth_mode: str = "subscription",
 ) -> tuple[asyncio.subprocess.Process, Path]:
     """Spawn the codex subprocess with piped I/O.
 
-    Inside a container, a private HOME exposes the recursion-safe MCP tools
+    In a Sandbox, a private HOME exposes the recursion-safe MCP tools
     in ``params.nested_mcp_tools`` and carries the scoped MCP environment.
     An unlabeled caller uses "_anonymous" with an empty allowlist.
     """
@@ -678,7 +688,7 @@ async def _codex_spawn(
 
     if not defers_to_cli(auth_mode) and os.environ.get("CODEX_HOME"):
         env = {**os.environ, "CODEX_HOME": str(subscription_creds_path("codex").parent)}
-    if _inside_container() and not params.text_only:
+    if inside_session_runtime() and not params.text_only:
         env = dict(os.environ)
         env["HOME"] = _ensure_nested_codex_home(
             params.label or "_anonymous",
@@ -771,7 +781,11 @@ async def _codex_run_subprocess(
             with contextlib.suppress(asyncio.CancelledError):
                 await stderr_task
 
-    await _run_codex_work(_stream_and_drain(), proc, timeout_seconds=params.timeout_seconds)
+    await _run_codex_work(
+        _stream_and_drain(),
+        proc,
+        timeout_seconds=params.timeout_seconds,
+    )
     # ``_stream_and_drain`` awaited ``proc.wait()``, so the exit status is set here.
     assert proc.returncode is not None
     if not prompt_fed and proc.returncode == 0:
@@ -814,7 +828,10 @@ async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
 
 
 async def _run_codex_work(
-    work: Coroutine[Any, Any, None], proc: asyncio.subprocess.Process, *, timeout_seconds: int
+    work: Coroutine[Any, Any, None],
+    proc: asyncio.subprocess.Process,
+    *,
+    timeout_seconds: int,
 ) -> None:
     """Run streamed Codex work and always terminate its process on cancellation."""
     try:
@@ -855,7 +872,11 @@ async def _read_stdout(
             buf.extend(chunk)
 
 
-def _dispatch_stdout_event(event: dict, on_event: Any, live_usage: CodexLiveUsage | None) -> None:
+def _dispatch_stdout_event(
+    event: dict,
+    on_event: Any,
+    live_usage: CodexLiveUsage | None,
+) -> None:
     """Route one validated ``codex exec --json`` record."""
     etype = event.get("type")
     item = event.get("item", {})
@@ -929,7 +950,8 @@ def _raise_for_codex_detail(detail: str, *, prefix: str, model: str) -> None:
 
 
 def _codex_resolve_structured(
-    output_format: dict[str, Any] | None, output: str
+    output_format: dict[str, Any] | None,
+    output: str,
 ) -> tuple[dict | None, bool]:
     """Resolve structured output from Codex response."""
     if output_format is None or not output:

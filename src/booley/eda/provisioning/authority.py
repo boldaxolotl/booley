@@ -200,7 +200,12 @@ def remove_installation(name: str) -> None:
 
 
 def register_license(
-    name: str, *, server_ipv4: str, server_hostid: str, lmgrd_port: int, vendor_port: int
+    name: str,
+    *,
+    server_ipv4: str,
+    server_hostid: str,
+    lmgrd_port: int,
+    vendor_port: int,
 ) -> LicenseProfile:
     """Validate and atomically register one fixed FlexNet topology."""
     _validate_name(name, "license profile")
@@ -256,7 +261,10 @@ def _prepare_add_grant(
 
 
 @contextlib.contextmanager
-def _prepare_revoke_grant(project_root: str, kind: str) -> Iterator[Callable[[], ProjectGrant]]:
+def _prepare_revoke_grant(
+    project_root: str,
+    kind: str,
+) -> Iterator[Callable[[], ProjectGrant]]:
     """Validate revocation under EDA's lock, then expose its commit step."""
     removed: ProjectGrant | None = None
     with _locked_state() as state:
@@ -307,7 +315,8 @@ def resolve_license(project_root: Path, kind: str = VIVADO_KIND) -> LicenseProfi
 
 
 def resolve_for_inspection(
-    project_root: Path, host_provisioning: bool
+    project_root: Path,
+    host_provisioning: bool,
 ) -> tuple[Installation | None, LicenseProfile | None]:
     """Resolve one atomic authority snapshot without creating host state."""
     project = _canonical_project(project_root)
@@ -316,7 +325,8 @@ def resolve_for_inspection(
 
 @contextlib.contextmanager
 def resolve_for_issuance(
-    project_root: Path, host_provisioning: bool
+    project_root: Path,
+    host_provisioning: bool,
 ) -> Iterator[tuple[Installation | None, LicenseProfile | None]]:
     """Resolve one coherent authority snapshot while holding the registry lock.
 
@@ -335,7 +345,9 @@ def resolve_for_issuance(
 
 
 def _resolve_issuance_records(
-    project: Path, host_provisioning: bool, state: AuthorityState
+    project: Path,
+    host_provisioning: bool,
+    state: AuthorityState,
 ) -> tuple[Installation | None, LicenseProfile | None]:
     matches = [grant for grant in state.grants if _grant_key(grant) == (str(project), VIVADO_KIND)]
     if len(matches) > 1:

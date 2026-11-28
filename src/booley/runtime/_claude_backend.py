@@ -131,7 +131,11 @@ class ClaudeSDKBackend:
             )
         return None
 
-    async def call(self, params: AgentCallParams, **kwargs: Any) -> AgentResult:
+    async def call(
+        self,
+        params: AgentCallParams,
+        **kwargs: Any,
+    ) -> AgentResult:
         """Call a Claude agent via the Agent SDK with retry."""
         on_event = kwargs.pop("on_event", None)
         on_start = kwargs.pop("on_start", None)
@@ -220,7 +224,13 @@ class ClaudeSDKBackend:
                     on_start()
 
             await _consume_claude_stream(
-                prompt, options, counters, transcript_file, on_event, state, on_message=on_message
+                prompt,
+                options,
+                counters,
+                transcript_file,
+                on_event,
+                state,
+                on_message=on_message,
             )
 
     async def _call_once(
@@ -262,7 +272,9 @@ class ClaudeSDKBackend:
                 transcript_file = _open_transcript(stack, transcript_path)
                 if transcript_file is not None:
                     _write_prompt_header(
-                        transcript_file, getattr(options, "system_prompt", None), prompt
+                        transcript_file,
+                        getattr(options, "system_prompt", None),
+                        prompt,
                     )
                 try:
                     await self._process_stream(
@@ -460,12 +472,15 @@ def _options_model(options: ClaudeAgentOptions) -> str:
 
 
 def _build_sdk_options(
-    params: AgentCallParams, auth_mode: str = "subscription"
+    params: AgentCallParams,
+    auth_mode: str = "subscription",
 ) -> ClaudeAgentOptions:
     """Build ClaudeAgentOptions from AgentCallParams."""
     cwd_path = Path(params.cwd).resolve()
     options = ClaudeAgentOptions(
-        model=params.model, cwd=cwd_path, permission_mode="bypassPermissions"
+        model=params.model,
+        cwd=cwd_path,
+        permission_mode="bypassPermissions",
     )
 
     if params.text_only:
@@ -513,7 +528,10 @@ def _build_sdk_options(
     return options
 
 
-def _apply_mcp_servers(options: ClaudeAgentOptions, params: AgentCallParams) -> None:
+def _apply_mcp_servers(
+    options: ClaudeAgentOptions,
+    params: AgentCallParams,
+) -> None:
     """Wire the Booley MCP server into the SDK options.
 
     Mirrors the Codex nested-agent contract: when ``nested_mcp_tools`` is set
@@ -636,7 +654,11 @@ class _UsageCounters:
         if self.total_cost > 0:
             return self.total_cost
         return estimate_cost(
-            model, self.total_input, self.total_cached, self.total_output, self.total_cache_create
+            model,
+            self.total_input,
+            self.total_cached,
+            self.total_output,
+            self.total_cache_create,
         )
 
     def usage_delta(self, model: str) -> tuple[int, float]:
@@ -662,7 +684,8 @@ class _UsageCounters:
 
 
 def _open_transcript(
-    stack: contextlib.ExitStack, transcript_path: Path | None
+    stack: contextlib.ExitStack,
+    transcript_path: Path | None,
 ) -> io.TextIOBase | None:
     """Open a transcript file within an ExitStack, or return None."""
     if transcript_path is None:
@@ -755,7 +778,9 @@ def _capture_pending_file_edits(message: AssistantMessage, state: _StreamState) 
 
 
 def _dispatch_completed_file_edits(
-    on_event: Any, message: UserMessage, state: _StreamState
+    on_event: Any,
+    message: UserMessage,
+    state: _StreamState,
 ) -> None:
     """Emit successful Claude file-operation results as backend-neutral events."""
     paths: list[str] = []
@@ -871,7 +896,9 @@ def _handle_stream_exception(
 
 
 def _try_structured_fallback(
-    output_format: dict[str, Any] | None, structured: dict | None, final_text: str
+    output_format: dict[str, Any] | None,
+    structured: dict | None,
+    final_text: str,
 ) -> tuple[dict | None, bool]:
     """Attempt structured output fallback via JSON extraction."""
     if output_format is None or structured:
@@ -896,7 +923,9 @@ def _finalize_result(
 ) -> AgentResult:
     """Build AgentResult from counters, apply structured fallback, log summary."""
     structured, structured_fallback = _try_structured_fallback(
-        output_format, c.structured, c.final_text
+        output_format,
+        c.structured,
+        c.final_text,
     )
     cost = c.estimated_cost(model)
 
@@ -923,7 +952,11 @@ def _finalize_result(
     return result
 
 
-def _log_result_details(c: _UsageCounters, cost: float, structured: dict | None) -> None:
+def _log_result_details(
+    c: _UsageCounters,
+    cost: float,
+    structured: dict | None,
+) -> None:
     """Emit DEBUG-level result details (preview, token counts, structured keys)."""
     output_preview = c.final_text[:300].replace("\n", " ") if c.final_text else "(empty)"
     if len(c.final_text) > 300:
@@ -1072,7 +1105,9 @@ def _rate_limit_wait_s(info: Any) -> float:
     return wait
 
 
-async def _handle_rate_limit_event(event: RateLimitEvent) -> None:
+async def _handle_rate_limit_event(
+    event: RateLimitEvent,
+) -> None:
     """Handle a rate limit event from the SDK stream.
 
     A rejected event waits until its reset and raises a retryable error, unless the reset
@@ -1107,7 +1142,11 @@ async def _handle_rate_limit_event(event: RateLimitEvent) -> None:
 _transcript_path_for_attempt = transcript_path_for_attempt
 
 
-def _write_prompt_header(f: io.TextIOBase, system_prompt: str | None, user_prompt: str) -> None:
+def _write_prompt_header(
+    f: io.TextIOBase,
+    system_prompt: str | None,
+    user_prompt: str,
+) -> None:
     """Write the system + user prompts as the first JSONL entry."""
     entry = {
         "type": "prompt",
@@ -1134,6 +1173,10 @@ def _write_transcript_turn(f: io.TextIOBase, msg: AssistantMessage) -> None:
                 b[field_name] = getattr(block, field_name)
         blocks.append(b)
 
-    entry = {"timestamp": utc_now_rfc3339(), "usage": msg.usage, "content": blocks}
+    entry = {
+        "timestamp": utc_now_rfc3339(),
+        "usage": msg.usage,
+        "content": blocks,
+    }
     f.write(json.dumps(entry, default=str) + "\n")
     f.flush()

@@ -12,7 +12,12 @@ from pathlib import Path
 import pytest
 
 from booley.runtime import session_admission, session_runtime
-from tests.harness.session_docker_fake import SessionDockerFake, route_session_commands, run_cli
+from tests.harness.session_docker_fake import (
+    SessionDockerFake,
+    docker_runner,
+    route_session_commands,
+    run_cli,
+)
 
 
 def install_docker_fake(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> SessionDockerFake:
@@ -90,7 +95,7 @@ def _capacity_refusal(fake: SessionDockerFake, tmp_path: Path, root: Path) -> st
     other = tmp_path / "other-project"
     other.mkdir(exist_ok=True)
     with pytest.raises(session_admission.AdmissionError) as refused:
-        session_admission.admit_start(other, target_name="other", run=fake.run)
+        session_admission.admit_start(other, target_name="other", run=docker_runner(fake.run))
     assert str(root.resolve()) in str(refused.value)
     return str(refused.value)
 
@@ -102,7 +107,7 @@ def test_every_session_down_hint_works_for_deleted_project(
     fake = install_docker_fake(monkeypatch, tmp_path)
 
     def sandbox(_root: Path) -> session_admission.Sandbox:
-        (item,) = session_admission.running_sandboxes(run=fake.run)
+        (item,) = session_admission.running_sandboxes(run=docker_runner(fake.run))
         return item
 
     builders: dict[str, Callable[[Path], str]] = {

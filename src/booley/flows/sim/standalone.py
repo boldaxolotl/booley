@@ -118,7 +118,10 @@ _FRONTEND_OPTIONS_KEY = {
 # Dialect flags a fallback probe runs with: the Target's own flags do not apply
 # to a compiler the Target does not use. Icarus needs SystemVerilog enabled to
 # parse the sources at all; Verilator's default already accepts them.
-_FALLBACK_FLAGS = {_FRONTEND_IVERILOG: ("-g2012",), _FRONTEND_VERILATOR: ()}
+_FALLBACK_FLAGS = {
+    _FRONTEND_IVERILOG: ("-g2012",),
+    _FRONTEND_VERILATOR: (),
+}
 
 # Verilator options that select the language generation, each followed by its
 # value token (``--default-language 1364-2005``).
@@ -351,7 +354,10 @@ class StandaloneMixin:
             if Path(rel).suffix.lower() in _HDL_SUFFIXES
         }
 
-    def _scan_standalone_scope(self, scope: list[str]) -> tuple[list[tuple[str, str]], list[str]]:
+    def _scan_standalone_scope(
+        self,
+        scope: list[str],
+    ) -> tuple[list[tuple[str, str]], list[str]]:
         """Scan *scope* files → ((module, declaring file) pairs, shared files).
 
         Shared files are those declaring a ``package`` or ``interface``; they
@@ -438,7 +444,12 @@ class StandaloneMixin:
         return probes
 
     def _standalone_compile_command(
-        self, module: str, rel: str, shared: list[str], frontend: str, flags: tuple[str, ...]
+        self,
+        module: str,
+        rel: str,
+        shared: list[str],
+        frontend: str,
+        flags: tuple[str, ...],
     ) -> list[str]:
         """The per-module probe: elaborate *module* from its declaring file only.
 
@@ -473,7 +484,10 @@ class StandaloneMixin:
         return ["iverilog", *flags, "-o", os.devnull, "-s", module, *prereqs, rel]
 
     def _run_standalone_probes(
-        self, probes: tuple[_StandaloneProbe, ...], *, primary_ok: bool
+        self,
+        probes: tuple[_StandaloneProbe, ...],
+        *,
+        primary_ok: bool,
     ) -> tuple[list[_ProbeRecord], list[_ProbeRecord], list[str], str]:
         """Probe every planned compile under one deadline and classify its outcome.
 
@@ -496,7 +510,8 @@ class StandaloneMixin:
                     f"{label} standalone sweep timed out after {self._get_timeout()}s",
                 )
             record, log_chunk, eda_tool_error = self._run_standalone_probe(
-                probe, timeout_s=max(1, math.ceil(remaining_s))
+                probe,
+                timeout_s=max(1, math.ceil(remaining_s)),
             )
             role = " (fallback)" if probe.fallback else ""
             via = _probe_label(probe.frontend, probe.flags)
@@ -515,7 +530,10 @@ class StandaloneMixin:
         return failures, unparsed, log_chunks, ""
 
     def _run_standalone_probe(
-        self, probe: _StandaloneProbe, *, timeout_s: int
+        self,
+        probe: _StandaloneProbe,
+        *,
+        timeout_s: int,
     ) -> tuple[_ProbeRecord | None, str, str]:
         """Run one bounded probe and return its finding, log, and tool error."""
         module, rel, frontend = probe.module, probe.file, probe.frontend
@@ -541,7 +559,10 @@ class StandaloneMixin:
         return None, log_chunk, message
 
     def _run_standalone_check(
-        self, targets: list[str], *, primary_ok: bool = True
+        self,
+        targets: list[str],
+        *,
+        primary_ok: bool = True,
     ) -> _StandaloneOutcome:
         """Run the optional per-module sweep."""
         t0 = monotonic()
@@ -553,22 +574,35 @@ class StandaloneMixin:
         if self._eda_tool is None and len(recipe.frontends) == 1:
             self._eda_tool = recipe.frontends[0]
         failures, unparsed, log_chunks, eda_tool_error = self._run_standalone_probes(
-            recipe.probes, primary_ok=primary_ok
+            recipe.probes,
+            primary_ok=primary_ok,
         )
         log_pointer = self._persist_standalone_log("".join(log_chunks))
         error = self._standalone_probe_error(
-            recipe, failures, unparsed, eda_tool_error, log_pointer
+            recipe,
+            failures,
+            unparsed,
+            eda_tool_error,
+            log_pointer,
         )
         if error is not None:
             return error
-        return self._standalone_verdict(recipe, failures, unparsed, log_pointer, monotonic() - t0)
+        return self._standalone_verdict(
+            recipe,
+            failures,
+            unparsed,
+            log_pointer,
+            monotonic() - t0,
+        )
 
     def _prepare_standalone_check(
-        self, targets: list[str]
+        self,
+        targets: list[str],
     ) -> _StandalonePlanRecipe | _StandaloneOutcome:
         """Return the planned (or freshly planned) recipe, or the error outcome."""
         self._open_run_log(
-            "standalone", work_root_for(self.args.work_dir, "sim", "standalone", variant="sweep")
+            "standalone",
+            work_root_for(self.args.work_dir, "sim", "standalone", variant="sweep"),
         )
         planned = self._standalone_plan_recipe
         if planned is not None:
@@ -592,7 +626,7 @@ class StandaloneMixin:
             raise ValueError(
                 f"no module declarations found in the RTL source scope "
                 f"({len(coverage)} files) — the criterion would be vacuous. "
-                "Check the Targets' RTL filesets."
+                "Check the Targets' RTL filesets.",
             )
         probes = self._standalone_probes(modules, shared, coverage)
         commands = tuple(
@@ -603,7 +637,11 @@ class StandaloneMixin:
             )
             for probe in probes
         )
-        return _StandalonePlanRecipe(probes=tuple(probes), shared=tuple(shared), commands=commands)
+        return _StandalonePlanRecipe(
+            probes=tuple(probes),
+            shared=tuple(shared),
+            commands=commands,
+        )
 
     def _standalone_probe_error(
         self,
@@ -722,7 +760,9 @@ class StandaloneMixin:
         return pointer or None
 
     def _standalone_failure_lines(
-        self, failures: list[_ProbeRecord], log_pointer: str | None
+        self,
+        failures: list[_ProbeRecord],
+        log_pointer: str | None,
     ) -> list[str]:
         """Per-failure console lines: module, declaring file, probe dialect, compiler stderr.
 
@@ -748,7 +788,8 @@ class StandaloneMixin:
 
     @staticmethod
     def _standalone_ungraded_lines(
-        unparsed: list[_ProbeRecord], log_pointer: str | None
+        unparsed: list[_ProbeRecord],
+        log_pointer: str | None,
     ) -> list[str]:
         """Name the modules the probe could not grade, next to the real failures.
 
@@ -775,7 +816,10 @@ class StandaloneMixin:
         return lines
 
     @staticmethod
-    def _parse_gap_message(unparsed: list[_ProbeRecord], total: int) -> str:
+    def _parse_gap_message(
+        unparsed: list[_ProbeRecord],
+        total: int,
+    ) -> str:
         """Explain a fallback-probe capability gap and name the way out.
 
         Deliberately not phrased as a design failure: the per-Target elaborate

@@ -90,7 +90,7 @@ def extract_error_gist(error_output: str) -> str:
     error_re = re.compile(
         r"(?:%Error[^:]*:\s*\S+:\d+:\s*(.+)"  # Verilator
         r"|(?:^|\n)\s*(?:error|Error):\s*(.+)"  # generic
-        r"|(?:^|\n)\s*(\S+:\d+:\s*(?:error|syntax error).+))"  # Icarus/sv2v
+        r"|(?:^|\n)\s*(\S+:\d+:\s*(?:error|syntax error).+))",  # Icarus/sv2v
     )
     m = error_re.search(error_output)
     if m:

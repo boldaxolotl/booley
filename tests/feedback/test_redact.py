@@ -40,7 +40,8 @@ def project(tmp_path):
     ):
         subprocess.run(["git", *args], cwd=root, check=True, timeout=SUBPROCESS_TIMEOUT_S)
     (root / ".booley" / "booley.toml").write_text(
-        '[project]\nname = "rocketwidget"\n\n[flows.sim]\n', encoding="utf-8"
+        '[project]\nname = "rocketwidget"\n\n[flows.sim]\n',
+        encoding="utf-8",
     )
     (root / "rocketwidget.core").write_text(
         "CAPI=2:\nname: acme:ip:rocketwidget:1.0\ntargets:\n"
@@ -83,7 +84,11 @@ class TestScrubbing:
             ("log line mentions bob@othercorp.example", ("othercorp",), ""),
             ("/home/someoneelse/work/thing.sv", ("someoneelse",), ""),
             (r"C:\Users\jdoe\proj\thing.sv", ("jdoe",), ""),
-            ("elaborating rocketwidget_top for sim_rocketwidget", ("rocketwidget",), "<module-"),
+            (
+                "elaborating rocketwidget_top for sim_rocketwidget",
+                ("rocketwidget",),
+                "<module-",
+            ),
         ],
         ids=["repo-path", "remote-and-slug", "committer", "email", "home", "windows", "core"],
     )
@@ -199,7 +204,9 @@ class TestScrubbing:
         assert out.count(out.split()[0]) == 2
 
     @pytest.mark.parametrize(
-        "value", ['"Skunkworks"', '["Skunkworks", 7]'], ids=["bare-string", "non-string-entry"]
+        "value",
+        ['"Skunkworks"', '["Skunkworks", 7]'],
+        ids=["bare-string", "non-string-entry"],
     )
     def test_invalid_redact_extra_fails_with_doctors_message(self, project, value):
         """An ignored or coerced term would leak, so a bad knob must stop the plan."""
@@ -330,7 +337,8 @@ class TestHonesty:
         assert any("verbatim" in r for r in residual_risks("text", plan))
 
     @pytest.mark.parametrize(
-        ("hits", "expected"), [({}, "no substitutions made"), ({"<repo>": 2}, "<repo> (x2)")]
+        ("hits", "expected"),
+        [({}, "no substitutions made"), ({"<repo>": 2}, "<repo> (x2)")],
     )
     def test_diff_summary(self, hits, expected):
         assert expected in diff_summary(hits)

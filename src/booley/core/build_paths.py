@@ -11,7 +11,13 @@ from booley.core.checkout_role import require_project_checkout
 _NAME_SANITIZE_RE = re.compile(r"[^A-Za-z0-9_]+")
 
 
-def work_root_for(work_dir: Path | str, flow: str, config: str, *, variant: str = "") -> Path:
+def work_root_for(
+    work_dir: Path | str,
+    flow: str,
+    config: str,
+    *,
+    variant: str = "",
+) -> Path:
     """Return the canonical per-(Flow, config[, variant]) build directory.
 
     Live under the checkout's own Booley Directory (its root ``booley.toml``

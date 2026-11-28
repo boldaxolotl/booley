@@ -48,10 +48,11 @@ _GITCONFIG_FIX = (
     "entries from the gitconfig named above"
 )
 _CREDENTIAL_HELPER_FIX = (
-    "remove the credential helper lines from each gitconfig named above; to stop "
-    'VS Code adding them again, set dev.containers.gitCredentialHelperConfigLocation to "none" '
+    "remove this credential helper line from the gitconfig named above; to stop "
+    'VS Code adding it again, set dev.containers.gitCredentialHelperConfigLocation to "none" '
     "and dev.containers.copyGitConfig to false in your host VS Code settings; or, to accept "
-    f"the forwarding, waive {CREDENTIAL_HELPER_CHECK} in doctor-waivers.toml"
+    f"this helper, waive {CREDENTIAL_HELPER_CHECK} with this warning's subject in "
+    "doctor-waivers.toml"
 )
 _USERINFO_RE = re.compile(r"(://)[^/\s]*@")
 _QUOTED_SECRET_RE = re.compile(r"""(['"])(password|username)=[^'"]*\1""")
@@ -199,24 +200,30 @@ def _redacted(text: str) -> str:
     return " ".join(text.split())
 
 
-def inspect_credential_helpers(checkout: Path) -> IdentityCheck:
+def inspect_credential_helpers(checkout: Path) -> list[IdentityCheck]:
     """Check that no system or global gitconfig sets a Git credential helper.
 
+    Returns one warning per helper, whose subject is the redacted ``<key>=<value>``
+    so a waiver can accept that helper; otherwise a single pass or inspection failure.
     Only lists configuration; no helper and no ``git credential`` command runs.
     """
     clean = IdentityCheck(passed="system and global gitconfig set no Git credential helper")
     try:
         result = _git_config(checkout, "--get-regexp", r"^credential\.(.+\.)?helper$")
     except (OSError, subprocess.SubprocessError) as exc:
-        return _gitconfig_unreadable(
-            CREDENTIAL_HELPER_CHECK, "credential helpers", f"Git could not be inspected: {exc}"
-        )
+        return [
+            _gitconfig_unreadable(
+                CREDENTIAL_HELPER_CHECK, "credential helpers", f"Git could not be inspected: {exc}"
+            )
+        ]
     if result.returncode == 1:
-        return clean
+        return [clean]
     if result.returncode != 0:
-        return _gitconfig_unreadable(
-            CREDENTIAL_HELPER_CHECK, "credential helpers", _first_line(result.stderr)
-        )
+        return [
+            _gitconfig_unreadable(
+                CREDENTIAL_HELPER_CHECK, "credential helpers", _first_line(result.stderr)
+            )
+        ]
     found: list[_ConfigEntry] = []
     for entry in _parse_entries(result.stdout, with_key=True):
         if entry.scope not in _FILE_SCOPES:
@@ -226,15 +233,24 @@ def inspect_credential_helpers(checkout: Path) -> IdentityCheck:
         else:
             found.append(entry)
     if not found:
-        return clean
-    listing = ", ".join(f"{_redacted(e.key)}='{_redacted(e.value)}' ({e.origin})" for e in found)
+        return [clean]
+    return [_credential_helper_check(entry, position) for position, entry in enumerate(found)]
+
+
+def _credential_helper_check(entry: _ConfigEntry, position: int) -> IdentityCheck:
+    """Warn about one helper; *position* keeps helpers that redact identically apart."""
+    key, value = _redacted(entry.key), _redacted(entry.value)
     message = (
-        f"system or global gitconfig sets Git credential helper(s) {listing}; any process in "
-        "this Sandbox, including the agent, can ask them for credentials. An editor attach "
-        "(VS Code Dev Containers, Codespaces) likely installed them; the Sandbox Image sets none"
+        f"system or global gitconfig sets Git credential helper {key}='{value}' "
+        f"({entry.origin}); any process in this Sandbox, including the agent, can ask it "
+        "for credentials. An editor attach (VS Code Dev Containers, Codespaces) likely "
+        "installed it; the Sandbox Image sets none"
     )
     return IdentityCheck(
-        warning=warning(CREDENTIAL_HELPER_CHECK, message), fix=_CREDENTIAL_HELPER_FIX
+        warning=warning(
+            CREDENTIAL_HELPER_CHECK, message, subject=f"{key}={value}", dedupe=str(position)
+        ),
+        fix=_CREDENTIAL_HELPER_FIX,
     )
 
 

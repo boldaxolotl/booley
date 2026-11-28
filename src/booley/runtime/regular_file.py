@@ -20,7 +20,12 @@ def _windows_path_from_handle(descriptor: int) -> str:  # pragma: no cover
     from ctypes import wintypes
 
     final_path = ctypes.windll.kernel32.GetFinalPathNameByHandleW
-    final_path.argtypes = (wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD, wintypes.DWORD)
+    final_path.argtypes = (
+        wintypes.HANDLE,
+        wintypes.LPWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+    )
     final_path.restype = wintypes.DWORD
     buffer = ctypes.create_unicode_buffer(32768)
     length = final_path(msvcrt.get_osfhandle(descriptor), buffer, len(buffer), 0)

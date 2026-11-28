@@ -10,13 +10,13 @@ from pathlib import Path
 from time import monotonic
 from typing import cast
 
+from booley.core.atomic_files import atomic_write_json
 from booley.flows.artifact_durability import durable_create
 from booley.flows.sim.record_files import read_bounded
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
-    atomic_write_json,
     execution_paths,
     read_json,
     request_cancellation,
@@ -84,7 +84,10 @@ class ChildExecutionRegistry:
         return registry
 
     def _configure(
-        self, manifest: SimulationRecordManifest, project_data: Path, booley_dir: Path | None
+        self,
+        manifest: SimulationRecordManifest,
+        project_data: Path,
+        booley_dir: Path | None,
     ) -> None:
         self._manifest = manifest
         self._project_data_root = project_data
@@ -132,7 +135,11 @@ class ChildExecutionRegistry:
             atomic_write_json(paths.record, _waiting_record())
         return PreparedChild(execution_id, paths.context)
 
-    def mark_terminal(self, prepared: PreparedChild, terminal_cause: str) -> None:
+    def mark_terminal(
+        self,
+        prepared: PreparedChild,
+        terminal_cause: str,
+    ) -> None:
         def change(terminal: dict[str, object] | None) -> dict[str, object] | None:
             if terminal is None:
                 raise SimulationRecordIntegrityError("child execution record disappeared")
@@ -231,7 +238,6 @@ def _publish_or_verify(path: Path, raw: bytes, *, booley_dir: Path | None = None
             limit=_PROTOCOL_RECORD_LIMIT,
             error=SimulationRecordIntegrityError,
             booley_dir=booley_dir,
-            single_link=True,
         )
         if current != raw:
             raise SimulationRecordIntegrityError(
@@ -247,7 +253,6 @@ def _publish_or_verify(path: Path, raw: bytes, *, booley_dir: Path | None = None
                 limit=_PROTOCOL_RECORD_LIMIT,
                 error=SimulationRecordIntegrityError,
                 booley_dir=booley_dir,
-                single_link=True,
             )
             != raw
         ):

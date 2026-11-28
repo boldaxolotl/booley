@@ -172,7 +172,8 @@ async def test_preview_shows_the_session_title():
     # Bug caught: the preview's first line showed only the handle for a named session.
     rows = [session_row(0, "wt0"), session_row(1, "wt1")]
     current = replace(
-        snapshot_of(rows), session_titles={"codex:00": "S1 \u00b7 uart-fix", "codex:01": "S2"}
+        snapshot_of(rows),
+        session_titles={"codex:00": "S1 \u00b7 uart-fix", "codex:01": "S2"},
     )
     app = DashboardApp(lambda: current)
     async with app.run_test(size=(130, 30)) as pilot:
@@ -266,7 +267,10 @@ async def test_enter_from_preview_opens_unchanged_session_detail():
         assert app.navigation.view == "session"
         assert not app.query_one("#aside").display
         assert str(app.query_one("#orientation", Static).render()) == ORIENTATION
-        assert app.row_keys == ["job:" + json.dumps(job.key), "call:0"]
+        assert app.row_keys == [
+            "job:" + json.dumps(job.key),
+            "call:0",
+        ]
 
 
 # Captured from the unmodified session detail of the fixture above.

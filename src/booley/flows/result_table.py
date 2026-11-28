@@ -47,7 +47,10 @@ def note_line(subject: str, label: str, text: str) -> str:
 
 
 def compose_result(
-    baseline_ref: str | None, table: Sequence[str], notes: Sequence[str], result_line: str
+    baseline_ref: str | None,
+    table: Sequence[str],
+    notes: Sequence[str],
+    result_line: str,
 ) -> ResultText:
     """Assemble the ``baseline:`` line, table, notes and ``RESULT:`` line."""
     lines = [

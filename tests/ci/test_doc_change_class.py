@@ -47,7 +47,6 @@ SEED = {
     "docs/user/CLI-REFERENCE.md": _CLI,
     "docs/user/CONFIG.md": _CONFIG,
     "CHANGELOG.md": "# Changelog\n",
-    "src/booley/data/refs/CHANGELOG.md": "# Changelog\n",
     "src/booley/x.py": "x = 1\n",
 }
 
@@ -101,7 +100,8 @@ def _run(
 ) -> tuple[int, dict[str, object], str]:
     repo, base, head = _repository(tmp_path, changes)
     result = run_bounded_child(
-        [sys.executable, str(_SCRIPT), "--base", base, "--head", head, *extra], cwd=repo
+        [sys.executable, str(_SCRIPT), "--base", base, "--head", head, *extra],
+        cwd=repo,
     )
     payload: dict[str, object] = json.loads(result.stdout) if result.stdout.strip() else {}
     return result.returncode, payload, result.stderr
@@ -129,7 +129,10 @@ _PREMERGE_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, str
         _append("GLOSSARY-MAP.md", "x\n"),
         {"GLOSSARY-MAP.md": ("premerge", "glossary")},
     ),
-    "root-glossary": ({"GLOSSARY.md": "# Glossary\n"}, {"GLOSSARY.md": ("premerge", "glossary")}),
+    "root-glossary": (
+        {"GLOSSARY.md": "# Glossary\n"},
+        {"GLOSSARY.md": ("premerge", "glossary")},
+    ),
     "adr": (_append("docs/adr/0001-x.md", "x\n"), {"docs/adr/0001-x.md": ("premerge", "adr")}),
     "page-added": (
         {"docs/user/NEW.md": "# New\n"},
@@ -270,10 +273,6 @@ _POSTREVIEW_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, s
 
 _NONE_CASES: dict[str, tuple[dict[str, str | None], dict[str, tuple[str, str]]]] = {
     "changelog": (_append("CHANGELOG.md", "x\n"), {"CHANGELOG.md": ("none", "changelog")}),
-    "packaged-changelog": (
-        _append("src/booley/data/refs/CHANGELOG.md", "x\n"),
-        {"src/booley/data/refs/CHANGELOG.md": ("none", "changelog")},
-    ),
     "code-only": (_append("src/booley/x.py", "y = 2\n"), {}),
 }
 

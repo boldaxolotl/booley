@@ -13,9 +13,11 @@ import pytest
 
 from booley.harness import booley as tlr
 from booley.harness import worktree_cmd
-from booley.runtime import runtime_context, worktree_paths
+from booley.runtime import worktree_paths
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.docs.test_sandbox_doc_citations import citation_problems
 from tests.project_runtime_git_support import NEW_RUNTIME_PATHS
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import scaled
 
@@ -58,7 +60,7 @@ def test_worktree_requires_a_subcommand(capsys) -> None:
 def test_worktree_is_sandbox_only_and_project_bound(monkeypatch, capsys) -> None:
     assert tlr.COMMAND_LOCATIONS["worktree"] is tlr.CommandLocation.SESSION_RUNTIME
     assert tlr.COMMAND_PROJECT_BINDINGS["worktree"] is tlr.ProjectBinding.REQUIRED
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
 
     with pytest.raises(SystemExit) as exc:
         tlr._enforce_runtime_location("worktree")
@@ -1820,7 +1822,10 @@ def relocated_versioned_project(tmp_path, monkeypatch):
     _write(root / ".git/info/exclude", "/state\n")
     source = root / "state"
     _write(source / ".gitignore", PROJECT_GITIGNORE)
-    _write(source / "booley.toml", "[agent.git]\nname='Worktree Test'\nemail='wt@test.invalid'\n")
+    _write(
+        source / "booley.toml",
+        "[agent.git]\nname='Worktree Test'\nemail='wt@test.invalid'\n",
+    )
     _write(source / "cores/top.core", CORE)
     git(source, "init", "-q", "-b", "main")
     git(source, "add", ".")

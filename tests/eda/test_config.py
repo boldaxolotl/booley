@@ -44,9 +44,10 @@ def test_windows_accepts_only_image_provisioning(provisioning: str, match: str |
     "raw,match",
     [
         ({"quartus": {}}, "unsupported EDA kind"),
-        (
+        pytest.param(
             {"vivado": {"provisioning": "host", "installation": "vivado_2025_2"}},
-            "installation is retired",
+            r"unknown key\(s\): installation",
+            id="installation",
         ),
     ],
 )
@@ -62,7 +63,10 @@ def test_load_eda_config_uses_external_project_data_dir(
     data = tmp_path / "private-project-data"
     project.mkdir()
     data.mkdir()
-    (data / "booley.toml").write_text('[eda.vivado]\nprovisioning = "host"\n', encoding="utf-8")
+    (data / "booley.toml").write_text(
+        '[eda.vivado]\nprovisioning = "host"\n',
+        encoding="utf-8",
+    )
     monkeypatch.setenv("BOOLEY_DIR", str(data))
     monkeypatch.setattr("booley.eda.provisioning.configuration.sys.platform", "linux")
 

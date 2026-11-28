@@ -30,7 +30,9 @@ from booley.config.agent import (
     wire_auth,
 )
 from booley.config.gateway import VISITOR_AUTH
+from booley.core import docker_cli
 from booley.core.project_identity import project_name_id
+from booley.core.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 from booley.runtime import auth_token
 from booley.runtime import vaporview as _vaporview
 from booley.runtime.compiler_cache import COMPILER_CACHE_ROOT_ENV, ISSUED_COMPILER_CACHE_ROOT
@@ -42,7 +44,6 @@ from booley.runtime.incontainer_git_identity import (
     load_git_identity,
 )
 from booley.runtime.mcp_config import DEVELOPER_AGENT_ENV
-from booley.runtime.sandbox_layout import BOOLEY_DIR_TARGET, WORK_DIR
 from booley.runtime.timefmt import LOCAL_TIMEZONE_ENV
 from booley.runtime.vaporview import PRESENTATION_COLOR_SETTINGS
 
@@ -69,7 +70,7 @@ PROXY_URL = f"http://{PROXY_HOST}:{PROXY_PORT}"
 UNPROXIED_NETWORK = "booley-unproxied-v1"
 
 # Label the idle reaper (WS2) matches to find/own Sandboxes.
-INTERACTIVE_ROLE_LABEL = "booley.role=interactive"
+INTERACTIVE_ROLE_LABEL = f"{docker_cli.ROLE_LABEL}=interactive"
 
 # Process cap for the whole Sandbox (fork-bomb ceiling, not a tuning
 # knob). The container hosts the editor, agent clients, and concurrent EDA
@@ -175,7 +176,10 @@ _APP_AUTH_TARGET = {
 # writable layer is discarded on rebuild, so without this the agent loses its
 # plans, session transcripts, and todos (e.g. ~/.claude/plans/*.md). Backed by a
 # named Docker volume (see :func:`_state_volume_mount`).
-_APP_STATE_DIR = {APP_CLAUDE: f"{AGENT_HOME}/.claude", APP_CODEX: f"{AGENT_HOME}/.codex"}
+_APP_STATE_DIR = {
+    APP_CLAUDE: f"{AGENT_HOME}/.claude",
+    APP_CODEX: f"{AGENT_HOME}/.codex",
+}
 
 # Claude Code's user config (``~/.claude.json``) caches statsig feature-gate
 # evaluations — including staged-rollout / promotional model grants (e.g.
@@ -701,7 +705,11 @@ def _build_mounts(
     mounts.extend(_mask_mounts(mask_paths, mask_source))
     if protected_devcontainer_source:
         mounts.append(
-            _bind_mount(protected_devcontainer_source, f"{WORK_DIR}/.devcontainer", readonly=True)
+            _bind_mount(
+                protected_devcontainer_source,
+                f"{WORK_DIR}/.devcontainer",
+                readonly=True,
+            )
         )
     return mounts
 

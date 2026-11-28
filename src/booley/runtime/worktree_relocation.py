@@ -5,7 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 from booley.runtime import platform_paths
-from booley.runtime.submodule_materialization import SubmoduleMaterializationError, submodule_paths
+from booley.runtime.submodule_materialization import (
+    SubmoduleMaterializationError,
+    submodule_paths,
+)
 
 _TIMEOUT_S = 30
 

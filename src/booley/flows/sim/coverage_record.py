@@ -347,7 +347,10 @@ def _check_field(
 
 
 def _check_array_items(
-    values: Sequence[object], expected: str, pointer: str, findings: list[CoverageFinding]
+    values: Sequence[object],
+    expected: str,
+    pointer: str,
+    findings: list[CoverageFinding],
 ) -> list[object]:
     valid: list[object] = []
     for index, value in enumerate(values):
@@ -403,7 +406,10 @@ def _validate_capability_shapes(
     for index, capability in enumerate(valid):
         assert isinstance(capability, Mapping)
         _check_string_fields(
-            capability, ("record_class", "status"), f"/collector/capabilities/{index}", findings
+            capability,
+            ("record_class", "status"),
+            f"/collector/capabilities/{index}",
+            findings,
         )
 
 
@@ -417,7 +423,10 @@ def _validate_collector_shape(
     native_format = _check_field(collector, "native_format", "object", "/collector", findings)
     if isinstance(native_format, Mapping):
         _check_string_fields(
-            native_format, ("name", "compatibility"), "/collector/native_format", findings
+            native_format,
+            ("name", "compatibility"),
+            "/collector/native_format",
+            findings,
         )
     capabilities = _check_field(collector, "capabilities", "array", "/collector", findings)
     if isinstance(capabilities, list):
@@ -468,7 +477,10 @@ def _validate_source_closure_shape(
         for index, source in enumerate(valid):
             assert isinstance(source, Mapping)
             _check_string_fields(
-                source, ("path", "sha256"), f"/source_closure/{category}/{index}", findings
+                source,
+                ("path", "sha256"),
+                f"/source_closure/{category}/{index}",
+                findings,
             )
 
 
@@ -709,7 +721,13 @@ def _validate_evaluation_shape(
         evaluation, "criterion_fingerprint", "string_or_null", "/evaluation", findings
     )
     if isinstance(fingerprint, str):
-        _check_field(evaluation, "approved_waiver_set_digest", "string", "/evaluation", findings)
+        _check_field(
+            evaluation,
+            "approved_waiver_set_digest",
+            "string",
+            "/evaluation",
+            findings,
+        )
     suite = _check_field(evaluation, "suite", "object", "/evaluation", findings)
     thresholds = _check_field(evaluation, "thresholds", "object", "/evaluation", findings)
     metrics = _check_field(evaluation, "metrics", "array", "/evaluation", findings)
@@ -1117,7 +1135,10 @@ def _validate_capabilities(document: Mapping[str, object]) -> list[CoverageFindi
     assert isinstance(collector, Mapping)
     capabilities = collector["capabilities"]
     findings = _duplicate_key_findings(
-        capabilities, "record_class", "COV_CAPABILITY_DUPLICATE", "/collector/capabilities"
+        capabilities,
+        "record_class",
+        "COV_CAPABILITY_DUPLICATE",
+        "/collector/capabilities",
     )
     for index, capability in enumerate(capabilities):
         if capability["status"] not in {"reported", "absent", "unsupported"}:
@@ -1483,7 +1504,10 @@ def _encode_run(run: CoverageRun) -> dict[str, object]:
 
 
 def _encode_artifact(artifact: CoverageArtifact) -> dict[str, object]:
-    document: dict[str, object] = {"id": artifact.id, "kind": artifact.kind}
+    document: dict[str, object] = {
+        "id": artifact.id,
+        "kind": artifact.kind,
+    }
     if artifact.owner_run is not None:
         document["owner_run"] = artifact.owner_run
     document.update(

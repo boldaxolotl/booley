@@ -13,8 +13,8 @@ every init-driven image reported a bare ``booley <version>`` and the prescribed
 "does the wheel match the commit?" freshness check was unanswerable exactly
 where it matters (F-3).
 
-Kept dependency-free (stdlib only, plus stdlib-only ``booley.runtime`` modules,
-no imports from the rest of the harness) so ``build.sh`` can call it with nothing
+Kept dependency-free (stdlib only, plus stdlib-only ``booley.runtime`` and
+``booley.core`` modules, no imports from the rest of the harness) so ``build.sh`` can call it with nothing
 but ``PYTHONPATH=src``. Every wheel build renders the packaged docs from their
 sources here, so no builder can pack a stale or missing copy.
 """
@@ -36,8 +36,11 @@ from pathlib import Path, PurePosixPath
 
 from booley.runtime import platform_paths
 from booley.runtime.packaged_docs import (
+    CHANGELOG_SOURCE,
+    PACKAGED_CHANGELOG_RELATIVE_PATH,
     PACKAGED_DOCS_RELATIVE_DIR,
     SHIPPED_DOCS,
+    write_packaged_changelog,
     write_packaged_docs,
 )
 
@@ -45,19 +48,25 @@ from booley.runtime.packaged_docs import (
 STAMP_RELPATH = "src/booley/_build_commit.py"
 DEVELOPMENT_CONTEXT_RELPATH = "src/booley/data/development-build-context.tar.gz"
 
-_PAYLOAD_TREES = ("src/booley", "crates/bwave/src")
+_PAYLOAD_TREES = (
+    "src/booley",
+    "crates/bwave/src",
+)
 _PAYLOAD_FILES = (
     ".dockerignore",
     "pyproject.toml",
     "VERSION",
     "crates/bwave/Cargo.toml",
     "crates/bwave/Cargo.lock",
+    CHANGELOG_SOURCE,
     *SHIPPED_DOCS,
 )
 _PAYLOAD_EXCLUDED = frozenset({STAMP_RELPATH, DEVELOPMENT_CONTEXT_RELPATH})
 # Rendered doc copies are derived from SHIPPED_DOCS, which the fingerprints hash,
 # so hashing them too would let a stale copy change the identity of a build.
 _RENDERED_DOCS_PREFIX = f"{PACKAGED_DOCS_RELATIVE_DIR}/"
+# The packaged changelog is a copy of CHANGELOG_SOURCE, skipped for the same reason by exact
+# path, so a stray sibling file in the package data still enters the fingerprints.
 
 # Inputs which determine the Python wheel.  Native B-Wave sources and image
 # recipes deliberately live in substrate fingerprints instead.  The overlay
@@ -66,7 +75,7 @@ _RENDERED_DOCS_PREFIX = f"{PACKAGED_DOCS_RELATIVE_DIR}/"
 # intact, and changing Python must not invalidate the EDA/toolchain substrates
 # below it.
 _WHEEL_SOURCE_TREES = ("src/booley",)
-_WHEEL_SOURCE_FILES = ("pyproject.toml", "VERSION", *SHIPPED_DOCS)
+_WHEEL_SOURCE_FILES = ("pyproject.toml", "VERSION", CHANGELOG_SOURCE, *SHIPPED_DOCS)
 
 # Keep every non-generated tree read by the B-Wave Cargo build. Cargo validates
 # declared bench paths while parsing the manifest, and the binary embeds docs
@@ -90,6 +99,7 @@ _DEVELOPMENT_CONTEXT_FILES = (
     "crates/bwave/Cargo.lock",
     "crates/bwave/Cargo.toml",
     "pyproject.toml",
+    CHANGELOG_SOURCE,
     *SHIPPED_DOCS,
 )
 _MAX_CONTEXT_MEMBERS = 5_000
@@ -174,8 +184,10 @@ def _iter_tree_files(
             if not path.is_file() or "__pycache__" in path.parts or path.suffix == ".pyc":
                 continue
             relative_path = path.relative_to(booley_root).as_posix()
-            if relative_path in _PAYLOAD_EXCLUDED or relative_path.startswith(
-                _RENDERED_DOCS_PREFIX
+            if (
+                relative_path in _PAYLOAD_EXCLUDED
+                or relative_path == PACKAGED_CHANGELOG_RELATIVE_PATH
+                or relative_path.startswith(_RENDERED_DOCS_PREFIX)
             ):
                 continue
             yield path
@@ -346,7 +358,10 @@ def _write_development_context(booley_root: Path, target: Path) -> str:
         raise ValueError("development build context is too large")
     target.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(
-        dir=target.parent, prefix=f".{target.name}.", suffix=".tmp", delete=False
+        dir=target.parent,
+        prefix=f".{target.name}.",
+        suffix=".tmp",
+        delete=False,
     ) as handle:
         temporary = Path(handle.name)
     completed = False
@@ -376,8 +391,16 @@ def _write_development_context(booley_root: Path, target: Path) -> str:
     return hashlib.sha256(target.read_bytes()).hexdigest()
 
 
+def _render_packaged_copies(booley_root: Path) -> None:
+    """Render the packaged user docs and copy the changelog, both Git-ignored build output."""
+    write_packaged_docs(booley_root)
+    write_packaged_changelog(booley_root)
+
+
 def write_build_stamp(
-    booley_root: Path, *, profile: BuildProfile = BuildProfile.DEVELOPMENT_WHEEL
+    booley_root: Path,
+    *,
+    profile: BuildProfile = BuildProfile.DEVELOPMENT_WHEEL,
 ) -> str:
     """Generate the stamp module for *booley_root*; return the stamped commit.
 
@@ -393,9 +416,9 @@ def write_build_stamp(
     target.unlink(missing_ok=True)
     context.unlink(missing_ok=True)
     # Stamp the commit (and its +dirty marker) first, then render so no builder packs a
-    # stale or missing doc. The copies are Git-ignored, so rendering never dirties the tree.
+    # stale or missing doc or changelog. The copies are Git-ignored, so this never dirties the tree.
     commit = resolve_build_commit(booley_root)
-    write_packaged_docs(booley_root)
+    _render_packaged_copies(booley_root)
     from booley.runtime.image_build_contracts import source_image_build_contracts
     from booley.runtime.timefmt import parse_timestamp, rfc3339_from_datetime
 

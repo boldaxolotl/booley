@@ -269,7 +269,10 @@ def commit_file(repository: Path, commit: str, path: str) -> bytes | None:
 
 
 def _read_side(
-    repository: Path, label: str, commit: str, placement: Callable[[Path, str], PurePosixPath]
+    repository: Path,
+    label: str,
+    commit: str,
+    placement: Callable[[Path, str], PurePosixPath],
 ) -> _Side:
     """Read ``metrics.toml`` and ``tests.toml`` of *commit* from the place it keeps them."""
     try:

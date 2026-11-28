@@ -39,7 +39,14 @@ def adjacent_artifact_paths(transcript_path: Path | None) -> AgentArtifactPaths:
 
 
 def _format_markdown(record: dict[str, Any]) -> str:
-    lines = ["# Actual Prompt Sent", "", "```text", record["full_prompt"], "```", ""]
+    lines = [
+        "# Actual Prompt Sent",
+        "",
+        "```text",
+        record["full_prompt"],
+        "```",
+        "",
+    ]
     return "\n".join(lines)
 
 

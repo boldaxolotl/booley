@@ -1,4 +1,7 @@
-"""Exercise the installed agent CLIs and their managed web-isolation policies."""
+"""Exercise the installed agent CLIs and their managed web-isolation policies.
+
+A local server fakes the model provider API the agent CLIs call.
+"""
 
 from __future__ import annotations
 
@@ -45,7 +48,13 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     # Unbounded child: standalone script run inside the image, outside pytest
     result = subprocess.run(
-        command, cwd=cwd, env=env, text=True, capture_output=True, timeout=timeout, check=False
+        command,
+        cwd=cwd,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=timeout,
+        check=False,
     )
     if result.returncode != 0:
         output = f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
@@ -86,7 +95,11 @@ def _assert_diagnostics() -> None:
     _run(["codex", "--help"])
     # Unbounded child: standalone script run inside the image, outside pytest
     codex = subprocess.run(
-        ["codex", "doctor", "--json"], text=True, capture_output=True, timeout=_HANG_S, check=False
+        ["codex", "doctor", "--json"],
+        text=True,
+        capture_output=True,
+        timeout=_HANG_S,
+        check=False,
     )
     report = json.loads(codex.stdout)
     assert report["codexVersion"] == EXPECTED_CODEX

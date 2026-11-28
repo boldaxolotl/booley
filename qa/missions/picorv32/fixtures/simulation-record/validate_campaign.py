@@ -54,7 +54,9 @@ def _manifest_digest(raw: bytes) -> str:
 
 
 def validate_backlinks(
-    manifest_path: Path, summary_path: Path, projection_path: Path
+    manifest_path: Path,
+    summary_path: Path,
+    projection_path: Path,
 ) -> dict[str, object]:
     """Authenticate summary and compatibility backlinks to one manifest."""
     manifest, manifest_raw = _load(manifest_path)
@@ -130,7 +132,10 @@ def validate(manifest_path: Path, expected: list[str]) -> dict[str, object]:
     _need(isinstance(required, dict), "Required Simulation Suite is missing")
     fingerprints = manifest.get("fingerprints")
     _need(isinstance(fingerprints, dict), "manifest fingerprints are missing")
-    _need(isinstance(fingerprints.get("workload_sha256"), str), "workload fingerprint is missing")
+    _need(
+        isinstance(fingerprints.get("workload_sha256"), str),
+        "workload fingerprint is missing",
+    )
     return {
         "manifest": str(manifest_path.resolve()),
         "manifest_sha256": _manifest_digest(raw),

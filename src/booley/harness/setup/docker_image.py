@@ -209,7 +209,10 @@ def _installed_image_version() -> str | None:
     return _image_label(DOCKER_IMAGE, LABEL_VERSION)
 
 
-def _image_is_stale(fingerprint: str, expected_version: str | None = None) -> bool:
+def _image_is_stale(
+    fingerprint: str,
+    expected_version: str | None = None,
+) -> bool:
     """Whether the present sandbox image no longer matches the local source.
 
     - no fingerprint label: an image built before this guard existed (the exact
@@ -303,12 +306,22 @@ def _image_pull_timeout_seconds() -> int:
     return timeout
 
 
-def _try_pull_image(version: str, image: str = DOCKER_IMAGE, *, adopt: bool = True) -> bool:
+def _try_pull_image(
+    version: str,
+    image: str = DOCKER_IMAGE,
+    *,
+    adopt: bool = True,
+) -> bool:
     tag = remote_tag(image, version)
     info(f"trying to pull pre-built image: {tag}")
     timeout = _image_pull_timeout_seconds()
     try:
-        result = subprocess.run(["docker", "pull", tag], text=True, timeout=timeout, check=False)
+        result = subprocess.run(
+            ["docker", "pull", tag],
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
     except subprocess.TimeoutExpired:
         warn(
             f"pre-built image pull timed out after {timeout} seconds; "
@@ -352,7 +365,9 @@ def _tag_pulled_image(tag: str, image: str) -> bool:
 
 
 def _report_incompatible_image(
-    ctx: InitContext, installed_version: str | None, expected_version: str
+    ctx: InitContext,
+    installed_version: str | None,
+    expected_version: str,
 ) -> None:
     """Warn that the base image could not be refreshed to the required release."""
     found = f"v{installed_version}" if installed_version else "of unknown version"
@@ -407,7 +422,13 @@ def _prepare_existing_base_image(
     if ctx.check_only:
         ctx.record("docker_image", "warn", "would rebuild (stale)")
         return True
-    _docker_local_build(ctx, docker_dir, exists, fingerprint, capacity_plan=capacity_plan)
+    _docker_local_build(
+        ctx,
+        docker_dir,
+        exists,
+        fingerprint,
+        capacity_plan=capacity_plan,
+    )
     return True
 
 
@@ -547,7 +568,10 @@ def _docker_local_build(
         ctx.record("docker_image", "err", f"Sandbox Image capacity check failed: {error}")
         return
     runtime_base_id = _acquire_runtime_base(
-        ctx, booley_root, rebuild=rebuild_runtime_base, capacity_plan=capacity_plan
+        ctx,
+        booley_root,
+        rebuild=rebuild_runtime_base,
+        capacity_plan=capacity_plan,
     )
     if runtime_base_id is None:
         return

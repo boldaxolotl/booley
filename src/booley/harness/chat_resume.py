@@ -212,7 +212,10 @@ def _occupied(common: Path, live: list[ConversationRecord] | None = None) -> dic
     started by hand, whose record carries no process key.
     """
     records = conversation_records.live(common) if live is None else live
-    return {**chat_checkout.worktree_sessions(common), **conversation_records.occupants(records)}
+    return {
+        **chat_checkout.worktree_sessions(common),
+        **conversation_records.occupants(records),
+    }
 
 
 def _by_id(

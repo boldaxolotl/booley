@@ -53,9 +53,17 @@ def pass_finding(message: str) -> ConfigFinding:
 
 
 def warn_finding(
-    message: str, check_id: str, *, subject: str | None = None, fix: str = ""
+    message: str,
+    check_id: str,
+    *,
+    subject: str | None = None,
+    fix: str = "",
 ) -> ConfigFinding:
     """Build a warning with stable waiver identity and an optional fix."""
     return ConfigFinding(
-        ConfigFindingSeverity.WARN, message, fix, check_id=check_id, subject=subject
+        ConfigFindingSeverity.WARN,
+        message,
+        fix,
+        check_id=check_id,
+        subject=subject,
     )

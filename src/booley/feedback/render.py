@@ -31,8 +31,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from booley.core.boundary import as_int
+from booley.core.sandbox_detection import inside_session_runtime
 from booley.feedback import redact as redact_mod
-from booley.feedback.findings import BUCKET_TITLE, Finding, FindingsLog, read_log
+from booley.feedback.findings import (
+    BUCKET_TITLE,
+    Finding,
+    FindingsLog,
+    read_log,
+)
 from booley.runtime.timefmt import format_human_date, format_human_datetime_safe
 
 #: The local report of entries logged by a setup run.
@@ -98,7 +104,7 @@ class Environment:
     booley_version: str = ""
     python_version: str = ""
     platform: str = ""
-    in_container: bool = False
+    in_sandbox: bool = False
     doctor_deep_clean: bool | None = None
 
     def as_rows(self) -> list[tuple[str, str]]:
@@ -107,7 +113,7 @@ class Environment:
             ("Booley", self.booley_version),
             ("Python", self.python_version),
             ("Platform", self.platform),
-            ("Location", "Sandbox" if self.in_container else "host CLI"),
+            ("Location", "Sandbox" if self.in_sandbox else "host CLI"),
             ("doctor --deep clean", doctor),
         ]
 
@@ -121,7 +127,7 @@ def collect_environment(*, doctor_deep_clean: bool | None = None) -> Environment
     env = Environment(
         python_version=platform.python_version(),
         platform=f"{platform.system()} {platform.machine()}",
-        in_container=Path("/.dockerenv").exists(),
+        in_sandbox=inside_session_runtime(),
         doctor_deep_clean=doctor_deep_clean,
     )
     try:
@@ -256,9 +262,15 @@ def _summary_table(log: FindingsLog) -> list[str]:
         "",
     ]
     if log.friction:
-        lines += [f"Friction reports (confusing, not broken): **{len(log.friction)}**.", ""]
+        lines += [
+            f"Friction reports (confusing, not broken): **{len(log.friction)}**.",
+            "",
+        ]
     if log.impressions:
-        lines += [f"Impressions (what you think of Booley): **{len(log.impressions)}**.", ""]
+        lines += [
+            f"Impressions (what you think of Booley): **{len(log.impressions)}**.",
+            "",
+        ]
     if log.wins:
         lines += [f"Checks that passed first try: **{len(log.wins)}**.", ""]
     if log.corrupt_lines:
@@ -271,7 +283,11 @@ def _summary_table(log: FindingsLog) -> list[str]:
 
 
 def render_user_report(
-    log: FindingsLog, *, project_name: str = "", env: Environment | None = None, origin: str = ""
+    log: FindingsLog,
+    *,
+    project_name: str = "",
+    env: Environment | None = None,
+    origin: str = "",
 ) -> str:
     """The local, unredacted report for the project owner.
 

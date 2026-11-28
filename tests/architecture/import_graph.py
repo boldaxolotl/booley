@@ -149,7 +149,9 @@ def analyze_imports(source_root: Path) -> tuple[Dependency, ...]:
 
 
 def dependency_graph_snapshot(
-    source_root: Path, *, named_hotspots: tuple[str, ...] = NAMED_HOTSPOTS
+    source_root: Path,
+    *,
+    named_hotspots: tuple[str, ...] = NAMED_HOTSPOTS,
 ) -> DependencyGraphSnapshot:
     """Analyze one package tree into immutable comparison diagnostics."""
     modules = tuple(sorted(_discover_modules(source_root)))
@@ -168,14 +170,17 @@ def dependency_graph_snapshot(
 
 
 def compare_dependency_graphs(
-    before: DependencyGraphSnapshot, after: DependencyGraphSnapshot
+    before: DependencyGraphSnapshot,
+    after: DependencyGraphSnapshot,
 ) -> DependencyGraphDiff:
     """Return a pure, deterministic comparison of two graph snapshots."""
     before_membership = dict(before.scc_membership)
     after_membership = dict(after.scc_membership)
     transitions = tuple(
         SccMembershipTransition(
-            package, before_membership.get(package), after_membership.get(package)
+            package,
+            before_membership.get(package),
+            after_membership.get(package),
         )
         for package in sorted(before_membership.keys() | after_membership.keys())
         if before_membership.get(package) != after_membership.get(package)
@@ -197,7 +202,9 @@ def compare_dependency_graphs(
     )
 
 
-def top_level_package_sccs(dependencies: tuple[Dependency, ...]) -> tuple[tuple[str, ...], ...]:
+def top_level_package_sccs(
+    dependencies: tuple[Dependency, ...],
+) -> tuple[tuple[str, ...], ...]:
     """Return deterministic SCCs after projection to ``booley.<package>`` owners."""
     adjacency = _package_adjacency(dependencies)
     finishing_order = _finishing_order(adjacency)
@@ -212,7 +219,9 @@ def top_level_package_sccs(dependencies: tuple[Dependency, ...]) -> tuple[tuple[
     return tuple(sorted(groups))
 
 
-def mutual_package_pairs(dependencies: tuple[Dependency, ...]) -> tuple[tuple[str, str], ...]:
+def mutual_package_pairs(
+    dependencies: tuple[Dependency, ...],
+) -> tuple[tuple[str, str], ...]:
     """Return top-level package pairs with direct edges in both directions."""
     adjacency = _package_adjacency(dependencies)
     return tuple(
@@ -251,7 +260,9 @@ def _discover_modules(source_root: Path) -> dict[str, SourceModule]:
 
 
 def _node_targets(
-    node: ast.AST, source: SourceModule, known_modules: frozenset[str]
+    node: ast.AST,
+    source: SourceModule,
+    known_modules: frozenset[str],
 ) -> tuple[str, ...]:
     if isinstance(node, ast.Import):
         return tuple(alias.name for alias in node.names if alias.name in known_modules)

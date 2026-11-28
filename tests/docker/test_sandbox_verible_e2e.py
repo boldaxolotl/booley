@@ -112,15 +112,16 @@ def _require_verible_sandbox() -> None:
     if have_bin.returncode != 0:
         pytest.skip(
             f"{_IMAGE} image predates Verible support (ADR 0033) — rebuild it "
-            "(booley init) to run this e2e"
+            "(booley init) to run this e2e",
         )
     have_node = _run_in_sandbox(
-        ["python3", "-c", "import edalize.tools.verible"], timeout=SUBPROCESS_TIMEOUT_S
+        ["python3", "-c", "import edalize.tools.verible"],
+        timeout=SUBPROCESS_TIMEOUT_S,
     )
     if have_node.returncode != 0:
         pytest.skip(
             f"{_IMAGE} image lacks the Edalize verible tool node patch "
-            "(ADR 0033) — rebuild it (booley init) to run this e2e"
+            "(ADR 0033) — rebuild it (booley init) to run this e2e",
         )
 
 
@@ -133,7 +134,8 @@ def _write_fixture(root: Path, *, waived: bool) -> None:
         (root / "lint" / "waivers.txt").write_text(_WAIVER, encoding="utf-8")
         waiver_files = "      - lint/waivers.txt: {file_type: veribleLintWaiver}\n"
     (root / "verible_e2e.core").write_text(
-        _CORE_CLEAN_TMPL.format(waiver_files=waiver_files), encoding="utf-8"
+        _CORE_CLEAN_TMPL.format(waiver_files=waiver_files),
+        encoding="utf-8",
     )
 
 

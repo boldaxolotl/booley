@@ -58,7 +58,10 @@ def test_windows_batch_cli_fails_closed_without_execution(tmp_path) -> None:
     )
 
     result = subprocess.run(
-        [sys.executable, "-c", script, str(batch_cli)], capture_output=True, text=True, check=False
+        [sys.executable, "-c", script, str(batch_cli)],
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
     assert result.returncode == 0, result.stderr

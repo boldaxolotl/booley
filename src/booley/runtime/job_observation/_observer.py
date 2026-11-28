@@ -323,7 +323,8 @@ def _project_job(
     )
     stage = _reported_stage(None if progress is None else progress[0])
     artifacts = available_paths(
-        report or {}, (reports_parent or root.parent, Path(rec.work_dir) if rec.work_dir else root)
+        report or {},
+        (reports_parent or root.parent, Path(rec.work_dir) if rec.work_dir else root),
     )
     holders, waiters = memory
     wait = None if claim is None else job_slots.memory_wait(claim, holders, waiters, time.time())

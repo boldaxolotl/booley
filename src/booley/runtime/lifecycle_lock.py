@@ -34,7 +34,9 @@ def _lock_owner(handle: TextIO) -> str:
 
 @contextmanager
 def host_lifecycle_lock(
-    operation: str, *, wait_timeout_s: float = DEFAULT_WAIT_TIMEOUT_SECONDS
+    operation: str,
+    *,
+    wait_timeout_s: float = DEFAULT_WAIT_TIMEOUT_SECONDS,
 ) -> Iterator[None]:
     """Hold the host-wide lock, waiting up to *wait_timeout_s* under contention."""
     booley_config = config_dir()

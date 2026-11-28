@@ -510,7 +510,12 @@ class _FactCollector:
     """Visitor that gathers the semantic facts of every file in ``buffers`` in one pass."""
 
     def __init__(
-        self, pyslang: Any, buffers: AbstractSet[Any], *, track_units: bool, manager: Any = None
+        self,
+        pyslang: Any,
+        buffers: AbstractSet[Any],
+        *,
+        track_units: bool,
+        manager: Any = None,
     ) -> None:
         self._pyslang = pyslang
         self._buffers = buffers

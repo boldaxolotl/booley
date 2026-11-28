@@ -89,7 +89,9 @@ def test_native_list_metadata_crosses_single_root_python_decoder(store: Path) ->
     assert len(signals) == 1
 
 
-def test_native_list_metadata_crosses_multi_root_python_decoder(multi_root_store: Path) -> None:
+def test_native_list_metadata_crosses_multi_root_python_decoder(
+    multi_root_store: Path,
+) -> None:
     """Regression for 7146fc1d: multiple roots are not an empty store."""
     metadata, signals = _list_metadata(multi_root_store)
 
@@ -101,11 +103,14 @@ def test_native_list_metadata_crosses_multi_root_python_decoder(multi_root_store
 
 
 def test_trace_session_accepts_native_multi_root_store(
-    multi_root_store: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    multi_root_store: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     work_dir = tmp_path / "run"
     monkeypatch.setattr(
-        "booley.bwave.waveform_store.native_bwave_binary", lambda: str(_native_bwave_binary())
+        "booley.bwave.waveform_store.native_bwave_binary",
+        lambda: str(_native_bwave_binary()),
     )
 
     inspection = TraceSession(work_dir, trace_scope="uart16550").inspect(multi_root_store)
@@ -184,6 +189,9 @@ def test_native_open_ended_range_includes_tail_clock_events(
 ) -> None:
     from booley.bwave import cli
 
+    # Private: `_TickResolver` converts the `--time` viewport of scoped `bwave gui`, which
+    # #4757 replaces; no public entry stops before the viewer bridge. `_load_sessions` is
+    # stubbed so the resolver takes no Markers from the host's session file.
     monkeypatch.setattr(cli, "_load_sessions", lambda *_args: {})
     monkeypatch.setattr(cli, "native_bwave_binary", _native_bwave_binary)
     resolver = cli._TickResolver(str(store), "test")

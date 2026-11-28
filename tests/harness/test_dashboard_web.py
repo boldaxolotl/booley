@@ -25,17 +25,16 @@ from starlette.testclient import TestClient
 
 from booley.harness import booley as tlr
 from booley.runtime import job_records, job_slots
-from booley.runtime.memory_budget import resolve_memory_budget
 from booley.runtime.pid import ProcessIdentity
 from tests.conftest import symlink_or_skip
 from tests.git_support import git
+from tests.memory_budget_support import DASHBOARD, fail_budget, pin_budget
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s
 from tests.uvicorn_support import capture_serving
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 
-GIB = 2**30
 MIB = 2**20
 SCOPE = "pid:[4026531836]"
 # 2026-10-08T10:00:20Z
@@ -107,13 +106,7 @@ def _client(world: World, monkeypatch: pytest.MonkeyPatch) -> TestClient:
     """
     snapshot = _snapshot_module()
     monkeypatch.setattr(snapshot, "wall_clock", lambda: NOW)
-    monkeypatch.setattr(
-        snapshot,
-        "compute_memory_budget",
-        lambda **_kw: resolve_memory_budget(
-            limit_bytes=8 * GIB, installed_bytes=None, processes=()
-        ),
-    )
+    pin_budget(monkeypatch, BUDGET_BYTES // MIB, importer=DASHBOARD)
     app = _web().create_app(world.main, world.booley, proc_root=world.proc, cgroup=world.cgroup)
     return TestClient(app)
 
@@ -138,12 +131,12 @@ def _job(
     *,
     target: str | None = "uart",
     session: str | None = "sess1",
+    key: str | None = None,
     status: str = "done",
     exit_code: int | None = 0,
     started: str = STARTED,
     ended: str | None = STARTED,
     pid: int | None = None,
-    live: bool = False,
     report: dict | None = None,
     standalone_report_root: Path | None = None,
 ) -> Path:
@@ -154,7 +147,7 @@ def _job(
         root = standalone_jobs_dir(world.booley)
     else:
         root = world.booley / "job_logs" / session / ".runtime" / "jobs"
-    identity = _live_process(world, pid) if live and pid else None
+    identity = None if pid is None else _live_process(world, pid)
     running = status == "running"
     job_records.write_record(
         job_records.JobRecord(
@@ -168,7 +161,7 @@ def _job(
             exit_code=exit_code,
             run_started_at=started if running and pid else None,
             work_dir=None if work_dir is None else str(work_dir),
-            session_key=session,
+            session_key=key or session,
             process_identity=identity,
             ended_at=None if running else ended,
             report_root=(
@@ -190,6 +183,8 @@ def _job(
 def _slot(world: World, kind: str, seq: int, pid: int, payload: dict) -> None:
     directory = job_slots.slots_dir(world.booley) / "memory"
     directory.mkdir(parents=True, exist_ok=True)
+    # SlotStore writes only the calling process's own entry; a claim of another (fake)
+    # process needs the store's on-disk entry name.
     name = job_slots._entry_name(kind, 1, seq, pid, 0)
     (directory / name).write_bytes(json.dumps({"created_at": STARTED, **payload}).encode())
 
@@ -215,7 +210,18 @@ def _targets(rows: list[dict]) -> list[str]:
 
 
 def _dashboard_args(*words: str) -> argparse.Namespace:
+    # Only test_dashboard_without_web_opens_the_textual_dashboard uses the private parser:
+    # it stubs the Textual Dashboard, which #4561 deletes with that test.
     return tlr._build_parser().parse_args(["dashboard", *words])
+
+
+def _booley(monkeypatch: pytest.MonkeyPatch, project: Path, *argv: str) -> int:
+    """`booley -C <project> <argv>` through the CLI entry point, inside a Sandbox."""
+    for name, value in (("BOOLEY_CONTAINER", "1"), ("BOOLEY_EGRESS", "unproxied")):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("PYTHONUTF8", "1")
+    monkeypatch.setattr(sys, "argv", ["booley", "-C", str(project), *argv])
+    return tlr.main()
 
 
 _SERVE_SCRIPT = "import sys; from pathlib import Path; from booley.harness.dashboard import web; raise SystemExit(web.serve(Path(sys.argv[1]), 0))"
@@ -267,7 +273,7 @@ def test_held_port_is_a_booley_error_without_banner(world, monkeypatch, capsys):
         holder.listen()
         port = holder.getsockname()[1]
 
-        assert tlr._cmd_dashboard(_dashboard_args("--web", "--port", str(port)), world.main) == 2
+        assert _booley(monkeypatch, world.main, "dashboard", "--web", "--port", str(port)) == 2
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -279,25 +285,26 @@ def test_held_port_is_a_booley_error_without_banner(world, monkeypatch, capsys):
     assert served == []
 
 
-def test_dashboard_help_documents_web_and_port(capsys):
+@pytest.mark.parametrize(
+    ("port", "code", "shown"),
+    [
+        (None, 0, ("[--web]", "127.0.0.1", "--port PORT", "default: 8090")),
+        *(
+            (port, 2, ("port must be a whole number from 1 to 65535",))
+            for port in ("0", "65536", "-1", "http")
+        ),
+    ],
+)
+def test_dashboard_help_and_port_range(tmp_path, monkeypatch, capsys, port, code, shown):
+    words = ("--help",) if port is None else ("--web", "--port", port)
     with pytest.raises(SystemExit) as stop:
-        _dashboard_args("--help")
+        _booley(monkeypatch, tmp_path, "dashboard", *words)
 
-    text = " ".join(capsys.readouterr().out.split())
-    assert stop.value.code == 0
-    assert "--web" in text
-    assert "127.0.0.1" in text
-    assert "--port PORT" in text
-    assert "default: 8090" in text
-
-
-@pytest.mark.parametrize("port", ["0", "65536", "-1", "http"])
-def test_port_outside_tcp_range_is_refused(capsys, port):
-    with pytest.raises(SystemExit) as stop:
-        _dashboard_args("--web", "--port", port)
-
-    assert stop.value.code == 2
-    assert "port must be a whole number from 1 to 65535" in capsys.readouterr().err
+    assert stop.value.code == code
+    captured = capsys.readouterr()
+    text = " ".join((captured.err if code else captured.out).split())
+    for fragment in shown:
+        assert fragment in text
 
 
 def test_port_without_web_is_refused(tmp_path, monkeypatch, capsys):
@@ -320,53 +327,34 @@ def test_dashboard_without_web_opens_the_textual_dashboard(tmp_path, monkeypatch
     assert opened == [tmp_path]
 
 
-def test_linked_worktree_snapshot_lists_only_its_jobs(world, monkeypatch):
-    _job(world, "run-wt", world.wt, target="t_wt")
-    _job(world, "run-main", world.main, target="t_main")
-    _job(world, "run-other", world.other, target="t_other")
+@pytest.mark.parametrize(
+    ("name", "targets", "branch"),
+    [
+        ("wt", ["t_wt"], "booley/wt"),
+        ("link", ["t_wt"], "booley/wt"),
+        ("main", ["t_main"], "main"),
+        ("detached", [], None),
+    ],
+)
+def test_snapshot_lists_only_the_named_worktrees_jobs(
+    world, tmp_path, monkeypatch, name, targets, branch
+):
+    for target, work_dir in (("t_wt", world.wt), ("t_main", world.main), ("t_other", world.other)):
+        _job(world, f"run-{target}", work_dir, target=target)
     _job(world, "run-nowhere", None, target="t_nowhere")
+    worktree = {"wt": world.wt, "main": world.main}.get(name, tmp_path / name)
+    if name == "link":
+        symlink_or_skip(worktree, world.wt, target_is_directory=True)
+    elif name == "detached":
+        git(world.main, "worktree", "add", "-q", "--detach", str(worktree), "HEAD")
 
     with _client(world, monkeypatch) as client:
-        body = _snapshot(client, world.wt)
+        body = _snapshot(client, worktree)
 
-    assert _targets(body["results"]["jobs"]) == ["t_wt"]
+    assert _targets(body["results"]["jobs"]) == targets
     assert body["now"] == []
-    assert body["header"]["worktree"] == str(world.wt.resolve())
-    assert body["header"]["branch"] == "booley/wt"
-
-
-def test_worktree_named_through_a_symlink_is_the_same_worktree(world, tmp_path, monkeypatch):
-    _job(world, "run-wt", world.wt, target="t_wt")
-    link = tmp_path / "link-to-wt"
-    symlink_or_skip(link, world.wt, target_is_directory=True)
-
-    with _client(world, monkeypatch) as client:
-        body = _snapshot(client, link)
-
-    assert _targets(body["results"]["jobs"]) == ["t_wt"]
-    assert body["header"]["worktree"] == str(world.wt.resolve())
-
-
-def test_main_checkout_is_a_worktree_with_only_its_jobs(world, monkeypatch):
-    _job(world, "run-wt", world.wt, target="t_wt")
-    _job(world, "run-main", world.main, target="t_main")
-
-    with _client(world, monkeypatch) as client:
-        body = _snapshot(client, world.main)
-
-    assert _targets(body["results"]["jobs"]) == ["t_main"]
-    assert body["header"]["worktree"] == str(world.main.resolve())
-    assert body["header"]["branch"] == "main"
-
-
-def test_detached_worktree_has_no_branch(world, tmp_path, monkeypatch):
-    detached = tmp_path / "detached"
-    git(world.main, "worktree", "add", "-q", "--detach", str(detached), "HEAD")
-
-    with _client(world, monkeypatch) as client:
-        body = _snapshot(client, detached)
-
-    assert body["header"]["branch"] is None
+    assert body["header"]["worktree"] == str(worktree.resolve())
+    assert body["header"]["branch"] == branch
 
 
 @pytest.mark.parametrize(
@@ -380,6 +368,7 @@ def test_detached_worktree_has_no_branch(world, tmp_path, monkeypatch):
         ("recreated", 404),
         ("foreign", 404),
         ("outside", 404),
+        ("unlistable", 503),
     ],
 )
 def test_unaccepted_worktree_gets_a_json_error_without_jobs(
@@ -389,9 +378,12 @@ def test_unaccepted_worktree_gets_a_json_error_without_jobs(
     git(world.main, "worktree", "add", "-q", "-b", "booley/deleted", str(deleted), "HEAD")
     outside = tmp_path / "outside"
     outside.mkdir()
-    for path in (deleted, outside, tmp_path / "nowhere"):
+    for path in (deleted, outside, tmp_path / "nowhere", world.wt):
         _job(world, f"run-{path.name}", path, target="leak")
     shutil.rmtree(deleted)
+    if kind == "unlistable":
+        # Git refuses a repository whose HEAD is unreadable, so it cannot list the worktrees.
+        (world.main / ".git" / "HEAD").write_bytes(b"garbage\n")
     if kind in {"recreated", "foreign"}:
         deleted.mkdir()
     if kind == "foreign":
@@ -405,6 +397,7 @@ def test_unaccepted_worktree_gets_a_json_error_without_jobs(
         "recreated": {"worktree": str(deleted)},
         "foreign": {"worktree": str(deleted)},
         "outside": {"worktree": str(outside)},
+        "unlistable": {"worktree": str(world.wt)},
     }[kind]
 
     with _client(world, monkeypatch) as client:
@@ -415,36 +408,18 @@ def test_unaccepted_worktree_gets_a_json_error_without_jobs(
     body = response.json()
     assert list(body) == ["error"]
     assert isinstance(body["error"], str)
+    if kind == "unlistable":
+        assert body["error"].startswith("Git could not list the worktrees: ")
     assert "leak" not in response.text
 
 
-def test_a_sessions_key_without_a_handle_reads_as_its_process():
-    from types import SimpleNamespace
-
-    from booley.harness.dashboard.web_snapshot import _owner
-
-    key = "pid:pid:[4026531836]:42:7"
-    job = SimpleNamespace(record=SimpleNamespace(session_key=key), owner_handle="")
-
-    assert _owner(job).startswith("PID 42")
-
-
-def test_unlistable_worktrees_are_a_503_without_jobs(world, monkeypatch):
-    from booley.harness.worktree_list import WorktreeListError
-
-    web = _web()
-
-    def refuse(_repository):
-        raise WorktreeListError("git worktree failed")
-
-    monkeypatch.setattr(web, "worktree_registrations", refuse)
-    _job(world, "run-wt", world.wt, target="leak")
+def test_a_sessions_key_without_a_handle_reads_as_its_process(world, monkeypatch):
+    _job(world, "run-pid", world.wt, session="pid", key="pid:pid:[4026531836]:42:7")
 
     with _client(world, monkeypatch) as client:
-        response = client.get("/api/snapshot", params={"worktree": str(world.wt)})
+        (row,) = _snapshot(client, world.wt)["results"]["jobs"]
 
-    assert response.status_code == 503
-    assert response.json() == {"error": "Git could not list the worktrees: git worktree failed"}
+    assert row["owner"] == "PID 42 · ns 4026531836"
 
 
 def test_report_route_serves_only_reports_of_the_named_worktree(world, monkeypatch):
@@ -479,32 +454,15 @@ def test_report_route_serves_only_reports_of_the_named_worktree(world, monkeypat
 
 
 def test_now_lists_running_and_queued_jobs_with_queue_position(world, monkeypatch):
-    _job(
-        world, "run-r", world.wt, target="t_run", status="running", ended=None, pid=7001, live=True
-    )
-    _job(
-        world,
-        "run-q",
-        world.wt,
-        target="t_queued",
-        status="running",
-        ended=None,
-        started="2026-10-08T10:00:15Z",
-        pid=7002,
-        live=True,
-    )
+    _queued_world(world)
     _job(
         world,
         "run-s",
         world.wt,
         target="t_spawn",
         status="running",
-        ended=None,
         started="2026-10-08T10:00:18Z",
     )
-    for seq, pid, mib in ((1, 7101, 200.0), (2, 7102, 500.0)):
-        _slot(world, "h", seq, pid, {"memory": _claim(mib)})
-    _slot(world, "w", 3, 7002, _own(7002, "run-q", memory=_claim(400.0)))
 
     with _client(world, monkeypatch) as client:
         body = _snapshot(client, world.wt)
@@ -565,6 +523,7 @@ def test_results_are_newest_first_capped_with_counts_and_report_links(world, mon
     assert len(jobs) == 50
     assert ended == sorted(ended, reverse=True)
     assert (jobs[0]["target"], jobs[1]["target"], jobs[-1]["target"]) == ("sa", "t51", "t3")
+    assert jobs[0]["owner"] == "you"
     assert (body["results"]["passed"], body["results"]["failed"]) == (18, 31)
     assert jobs[1]["result"] == "PASSED"
     by_target = {row["target"]: row for row in jobs}
@@ -586,69 +545,12 @@ def test_results_are_newest_first_capped_with_counts_and_report_links(world, mon
     assert linked.json() == {"run_id": "run-sa", "criterion_key": "k", "criterion_met": True}
 
 
-def test_standalone_job_of_the_worktree_is_owned_by_you(world, monkeypatch):
-    _job(
-        world,
-        "run-sa",
-        world.wt,
-        target="t_sa",
-        session=None,
-        status="running",
-        ended=None,
-        pid=7003,
-        live=True,
-    )
-    _job(
-        world,
-        "run-sa-other",
-        world.other,
-        target="t_sa_other",
-        session=None,
-        status="running",
-        ended=None,
-        pid=7004,
-        live=True,
-    )
-
-    with _client(world, monkeypatch) as client:
-        body = _snapshot(client, world.wt)
-
-    assert [(row["target"], row["owner"], row["state"]) for row in body["now"]] == [
-        ("t_sa", "you", "running")
-    ]
-
-
 def test_unfinished_jobs_of_old_sessions_are_listed_and_counted(world, monkeypatch):
     for index in range(65):
-        newer = world.booley / "job_logs" / f"new{index}" / ".runtime" / "jobs"
-        newer.mkdir(parents=True)
-    _job(world, "run-s", world.wt, target="t_spawn", status="running", ended=None)
-    _job(
-        world,
-        "run-q",
-        world.wt,
-        target="t_queued",
-        status="running",
-        ended=None,
-        pid=7002,
-        live=True,
-    )
-    _job(
-        world, "run-r", world.wt, target="t_run", status="running", ended=None, pid=7001, live=True
-    )
-    _job(
-        world,
-        "run-sa",
-        world.wt,
-        target="t_sa",
-        session=None,
-        status="running",
-        ended=None,
-        pid=7003,
-        live=True,
-    )
-    _slot(world, "h", 1, 7101, {"memory": _claim(200.0)})
-    _slot(world, "w", 2, 7002, _own(7002, "run-q", memory=_claim(400.0)))
+        (world.booley / "job_logs" / f"new{index}" / ".runtime" / "jobs").mkdir(parents=True)
+    _queued_world(world)
+    _job(world, "run-s", world.wt, target="t_spawn", status="running")
+    _job(world, "run-sa", world.wt, target="t_sa", session=None, status="running", pid=7003)
     # The roots holding the unfinished Jobs are the oldest of all 66.
     for root in (world.booley / "job_logs").glob("*/.runtime/jobs"):
         old = root.parent.parent.name in {"sess1", "standalone"}
@@ -672,17 +574,7 @@ def test_cli_jobs_waiting_for_memory_are_queued_and_counted(world, monkeypatch):
     # `booley session enter` exports the execution ID, so a CLI Job's own claim is execution-owned.
     execution = {"owner_kind": "execution", "execution_id": "b2" * 16}
     for run_id, pid in (("run-h", 7030), ("run-w1", 7031), ("run-w2", 7032), ("run-rec", 7033)):
-        _job(
-            world,
-            run_id,
-            world.wt,
-            target=run_id,
-            session=None,
-            status="running",
-            ended=None,
-            pid=pid,
-            live=True,
-        )
+        _job(world, run_id, world.wt, target=run_id, session=None, status="running", pid=pid)
     _slot(world, "h", 1, 7030, _own(7030, "run-h", **execution, memory=_claim(200.0)))
     _slot(world, "h", 2, 7033, _own(7033, "run-rec", **execution, memory=_claim(100.0)))
     _slot(world, "w", 3, 7031, _own(7031, "run-w1", **execution, memory=_claim(6000.0)))
@@ -708,7 +600,7 @@ def test_cli_jobs_waiting_for_memory_are_queued_and_counted(world, monkeypatch):
 def test_header_carries_resources_budget_and_jobs_counted_once(world, monkeypatch):
     ticks = iter((100.0, 110.0))
     # One Job holding a companion claim and two work-item claims.
-    _job(world, "run-a", world.wt, status="running", ended=None, pid=7010, live=True)
+    _job(world, "run-a", world.wt, status="running", pid=7010)
     for seq, mib, extra in ((1, 100.0, {"companion": True}), (2, 200.0, {}), (3, 300.0, {})):
         _slot(
             world,
@@ -722,7 +614,7 @@ def test_header_carries_resources_budget_and_jobs_counted_once(world, monkeypatc
             ),
         )
     # A running Job whose child-lane claim waits is still running.
-    _job(world, "run-c", world.main, status="running", ended=None, pid=7011, live=True)
+    _job(world, "run-c", world.main, status="running", pid=7011)
     _slot(
         world,
         "w",
@@ -731,7 +623,7 @@ def test_header_carries_resources_budget_and_jobs_counted_once(world, monkeypatc
         {"owner_identity": _identity(7011), "owner_kind": "execution", "memory": _claim(50.0)},
     )
     # A queued Job counts as queued, not reserved.
-    _job(world, "run-b", world.other, status="running", ended=None, pid=7012, live=True)
+    _job(world, "run-b", world.other, status="running", pid=7012)
     _slot(world, "w", 5, 7012, _own(7012, "run-b", memory=_claim(400.0)))
     # A stale holder of a dead owner reserves nothing.
     _slot(world, "h", 6, 7013, {"owner_identity": _identity(7013), "memory": _claim(1000.0)})
@@ -763,7 +655,7 @@ def test_header_carries_resources_budget_and_jobs_counted_once(world, monkeypatc
 
 
 def test_run_alone_holder_is_reported_not_summed(world, monkeypatch):
-    _job(world, "run-a", world.wt, status="running", ended=None, pid=7020, live=True)
+    _job(world, "run-a", world.wt, status="running", pid=7020)
     alone = job_slots.MemoryClaim(6144.0, run_alone=True).to_payload()
     _slot(world, "h", 1, 7020, _own(7020, "run-a", memory=alone))
 
@@ -775,12 +667,9 @@ def test_run_alone_holder_is_reported_not_summed(world, monkeypatch):
 
 
 def test_budget_shows_without_jobs_and_unavailable_budget_is_marked(world, monkeypatch):
-    def unreadable(**_kw):
-        raise OSError("MemTotal is unreadable")
-
     with _client(world, monkeypatch) as client:
         empty = _snapshot(client, world.wt)["header"]["admission"]
-        monkeypatch.setattr(_snapshot_module(), "compute_memory_budget", unreadable)
+        fail_budget(monkeypatch, importer=DASHBOARD)
         marked = _snapshot(client, world.wt)["header"]["admission"]
 
     assert empty == {
@@ -792,7 +681,7 @@ def test_budget_shows_without_jobs_and_unavailable_budget_is_marked(world, monke
         "queued_jobs": 0,
     }
     assert marked["memory_budget_bytes"] is None
-    assert marked["memory_budget_unavailable"] == "MemTotal is unreadable"
+    assert marked["memory_budget_unavailable"] == "MemTotal unreadable"
 
 
 PROBE = Path(__file__).with_name("dashboard_page_probe.cjs")
@@ -843,26 +732,15 @@ def _search(worktree: Path | str) -> str:
 
 def _queued_world(world: World) -> None:
     """One running and one queued Job of `world.wt`."""
-    _job(
-        world,
-        "run-r",
-        world.wt,
-        target="t_run",
-        status="running",
-        ended=None,
-        pid=LIVE_PID,
-        live=True,
-    )
+    _job(world, "run-r", world.wt, target="t_run", status="running", pid=LIVE_PID)
     _job(
         world,
         "run-q",
         world.wt,
         target="t_queued",
         status="running",
-        ended=None,
         started="2026-10-08T10:00:15Z",
         pid=7002,
-        live=True,
     )
     for seq, pid, mib in ((1, 7101, 200.0), (2, 7102, 500.0)):
         _slot(world, "h", seq, pid, {"memory": _claim(mib)})
@@ -909,7 +787,9 @@ def test_page_renders_the_snapshot_with_results_collapsed_and_polls(world, monke
         _job(world, "run-new", world.wt, target="t_new", ended="2026-10-08T10:00:10Z")
         second = _reply(client, world.wt)
         probe = _run_page(
-            _page_js(client), {"search": _search(world.wt), "responses": [first, second]}, tmp_path
+            _page_js(client),
+            {"search": _search(world.wt), "responses": [first, second]},
+            tmp_path,
         )
 
     assert len(probe["fetches"]) == 2
@@ -974,9 +854,7 @@ def test_results_open_state_is_remembered_in_the_browser(world, monkeypatch, tmp
 
 
 def test_unchanged_results_are_not_rewritten(world, monkeypatch, tmp_path):
-    _job(
-        world, "run-r", world.wt, target="t_run", status="running", ended=None, pid=7001, live=True
-    )
+    _job(world, "run-r", world.wt, target="t_run", status="running", pid=7001)
     _job(world, "run-a", world.wt, target="t_a")
 
     with _client(world, monkeypatch) as client:
@@ -984,7 +862,9 @@ def test_unchanged_results_are_not_rewritten(world, monkeypatch, tmp_path):
         monkeypatch.setattr(_snapshot_module(), "wall_clock", lambda: NOW + 5)
         second = _reply(client, world.wt)
         probe = _run_page(
-            _page_js(client), {"search": _search(world.wt), "responses": [first, second]}, tmp_path
+            _page_js(client),
+            {"search": _search(world.wt), "responses": [first, second]},
+            tmp_path,
         )
 
     assert first["body"]["results"] == second["body"]["results"]
@@ -999,7 +879,9 @@ def test_empty_worktree_says_no_jobs_have_run(world, monkeypatch, tmp_path):
     with _client(world, monkeypatch) as client:
         reply = _reply(client, world.wt)
         probe = _run_page(
-            _page_js(client), {"search": _search(world.wt), "responses": [reply]}, tmp_path
+            _page_js(client),
+            {"search": _search(world.wt), "responses": [reply]},
+            tmp_path,
         )
 
     assert reply["body"]["header"]["resources"]["memory_limit_bytes"] is None

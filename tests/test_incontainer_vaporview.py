@@ -44,7 +44,7 @@ def _vanilla_manifest() -> dict:
                         "vaporview.customColor8": {"scope": "application", "default": "#4abfa8"},
                     }
                 },
-            ]
+            ],
         },
     }
 
@@ -276,10 +276,10 @@ class TestPatchFile:
     def test_atomic_write_failure_is_reported(self, tmp_path, monkeypatch):
         manifest = _install_at(tmp_path / f"lramseyer.vaporview-{_VERSION}", _vanilla_manifest())
 
-        def fail_write(_path, _content):
+        def fail_write(_path, _content, **_options):
             raise OSError("simulated write failure")
 
-        monkeypatch.setattr(iv, "_atomic_write_text", fail_write)
+        monkeypatch.setattr(iv, "atomic_write_text", fail_write)
 
         result = iv._patch_file(manifest)
 
@@ -512,7 +512,10 @@ class TestInstallRaceWait:
                 )
 
         assert iv._watch_for_late_install(
-            home, sleep=sleep, clock=lambda: state["t"], stop=lambda: state["sleeps"] > 3
+            home,
+            sleep=sleep,
+            clock=lambda: state["t"],
+            stop=lambda: state["sleeps"] > 3,
         )
         assert activation_payload is not None
         properties = _color_properties(activation_payload)
@@ -556,7 +559,11 @@ class TestInstallRaceWait:
                 bundle.write_text(_VANILLA_BUNDLE, encoding="utf-8")
 
         assert iv._watch_for_late_install(
-            home, sleep=sleep, clock=lambda: state["t"], stop=lambda: state["sleeps"] > 3, err=err
+            home,
+            sleep=sleep,
+            clock=lambda: state["t"],
+            stop=lambda: state["sleeps"] > 3,
+            err=err,
         )
         assert state["sleeps"] == 2
         assert "manifest is not readable JSON yet" in err.getvalue()
@@ -570,7 +577,10 @@ class TestInstallRaceWait:
             state.update(t=state["t"] + dt, sleeps=state["sleeps"] + 1)
 
         assert not iv._watch_for_late_install(
-            home, sleep=sleep, clock=lambda: state["t"], stop=lambda: state["sleeps"] == 40
+            home,
+            sleep=sleep,
+            clock=lambda: state["t"],
+            stop=lambda: state["sleeps"] == 40,
         )
         assert state["sleeps"] == 40
 
@@ -583,7 +593,10 @@ class TestInstallRaceWait:
         monkeypatch.setattr(iv, "_open_watch_lock", fail)
 
         assert not iv._watch_for_late_install(
-            home, sleep=lambda _dt: None, clock=lambda: 0.0, err=err
+            home,
+            sleep=lambda _dt: None,
+            clock=lambda: 0.0,
+            err=err,
         )
         assert str(home / ".booley" / iv._WATCH_LOCK) in err.getvalue()
         assert "read-only state directory" in err.getvalue()

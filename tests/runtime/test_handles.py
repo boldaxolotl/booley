@@ -147,7 +147,9 @@ def test_job_kinds_and_project_wide_counter(tmp_path_factory):
         "SYN": ("asic_synthesize", "synth"),
         "LINT": ("lint", "lint_rtl"),
         "FPGA": ("fpga_impl", "fpga"),
-        "JOB": ("custom",),
+        "MEAS": ("measure",),
+        "MUT": ("mutation",),
+        "JOB": ("custom", "reviewer"),
     }.items():
         for endpoint in endpoints:
             tmp_path = tmp_path_factory.mktemp(str(endpoint))
@@ -157,7 +159,7 @@ def test_job_kinds_and_project_wide_counter(tmp_path_factory):
             state.next_number = 1
             store.save(state)
             handles.register_job(tmp_path, "second", "lint", None)
-            handles.register_job(tmp_path, "first", endpoint, None)
+            handles.register_job(tmp_path, "first", "measure", None)  # stored kind wins
             state = handles.HandleStore(tmp_path, jobs=True).load()
             assert state.entries == {"first": f"J-{prefix}1", "second": "J-LINT2"}, endpoint
             assert state.next_number == 3, endpoint
@@ -620,7 +622,11 @@ def test_handle_map_without_names_loads_and_titles_are_handles(tmp_path):
     legacy = {"schema": 1, "entries": {"k": "S4"}, "aliases": {"old": "k"}, "next_number": 5}
     store.path.write_text(json.dumps(legacy))
     assert store.load().names == {}
-    assert store.titled_snapshot() == ({"k": "S4", "old": "S4"}, {"k": "S4", "old": "S4"}, ())
+    assert store.titled_snapshot() == (
+        {"k": "S4", "old": "S4"},
+        {"k": "S4", "old": "S4"},
+        (),
+    )
     # Reading a label-less map writes nothing; a reservation without a name leaves it as is.
     store.reserve("k", "S")
     assert json.loads(store.path.read_text()) == legacy

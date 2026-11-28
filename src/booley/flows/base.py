@@ -49,6 +49,7 @@ from booley.runtime.endpoint_execution import (
     note_job_oom_kill,
 )
 from booley.runtime.filesystem_utils import make_directories
+from booley.runtime.process_group import own_process_group, release_process_group
 from booley.runtime.python_artifacts import relocate_python_artifacts
 from booley.targets.catalog import PreparedTargetSelection
 from booley.targets.domain import TARGET_AWARE_FLOWS, FuseSocError, TargetHandle
@@ -119,7 +120,9 @@ def blame_own_oom_kill(
 
 def _prepare_supervised_command(cmd: list[str], env: dict[str, str]):
     from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV
-    from booley.runtime.supervised_execution import current_supervised_execution
+    from booley.runtime.supervised_execution import (
+        current_supervised_execution,
+    )
 
     scope = current_supervised_execution()
     if scope is not None and scope.execution_id is not None:
@@ -157,6 +160,7 @@ def _start_local_process(cmd, cwd, env, scope):
             env=env,
             **_popen_kwargs_with_lease(),
         )
+        own_process_group(proc)
         if scope is not None:
             scope.processes.register(proc)
         return proc
@@ -168,7 +172,11 @@ def _start_local_process(cmd, cwd, env, scope):
 
 
 def _communicate_local_process(
-    cmd: list[str], proc: subprocess.Popen, scope: Any, started: float, timeout: int
+    cmd: list[str],
+    proc: subprocess.Popen,
+    scope: Any,
+    started: float,
+    timeout: int,
 ) -> SubprocessResult:
     from booley.runtime.platform_paths import kill_process_tree
 
@@ -267,7 +275,9 @@ class FlowMechanics:
         cmd = self._build_command()
         if not cmd:
             return EndpointOutcome(
-                exit_code=EXIT_ERROR, report_text="No command to execute", refused=True
+                exit_code=EXIT_ERROR,
+                report_text="No command to execute",
+                refused=True,
             )
         proc_result = self._execute(cmd)
         return self._interpret_result(proc_result)
@@ -314,7 +324,7 @@ class FlowMechanics:
         """Run locally and reap the whole process tree on timeout or interruption.
 
         *cwd* defaults to :meth:`_get_cwd`; a caller running another checkout
-        (a Cycle Count baseline) names that checkout.
+        names that checkout.
         """
         import sys as _sys
 
@@ -370,16 +380,19 @@ class FlowMechanics:
         proc = _start_local_process(cmd, cwd, env, scope)
         if proc is None:
             return None
-        if observer is not None:
-            # Only a spawned tool counts as started in the progress record.
-            observer.begin_command()
-        monitor.start(proc.pid)
         try:
             if observer is not None:
-                return _observe_local_process(proc, observer, scope, start, timeout)
-            return _communicate_local_process(cmd, proc, scope, start, timeout)
+                # Only a spawned tool counts as started in the progress record.
+                observer.begin_command()
+            monitor.start(proc.pid)
+            try:
+                if observer is not None:
+                    return _observe_local_process(proc, observer, scope, start, timeout)
+                return _communicate_local_process(cmd, proc, scope, start, timeout)
+            finally:
+                monitor.finish(proc.reaped_peak_bytes)
         finally:
-            monitor.finish(proc.reaped_peak_bytes)
+            release_process_group(proc)
 
     def _resource_flags(self) -> tuple[str, ...]:
         """Instrumentation flags that key this Flow's resource history."""
@@ -437,7 +450,11 @@ class FlowMechanics:
     # ------------------------------------------------------------------
 
     def _execute_boundary(
-        self, cmd: list[str], *, timeout: int | None = None, cwd: Path | None = None
+        self,
+        cmd: list[str],
+        *,
+        timeout: int | None = None,
+        cwd: Path | None = None,
     ) -> SubprocessResult:
         """Run a boundary command locally inside the Sandbox, in *cwd* when given."""
         dispatched = time.time()
@@ -529,9 +546,6 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         EndpointState.__init__(self)  # new invocation id, display identity, ...
         self._args = request
         self.publication_resources = contextlib.ExitStack()
-        # Baseline worktrees held open in `publication_resources`, by revision; each
-        # revision is materialized once per invocation and shared (#1959).
-        self.baseline_worktrees: dict[str, Path] = {}
         self.reset_report_metadata()
         job_resources.clear_label()  # a stage label must not outlive its invocation
 
@@ -567,11 +581,15 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
             return None
         try:
             selection = PreparedTargetSelection.resolve(
-                self.args.work_dir, self.args.target, for_flow=self.name, select_omitted=True
+                self.args.work_dir,
+                self.args.target,
+                for_flow=self.name,
+                select_omitted=True,
             )
         except (FuseSocError, OSError, ValueError) as exc:
             return EndpointOutcome(
-                exit_code=EXIT_ERROR, report_text=f"{self.name} Target selection failed: {exc}"
+                exit_code=EXIT_ERROR,
+                report_text=f"{self.name} Target selection failed: {exc}",
             )
         self._prepared_target_selection = selection
         self.set_report_targets([handle.selector for handle in selection.handles])
@@ -601,7 +619,9 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
         if prepared is not None and prepared.matches(self.args.work_dir, self.args.target):
             return prepared
         return PreparedTargetSelection.resolve(
-            self.args.work_dir, self.args.target, for_flow=self.name
+            self.args.work_dir,
+            self.args.target,
+            for_flow=self.name,
         )
 
     def _selected_target_handles(self) -> tuple[TargetHandle, ...]:
@@ -707,7 +727,11 @@ class BuiltinFlow(FlowMechanics, EndpointState, Generic[RequestT]):
 
     def _timeout_ms(self) -> int:
         """Resolve the strict shared timeout precedence for this built-in Flow."""
-        return resolve_timeout_ms(self.name, Path(self.args.work_dir), self.args.timeout_ms)
+        return resolve_timeout_ms(
+            self.name,
+            Path(self.args.work_dir),
+            self.args.timeout_ms,
+        )
 
     def _pre_state_gate(self) -> EndpointOutcome | None:
         """Validate the shared invocation contract before dry-run can return."""

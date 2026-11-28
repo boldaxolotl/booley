@@ -72,7 +72,13 @@ from booley.presentation.report_results import (
 from booley.runtime.handles import job_prefix
 from booley.runtime.job_records import parse_stamp, target_arg
 from booley.runtime.pid import ProcessState
-from booley.runtime.session_activity import UNKNOWN, WAITING_TOOL, WAITING_USER, WORKING, Activity
+from booley.runtime.session_activity import (
+    UNKNOWN,
+    WAITING_TOOL,
+    WAITING_USER,
+    WORKING,
+    Activity,
+)
 from booley.runtime.timefmt import format_age, format_clock, format_duration, parse_timestamp
 
 logger = logging.getLogger(__name__)
@@ -943,7 +949,7 @@ class DashboardApp(App[None]):
         aside = self.query_one("#aside")
         return self.focused is aside and aside.scroll_y == 0
 
-    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:  # noqa: ARG002 — overrides Textual App.check_action
         """Window keys act only on the base screen and while the top bar is not focused."""
         if action not in {"step_window", "focus_top_bar"}:
             return True

@@ -63,7 +63,8 @@ def flow_project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(build_reuse, "RACE_MARGIN_NS", 0)
     project = _write_project(tmp_path)
     (project / ".booley" / "tests.toml").write_text(
-        '[sim]\ntests = ["first", "second", "third"]\nselect = "+test={name}"\n', encoding="utf-8"
+        '[sim]\ntests = ["first", "second", "third"]\nselect = "+test={name}"\n',
+        encoding="utf-8",
     )
     return project
 

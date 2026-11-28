@@ -7,7 +7,7 @@ import stat
 from enum import Enum
 from pathlib import Path
 
-from booley.runtime.atomic_files import (
+from booley.core.atomic_files import (
     WriteOnceConflictError,
     atomic_replace_bytes,
     atomic_write_once,
@@ -181,7 +181,11 @@ def guarded_write(
         )
 
     outcome = _planned_write_outcome(
-        target, content, owner_marker=owner_marker, backup_suffix=backup_suffix, newline=newline
+        target,
+        content,
+        owner_marker=owner_marker,
+        backup_suffix=backup_suffix,
+        newline=newline,
     )
     if outcome in (WriteOutcome.SKIPPED, WriteOutcome.REFUSED):
         return outcome

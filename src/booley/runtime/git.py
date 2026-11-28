@@ -171,7 +171,10 @@ def _git_common_dir_fs(wt: Path) -> Path | None:  # noqa: PLR0911 — ordered re
 
 
 def _git_exclude_update(
-    wt: Path, names: Iterable[str], *, header: str
+    wt: Path,
+    names: Iterable[str],
+    *,
+    header: str,
 ) -> tuple[Path | None, list[str] | None]:
     """Prepare the exact shared-info exclude update, if one is needed."""
     common = _git_common_dir(wt)
@@ -205,7 +208,10 @@ def _git_exclude_update(
 
 
 def git_excludes_pending(
-    wt: Path, names: Iterable[str], *, header: str = BOOLEY_EXCLUDE_HEADER
+    wt: Path,
+    names: Iterable[str],
+    *,
+    header: str = BOOLEY_EXCLUDE_HEADER,
 ) -> bool:
     """Return whether the honored Git exclude needs reconciliation, without writing."""
     _path, lines = _git_exclude_update(wt, names, header=header)
@@ -233,7 +239,10 @@ def stealth_exclude_names(root: Path) -> tuple[str, ...]:
 
 
 def add_git_excludes(
-    wt: Path, names: Iterable[str], *, header: str = BOOLEY_EXCLUDE_HEADER
+    wt: Path,
+    names: Iterable[str],
+    *,
+    header: str = BOOLEY_EXCLUDE_HEADER,
 ) -> bool:
     """Idempotently add ``/<name>`` entries to the repo's honored ``info/exclude``.
 
@@ -465,7 +474,13 @@ def scope_matches_dirty_file(scope: list[str], filepath: str, status: str) -> bo
     return False
 
 
-def commit_scope(wt: Path, scope: list[str], message: str, *, literal: bool = False) -> None:
+def commit_scope(
+    wt: Path,
+    scope: list[str],
+    message: str,
+    *,
+    literal: bool = False,
+) -> None:
     """Stage scope files and commit. Uses explicit paths, never git add -A.
 
     Raises ValueError if scope is empty -- callers must provide explicit paths.
@@ -552,7 +567,8 @@ def _isolate_scope_staging(wt: Path, scope: list[str], *, literal: bool = False)
         if not out_of_scope:
             return
         reset_result = git_run(
-            wt, ["--literal-pathspecs", "reset", "--quiet", "HEAD", "--", *out_of_scope]
+            wt,
+            ["--literal-pathspecs", "reset", "--quiet", "HEAD", "--", *out_of_scope],
         )
         if reset_result.returncode != 0:
             raise BlockingError(

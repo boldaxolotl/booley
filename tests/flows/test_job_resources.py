@@ -28,14 +28,16 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.live_progress import observe_stage
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.flows.terminal_progress import TerminalProgress
-from booley.runtime import resource_history, runtime_context
+from booley.runtime import resource_history
 from booley.runtime.project_gitignore import PROJECT_GITIGNORE
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.supervised_execution import (
     SupervisedExecutionScope,
     supervised_execution_scope,
 )
 from booley.runtime.timefmt import rfc3339_from_datetime, utc_now_rfc3339
 from tests.flows.test_flow_base import EchoFlow, _flow_env
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s, scaled
 
@@ -97,7 +99,7 @@ class CommandFlow(EchoFlow):
 @pytest.fixture
 def run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     """``run(command)``: the command through the Flow's public endpoint."""
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setenv("BOOLEY_SLUG", "test")
 
     def run_command(command: list[str]) -> SubprocessResult:
@@ -276,7 +278,8 @@ def test_synth_history_threads_equal_the_openroad_thread_count(tmp_path, monkeyp
     fake_make.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
     plan = SimpleNamespace(
-        build_dir=tmp_path / "build", spec=SimpleNamespace(timing=SimpleNamespace(mode="physical"))
+        build_dir=tmp_path / "build",
+        spec=SimpleNamespace(timing=SimpleNamespace(mode="physical")),
     )
     job_resources.label_commands("core", "synth")
 
@@ -962,7 +965,8 @@ def test_simulation_stages_label_build_and_run_commands():
 
 
 @pytest.mark.parametrize(
-    ("coverage", "trace", "flags"), [(False, False, ()), (True, True, ("coverage", "trace"))]
+    ("coverage", "trace", "flags"),
+    [(False, False, ()), (True, True, ("coverage", "trace"))],
 )
 def test_simulation_flags_key_the_history(coverage, trace, flags):
     sim = SimulateFlow()
@@ -1076,7 +1080,6 @@ def test_a_run_the_bundle_check_refuses_after_exit_records_a_failure(tmp_path, m
             tmp_path,
             (),
             0.0,
-            lambda _boundary: None,
         )
 
     (record,) = _history(tmp_path)
@@ -1322,7 +1325,10 @@ def test_doctor_started_runs_write_no_records(run, tmp_path, monkeypatch):
 
 @pytest.mark.parametrize(
     ("field", "value", "context"),
-    [("source_bytes", 1234, contextlib.nullcontext), ("threads", 4, lambda: fixed_job_threads(4))],
+    [
+        ("source_bytes", 1234, contextlib.nullcontext),
+        ("threads", 4, lambda: fixed_job_threads(4)),
+    ],
 )
 def test_records_carry_a_label_field_only_when_known(flow, tmp_path, field, value, context):
     job_resources.label_commands("core", "sim_build", source_bytes=1234)

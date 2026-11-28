@@ -189,7 +189,11 @@ def write_progress_json(
 
 
 def read_progress_for_run(
-    report_roots: Sequence[Path], endpoint: str, run_id: str, *, booley_dir: Path | None = None
+    report_roots: Sequence[Path],
+    endpoint: str,
+    run_id: str,
+    *,
+    booley_dir: Path | None = None,
 ) -> tuple[Path, dict[str, Any]] | None:
     """Return the newest trusted run-scoped checkpoint and its exact path.
 
@@ -234,7 +238,11 @@ def read_progress_for_run(
 
 
 def repair_progress_after_reap(
-    report_roots: Sequence[Path], endpoint: str, run_id: str, *, booley_dir: Path | None = None
+    report_roots: Sequence[Path],
+    endpoint: str,
+    run_id: str,
+    *,
+    booley_dir: Path | None = None,
 ) -> bool:
     """Best-effort terminalization after the supervisor proved a child dead."""
     try:
@@ -258,43 +266,6 @@ def repair_progress_after_reap(
     validate_progress_shape(repaired)
     try:
         _replace_if_unchanged(path, document, repaired, booley_dir=booley_dir)
-    except (OSError, ValueError):
-        return False
-    return True
-
-
-def supersede_progress(
-    path: Path, *, new_invocation: int, new_run_id: str, booley_dir: Path | None = None
-) -> bool:
-    """Best-effort supersede an authenticated coverage progress projection.
-
-    *booley_dir* names the Booley Directory entry, the one path component that may
-    be a symlink; links elsewhere stay refused.
-    """
-    try:
-        document = validate_coverage_origin_progress(path, booley_dir=booley_dir)
-    except (OSError, ValueError):
-        return False
-    phase = document.get("phase")
-    if phase in {"superseded", "complete"}:
-        return False
-    if phase not in {"starting", "running", "aborted"}:
-        return False
-    updated = dict(document)
-    updated.update(
-        {
-            "complete": True,
-            "phase": "superseded",
-            "terminal_timestamp": utc_now_rfc3339(),
-            "superseded_by": {
-                "invocation": new_invocation,
-                **({"run_id": new_run_id} if new_run_id else {}),
-            },
-        }
-    )
-    validate_progress_shape(updated)
-    try:
-        _replace_if_unchanged(path, document, updated, booley_dir=booley_dir)
     except (OSError, ValueError):
         return False
     return True
@@ -333,22 +304,11 @@ def retire_progress_of_requeued_attempt(
     _replace_if_unchanged(path, document, updated, booley_dir=booley_dir)
 
 
-def validate_coverage_origin_progress(
-    path: Path, *, booley_dir: Path | None = None
-) -> dict[str, Any]:
-    """Validate the exact authenticated invocation progress before recovery.
-
-    *booley_dir* names the Booley Directory entry, the one path component that may
-    be a symlink; links elsewhere stay refused.
-    """
-    document = _read_trusted_progress(path, (path.parents[2],), booley_dir=booley_dir)
-    if document is None or document.get("flow") != "sim" or document.get("coverage") is not True:
-        raise ValueError("resume origin has no valid coverage progress")
-    return document
-
-
 def _read_trusted_progress(
-    path: Path, report_roots: Sequence[Path], *, booley_dir: Path | None = None
+    path: Path,
+    report_roots: Sequence[Path],
+    *,
+    booley_dir: Path | None = None,
 ) -> dict[str, Any] | None:
     try:
         root = _containing_root(path, report_roots)

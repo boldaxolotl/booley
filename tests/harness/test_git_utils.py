@@ -139,7 +139,10 @@ def test_literal_scope_with_pathspec_metacharacters(wt: Path) -> None:
 
 @pytest.mark.parametrize(
     ("stage", "left"),
-    [(["add", "outside.sv"], "?? outside.sv"), (["rm", "--quiet", "init.txt"], " D init.txt")],
+    [
+        (["add", "outside.sv"], "?? outside.sv"),
+        (["rm", "--quiet", "init.txt"], " D init.txt"),
+    ],
     ids=["added", "deleted"],
 )
 def test_pre_staged_outsider_is_left_uncommitted(wt: Path, stage: list[str], left: str) -> None:
@@ -264,7 +267,12 @@ class TestAddGitExcludes:
         body = (repo / ".git" / "info" / "exclude").read_text(encoding="utf-8")
         assert body.count(BOOLEY_EXCLUDE_HEADER) == 1
         block = body.split(BOOLEY_EXCLUDE_HEADER, 1)[1].strip().splitlines()
-        assert block == ["/.devcontainer", "/.booley", "/.claude", "/.booley-projected-*.core"]
+        assert block == [
+            "/.devcontainer",
+            "/.booley",
+            "/.claude",
+            "/.booley-projected-*.core",
+        ]
 
     def test_repairs_duplicate_generated_headers(self, tmp_path):
         repo = _init_repo(tmp_path / "repo")

@@ -51,7 +51,11 @@ pytestmark = pytest.mark.skipif(not BWAVE_BIN.exists(), reason="bwave not built"
 
 def bwave(args: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
     result = subprocess.run(
-        [str(BWAVE_BIN), *args], capture_output=True, text=True, timeout=timeout, check=False
+        [str(BWAVE_BIN), *args],
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
     )
     assert result.returncode == 0, (
         f"bwave {' '.join(args)} failed rc={result.returncode}\n"

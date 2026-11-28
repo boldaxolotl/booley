@@ -205,7 +205,8 @@ def test_eager_and_lazy_resolve_the_same_default_cli(tmp_path, monkeypatch, env,
 def test_model_settings_maps_each_model_to_its_keys():
     """Every Specialist model maps to the key selecting it."""
     settings = AgentSettings(
-        clis=("claude", "codex"), specialist_models={"reviewer": "gpt-6-luna"}
+        clis=("claude", "codex"),
+        specialist_models={"reviewer": "gpt-6-luna"},
     )
     assert settings.model_settings() == {
         "claude-opus-5-5": ("[models] coverage_analyst",),

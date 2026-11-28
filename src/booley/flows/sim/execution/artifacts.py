@@ -64,7 +64,8 @@ class CompatibilityArtifactPolicy:
 
 
 def _configured_trace_paths(
-    patterns: tuple[str, ...], search_roots: tuple[Path, ...]
+    patterns: tuple[str, ...],
+    search_roots: tuple[Path, ...],
 ) -> tuple[Path, ...]:
     matches: list[Path] = []
     for pattern in patterns:
@@ -100,7 +101,11 @@ class TraceArtifactPolicy:
 
     @classmethod
     def capture(
-        cls, *, run_cwd: Path, build_root: Path, patterns: tuple[str, ...]
+        cls,
+        *,
+        run_cwd: Path,
+        build_root: Path,
+        patterns: tuple[str, ...],
     ) -> TraceArtifactPolicy:
         """Capture configured trace identities immediately before dispatch."""
         resolved_run_cwd = run_cwd.resolve()
@@ -121,7 +126,10 @@ class TraceArtifactPolicy:
                 stamps.append((path, stamp))
         return cls(resolved_run_cwd, roots, patterns, tuple(stamps))
 
-    def validate_reported(self, reported: str) -> ArtifactEvidence:
+    def validate_reported(
+        self,
+        reported: str,
+    ) -> ArtifactEvidence:
         """Resolve and validate a trace path reported by the completed adapter."""
         path = Path(reported)
         if not path.is_absolute():
@@ -140,7 +148,11 @@ class TraceArtifactPolicy:
         )
 
     def fresh_candidates(
-        self, *, owned: frozenset[Path], ignored_dirs: tuple[Path, ...], limit: int
+        self,
+        *,
+        owned: frozenset[Path],
+        ignored_dirs: tuple[Path, ...],
+        limit: int,
     ) -> tuple[tuple[Path, ...], int]:
         """List waveform files this attempt created or changed, for diagnostics only.
 
@@ -177,4 +189,8 @@ class TraceArtifactPolicy:
         return tuple(ordered[:limit]), max(0, len(ordered) - limit)
 
 
-__all__ = ["CompatibilityArtifactPolicy", "TraceArtifactPolicy", "artifact_path_component"]
+__all__ = [
+    "CompatibilityArtifactPolicy",
+    "TraceArtifactPolicy",
+    "artifact_path_component",
+]

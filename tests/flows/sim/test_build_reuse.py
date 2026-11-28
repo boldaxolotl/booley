@@ -151,7 +151,9 @@ def test_recipe_gate_declines_uncontained_search_and_toolchain_overrides(
     assert stock_verilator_recipe(tmp_path / "b") is None
 
 
-def test_recipe_reports_libraries_the_linker_finds_outside_the_generation(tmp_path: Path) -> None:
+def test_recipe_reports_libraries_the_linker_finds_outside_the_generation(
+    tmp_path: Path,
+) -> None:
     build = tmp_path / "b"
     _stock_recipe(build, _CONTAINED_VC + '-LDFLAGS "-Llib -lstaged -lz -l m -l:libspecial.so.1"\n')
     (build / "lib").mkdir()
@@ -527,7 +529,8 @@ def test_toolchain_identity_covers_install_compiler_and_system_headers(tmp_path:
         lambda: (root / "include" / "verilated.h").write_text("// v2\n", encoding="utf-8"),
         lambda: (tmp_path / "sysinclude" / "bits" / "new.h").write_text("", encoding="utf-8"),
         lambda: (tmp_path / "bin" / "fakecxx").write_text(
-            (tmp_path / "bin" / "fakecxx").read_text(encoding="utf-8") + "# v2\n", encoding="utf-8"
+            (tmp_path / "bin" / "fakecxx").read_text(encoding="utf-8") + "# v2\n",
+            encoding="utf-8",
         ),
     ):
         before = verilator_identity(environment)
@@ -715,6 +718,31 @@ def test_declined_key_clears_the_previous_verilator_identity(
         assert session.cache_decision == CacheDecision.CHANGED_SOURCE
         session.authorize_fresh_image(prepared, inputs, key)
         assert _manifest(prepared)["reusable"] is False
+
+
+@posix_only
+@pytest.mark.parametrize(
+    "hidden",
+    ["src/.a-hidden.v", "src/run.log", "src/.booley-runtime-inputs/m.v"],
+    ids=["dot-file", "run-log", "runtime-inputs"],
+)
+def test_isolated_reuse_declines_source_named_like_a_booley_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, hidden: str
+) -> None:
+    """In an ``ignore_native_cores`` Project a file the input snapshot skips declines reuse."""
+    (tmp_path / ".booley").mkdir()
+    (tmp_path / ".booley" / "booley.toml").write_text(
+        "[stealth]\nenabled = true\nignore_native_cores = true\n", encoding="utf-8"
+    )
+    session = SimulationBuildSession(_handle(tmp_path), wait_s=60)
+    with session:
+        prepared, inputs = _keyed_generation(tmp_path, monkeypatch, session)
+        # Control: without the hidden file the generation keys.
+        assert session.reusable_key(prepared, inputs, hooks=False) is not None
+        path = prepared.work_root / hidden
+        path.parent.mkdir(exist_ok=True)
+        path.write_text("module m; endmodule\n", encoding="utf-8")
+        assert session.reusable_key(prepared, inputs, hooks=False) is None
 
 
 @posix_only

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import tomllib
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -9,6 +11,13 @@ import pytest
 from booley.audit import agent_schema, flow_schema, project_schema
 from booley.audit.config_common import ConfigFindingSeverity, ConfigTableAudit
 from booley.audit.diagnostic_results import Severity
+from booley.config.flow_enablement import FlowConfigError, flow_enabled
+from booley.flows.invocation import resolve_timeout_ms
+from booley.flows.sim.config import (
+    resolve_pre_sim_commands,
+    resolve_sim_build_timeout_ms,
+    resolve_sim_trace_convert_timeout_ms,
+)
 from booley.harness.setup import readiness
 
 
@@ -44,16 +53,6 @@ def _texts(audit: ConfigTableAudit, severity: ConfigFindingSeverity) -> str:
             {"flows": {"custom": ["sim"]}},
             ["[flows].custom is retired", "enabled = false"],
             id="custom",
-        ),
-        pytest.param(
-            {"flows": {"elab": {"standalone_frontend": "iverilog"}}},
-            ["[flows.elab] is retired", "sim --mode elab-only", "delete standalone_frontend"],
-            id="elab",
-        ),
-        pytest.param(
-            {"flows": {"elaborate": {"standalone_frontend": "iverilog"}}},
-            ["[flows.elaborate] is retired"],
-            id="elaborate",
         ),
         pytest.param(
             {"flows": {"synth": {"flatten": True}}},
@@ -111,14 +110,51 @@ def test_flow_knob_warns_only_under_a_flow_that_ignores_it(
     assert ignored(non_reader) == (True, {f"{non_reader}.{knob}"})
 
 
-@pytest.mark.parametrize("value", ["make prep", ["make prep", ""]])
-def test_pre_run_commands_must_be_a_list_of_nonempty_strings(value: object) -> None:
-    audit = flow_schema.audit_flow_table("sim", {"pre_run_commands": value})
+_SHARED_KNOB_CASES = [
+    pytest.param(knob, "1000", True, id=f"{knob}-valid")
+    for knob in ("timeout_ms", "build_timeout_ms", "trace_convert_timeout_ms")
+] + [
+    pytest.param(knob, value, False, id=f"{knob}-{label}")
+    for knob in ("timeout_ms", "build_timeout_ms", "trace_convert_timeout_ms")
+    for label, value in (("zero", "0"), ("string", '"1000"'))
+]
+_SHARED_KNOB_CASES += [
+    pytest.param("enabled", "false", True, id="enabled-valid"),
+    pytest.param("enabled", '"false"', False, id="enabled-string"),
+    pytest.param("pre_run_commands", '["make"]', True, id="pre-run-valid"),
+    pytest.param("pre_run_commands", '"make"', False, id="pre-run-string"),
+    pytest.param("pre_run_commands", '["make", ""]', False, id="pre-run-empty"),
+]
 
-    assert not audit.is_valid
-    assert "pre_run_commands must be a list of strings, none empty" in _texts(
-        audit, ConfigFindingSeverity.FAIL
-    )
+
+@pytest.mark.parametrize(("knob", "toml_value", "valid"), _SHARED_KNOB_CASES)
+def test_doctor_and_the_flow_agree_on_each_shared_knob(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, knob: str, toml_value: str, valid: bool
+) -> None:
+    monkeypatch.delenv("BOOLEY_DIR", raising=False)
+    (tmp_path / ".booley").mkdir()
+    text = f"[flows.sim]\n{knob} = {toml_value}\n"
+    (tmp_path / ".booley" / "booley.toml").write_bytes(text.encode())
+    flow_reader = {
+        "timeout_ms": lambda: resolve_timeout_ms("sim", tmp_path, None),
+        "build_timeout_ms": lambda: resolve_sim_build_timeout_ms(tmp_path),
+        "trace_convert_timeout_ms": lambda: resolve_sim_trace_convert_timeout_ms(tmp_path),
+        "enabled": lambda: flow_enabled("sim", tmp_path),
+        "pre_run_commands": lambda: resolve_pre_sim_commands(tmp_path),
+    }[knob]
+    refusal: str | None = None
+    try:
+        flow_reader()
+    except ValueError as exc:
+        refusal = str(exc)
+
+    audit = flow_schema.audit_flow_tables(tomllib.loads(text), ())
+    failures = [item.message for item in audit.findings if item.severity.name == "FAIL"]
+
+    assert (refusal is None) is valid
+    assert failures == ([] if valid else [refusal])
+    if refusal is not None:
+        assert f"[flows.sim].{knob}" in refusal
 
 
 def test_sim_output_dir_is_retired_without_failing_doctor() -> None:
@@ -164,6 +200,12 @@ def test_windows_rejects_host_provisioning_during_config_audit(
         ),
         pytest.param({}, True, [], id="absent"),
         pytest.param({"agent": {}}, True, [], id="empty"),
+        pytest.param(
+            {"agent": {"clis": ["codex"], "default": "claude"}},
+            False,
+            ["not in booley.toml [agent] clis"],
+            id="default-outside-clis",
+        ),
     ],
 )
 def test_agent_table_fails_only_a_present_and_wrong_value(
@@ -179,19 +221,24 @@ def test_agent_table_fails_only_a_present_and_wrong_value(
         assert text in message
 
 
-def test_doctor_stops_on_retired_standalone_frontend_with_its_own_migration(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+def test_doctor_reports_every_retired_flow_key_and_a_command_refuses_with_the_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Doctor stops on the retired key with its own migration text, not the EDA fix."""
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir()
-    (booley_dir / "booley.toml").write_bytes(b'[flows.sim]\nstandalone_frontend = "auto"\n')
+    (booley_dir / "booley.toml").write_bytes(
+        b'[flows.elab]\nx = 1\n[flows.sim]\nstandalone_frontend = "auto"\n'
+    )
 
     result = readiness.load_project(tmp_path)
 
-    (finding,) = [f for f in result.report.findings if f.severity is Severity.FAIL]
-    assert finding.message.startswith("booley.toml [flows.sim].standalone_frontend is retired")
-    assert "each Target's simulator" in finding.message
-    assert "commercial-EDA" not in finding.fix
+    fails = [f.message for f in result.report.findings if f.severity is Severity.FAIL]
+    assert len(fails) == 2
+    assert fails[0].startswith("booley.toml [flows.elab] is retired")
+    assert fails[1].startswith("booley.toml [flows.sim].standalone_frontend is retired")
     assert result.project is None
+    with pytest.raises(FlowConfigError) as refusal:
+        flow_enabled("sim", tmp_path)
+    assert str(refusal.value).startswith(fails[0])
+    assert "standalone_frontend is retired" not in str(refusal.value)

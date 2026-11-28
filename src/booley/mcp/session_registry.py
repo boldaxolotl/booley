@@ -13,8 +13,8 @@ from itertools import islice
 from pathlib import Path
 from typing import Any, Literal
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.boundary import require_dict, require_str, require_str_value, require_uuid4
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.chat_sessions import codex_chat_owner
 from booley.runtime.filesystem_utils import read_file_bytes
 from booley.runtime.handles import (
@@ -24,7 +24,12 @@ from booley.runtime.handles import (
     session_writer,
 )
 from booley.runtime.mount_history import MountHistoryError, translate_stored_path
-from booley.runtime.pid import DEAD_PROCESS_STATES, ProcessIdentity, ProcessState, observe_process
+from booley.runtime.pid import (
+    DEAD_PROCESS_STATES,
+    ProcessIdentity,
+    ProcessState,
+    observe_process,
+)
 from booley.runtime.safe_storage import refuse_symlinks
 from booley.runtime.session_activity import (
     ActivityStore,
@@ -458,7 +463,10 @@ class SessionRegistry:
             handles.reserve(
                 facts.key,
                 "S",
-                predecessors=(*predecessors, *fallback_predecessors(facts.key, facts.work_dir)),
+                predecessors=(
+                    *predecessors,
+                    *fallback_predecessors(facts.key, facts.work_dir),
+                ),
             )
             if (handles.entries, handles.aliases) != before:
                 store.save(handles)

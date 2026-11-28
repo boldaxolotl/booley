@@ -25,7 +25,8 @@ def test_python_version_audit_preserves_pass_and_actionable_failure() -> None:
     stale = host_environment.audit_python_version((3, 10), (3, 11))
 
     assert healthy == host_environment.EnvironmentFinding(
-        host_environment.EnvironmentSeverity.PASS, "Python 3.14"
+        host_environment.EnvironmentSeverity.PASS,
+        "Python 3.14",
     )
     assert stale.severity is host_environment.EnvironmentSeverity.FAIL
     assert stale.fix == "install python3.11+"
@@ -34,7 +35,10 @@ def test_python_version_audit_preserves_pass_and_actionable_failure() -> None:
 def test_container_runtime_skips_inside_session_without_discovery() -> None:
     lookup = FixedLookup("/usr/bin/docker")
     audit = host_environment.probe_container_runtime(
-        "docker", inside_session_runtime=True, which=lookup, run=refusing_runner
+        "docker",
+        inside_session_runtime=True,
+        which=lookup,
+        run=refusing_runner,
     )
 
     assert audit.executable is None
@@ -95,7 +99,10 @@ def test_container_runtime_reports_each_host_state(
     message: str | None,
 ) -> None:
     audit = host_environment.probe_container_runtime(
-        "docker", inside_session_runtime=False, which=FixedLookup(found), run=runner
+        "docker",
+        inside_session_runtime=False,
+        which=FixedLookup(found),
+        run=runner,
     )
 
     assert audit.executable == executable

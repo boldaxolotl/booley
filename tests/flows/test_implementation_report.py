@@ -29,13 +29,22 @@ from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
 
 
 def _context(**overrides) -> ImplementationContext:
-    values = {"flow": "synth", "target": "asic", "eda_tool": "yosys", "invocation_run_id": "run-1"}
+    values = {
+        "flow": "synth",
+        "target": "asic",
+        "eda_tool": "yosys",
+        "invocation_run_id": "run-1",
+    }
     values.update(overrides)
     return ImplementationContext(**values)
 
 
 def _run(**overrides) -> ImplementationRun:
-    values = {"passed": True, "tool_returncode": 0, "metrics": {"area": 10.0}}
+    values = {
+        "passed": True,
+        "tool_returncode": 0,
+        "metrics": {"area": 10.0},
+    }
     values.update(overrides)
     return ImplementationRun(**values)
 
@@ -43,7 +52,9 @@ def _run(**overrides) -> ImplementationRun:
 def test_comparison_records_per_metric_unavailability() -> None:
     report = build_implementation_report(
         _context(
-            baseline_target="old", requested_baseline_ref="main~1", resolved_baseline_ref="a" * 40
+            baseline_target="old",
+            requested_baseline_ref="main~1",
+            resolved_baseline_ref="a" * 40,
         ),
         _run(metrics={"area": 12.0, "optional": None}),
         _run(metrics={"area": 0.0, "optional": 5.0}),
@@ -63,7 +74,10 @@ def test_adapter_inputs_are_defensively_copied() -> None:
     metrics = {"area": 10.0}
     recipe = {"mode": "physical"}
     report = build_implementation_report(
-        _context(), _run(metrics=metrics, recipe_snapshot=recipe), None, MetricPolicy(("area",))
+        _context(),
+        _run(metrics=metrics, recipe_snapshot=recipe),
+        None,
+        MetricPolicy(("area",)),
     )
     metrics["area"] = 99.0
     recipe["mode"] = "logical"
@@ -79,7 +93,10 @@ def test_context_rejects_missing_identity_and_diagnostics_are_bounded() -> None:
         ImplementationContext(flow="", target="asic")
 
     report = build_implementation_report(
-        _context(), _run(diagnostic_excerpt="x" * 5_000), None, MetricPolicy(("area",))
+        _context(),
+        _run(diagnostic_excerpt="x" * 5_000),
+        None,
+        MetricPolicy(("area",)),
     )
 
     diagnostic = report.canonical["status"]["diagnostic_excerpt"]
@@ -96,7 +113,12 @@ def test_synth_and_fpga_adapters_share_structure_but_keep_unique_metrics() -> No
     ).canonical
     fpga = build_fpga_implementation_report(
         _context(flow="fpga", target="new", eda_tool="vivado"),
-        FpgaMetrics(lut_count=10, ff_count=20, wns_ns=0.1, whs_ns=0.1),
+        FpgaMetrics(
+            lut_count=10,
+            ff_count=20,
+            wns_ns=0.1,
+            whs_ns=0.1,
+        ),
         None,
     ).canonical
 
@@ -118,7 +140,9 @@ def test_fpga_cache_separates_producer_and_consumer_provenance() -> None:
     )
 
     report = build_fpga_implementation_report(
-        _context(flow="fpga", target="board", eda_tool="vivado"), current, None
+        _context(flow="fpga", target="board", eda_tool="vivado"),
+        current,
+        None,
     ).canonical
 
     assert report["cache"] == {"cached": True, "fingerprint": "cache-key"}
@@ -171,7 +195,12 @@ def test_publication_writes_numbered_report_before_stable_alias(tmp_path: Path) 
             requested_baseline_ref="main~1",
             resolved_baseline_ref="a" * 40,
         ),
-        _run(artifacts={"log": log.relative_to(tmp_path).as_posix(), "dirs": {"build": "build"}}),
+        _run(
+            artifacts={
+                "log": log.relative_to(tmp_path).as_posix(),
+                "dirs": {"build": "build"},
+            }
+        ),
         _run(artifacts={"log": baseline_log.relative_to(tmp_path).as_posix()}),
         MetricPolicy(("area",)),
     )

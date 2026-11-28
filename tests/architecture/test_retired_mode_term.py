@@ -13,7 +13,6 @@ _SCAN_DIRS = ("src", "tests")
 _THIS_FILE = Path(__file__).resolve()
 _PHRASE = re.compile(r"interactive[\s#-]+mode", re.IGNORECASE)
 _ALLOWED_PHRASE_FILES = (
-    _ROOT / "src" / "booley" / "data" / "refs" / "CHANGELOG.md",
     _ROOT / "src" / "booley" / "data" / "skills" / "booley-setup" / "steps" / "0-plan.md",
 )
 _OLD_PRIVATE_NAMES = (
@@ -50,7 +49,6 @@ _OLD_PRIVATE_NAMES = (
 _RETIRED_VARIABLE_OR_DIRECTORY = re.compile(r"BOOLEY_MCP_MODE|\.interactive_logs")
 _HISTORY_PREFIXES = (
     "CHANGELOG.md",
-    "src/booley/data/refs/CHANGELOG.md",
     "changelog.d/",
     "docs/adr/",
 )
@@ -64,15 +62,12 @@ _ALLOWED_HITS = {
 
 
 def _files(suffixes: tuple[str, ...] | None = None) -> list[Path]:
-    found: list[Path] = []
-    for name in _SCAN_DIRS:
-        for path in sorted((_ROOT / name).rglob("*")):
-            if not path.is_file() or "__pycache__" in path.parts:
-                continue
-            if suffixes is not None and path.suffix not in suffixes:
-                continue
-            found.append(path)
-    return found
+    # Git-listed files only: a local build renders Git-ignored copies of the changelog.
+    return [
+        path
+        for path in source_checkout_files(_ROOT, *_SCAN_DIRS)
+        if "__pycache__" not in path.parts and (suffixes is None or path.suffix in suffixes)
+    ]
 
 
 def _lines(path: Path) -> list[str]:

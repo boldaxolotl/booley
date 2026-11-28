@@ -28,25 +28,21 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
-    ResumeSimulationRecordRunRequest,
     SimulationRecord,
     SimulationRecordPolicy,
     SimulationRecordPublicationError,
 )
-from booley.flows.sim.record.coverage_execution import CoverageAggregateExecutor
+from booley.flows.sim.record.coverage_execution import (
+    CoverageAggregateExecutor,
+)
 from booley.flows.sim.record.flow_planning import plan_coarse_simulation_record
 from booley.flows.sim.record.model import SimulationResult, create_simulation_record_plan
-from booley.flows.sim.record.planning import manifest_digest
-from booley.flows.sim.record.resume import (
-    ValidatedManifestNode,
-    ValidatedResumeManifest,
-    ValidatedTargetBinding,
-)
 from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInspection
+from tests.flows.sim.fault_point_support import inject_faults
 from tests.flows.sim.simulation_record_test_support import (
     _admission,
     _build_execution,
@@ -62,10 +58,12 @@ from tests.flows.sim.simulation_record_test_support import (
     _request,
     _run_coverage_simulation_record,
     _unfiltered_cocotb_manifest,
-    _validated_resume,
 )
 from tests.flows.sim.test_coverage_transaction import NativeExecution
-from tests.flows.sim.test_simulation_record_crash_matrix import _CrashOnce, _InjectedProcessDeath
+from tests.flows.sim.test_simulation_record_crash_matrix import (
+    _CrashOnce,
+    _InjectedProcessDeath,
+)
 
 
 def test_no_waivers_is_written_only_when_requested(tmp_path: Path) -> None:
@@ -190,7 +188,13 @@ def test_coarse_planner_rejects_foreign_inspection(tmp_path: Path) -> None:
         ),
     )
     inspection = TargetInspection(
-        foreign_handle, "tb", "sim", "verilator", {"cocotb_module": "test_counter"}, {}, ()
+        foreign_handle,
+        "tb",
+        "sim",
+        "verilator",
+        {"cocotb_module": "test_counter"},
+        {},
+        (),
     )
 
     with pytest.raises(SimulationRecordIntegrityError, match="Target facts disagree"):
@@ -249,7 +253,9 @@ class _RuntimeCheckingExecution(NativeExecution):
         return super().run(request)
 
 
-def test_coverage_aggregate_executes_authenticated_bundle_not_original(tmp_path: Path) -> None:
+def test_coverage_aggregate_executes_authenticated_bundle_not_original(
+    tmp_path: Path,
+) -> None:
     native = _ImageCheckingExecution()
     outcome, store = _run_coverage_simulation_record(tmp_path, native)
 
@@ -346,20 +352,19 @@ def _coverage_record_run(root: Path, native: NativeExecution):
 
 def test_coverage_resume_reuses_retained_nested_simulation_record(tmp_path: Path) -> None:
     native = NativeExecution()
-    executor, request, store, target = _coverage_record_run(tmp_path, native)
+    executor, request, store, _target = _coverage_record_run(tmp_path, native)
     simulation_record = SimulationRecord(executor)
     first = simulation_record.run(request)
-    validated = _validated_resume(store, request.plan, target, tmp_path)
 
     resumed = simulation_record.run(
-        ResumeSimulationRecordRunRequest(
-            validated,
+        NewSimulationRecordRunRequest(
             request.plan,
             tmp_path,
             request.report_root,
             SimulationRecordPolicy(),
-            request.invocation_directory,
-            _admission(),
+            record_directory=store.root,
+            invocation_directory=request.invocation_directory,
+            admission=_admission(),
         )
     )
 
@@ -404,9 +409,9 @@ def test_coverage_simulation_record_refuses_an_oversized_result_at_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # No coverage run produces a result above the real ceiling, so the limit is lowered in place.
-    schema, fields, _limit, reader = codec._DOCUMENT_SPECS[SimulationResult]
+    schema, fields, _limit = codec._DOCUMENT_SPECS[SimulationResult]
     # No coverage run produces a result above the real ceiling, so the limit is lowered in place.
-    monkeypatch.setitem(codec._DOCUMENT_SPECS, SimulationResult, (schema, fields, 64, reader))
+    monkeypatch.setitem(codec._DOCUMENT_SPECS, SimulationResult, (schema, fields, 64))
 
     with pytest.raises(SimulationRecordPublicationError) as caught:
         _run_coverage_simulation_record(tmp_path, NativeExecution())
@@ -637,8 +642,8 @@ def _start_crashed_cocotb_simulation_record(
         plan, root, invocation.parent, SimulationRecordPolicy(), invocation, _admission()
     )
     crash = _CrashOnce("before:simulation_result")
-    with pytest.raises(_InjectedProcessDeath):
-        SimulationRecord(executor, publication_checkpoint=crash).run(request)
+    with inject_faults(crash), pytest.raises(_InjectedProcessDeath):
+        SimulationRecord(executor).run(request)
     return invocation, SimulationRecordStore(invocation / "targets/sim/record")
 
 
@@ -657,21 +662,15 @@ def test_production_cocotb_batch_retries_whole_batch_after_crash(tmp_path: Path)
         execution_factory=lambda _options: execution,  # type: ignore[arg-type,return-value]
     )
     invocation, store = _start_crashed_cocotb_simulation_record(plan, tmp_path, executor)
-    node = ValidatedManifestNode(
-        store.manifest_path, plan.manifest, manifest_digest(plan.manifest)
-    )
-    validated = ValidatedResumeManifest(
-        node, (), (handle,), (ValidatedTargetBinding(node, tmp_path.resolve(), handle),)
-    )
     outcome = SimulationRecord(executor).run(
-        ResumeSimulationRecordRunRequest(
-            validated,
+        NewSimulationRecordRunRequest(
             plan,
             tmp_path,
             invocation.parent,
             SimulationRecordPolicy(),
-            invocation,
-            _admission(),
+            record_directory=store.root,
+            invocation_directory=invocation,
+            admission=_admission(),
         )
     )
 
@@ -681,7 +680,10 @@ def test_production_cocotb_batch_retries_whole_batch_after_crash(tmp_path: Path)
     assert recovered.attempt_count == 2
     result = recovered.result
     assert result is not None
-    assert tuple(item["test"] for item in result.document["observations"]) == ("count", "reset")
+    assert tuple(item["test"] for item in result.document["observations"]) == (
+        "count",
+        "reset",
+    )
     assert [item["kind"] for item in result.document["evidence"]] == ["cocotb_results"]
 
 

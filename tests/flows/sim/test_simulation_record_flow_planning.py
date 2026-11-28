@@ -14,7 +14,9 @@ from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 from tests.conftest import symlink_or_skip
 
 
-def test_resolved_target_plans_one_private_serial_item_per_exact_test(tmp_path: Path) -> None:
+def test_resolved_target_plans_one_private_serial_item_per_exact_test(
+    tmp_path: Path,
+) -> None:
     project, handle, inspection, preview = _planning_fixture(tmp_path)
     document = _plan(handle, inspection, preview, ("reset", "count"))
     assert "build_timeout" not in repr(document)
@@ -31,7 +33,8 @@ def test_resolved_target_plans_one_private_serial_item_per_exact_test(tmp_path: 
     assert catalog_empty["required_suite"]["default_invocation"] is False  # type: ignore[index]
     assert catalog_empty["required_suite"]["source_path"] == ".booley/tests.toml"  # type: ignore[index]
     (project / "booley.toml").write_text(
-        '[flows.sim]\nrun_cwd = "."\npre_sim_build_access = "legacy-per-test"\n', encoding="utf-8"
+        '[flows.sim]\nrun_cwd = "."\npre_sim_build_access = "legacy-per-test"\n',
+        encoding="utf-8",
     )
     private = _plan(handle, inspection, preview, ("reset", "count"))
     assert private["build_variants"][0]["sharing_eligible"] is False  # type: ignore[index]
@@ -90,7 +93,15 @@ def _planning_fixture(tmp_path: Path):
         ),
     )
     inputs = (TargetInput("tb.sv", "acme:lib:dut:1", "systemVerilogSource", ("tb",), False, {}),)
-    inspection = TargetInspection(handle, "tb", "sim", "icarus", {}, {}, inputs)
+    inspection = TargetInspection(
+        handle,
+        "tb",
+        "sim",
+        "icarus",
+        {},
+        {},
+        inputs,
+    )
     preview = SimulationPreview(
         commands=(("run", "reset"), ("run", "count")),
         groups=(("reset",), ("count",)),

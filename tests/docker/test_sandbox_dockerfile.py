@@ -183,6 +183,8 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         for index, segment in enumerate(segments):
             if not _DOWNLOAD.search(segment):
                 continue
+            for flag in ("--retry 8", "--retry-delay 30", "--retry-all-errors"):
+                assert flag in segment, f"{name}: download without {flag}: {segment[:60]}"
             paths = re.findall(r"\s(?:-o|--output)[\s=]+(\S+)", segment)
             assert paths, f"{name}: download without a named output file: {segment[:60]}"
             for path in paths:
@@ -195,6 +197,42 @@ def test_sandbox_downloads_are_verified_before_use() -> None:
         text = (_DOCKER_DIR / name).read_text(encoding="utf-8")
         assert "| bash" not in text, name
         assert "@^" not in text, name
+
+
+_APT = re.compile(r"\bapt-get\s+(?:update|install)\b")
+_GIT_NETWORK = re.compile(r"\bgit\b(?:\s+-c\s+\S+)*\s+(?:fetch|submodule\s+update)\b")
+_APT_RETRIES = "Acquire::Retries"
+
+
+def _network_retry_gaps(text: str) -> list[str]:
+    """Name each apt or git network call in a stage that lacks a retry setup before it."""
+    gaps: list[str] = []
+    apt_ready = helper_ready = False
+    for instruction in logical_instructions(text):
+        if instruction.keyword == "FROM":
+            apt_ready = helper_ready = False
+        if instruction.keyword != "RUN":
+            continue
+        for segment in (part.strip() for part in instruction.value.split("&&")):
+            if _APT_RETRIES in segment and "printf" in segment:
+                apt_ready = True
+            if "/usr/local/bin/booley-retry" in segment:
+                helper_ready = True
+            if _APT.search(segment) and not apt_ready:
+                gaps.append(f"line {instruction.line}: apt without {_APT_RETRIES}")
+            if _GIT_NETWORK.search(segment) and not segment.startswith("booley-retry "):
+                gaps.append(f"line {instruction.line}: git without booley-retry")
+            if segment.startswith("booley-retry ") and not helper_ready:
+                gaps.append(f"line {instruction.line}: booley-retry used before it is written")
+    return gaps
+
+
+def test_image_network_commands_retry_transient_failures() -> None:
+    """Every apt and git network call in an image recipe retries a transient failure."""
+    for path in sorted(_DOCKER_DIR.glob("Dockerfile*")):
+        assert _network_retry_gaps(path.read_text(encoding="utf-8")) == [], path.name
+    bare = "FROM a\nRUN apt-get update && git fetch origin x\n"
+    assert len(_network_retry_gaps(bare)) == 2
 
 
 def test_agent_cli_installs_are_locked_with_integrity_hashes() -> None:
@@ -318,7 +356,10 @@ def test_bundled_vsix_install_rejects_bad_payload(tmp_path: Path, name: str, cas
     body = body.replace("/tmp/", f"{tmp_path}/").replace("/usr/local", str(root / "usr/local"))
     # Substitute the network download only; run the shipped verification commands.
     curl = 'curl() { for arg; do if [ "$arg" = "-o" ]; then shift; break; fi; shift; done; cp "$FIXTURE" "$1"; }; '
-    result = run_bounded_child(["sh", "-c", curl + body], env=environment)
+    result = run_bounded_child(
+        ["sh", "-c", curl + body],
+        env=environment,
+    )
     installed = list((root / "usr/local/libexec/booley").glob("*.vsix"))
     assert (result.returncode == 0) == (case == "good"), result.stderr
     assert bool(installed) == (case == "good")
@@ -338,7 +379,6 @@ _CLI_VERSION_ALLOWED = (
     "src/booley/runtime/text_only_agent.py",
     "docs/internals/GATEWAY.md",
     "CHANGELOG.md",
-    "src/booley/data/refs/CHANGELOG.md",
     "changelog.d/",  # entries become CHANGELOG.md text at release
     "docs/adr/",
     "docs/internals/validation/",
@@ -357,7 +397,7 @@ def test_agent_cli_versions_are_written_only_in_their_manifest() -> None:
         # Digit boundaries stop a version from matching inside a longer one.
         pattern = rf"(^|[^0-9.]){re.escape(version)}([^0-9]|$)"
         result = run_bounded_child(
-            ["git", "grep", "-l", "-E", pattern, "--", ".", ":!*Cargo.lock"]
+            ["git", "grep", "-l", "-E", pattern, "--", ".", ":!*Cargo.lock"],
         )
         assert result.returncode in (0, 1), result.stderr
         found = result.stdout.splitlines()
@@ -399,7 +439,8 @@ def test_agent_cli_build_check_compares_installed_clis_with_the_manifest(tmp_pat
             stub.write_text(f"#!/bin/sh\necho '{output}'\n", encoding="utf-8")
             stub.chmod(0o755)
         return run_bounded_child(
-            ["sh", "-c", checks[0].replace(manifest_path, str(manifest))], env=env
+            ["sh", "-c", checks[0].replace(manifest_path, str(manifest))],
+            env=env,
         ).returncode
 
     assert exit_code("9.9.9", "8.8.8") == 0
@@ -534,7 +575,10 @@ def test_riscv_document_install_rejects_wrong_checksums(
     ).replace("/opt/riscv-docs", str(tmp_path / "docs"))
     # Substitute network downloads only; execute the shipped checksum and index commands.
     curl = 'curl() { for arg; do if [ "$arg" = "-o" ]; then shift; break; fi; shift; done; printf fixture > "$1"; }; '
-    result = run_bounded_child(["sh", "-c", curl + install], env=environment)
+    result = run_bounded_child(
+        ["sh", "-c", curl + install],
+        env=environment,
+    )
     assert (result.returncode != 0) == (bad_hash is not None), result.stderr
     assert (tmp_path / "docs" / "INDEX.md").exists() == (bad_hash is None)
     if bad_hash is None:

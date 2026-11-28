@@ -29,7 +29,10 @@ def test_relocation_copies_environment_and_sets_exact_destinations(tmp_path: Pat
 
 def test_relocation_can_disable_bytecode_for_embedded_python(tmp_path: Path) -> None:
     relocated = relocate_python_artifacts(
-        {"PYTHONPYCACHEPREFIX": "inherited", "PYTHONDONTWRITEBYTECODE": "0"},
+        {
+            "PYTHONPYCACHEPREFIX": "inherited",
+            "PYTHONDONTWRITEBYTECODE": "0",
+        },
         tmp_path,
         write_bytecode=False,
     )
@@ -80,7 +83,10 @@ def test_scoped_pytest_cache_keeps_shared_bytecode_root(tmp_path: Path) -> None:
 def test_malformed_pytest_addopts_does_not_break_non_pytest_children(tmp_path: Path) -> None:
     relocated = relocate_python_artifacts({"PYTEST_ADDOPTS": "'unterminated"}, tmp_path)
 
-    assert shlex.split(relocated["PYTEST_ADDOPTS"]) == ["-o", f"cache_dir={tmp_path / 'pytest'}"]
+    assert shlex.split(relocated["PYTEST_ADDOPTS"]) == [
+        "-o",
+        f"cache_dir={tmp_path / 'pytest'}",
+    ]
 
 
 def test_artifact_root_prefers_runtime_then_project_then_fallback(tmp_path: Path) -> None:

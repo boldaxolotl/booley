@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
+import json
+import subprocess
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
-from tests.relay_docker_fake import (
-    IMAGE_ID,
-    INSPECT_FAILURE,
-    SESSION_CONTAINER,
-    RelayDocker,
-    relay_state,
-)
+from tests.fake_docker_executable import FakeDocker, install_fake_docker
 from tests.sidecar_image_helpers import SIDECAR_ALPINE_BASE
 
 from booley.eda.provisioning.licensing import flexnet_docker
@@ -41,20 +39,135 @@ from booley.eda.provisioning.licensing.flexnet_relay import RelayConfigError
 
 _RESOURCES = resources_for_session("session-a")
 _LABELS = ("booley.project-id=project", "booley.spec-digest=spec")
+IMAGE_ID = "sha256:" + "a" * 64
+SESSION_CONTAINER = "session-container"
+_RELAY = _RESOURCES.relay_container
+_PRIVATE = _RESOURCES.private_network
+_OUTBOUND = _RESOURCES.outbound_network
+#: Words of the relay's health poll, and its answers.
+_POLL = ("inspect", _RELAY, "{{.State.Status}}")
+_STARTING = (0, "running starting", "")
+_HEALTHY = (0, "running healthy", "")
+_UNHEALTHY = (0, "running unhealthy", "")
+_INSPECT_FAILURE = (1, "", "daemon busy")
+
+
+def _relay_state(
+    *,
+    env: list[str] | None = None,
+    config_overrides: dict | None = None,
+    state_overrides: dict | None = None,
+    **host_overrides,
+) -> dict:
+    """The relay's ``container inspect`` document; arguments override one drifted field."""
+    host = {
+        "Binds": None,
+        "PortBindings": {},
+        "PublishAllPorts": False,
+        "ReadonlyRootfs": True,
+        "CapAdd": None,
+        "CapDrop": ["ALL"],
+        "Privileged": False,
+        "PidMode": "",
+        "IpcMode": "private",
+        "UsernsMode": "",
+        "Devices": [],
+        "DeviceRequests": None,
+        "SecurityOpt": ["no-new-privileges:true"],
+        "Tmpfs": {"/tmp": "rw,noexec,nosuid,nodev,size=1m"},
+        "PidsLimit": 64,
+        "Memory": 64 * 1024 * 1024,
+        "NanoCpus": 500_000_000,
+        "Ulimits": [{"Name": "nofile", "Hard": 256, "Soft": 256}],
+        "RestartPolicy": {"Name": "no", "MaximumRetryCount": 0},
+        "LogConfig": {"Type": "json-file", "Config": {"max-file": "2", "max-size": "1m"}},
+        **host_overrides,
+    }
+    config = {
+        "Image": IMAGE_ID,
+        "User": "65532:65532",
+        "Env": env
+        or [
+            "BOOLEY_FLEXNET_UPSTREAM_IPV4=10.20.30.40",
+            "BOOLEY_FLEXNET_SERVER_HOSTID=license-server-01",
+            "BOOLEY_FLEXNET_LMGRD_PORT=2100",
+            "BOOLEY_FLEXNET_VENDOR_PORT=2101",
+            "BOOLEY_FLEXNET_CONNECT_TIMEOUT=10",
+            "BOOLEY_FLEXNET_IDLE_TIMEOUT=300",
+            "BOOLEY_FLEXNET_MAX_CONNECTIONS=32",
+            "PATH=/usr/local/bin",
+        ],
+        "ExposedPorts": None,
+        **(config_overrides or {}),
+    }
+    networks = {
+        _PRIVATE: {"Aliases": ["booley-license-xilinx", "license-server-01"]},
+        _OUTBOUND: {"Aliases": []},
+    }
+    return {
+        "Image": IMAGE_ID,
+        "State": {"Running": True},
+        "Config": config,
+        "HostConfig": host,
+        "Mounts": [],
+        "NetworkSettings": {"Networks": networks},
+        **(state_overrides or {}),
+    }
+
+
+def _role_labels(role: str, labels: tuple[str, ...]) -> str:
+    issuance = dict(item.split("=", 1) for item in labels)
+    return json.dumps(
+        {**issuance, "booley.role": role, "booley.session-id": _RESOURCES.session_id}
+    )
+
+
+def _topology(labels: tuple[str, ...] = ()) -> dict[str, tuple[int, str]]:
+    """Reply rules of one correctly configured, healthy relay topology."""
+    nets = "{{json .NetworkSettings.Networks}}"
+    rules = {
+        "image inspect": IMAGE_ID,
+        f"inspect {_RELAY}": json.dumps(_relay_state()),
+        f"inspect {_RELAY} .Config.Labels}}}}": _role_labels("license-relay", labels),
+        " ".join(_POLL): "running healthy",
+        f"inspect {_RELAY} {{{{.State.Health.Status}}}}": "healthy",
+        f"inspect {_RELAY} {nets}": json.dumps({_PRIVATE: {}, _OUTBOUND: {}}),
+        f"inspect {SESSION_CONTAINER} {nets}": json.dumps({_PRIVATE: {}}),
+    }
+    isolated = {"com.docker.network.bridge.gateway_mode_ipv4": "isolated"}
+    for network, role, internal, options, members in (
+        (_PRIVATE, "license-private-network", "true", isolated, (_RELAY, SESSION_CONTAINER)),
+        (_OUTBOUND, "license-outbound-network", "false", {}, (_RELAY,)),
+    ):
+        endpoints = {name: {"Name": name} for name in members}
+        rules[f"network inspect {network}"] = json.dumps({"Containers": endpoints})
+        rules[f"inspect {network} .Labels}}}}"] = _role_labels(role, labels)
+        rules[f"inspect {network} {{{{.Internal}}}}"] = internal
+        rules[f"inspect {network} .Options}}}}"] = json.dumps(options)
+    return {words: (0, text) for words, text in rules.items()}
+
+
+@pytest.fixture
+def docker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
+    return install_fake_docker(tmp_path / "docker-bin", monkeypatch, _topology())
 
 
 def _profile() -> RelayProfile:
     return RelayProfile("10.20.30.40", "license-server-01", 2100, 2101)
 
 
-def _validate(docker: RelayDocker, labels: tuple[str, ...] = ()) -> None:
+def _validate(docker: FakeDocker, labels: tuple[str, ...] = ()) -> None:
     validate_relay(
-        docker.resources, SESSION_CONTAINER, _profile(), issuance_labels=labels, runner=docker
+        _RESOURCES,
+        SESSION_CONTAINER,
+        _profile(),
+        issuance_labels=labels,
+        runner=docker.runner,
     )
 
 
-def _health_inspects(docker: RelayDocker) -> list[list[str]]:
-    return [command for command in docker.commands if command[:2] == ["container", "inspect"]]
+def _health_inspects(docker: FakeDocker) -> list[list[str]]:
+    return [command for command in docker.calls if command[:2] == ["container", "inspect"]]
 
 
 @pytest.mark.parametrize(
@@ -62,13 +175,19 @@ def _health_inspects(docker: RelayDocker) -> list[list[str]]:
     [
         ("licenses.example", "host", 2100, 2101),
         ("10.0.0.1", "192.0.2.4", 2100, 2101),
-        ("10.0.0.1", "host", True, 2101),
         ("10.0.0.1", "host", 2100, 2100),
     ],
 )
 def test_profile_revalidates_every_authority_field(args: tuple[object, ...]) -> None:
     with pytest.raises(RelayConfigError):
         RelayProfile(*args)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("ports", [(True, 2101), (2100.0, 2101), (0, 2101), (2100, 65536)])
+def test_profile_rejects_invalid_ports(ports: tuple[object, object]) -> None:
+    message = "FlexNet ports must be integers from 1 through 65535"
+    with pytest.raises(RelayConfigError, match=message):
+        RelayProfile("10.0.0.1", "host", *ports)  # type: ignore[arg-type]
 
 
 def test_names_are_deterministic_and_do_not_leak_identity() -> None:
@@ -119,26 +238,51 @@ def test_image_build_uses_packaged_dockerfile_and_relay_only_context() -> None:
     assert Path(argv[-1]).parts[-2:] == ("provisioning", "licensing")
 
 
-def test_image_build_failure_is_actionable() -> None:
-    docker = RelayDocker(fail_prefix=("image", "build"))
+@pytest.mark.parametrize(
+    ("words", "code", "output", "message"),
+    [
+        ((_RELAY, ".Config.Labels}}"), 1, "daemon busy", "cannot inspect container .*daemon busy"),
+        ((_PRIVATE, ".Labels}}"), 0, "null", "invalid labels for network"),
+        ((_PRIVATE, ".Labels}}"), 0, '{"note": ""}', "invalid labels for network"),
+        ((_PRIVATE, ".Options}}"), 0, "[]", "invalid options for network"),
+        ((_RELAY, "{{json .NetworkSettings.Networks}}"), 0, "{", "invalid network state"),
+    ],
+)
+def test_validation_keeps_its_messages_for_untrusted_inspection(
+    docker: FakeDocker, words: tuple[str, str], code: int, output: str, message: str
+) -> None:
+    docker.answer("inspect", *words, code=code, stdout=output)
+
+    with pytest.raises(RelayDockerError, match=message):
+        _validate(docker)
+
+
+def test_validation_accepts_an_empty_foreign_label_on_a_client(docker: FakeDocker) -> None:
+    labels = json.dumps({"booley.role": "interactive", "image.note": ""})
+    docker.answer("inspect", SESSION_CONTAINER, ".Config.Labels}}", stdout=labels)
+
+    validate_relay(_RESOURCES, None, _profile(), issuance_labels=(), runner=docker.runner)
+
+
+def test_image_build_failure_is_actionable(docker: FakeDocker) -> None:
+    docker.answer("image", "build", code=1, stderr="injected failure")
     with pytest.raises(RelayDockerError, match=r"could not build.*injected failure"):
-        build_relay_image(runner=docker)
+        build_relay_image(runner=docker.runner)
 
 
-def test_ensure_image_skips_present_or_builds_when_forced() -> None:
-    present = RelayDocker()
-    assert ensure_relay_image(runner=present) is False
-    assert present.commands == [["image", "inspect", "booley-flexnet-relay:1"]]
+def test_ensure_image_skips_present_or_builds_when_forced(docker: FakeDocker) -> None:
+    assert ensure_relay_image(runner=docker.runner) is False
+    assert docker.calls == [["image", "inspect", "booley-flexnet-relay:1"]]
 
-    forced = RelayDocker()
-    assert ensure_relay_image(runner=forced, force=True) is True
-    assert forced.commands[0][:2] == ["image", "build"]
+    assert ensure_relay_image(runner=docker.runner, force=True) is True
+    assert docker.calls[1][:2] == ["image", "build"]
 
 
-def test_relay_image_resolution_requires_immutable_docker_id() -> None:
-    assert resolve_relay_image_id(runner=RelayDocker()) == IMAGE_ID
+def test_relay_image_resolution_requires_immutable_docker_id(docker: FakeDocker) -> None:
+    assert resolve_relay_image_id(runner=docker.runner) == IMAGE_ID
+    docker.answer("image", "inspect", stdout="relay:latest")
     with pytest.raises(RelayDockerError, match="invalid relay image ID"):
-        resolve_relay_image_id(runner=RelayDocker(image_id="relay:latest"))
+        resolve_relay_image_id(runner=docker.runner)
 
 
 def test_relay_argv_is_hardened_and_has_no_mount_or_published_port() -> None:
@@ -188,31 +332,37 @@ def test_private_aliases_are_fixed_and_session_never_joins_outbound() -> None:
     assert resources.outbound_network not in session
 
 
-def test_provision_orders_topology_and_waits_for_health() -> None:
-    docker = RelayDocker(health=("starting", "healthy"))
+def test_provision_orders_topology_and_waits_for_health(docker: FakeDocker) -> None:
+    docker.answer_in_turn(*_POLL, answers=[_STARTING, _HEALTHY])
     resources = provision_relay(
-        _profile(), "session-a", runner=docker, health_attempts=3, poll_interval=0
+        _profile(), "session-a", runner=docker.runner, health_attempts=3, poll_interval=0
     )
-    assert docker.commands[0] == [
+    assert docker.calls[0] == [
         "image",
         "inspect",
         "booley-flexnet-relay:1",
         "--format",
         "{{.Id}}",
     ]
-    assert docker.commands[1] == private_network_create_argv(resources)
-    assert docker.commands[2] == outbound_network_create_argv(resources)
-    assert docker.commands[3] == relay_run_argv(resources, _profile(), image=IMAGE_ID)
-    assert docker.commands[4] == relay_private_connect_argv(resources, _profile())
+    assert docker.calls[1] == private_network_create_argv(resources)
+    assert docker.calls[2] == outbound_network_create_argv(resources)
+    assert docker.calls[3] == relay_run_argv(resources, _profile(), image=IMAGE_ID)
+    assert docker.calls[4] == relay_private_connect_argv(resources, _profile())
     assert len(_health_inspects(docker)) == 2
 
 
-def test_resume_validation_checks_labels_health_authority_and_network_separation() -> None:
-    _validate(RelayDocker(labels=_LABELS), _LABELS)
+def test_resume_validation_checks_labels_health_authority_and_network_separation(
+    docker: FakeDocker,
+) -> None:
+    docker.replies.update(_topology(_LABELS))
+    _validate(docker, _LABELS)
 
 
-def test_extra_relay_label_names_key_without_printing_value() -> None:
-    docker = RelayDocker(labels=_LABELS, extra_labels={"booley.spec-digest-old": "stale"})
+def test_extra_relay_label_names_key_without_printing_value(docker: FakeDocker) -> None:
+    docker.replies.update(_topology(_LABELS))
+    labels = json.loads(_role_labels("license-relay", _LABELS))
+    extra = json.dumps(labels | {"booley.spec-digest-old": "stale"})
+    docker.answer("inspect", _RELAY, ".Config.Labels}}", stdout=extra)
 
     with pytest.raises(RelayDockerError, match="labels differ from host issuance") as caught:
         _validate(docker, _LABELS)
@@ -220,9 +370,12 @@ def test_extra_relay_label_names_key_without_printing_value() -> None:
     assert "stale" not in str(caught.value)
 
 
-def test_resume_validation_rejects_session_on_outbound_network() -> None:
+def test_resume_validation_rejects_session_on_outbound_network(docker: FakeDocker) -> None:
+    nets = "{{json .NetworkSettings.Networks}}"
+    both = json.dumps({_PRIVATE: {}, _OUTBOUND: {}})
+    docker.answer("inspect", SESSION_CONTAINER, nets, stdout=both)
     with pytest.raises(RelayDockerError, match="network membership") as caught:
-        _validate(RelayDocker(session_on_outbound=True))
+        _validate(docker)
     assert "outbound_network_present false -> true" in str(caught.value)
     assert "private_network_present" not in str(caught.value)
 
@@ -257,40 +410,44 @@ def test_resume_validation_rejects_session_on_outbound_network() -> None:
         ({"PidsLimit": 65}, "resource limits"),
         ({"RestartPolicy": {"Name": "always", "MaximumRetryCount": 0}}, "restart"),
         ({"LogConfig": {"Type": "json-file", "Config": {}}}, "logging"),
-        ({"env": ["BOOLEY_FLEXNET_UPSTREAM_IPV4=192.0.2.99"]}, "environment differs"),
+        (
+            {"env": ["BOOLEY_FLEXNET_UPSTREAM_IPV4=192.0.2.99"]},
+            "environment differs",
+        ),
     ],
 )
 def test_resume_validation_rejects_each_container_security_drift(
-    state_kwargs: dict, message: str
+    docker: FakeDocker, state_kwargs: dict, message: str
 ) -> None:
-    docker = RelayDocker(state=relay_state(_RESOURCES, **state_kwargs))
+    docker.answer("inspect", _RELAY, stdout=json.dumps(_relay_state(**state_kwargs)))
 
     with pytest.raises(RelayDockerError, match=message):
         _validate(docker)
 
 
-def test_resume_validation_rejects_unauthorized_private_endpoint() -> None:
-    docker = RelayDocker(private_containers=(SESSION_CONTAINER, "unrelated-container"))
+def test_resume_validation_rejects_unauthorized_private_endpoint(docker: FakeDocker) -> None:
+    members = (_RELAY, SESSION_CONTAINER, "unrelated-container")
+    endpoints = {name: {"Name": name} for name in members}
+    docker.answer("network", "inspect", _PRIVATE, stdout=json.dumps({"Containers": endpoints}))
 
     with pytest.raises(RelayDockerError, match="unauthorized endpoints"):
         _validate(docker)
 
 
-def test_resume_validation_rejects_relay_alias_drift() -> None:
-    state = relay_state(_RESOURCES)
-    state["NetworkSettings"]["Networks"][_RESOURCES.private_network]["Aliases"] = [
-        "booley-license-xilinx"
-    ]
+def test_resume_validation_rejects_relay_alias_drift(docker: FakeDocker) -> None:
+    state = _relay_state()
+    state["NetworkSettings"]["Networks"][_PRIVATE]["Aliases"] = ["booley-license-xilinx"]
+    docker.answer("inspect", _RELAY, stdout=json.dumps(state))
 
     with pytest.raises(RelayDockerError, match="aliases have drifted"):
-        _validate(RelayDocker(state=state))
+        _validate(docker)
 
 
-def test_partial_startup_rolls_back_container_then_networks() -> None:
-    docker = RelayDocker(fail_prefix=("network", "connect"))
+def test_partial_startup_rolls_back_container_then_networks(docker: FakeDocker) -> None:
+    docker.answer("network", "connect", code=1, stderr="injected failure")
     with pytest.raises(RelayDockerError, match="startup failed"):
-        provision_relay(_profile(), "session-a", runner=docker, poll_interval=0)
-    assert docker.commands[-3:] == [
+        provision_relay(_profile(), "session-a", runner=docker.runner, poll_interval=0)
+    assert docker.calls[-3:] == [
         ["container", "rm", "-f", _RESOURCES.relay_container],
         ["network", "rm", _RESOURCES.outbound_network],
         ["network", "rm", _RESOURCES.private_network],
@@ -298,10 +455,11 @@ def test_partial_startup_rolls_back_container_then_networks() -> None:
 
 
 @pytest.mark.parametrize(
-    "options,present,absent,inspects,attempts",
+    "health,replies,present,absent,inspects,attempts",
     [
         pytest.param(
-            {"health": ("unhealthy",), "cleanup_failure": (_RESOURCES.outbound_network,)},
+            [_UNHEALTHY],
+            {f"rm {_OUTBOUND}": (1, "still attached")},
             ["did not become healthy", "rollback left: network"],
             [],
             None,
@@ -309,9 +467,13 @@ def test_partial_startup_rolls_back_container_then_networks() -> None:
             id="rollback-residual",
         ),
         pytest.param(
+            [(0, "exited starting", "")],
             {
-                "health": ("exited starting",),
-                "relay_log": "INFO starting\nERROR invalid FlexNet relay configuration: bad port\n",
+                "container logs": (
+                    0,
+                    "",
+                    "INFO starting\nERROR invalid FlexNet relay configuration: bad port",
+                )
             },
             [
                 "container: exited, health: starting",
@@ -323,44 +485,41 @@ def test_partial_startup_rolls_back_container_then_networks() -> None:
             id="exited-with-log-tail",
         ),
         pytest.param(
-            {"health": ("starting", "unhealthy")},
+            [_STARTING, _UNHEALTHY],
+            {},
             ["container: running, health: unhealthy"],
             [],
             2,
             None,
             id="unhealthy-verdict",
         ),
-        pytest.param({"health": ("unhealthy",)}, [], ["relay log"], None, None, id="no-log"),
+        pytest.param([_UNHEALTHY], {}, [], ["relay log"], None, None, id="no-log"),
         pytest.param(
-            {"health": (INSPECT_FAILURE,) * 3},
+            [_INSPECT_FAILURE] * 3,
+            {},
             ["container: inspect-error, health: unknown"],
             [],
             3,
             3,
             id="persistent-inspect-failure",
         ),
-        pytest.param(
-            {"health": ("unhealthy",), "relay_log": "never read", "log_error": True},
-            ["container: running, health: unhealthy"],
-            ["relay log"],
-            None,
-            None,
-            id="log-fetch-error",
-        ),
     ],
 )
 def test_startup_failure_reports_state_and_log_tail(
-    options: dict,
+    docker: FakeDocker,
+    health: list[tuple[int, str, str]],
+    replies: dict[str, tuple[int, str, str] | tuple[int, str]],
     present: list[str],
     absent: list[str],
     inspects: int | None,
     attempts: int | None,
 ) -> None:
-    docker = RelayDocker(**options)
+    docker.answer_in_turn(*_POLL, answers=health)
+    docker.replies.update(replies)
     limit = {} if attempts is None else {"health_attempts": attempts}
 
     with pytest.raises(RelayDockerError) as raised:
-        provision_relay(_profile(), "session-a", runner=docker, poll_interval=0, **limit)
+        provision_relay(_profile(), "session-a", runner=docker.runner, poll_interval=0, **limit)
 
     message = str(raised.value)
     assert all(text in message for text in present)
@@ -369,10 +528,23 @@ def test_startup_failure_reports_state_and_log_tail(
         assert len(_health_inspects(docker)) == inspects
 
 
-def test_startup_failure_log_excerpt_is_bounded() -> None:
-    docker = RelayDocker(health=("unhealthy",), relay_log="x" * 5000)
+def test_startup_failure_when_the_log_fetch_times_out_omits_it(docker: FakeDocker) -> None:
+    docker.answer_in_turn(*_POLL, answers=[_UNHEALTHY])
+    docker.answer("container", "logs", stderr="never read")
+    docker.raise_on("container", "logs", error=subprocess.TimeoutExpired(["docker"], 30))
+
     with pytest.raises(RelayDockerError) as raised:
-        provision_relay(_profile(), "session-a", runner=docker, poll_interval=0)
+        provision_relay(_profile(), "session-a", runner=docker.runner, poll_interval=0)
+
+    assert "container: running, health: unhealthy" in str(raised.value)
+    assert "relay log" not in str(raised.value)
+
+
+def test_startup_failure_log_excerpt_is_bounded(docker: FakeDocker) -> None:
+    docker.answer_in_turn(*_POLL, answers=[_UNHEALTHY])
+    docker.answer("container", "logs", stderr="x" * 5000)
+    with pytest.raises(RelayDockerError) as raised:
+        provision_relay(_profile(), "session-a", runner=docker.runner, poll_interval=0)
     excerpt = str(raised.value).split("relay log: ", 1)[1]
     assert excerpt == "x" * flexnet_docker.HEALTH_LOG_MAX_CHARS
 
@@ -380,30 +552,33 @@ def test_startup_failure_log_excerpt_is_bounded() -> None:
 @pytest.mark.parametrize(
     "health",
     [
-        pytest.param(("starting",) * 100 + ("healthy",), id="slow-start-within-health-window"),
-        pytest.param((INSPECT_FAILURE, "starting", "healthy"), id="transient-inspect-failure"),
+        pytest.param([_STARTING] * 100 + [_HEALTHY], id="slow-start-within-health-window"),
+        pytest.param([_INSPECT_FAILURE, _STARTING, _HEALTHY], id="transient-inspect-failure"),
     ],
 )
-def test_relay_that_becomes_healthy_is_kept(health: tuple[str, ...]) -> None:
-    docker = RelayDocker(health=health)
-    provision_relay(_profile(), "session-a", runner=docker, poll_interval=0)
-    assert docker.health == []
+def test_relay_that_becomes_healthy_is_kept(
+    docker: FakeDocker, health: list[tuple[int, str, str]]
+) -> None:
+    docker.answer_in_turn(*_POLL, answers=health)
+    provision_relay(_profile(), "session-a", runner=docker.runner, poll_interval=0)
+    assert len(_health_inspects(docker)) == len(health)
 
 
-def test_remove_is_bounded_and_reports_residual_objects() -> None:
-    docker = RelayDocker(cleanup_failure=(_RESOURCES.private_network,))
-    with pytest.raises(RelayDockerError, match=_RESOURCES.private_network):
-        remove_relay(_RESOURCES, runner=docker)
-    assert len(docker.commands) == 3
+def test_remove_is_bounded_and_reports_residual_objects(docker: FakeDocker) -> None:
+    docker.answer("rm", _PRIVATE, code=1, stderr="still attached")
+    with pytest.raises(RelayDockerError, match=_PRIVATE):
+        remove_relay(_RESOURCES, runner=docker.runner)
+    assert len(docker.calls) == 3
 
 
-def test_project_cleanup_removes_all_sessions_before_owned_networks(tmp_path: Path) -> None:
-    docker = RelayDocker(
-        listed={"container": "headless\nvscode\nrelay\n", "network": "private\noutbound\n"}
-    )
+def test_project_cleanup_removes_all_sessions_before_owned_networks(
+    docker: FakeDocker, tmp_path: Path
+) -> None:
+    docker.answer("container", "ls", stdout="headless\nvscode\nrelay\n")
+    docker.answer("network", "ls", stdout="private\noutbound\n")
 
-    assert cleanup_project_resources(tmp_path, runner=docker) == ()
-    assert [command[:3] for command in docker.commands] == [
+    assert cleanup_project_resources(tmp_path, runner=docker.runner) == ()
+    assert [command[:3] for command in docker.calls] == [
         ["container", "ls", "-aq"],
         ["container", "rm", "-f"],
         ["container", "rm", "-f"],
@@ -412,16 +587,18 @@ def test_project_cleanup_removes_all_sessions_before_owned_networks(tmp_path: Pa
         ["network", "rm", "private"],
         ["network", "rm", "outbound"],
     ]
-    assert [command[3] for command in docker.commands[1:4]] == ["headless", "vscode", "relay"]
+    assert [command[3] for command in docker.calls[1:4]] == ["headless", "vscode", "relay"]
 
 
-def test_project_cleanup_reports_live_vscode_and_network_residue(tmp_path: Path) -> None:
-    docker = RelayDocker(
-        listed={"container": "vscode\n", "network": "private\n"},
-        cleanup_failure=("vscode", "private"),
-    )
+def test_project_cleanup_reports_live_vscode_and_network_residue(
+    docker: FakeDocker, tmp_path: Path
+) -> None:
+    docker.answer("container", "ls", stdout="vscode\n")
+    docker.answer("network", "ls", stdout="private\n")
+    for name in ("vscode", "private"):
+        docker.answer("rm", name, code=1, stderr="still attached")
 
-    assert cleanup_project_resources(tmp_path, runner=docker) == (
+    assert cleanup_project_resources(tmp_path, runner=docker.runner) == (
         "container:vscode",
         "network:private",
     )
@@ -437,13 +614,80 @@ def test_dockerfile_pins_minimal_base_and_runs_as_numeric_user() -> None:
     assert 'ENTRYPOINT ["python3", "/app/flexnet_relay.py"]' in dockerfile
 
 
-def test_cleanup_identity_uses_only_canonical_full_label() -> None:
+def test_cleanup_identity_uses_only_canonical_full_label(docker: FakeDocker) -> None:
     root = "/deleted/Project"
-    docker = RelayDocker()
 
-    assert flexnet_docker.cleanup_project_resources_for_identity(root, runner=docker) == ()
+    cleanup = flexnet_docker.cleanup_project_resources_for_identity
+    assert cleanup(root, runner=docker.runner) == ()
     expected = "label=booley.project-id=" + hashlib.sha256(root.encode()).hexdigest()
-    assert docker.commands == [
+    assert docker.calls == [
         ["container", "ls", "-aq", "--filter", expected],
         ["network", "ls", "-q", "--filter", expected],
     ]
+
+
+def _docker_reports(options: list[str]) -> tuple[str, dict]:
+    """``Config.User`` and ``HostConfig`` as Docker reports them for these run options."""
+    words = iter(options)
+    user, host, log = "", {}, {"Config": {}}
+    for flag in words:
+        if flag == "--read-only":
+            host["ReadonlyRootfs"] = True
+            continue
+        value = next(words)
+        if flag == "--user":
+            user = value
+        elif flag == "--tmpfs":
+            host["Tmpfs"] = dict([value.split(":", 1)])
+        elif flag in ("--cap-drop", "--security-opt"):
+            host["CapDrop" if flag == "--cap-drop" else "SecurityOpt"] = [value]
+        elif flag == "--pids-limit":
+            host["PidsLimit"] = int(value)
+        elif flag in ("--memory", "--memory-swap"):
+            key = "Memory" if flag == "--memory" else "MemorySwap"
+            host[key] = int(value.removesuffix("m")) * 1024 * 1024
+        elif flag == "--cpus":
+            host["NanoCpus"] = int(Decimal(value) * 10**9)
+        elif flag == "--ulimit":
+            name, limits = value.split("=")
+            soft, hard = (int(item) for item in limits.split(":"))
+            host["Ulimits"] = [{"Name": name, "Hard": hard, "Soft": soft}]
+        elif flag == "--restart":
+            host["RestartPolicy"] = {"Name": value, "MaximumRetryCount": 0}
+        elif flag == "--log-driver":
+            log["Type"] = value
+        else:
+            assert flag == "--log-opt", flag
+            log["Config"].update([value.split("=", 1)])
+    return user, {**host, "LogConfig": log}
+
+
+@pytest.mark.parametrize(
+    "change", [pytest.param({}, id="shipped"), pytest.param({"cpus": "1.25"}, id="changed")]
+)
+def test_relay_spec_check_accepts_the_container_its_options_run(change: dict) -> None:
+    shipped = flexnet_docker.RELAY_CONTAINER
+    spec = dataclasses.replace(shipped, **change)
+    user, host = _docker_reports(spec.run_options())
+    # Blank the fixture's shipped values first: an option the spec fails to render stays blank.
+    blank = dict.fromkeys(
+        (
+            "ReadonlyRootfs",
+            "Tmpfs",
+            "CapDrop",
+            "SecurityOpt",
+            "PidsLimit",
+            "Memory",
+            "NanoCpus",
+            "Ulimits",
+            "RestartPolicy",
+            "LogConfig",
+        )
+    )
+    state = _relay_state(config_overrides={"User": user}, **(blank | host))
+
+    spec.check(state["Config"], state["HostConfig"], state["Mounts"])
+
+    if change:
+        with pytest.raises(RelayDockerError, match="resource limits"):
+            shipped.check(state["Config"], state["HostConfig"], state["Mounts"])

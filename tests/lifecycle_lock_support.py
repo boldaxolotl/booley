@@ -42,7 +42,8 @@ class LifecycleLockHolder:
 
 @contextmanager
 def held_lifecycle_lock(
-    path: Path, owner: str = "pid=41 operation=other lifecycle command"
+    path: Path,
+    owner: str = "pid=41 operation=other lifecycle command",
 ) -> Iterator[LifecycleLockHolder]:
     """Hold *path* in a child process until the caller releases it."""
     context = multiprocessing.get_context("spawn")

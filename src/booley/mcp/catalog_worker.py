@@ -20,8 +20,9 @@ from booley.core.boundary import require_dict
 from booley.mcp import catalog
 from booley.mcp.flow_adapter import flow_negative_flags
 from booley.runtime.process_group import (
-    capture_process_group,
-    new_group_kwargs,
+    own_process_group,
+    owned_group_kwargs,
+    release_process_group,
     terminate_process_group,
 )
 
@@ -63,16 +64,19 @@ def run_schema_worker(
             str(result),
         ]
         process = subprocess.Popen(
-            command, stdout=output, stderr=output, env=environment, **new_group_kwargs()
+            command, stdout=output, stderr=output, env=environment, **owned_group_kwargs()
         )
-        group = capture_process_group(process)
+        group = own_process_group(process)
         try:
             _wait_for_worker(process, cancel)
         except RuntimeError as exc:
             raise RuntimeError(f"{exc}\n{_diagnostic_tail(output)}") from exc
         finally:
             # Also terminate descendants that outlive a successfully exited importer.
-            terminate_process_group(process, group, grace_seconds=0.2)
+            try:
+                terminate_process_group(process, group, grace_seconds=0.2)
+            finally:
+                release_process_group(process)
         return _read_result(result)
 
 
@@ -106,7 +110,9 @@ def _read_result(path: Path) -> tuple[list[dict[str, Any]], list[str]]:
     )
 
 
-def _import_file_safe(py_path: Path) -> tuple[object | None, str | None]:
+def _import_file_safe(
+    py_path: Path,
+) -> tuple[object | None, str | None]:
     """Import a Python file as a module. Returns (module, None) or (None, error_msg)."""
     import importlib.util
     import traceback
@@ -114,7 +120,8 @@ def _import_file_safe(py_path: Path) -> tuple[object | None, str | None]:
     module_name = py_path.stem
     try:
         spec = importlib.util.spec_from_file_location(
-            f"booley_custom_mcp_tools.{module_name}", py_path
+            f"booley_custom_mcp_tools.{module_name}",
+            py_path,
         )
         if spec is None or spec.loader is None:
             return None, f"Could not create module spec for {py_path}"
@@ -131,7 +138,9 @@ def _import_file_safe(py_path: Path) -> tuple[object | None, str | None]:
         return None, msg
 
 
-def _import_and_extract_file(py_path: Path) -> tuple[dict[str, Any] | None, str | None]:
+def _import_and_extract_file(
+    py_path: Path,
+) -> tuple[dict[str, Any] | None, str | None]:
     """Import a custom MCP tool from a file path and extract its schema."""
     mod, err = _import_file_safe(py_path)
     if err is not None:

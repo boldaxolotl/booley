@@ -25,7 +25,13 @@ WorkspaceAccess = Literal["read_only", "read_write"]
 
 def _run_git(args: list[str], cwd: Path, *, text: bool = True) -> str | bytes:
     """Run a bounded git plumbing command or fail with its diagnostic."""
-    result = subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=text)
+    result = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=text,
+    )
     return result.stdout
 
 
@@ -38,13 +44,19 @@ def _git_root(cwd: Path) -> Path:
 def _visible_paths(root: Path) -> list[Path]:
     """Return tracked and ordinary untracked paths in the current worktree."""
     output = _run_git(
-        ["ls-files", "-z", "--cached", "--others", "--exclude-standard"], root, text=False
+        ["ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        root,
+        text=False,
     )
     assert isinstance(output, bytes)
     return [Path(os.fsdecode(raw)) for raw in output.split(b"\0") if raw]
 
 
-def _safe_symlink_target(source: Path, real_root: Path, snapshot_root: Path) -> Path | None:
+def _safe_symlink_target(
+    source: Path,
+    real_root: Path,
+    snapshot_root: Path,
+) -> Path | None:
     """Map an in-worktree symlink target into the snapshot."""
     try:
         relative = source.resolve(strict=False).relative_to(real_root)
@@ -53,7 +65,12 @@ def _safe_symlink_target(source: Path, real_root: Path, snapshot_root: Path) -> 
     return snapshot_root / relative
 
 
-def _copy_path(source: Path, destination: Path, real_root: Path, snapshot_root: Path) -> None:
+def _copy_path(
+    source: Path,
+    destination: Path,
+    real_root: Path,
+    snapshot_root: Path,
+) -> None:
     """Copy one git-visible path without following symlinks."""
     if not source.parent.resolve().is_relative_to(real_root):
         raise ValueError(f"source parent escapes Project Root: {source.relative_to(real_root)}")
@@ -76,7 +93,12 @@ def _copy_path(source: Path, destination: Path, real_root: Path, snapshot_root: 
 
 def _populate_snapshot(real_root: Path, snapshot_root: Path) -> None:
     for relative in _visible_paths(real_root):
-        _copy_path(real_root / relative, snapshot_root / relative, real_root, snapshot_root)
+        _copy_path(
+            real_root / relative,
+            snapshot_root / relative,
+            real_root,
+            snapshot_root,
+        )
 
 
 def initialize_snapshot_git(snapshot_root: Path, *, include_ignored: bool = False) -> None:
@@ -147,7 +169,10 @@ def _project_category_paths(
     prefix = project_root.relative_to(repository_root)
     category_files = {
         category: tuple((prefix / path).as_posix() for path in paths)
-        for category, paths in (("rtl", sources.rtl_source_files), ("tb", sources.tb_files))
+        for category, paths in (
+            ("rtl", sources.rtl_source_files),
+            ("tb", sources.tb_files),
+        )
     }
     return category_files, tuple(
         (prefix / canonical_project_path(project_root, path)).as_posix() for path in scope

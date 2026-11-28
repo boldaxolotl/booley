@@ -97,7 +97,8 @@ EXPERT_GUIDANCE = (
     "Defaults are tuned; change these controls only when investigating timing or area."
 )
 BASELINE_HELP = HelpOption(
-    "baseline", "Git ref to compare against. When omitted, run without baseline comparison."
+    "baseline",
+    "Git ref to compare against. When omitted, run without baseline comparison.",
 )
 PPA_HELP = HelpOption(
     "ppa_profile",

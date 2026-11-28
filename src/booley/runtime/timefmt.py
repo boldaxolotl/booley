@@ -19,7 +19,21 @@ from booley.core.boundary import as_float
 MACHINE_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 LOCAL_TIMEZONE_ENV = "BOOLEY_LOCAL_TIMEZONE"
 
-_MONTHS = ("", "JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+_MONTHS = (
+    "",
+    "JAN",
+    "FEB",
+    "MAR",
+    "APR",
+    "MAY",
+    "JUN",
+    "JUL",
+    "AUG",
+    "SEP",
+    "OCT",
+    "NOV",
+    "DEC",
+)
 
 
 def utc_now_rfc3339() -> str:

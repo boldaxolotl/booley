@@ -18,7 +18,11 @@ from booley.core.boundary import require_dict
 WORKFLOWS = Path(__file__).parents[2] / ".github" / "workflows"
 
 # Workflow file -> the job whose `if:` carries the draft gate.
-GATED_JOBS = {"test.yml": "changes", "picorv32-demo.yml": "base-plan", "pages.yml": "build"}
+GATED_JOBS = {
+    "test.yml": "changes",
+    "picorv32-demo.yml": "base-plan",
+    "pages.yml": "build",
+}
 DRAFT_GATE = (
     "github.event_name != 'pull_request' || !github.event.pull_request.draft"
     " || startsWith(github.head_ref, 'mergify/merge-queue/')"

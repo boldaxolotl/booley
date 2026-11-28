@@ -12,6 +12,9 @@ from pathlib import Path
 import pytest
 
 from booley.harness import doctor, upgrade_review
+from booley.runtime import paths
+from booley.runtime.changelog import parse_releases
+from tests.source_checkout_support import copy_source_checkout
 from tests.time_budget import hang_guard_s
 
 _NOW = "2026-08-31T12:00:00Z"
@@ -102,7 +105,10 @@ def test_cross_process_observers_preserve_highest_target(tmp_path: Path) -> None
     )
     env = os.environ | {"PYTHONPATH": python_path}
     processes = [
-        subprocess.Popen([sys.executable, "-c", script, str(booley_dir), version], env=env)
+        subprocess.Popen(
+            [sys.executable, "-c", script, str(booley_dir), version],
+            env=env,
+        )
         for version in ["1.1.0", "1.5.0", "1.2.0", "1.4.0"]
     ]
 
@@ -185,11 +191,42 @@ def test_acknowledgment_clears_exact_pending_target(tmp_path: Path) -> None:
     upgrade_review.observe(booley_dir, current_version="2.0.0", now=_NOW)
 
     status = upgrade_review.acknowledge(
-        booley_dir, "2.0.0", current_version="2.0.0", packaged_changelog=_changelog(tmp_path)
+        booley_dir,
+        "2.0.0",
+        current_version="2.0.0",
+        packaged_changelog=_changelog(tmp_path),
     )
 
     assert status.condition is upgrade_review.ReviewCondition.CURRENT
     assert _payload(booley_dir) == {"schema": 1, "reviewed_through": "2.0.0"}
+
+
+def test_unbuilt_source_checkout_has_no_packaged_changelog(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without the build step the packaged changelog is absent and no reader falls back (#4356)."""
+    checkout = tmp_path / "checkout"
+    copy_source_checkout(
+        Path(__file__).resolve().parents[2], checkout, "CHANGELOG.md", "src/booley/data/refs"
+    )
+    root_changelog = (checkout / "CHANGELOG.md").read_text(encoding="utf-8")
+    newest = str(parse_releases(root_changelog)[0].version)
+    assert not (checkout / "src/booley/data/refs/CHANGELOG.md").exists()
+    # Point the default lookup at the unbuilt checkout's package data.
+    monkeypatch.setattr(paths, "package_data_dir", lambda: checkout / "src/booley/data")
+    booley_dir = _project(tmp_path)
+    upgrade_review.observe(booley_dir, current_version="0.0.1", now=_NOW)
+    upgrade_review.observe(booley_dir, current_version=newest, now=_NOW)
+
+    with pytest.raises(
+        upgrade_review.AcknowledgmentError, match="packaged changelog is unreadable"
+    ):
+        upgrade_review.acknowledge(
+            booley_dir,
+            newest,
+            current_version=newest,
+        )
+    assert _payload(booley_dir)["pending_target"] == newest
 
 
 def test_acknowledgment_rejects_stale_runtime_and_missing_entry(tmp_path: Path) -> None:
@@ -199,7 +236,10 @@ def test_acknowledgment_rejects_stale_runtime_and_missing_entry(tmp_path: Path) 
 
     with pytest.raises(upgrade_review.AcknowledgmentError, match="running Booley"):
         upgrade_review.acknowledge(
-            booley_dir, "2.0.0", current_version="1.0.0", packaged_changelog=_changelog(tmp_path)
+            booley_dir,
+            "2.0.0",
+            current_version="1.0.0",
+            packaged_changelog=_changelog(tmp_path),
         )
     with pytest.raises(upgrade_review.AcknowledgmentError, match="no release entry"):
         upgrade_review.acknowledge(
@@ -219,7 +259,10 @@ def test_newer_observation_wins_before_acknowledgment(tmp_path: Path) -> None:
 
     with pytest.raises(upgrade_review.AcknowledgmentError, match="pending target changed"):
         upgrade_review.acknowledge(
-            booley_dir, "2.0.0", current_version="2.0.0", packaged_changelog=_changelog(tmp_path)
+            booley_dir,
+            "2.0.0",
+            current_version="2.0.0",
+            packaged_changelog=_changelog(tmp_path),
         )
 
     assert _payload(booley_dir)["pending_target"] == "3.0.0"
@@ -305,7 +348,7 @@ def test_repeat_acknowledgment_is_locked_no_write(tmp_path, monkeypatch):
         booley_dir, "2.0.0", current_version="2.0.0", packaged_changelog=_changelog(tmp_path)
     )
     before = upgrade_review.state_path(booley_dir).read_bytes()
-    monkeypatch.setattr(upgrade_review, "_atomic_write", lambda *_args: pytest.fail("retry wrote"))
+    monkeypatch.setattr(upgrade_review, "_store_state", lambda *_args: pytest.fail("retry wrote"))
     repeated = upgrade_review.acknowledge(
         booley_dir, "2.0.0", current_version="2.0.0", packaged_changelog=tmp_path / "missing"
     )
@@ -320,7 +363,7 @@ def test_no_pending_requires_exact_current_baseline(tmp_path, monkeypatch, revie
     booley_dir = _project(tmp_path)
     upgrade_review.observe(booley_dir, current_version=reviewed)
     before = upgrade_review.state_path(booley_dir).read_bytes()
-    monkeypatch.setattr(upgrade_review, "_atomic_write", lambda *_args: pytest.fail("wrote"))
+    monkeypatch.setattr(upgrade_review, "_store_state", lambda *_args: pytest.fail("wrote"))
     if reviewed == "2.0.0":
         assert upgrade_review.acknowledge(
             booley_dir, "2.0.0", current_version="2.0.0"

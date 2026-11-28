@@ -7,11 +7,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.flows.endpoint_admission import AdmissionContext
-from booley.flows.test_runs import TestRun
-from booley.runtime.endpoint_execution import EndpointOutcome
-from booley.targets.domain import TargetHandle
+from booley.flows.test_runs import (
+    TestRun,
+)
+from booley.runtime.endpoint_execution import (
+    EndpointOutcome,
+)
+from booley.targets.domain import (
+    TargetHandle,
+)
 
-from .execution import SimulationExecution
+from .execution import (
+    SimulationExecution,
+)
 
 
 @dataclass(frozen=True, slots=True)

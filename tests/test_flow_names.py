@@ -20,6 +20,12 @@ def test_config_section_reads_only_the_canonical_spelling():
 
 
 def test_whole_config_normalization_covers_tables():
-    normalized = canonicalize_config({"flows": {"simulate": {"timeout_ms": 1000}}})
+    normalized = canonicalize_config(
+        {
+            "flows": {
+                "simulate": {"timeout_ms": 1000},
+            }
+        }
+    )
     assert normalized["flows"]["sim"] == {"timeout_ms": 1000}
     assert "simulate" not in normalized["flows"]

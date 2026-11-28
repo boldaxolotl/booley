@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from booley.core.file_hash import file_sha256
 from booley.evidence.review_guides import ReviewGuide, declared_guide_names, guide_digest
 
 _TICKET_FILE = "ticket.md"
@@ -63,7 +64,7 @@ def _document_digest(path: Path | None) -> str:
     if path is None or not path.exists():
         return _digest("")
     try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()
+        return file_sha256(path)
     except OSError as exc:
         raise ReviewContextError(f"Could not read persisted Reviewer context: {exc}") from exc
 
@@ -84,7 +85,10 @@ def _scope_hashes(work_dir: Path, scope: tuple[str, ...]) -> dict[str, str]:
 def build_review_contract_detail(invocation: ReviewInvocation) -> dict[str, Any]:
     """Build the canonical persisted identity for a Reviewer invocation."""
     ticket = _ticket_path(invocation.work_dir)
-    spec = _resolved(invocation.spec_path, invocation.work_dir)
+    spec = _resolved(
+        invocation.spec_path,
+        invocation.work_dir,
+    )
     scope = tuple(sorted(path.replace("\\", "/").removeprefix("./") for path in invocation.scope))
     contract: dict[str, Any] = {
         "version": REVIEW_DETAIL_VERSION,

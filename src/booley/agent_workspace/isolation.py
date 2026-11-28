@@ -21,7 +21,10 @@ logger = logging.getLogger(__name__)
 
 # Legacy fallback when no ``.core`` is authored. Category membership otherwise
 # comes only from the ``.core`` filesets; no project directory is special-cased.
-CATEGORY_DIRS_DEFAULT: dict[str, tuple[str, ...]] = {"rtl": ("rtl/",), "tb": ("tb/",)}
+CATEGORY_DIRS_DEFAULT: dict[str, tuple[str, ...]] = {
+    "rtl": ("rtl/",),
+    "tb": ("tb/",),
+}
 
 # ---------------------------------------------------------------------------
 # Category directory resolution
@@ -236,7 +239,10 @@ def _remove_snapshot_paths(root: Path, paths: set[Path], category: str) -> list[
 
 
 def _category_membership(
-    root: Path, category: str, category_files: dict[str, tuple[str, ...]], scope: tuple[str, ...]
+    root: Path,
+    category: str,
+    category_files: dict[str, tuple[str, ...]],
+    scope: tuple[str, ...],
 ) -> tuple[set[str], set[str]]:
     """Validate exact declarations and grant only explicit unregistered files."""
     if category not in ("rtl", "tb"):

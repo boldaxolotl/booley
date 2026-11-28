@@ -144,7 +144,10 @@ def _probe_params(
 
 
 def _measure_in(
-    project_root: Path, work: Path, timeout_s: int, getrusage: Callable[[int], Any] | None
+    project_root: Path,
+    work: Path,
+    timeout_s: int,
+    getrusage: Callable[[int], Any] | None,
 ) -> ProbeMeasurement:
     """Run the probe agent call in the *work* directory (see :func:`measure_developer_rss`)."""
     import asyncio
@@ -196,7 +199,9 @@ def _measure_in(
         )
     if after <= 0:
         raise ProbeError(
-            "no child RSS observed around the probe agent call", agent_called=True, usage=usage
+            "no child RSS observed around the probe agent call",
+            agent_called=True,
+            usage=usage,
         )
     return ProbeMeasurement(peak_rss_bytes=int(after) * 1024, exact=after > before, usage=usage)
 

@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from booley.audit import agent_schema, config_common, configs_schema, flow_schema, project_schema
+from booley.audit import agent_schema, config_common, flow_schema, project_schema
 from booley.audit.diagnostic_results import DiagnosticReport, Findings
 from booley.config.eda import EdaConfig, parse_eda_config
 from booley.core.config_paths import resolve_toml
@@ -29,7 +29,10 @@ from booley.harness.setup.git_hooks import (
     read_local_config,
     worktree_policy_repositories,
 )
-from booley.harness.setup.guidance_links import CANON_NAME, guidance_links_current
+from booley.harness.setup.guidance_links import (
+    CANON_NAME,
+    guidance_links_current,
+)
 from booley.harness.setup.line_endings import (
     LineEndingMode,
     LineEndingObservation,
@@ -65,7 +68,6 @@ class ProjectAudit:
     project_root: Path
     booley_dir: Path
     booley_toml: dict[str, Any]
-    configs_toml: dict[str, dict[str, Any]]
     first_target: str
     eda: dict[str, EdaConfig] = field(default_factory=dict)
 
@@ -144,7 +146,9 @@ def inspect_line_endings(request: LineEndingInspectionRequest) -> DiagnosticRepo
     """Map the shared read-only line-ending report into findings; never repairs."""
     report = Findings()
     line_endings = reconcile_project_line_endings(
-        request.project_root, request.booley_dir, mode=LineEndingMode.INSPECT
+        request.project_root,
+        request.booley_dir,
+        mode=LineEndingMode.INSPECT,
     )
     if line_endings.status is LineEndingStatus.NOT_APPLICABLE:
         report.skip("line endings: Project Root is not a git repo")
@@ -162,15 +166,19 @@ def inspect_line_endings(request: LineEndingInspectionRequest) -> DiagnosticRepo
 
 
 def _line_ending_observation(
-    report: RepositoryLineEndingReport, *codes: LineEndingObservationCode
+    report: RepositoryLineEndingReport,
+    *codes: LineEndingObservationCode,
 ) -> LineEndingObservation | None:
     return next(
-        (observation for observation in report.observations if observation.code in codes), None
+        (observation for observation in report.observations if observation.code in codes),
+        None,
     )
 
 
 def _report_unreadable_line_endings(
-    repository: RepositoryLineEndingReport, identity: str, report: Findings
+    repository: RepositoryLineEndingReport,
+    identity: str,
+    report: Findings,
 ) -> bool:
     observation = _line_ending_observation(
         repository,
@@ -196,7 +204,9 @@ def _report_unreadable_line_endings(
 
 
 def _report_autocrlf_risk(
-    repository: RepositoryLineEndingReport, identity: str, report: Findings
+    repository: RepositoryLineEndingReport,
+    identity: str,
+    report: Findings,
 ) -> bool:
     risk = _line_ending_observation(
         repository,
@@ -219,7 +229,8 @@ def _report_autocrlf_risk(
 
 
 def _report_repository_line_endings(
-    repository: RepositoryLineEndingReport, report: Findings
+    repository: RepositoryLineEndingReport,
+    report: Findings,
 ) -> None:
     identity = line_ending_repository_display(
         repository.repository.role, repository.repository.root
@@ -325,7 +336,12 @@ def _inspect_git_versions(
     _report_git_version("host Git", current, report)
     sandbox = (
         _git_version_at(
-            request.docker_exe, "run", "--rm", request.sandbox_image, "git", "--version"
+            request.docker_exe,
+            "run",
+            "--rm",
+            request.sandbox_image,
+            "git",
+            "--version",
         )
         if request.docker_exe
         else None
@@ -488,6 +504,15 @@ def _check_project_setup(
     """Strictly parse and validate Booley project setup files."""
     report.pass_(f"Booley Directory found: {booley_dir}")
 
+    configs_path = booley_dir / "configs.toml"
+    if configs_path.is_file():
+        report.warn(
+            "configs.toml is ignored: Booley no longer reads it",
+            f"delete {configs_path}",
+            check_id="config.configs-toml-ignored",
+            subject="configs.toml",
+        )
+
     booley_toml = _load_toml(booley_dir / "booley.toml", report)
     if booley_toml is None:
         return None
@@ -504,22 +529,7 @@ def _check_project_setup(
 
     booley_toml = canonicalize_config(booley_toml)
 
-    # configs.toml is optional now: ADR 0022 makes the ``.core`` the sole
-    # design-description home, and the legacy configs.toml registry path was
-    # removed. Validate a configs.toml only when a project still ships one.
-    configs_toml: dict[str, dict[str, Any]] = {}
-    configs_path = booley_dir / "configs.toml"
-    if configs_path.is_file():
-        configs_raw = _load_toml(configs_path, report)
-        if configs_raw is None:
-            return None
-        validated = _validate_configs_toml(configs_raw, report)
-        if validated is None:
-            valid = False
-        else:
-            configs_toml = validated
-
-    first_target = _first_target(project_root, configs_toml)
+    first_target = _first_target(project_root)
 
     if not valid:
         return None
@@ -530,23 +540,17 @@ def _check_project_setup(
         project_root=project_root,
         booley_dir=booley_dir,
         booley_toml=booley_toml,
-        configs_toml=configs_toml,
         first_target=first_target,
         eda=parse_eda_config(booley_toml.get("eda")),
     )
 
 
-def _first_target(project_root: Path, configs_toml: dict[str, dict[str, Any]]) -> str:
-    first_target = ""
+def _first_target(project_root: Path) -> str:
     try:
         targets = TargetCatalog.build(project_root).list()
-        first_target = targets[0].selector if targets else ""
-    except Exception:  # noqa: BLE001 — registry may be unavailable; fall back to a configs.toml config name
-        first_target = ""
-    if not first_target:
-        first_target = next(iter(configs_toml), "")
-
-    return first_target
+    except Exception:  # noqa: BLE001 — registry may be unavailable; Doctor then has no first target
+        return ""
+    return targets[0].selector if targets else ""
 
 
 def _load_toml(path: Path, report: Findings) -> dict[str, Any] | None:
@@ -599,18 +603,6 @@ def _validate_booley_toml(data: dict[str, Any], booley_dir: Path, report: Findin
         report.fail(f"Booley Directory missing: {booley_dir}", runtime_context.booley_init_hint())
         valid = False
     return valid
-
-
-def _validate_configs_toml(
-    raw: dict[str, Any], report: Findings
-) -> dict[str, dict[str, Any]] | None:
-    audit = configs_schema.audit_configs_toml(raw)
-    for issue in audit.issues:
-        report.fail(issue.message, issue.fix)
-    if audit.configs is None:
-        return None
-    report.pass_(f"configs.toml contains {len(audit.configs)} valid config(s)")
-    return audit.configs
 
 
 def _add_config_audit(audit: config_common.ConfigTableAudit, report: Findings) -> bool:

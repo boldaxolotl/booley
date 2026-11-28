@@ -145,7 +145,11 @@ class FlexNetRelay:
                 self._route_servers.append(server)
                 logging.info("relay listening listener_port=%d", self.bound_ports[-1])
             self._health_server = await asyncio.start_server(
-                self._handle_health, HEALTH_HOST, self.config.health_port, limit=1024, backlog=4
+                self._handle_health,
+                HEALTH_HOST,
+                self.config.health_port,
+                limit=1024,
+                backlog=4,
             )
             logging.info("relay ready routes=%d", len(self._route_servers))
         except BaseException:
@@ -255,7 +259,9 @@ class FlexNetRelay:
 
 
 async def _pump(
-    reader: asyncio.StreamReader, writer: asyncio.StreamWriter, activity: asyncio.Queue[None]
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    activity: asyncio.Queue[None],
 ) -> int:
     transferred = 0
     while True:

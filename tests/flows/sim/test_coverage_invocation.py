@@ -54,7 +54,11 @@ def test_coverage_context_prefers_checkout_local_project_data(tmp_path, monkeypa
     monkeypatch.setenv("BOOLEY_DIR", str(unrelated))
     reset_cache()
     assert resolve_booley_dir() == unrelated.resolve()
-    monkeypatch.setattr(coverage_flow_context, "load_test_configuration_field", lambda *_args: {})
+    monkeypatch.setattr(
+        coverage_flow_context,
+        "load_test_configuration_field",
+        lambda *_args: {},
+    )
 
     context = coverage_flow_context.coverage_project_context(checkout)
 
@@ -107,7 +111,9 @@ def test_prepared_selection_keeps_catalog_and_ordered_handles_together(tmp_path:
     selection = PreparedTargetSelection.resolve(tmp_path, "sim_1,sim_0", for_flow="sim")
 
     prepared = prepare_coverage_invocation(
-        CoverageInvocationRequest(("ignored",)), context, selection=selection
+        CoverageInvocationRequest(("ignored",)),
+        context,
+        selection=selection,
     )
 
     assert [target.handle.name for target in prepared.plan.targets] == ["sim_1", "sim_0"]

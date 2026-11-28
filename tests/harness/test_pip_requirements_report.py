@@ -13,9 +13,8 @@ from booley.harness import init_cmd
 from booley.harness import session_refresh as harness_refresh
 from booley.harness.setup.common import InitContext
 from booley.runtime import image_lifecycle as lifecycle
-from booley.runtime import project_image as pi
 from booley.runtime.version_attribution import VersionOrigin
-from tests.docker_image_cli_fake import serve_docker_image_cli
+from tests.fake_docker_executable import FakeDocker, install_fake_docker
 from tests.harness.test_image_lifecycle import pin_image_inputs
 
 LEFT_OUT_REQUIREMENTS = "-e ./local\nfusesoc==2.3\ncocotb==1.5.1\nnumpy\n"
@@ -32,8 +31,12 @@ def _project(tmp_path: Path, requirements: str, *, image: str | None = None) -> 
     return root
 
 
-def _stub_base_image(monkeypatch: pytest.MonkeyPatch, packages: dict[str, str]) -> None:
-    monkeypatch.setattr(pi, "base_image_packages", lambda *a, **k: packages)
+@pytest.fixture
+def docker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeDocker:
+    """An empty daemon whose base image has cocotb and numpy installed."""
+    fake = install_fake_docker(tmp_path / "docker-bin", monkeypatch, {}, images={})
+    fake.answer("run", stdout="cocotb==2.1.0\nnumpy==2.0\n")  # pip list --format=freeze
+    return fake
 
 
 def _current_result() -> lifecycle.LifecycleResult:
@@ -41,7 +44,10 @@ def _current_result() -> lifecycle.LifecycleResult:
 
 
 def test_init_check_warns_once_through_real_planning(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    docker: FakeDocker,
 ) -> None:
     # Private seam: init's image step needs a whole Project and host install, so call it directly.
     root = _project(tmp_path, LEFT_OUT_REQUIREMENTS)
@@ -51,16 +57,11 @@ def test_init_check_warns_once_through_real_planning(
         SimpleNamespace(origin=VersionOrigin.DISTRIBUTION, version="0.2.6"),
     )
     monkeypatch.setattr(harness_lifecycle, "embedded_official_release", lambda: True)
-    serve_docker_image_cli(monkeypatch)  # an empty daemon: the real adapter runs
     pin_image_inputs(monkeypatch, contracts=lifecycle.ImageBuildContracts("a" * 64, "b" * 64))
-
-    def forbidden(*_args, **_kwargs):
-        raise AssertionError("a check-only init must not run a container")
-
-    monkeypatch.setattr(pi, "base_image_packages", forbidden)
 
     init_cmd._reconcile_initialized_image(InitContext(project_root=root, check_only=True))
 
+    assert not any(call[0] == "run" for call in docker.calls)  # check-only runs no container
     out = capsys.readouterr().out
     assert out.count("'-e ./local'") == 1
     assert "install it at runtime" in out
@@ -70,11 +71,13 @@ def test_init_check_warns_once_through_real_planning(
 
 
 def test_init_notes_each_curated_override_once(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    docker: FakeDocker,
 ) -> None:
     # Private seam: init's image step needs a whole Project and host install, so call it directly.
     root = _project(tmp_path, LEFT_OUT_REQUIREMENTS)
-    _stub_base_image(monkeypatch, {"cocotb": "2.1.0", "numpy": "2.0"})
     monkeypatch.setattr(
         init_cmd.image_lifecycle, "reconcile_planned", lambda *a, **k: _current_result()
     )
@@ -90,11 +93,13 @@ def test_init_notes_each_curated_override_once(
 
 
 def test_session_refresh_converge_reports_left_out_lines(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    docker: FakeDocker,
 ) -> None:
     # Private seam: `session refresh` needs a whole Project and host install, so call `_RuntimeImages`.
     root = _project(tmp_path, LEFT_OUT_REQUIREMENTS)
-    _stub_base_image(monkeypatch, {"cocotb": "2.1.0"})
     converged = lifecycle.LifecycleResult(
         "booley-sandbox", "sha256:converged", lifecycle.Status.CURRENT
     )
@@ -113,7 +118,11 @@ def test_session_refresh_converge_reports_left_out_lines(
     "shape", ["clean", "external-image", "hand-written-dockerfile", "hand-edited-requirements"]
 )
 def test_no_new_output_without_left_out_lines(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], shape: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    shape: str,
+    docker: FakeDocker,
 ) -> None:
     # Private seam: init's image step needs a whole Project and host install, so call it directly.
     if shape == "clean":
@@ -130,7 +139,6 @@ def test_no_new_output_without_left_out_lines(
         docker_dir = root / ".booley" / "docker"
         docker_dir.mkdir()
         (docker_dir / "Dockerfile").write_text("FROM booley-sandbox\n", encoding="utf-8")
-    _stub_base_image(monkeypatch, {"cocotb": "2.1.0"})
     monkeypatch.setattr(
         init_cmd.image_lifecycle, "reconcile_planned", lambda *a, **k: _current_result()
     )

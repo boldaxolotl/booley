@@ -30,7 +30,10 @@ PUBLIC_FEEDBACK_DOCS = (
 )
 
 
-@pytest.mark.parametrize("relative_path", ("src/booley/data/skills/booley-feedback/SKILL.md",))
+@pytest.mark.parametrize(
+    "relative_path",
+    ("src/booley/data/skills/booley-feedback/SKILL.md",),
+)
 def test_feedback_docs_explain_shared_storage_and_checkout_context(relative_path):
     root = Path(__file__).parents[2]
     text = " ".join((root / relative_path).read_text(encoding="utf-8").split())

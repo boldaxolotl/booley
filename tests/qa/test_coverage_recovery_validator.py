@@ -16,7 +16,9 @@ recovery = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(recovery)
 
 
-def _evidence(tmp_path: Path, diagnostic: str) -> tuple[Path, Path, Path]:
+def _evidence(
+    tmp_path: Path, diagnostic: str, control_exit_code: int = 2
+) -> tuple[Path, Path, Path]:
     """Write archived and restored Results plus a rejection record with *diagnostic*."""
     result = tmp_path / "result.json"
     result.write_text(json.dumps({"grade": "pass"}))
@@ -31,8 +33,8 @@ def _evidence(tmp_path: Path, diagnostic: str) -> tuple[Path, Path, Path]:
                 "attempts_before": attempts,
                 "attempts_after": attempts,
                 "attempts_after_restore": attempts,
-                "control_exit_code": 0,
-                "control_complete": True,
+                "control_exit_code": control_exit_code,
+                "control_diagnostic": "start a new run:\n  booley flow sim --target t --coverage",
                 "eda_processes_started": [],
                 "valid_sha256": digest,
                 "restored_sha256": digest,
@@ -50,3 +52,10 @@ def test_accepts_a_simulation_result_validation_diagnostic(tmp_path: Path) -> No
 def test_rejects_a_diagnostic_that_does_not_name_the_simulation_result(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="does not name the Simulation Result"):
         recovery.validate_corrupt_terminal(*_evidence(tmp_path, "start a new run instead"))
+
+
+def test_rejects_a_restored_control_that_resumed(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="restored control was not refused"):
+        recovery.validate_corrupt_terminal(
+            *_evidence(tmp_path, "Simulation Result grade is invalid", control_exit_code=0)
+        )

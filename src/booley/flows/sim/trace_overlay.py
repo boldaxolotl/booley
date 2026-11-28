@@ -151,7 +151,10 @@ def trace_overlay_vlnv(base_vlnv: str) -> str:
     return ":".join(parts)
 
 
-def _with_trace_options(verilator_options: Sequence[Any], trace_depth: int) -> list[str]:
+def _with_trace_options(
+    verilator_options: Sequence[Any],
+    trace_depth: int,
+) -> list[str]:
     """Return *verilator_options* with a single canonical ``--trace``/``--trace-depth``.
 
     Used only when the Target has no authored trace format, so the overlay's
@@ -195,7 +198,10 @@ def _with_icarus_dump_root(iverilog_options: Sequence[Any]) -> list[str]:
     return out
 
 
-def _target_dump_module_entry(core_doc: Mapping[str, Any], target: str) -> str | None:
+def _target_dump_module_entry(
+    core_doc: Mapping[str, Any],
+    target: str,
+) -> str | None:
     """The ``booley_vcd_dump.sv`` fileset path *target* carries, or ``None``.
 
     Reads the ``.core`` doc directly (pre-resolve): a file entry is either a bare
@@ -288,10 +294,15 @@ def _inject_runtime_dump_trace(
     injected: Path | None = None
     if _target_dump_module_entry(doc, target) is None:
         injected = _inject_dump_module(
-            ledger, overlay_doc, target, ref.core_file, TRACE_OVERLAY_MARKER, project_root
+            ledger,
+            overlay_doc,
+            target,
+            ref.core_file,
+            TRACE_OVERLAY_MARKER,
+            project_root,
         )
     flow_options["iverilog_options"] = _with_icarus_dump_root(
-        flow_options.get("iverilog_options") or []
+        flow_options.get("iverilog_options") or [],
     )
     return injected
 
@@ -309,7 +320,9 @@ def _write_overlay_core_file(
 
 
 def _rebase_injected_dump_to_root(
-    overlay_doc: dict, project_root: Path | str, injected: Path
+    overlay_doc: dict,
+    project_root: Path | str,
+    injected: Path,
 ) -> None:
     """Declare *injected* relative to the Project Root, where the projection lives."""
     files = overlay_doc["filesets"][_INJECTED_DUMP_FILESET]["files"]
@@ -319,7 +332,9 @@ def _rebase_injected_dump_to_root(
 
 
 def write_trace_overlay(
-    handle: TargetHandle, *, trace_depth: int = DEFAULT_TRACE_DEPTH
+    handle: TargetHandle,
+    *,
+    trace_depth: int = DEFAULT_TRACE_DEPTH,
 ) -> TraceOverlay:
     """Write a co-located ``--trace`` overlay ``.core`` for a supported sim Target.
 
@@ -383,7 +398,10 @@ def sweep_cancelled_run_leftovers(project_root: Path, booley_dir: Path) -> None:
 
 
 def _write_trace_overlay(
-    handle: TargetHandle, trace_depth: int, project_root: Path | str, ledger: StagedInputLedger
+    handle: TargetHandle,
+    trace_depth: int,
+    project_root: Path | str,
+    ledger: StagedInputLedger,
 ) -> TraceOverlay:
     """Build and write the overlay through *ledger*."""
     target = handle.name
@@ -411,13 +429,22 @@ def _write_trace_overlay(
             raise FuseSocError(str(exc)) from exc
         if mode is None:
             mode = TraceMode.VCD_FIFO
-            flow_options["verilator_options"] = _with_trace_options(authored_options, trace_depth)
+            flow_options["verilator_options"] = _with_trace_options(
+                authored_options,
+                trace_depth,
+            )
         else:
             flow_options["verilator_options"] = [str(option) for option in authored_options]
     else:  # Icarus — runtime +trace via an explicitly rooted dump module
         mode = TraceMode.VCD_FIFO
         injected = _inject_runtime_dump_trace(
-            ledger, overlay_doc, doc, target, handle, flow_options, project_root
+            ledger,
+            overlay_doc,
+            doc,
+            target,
+            handle,
+            flow_options,
+            project_root,
         )
 
     # Only stealth cores (under `.booley/cores/`) get a root-level projection.

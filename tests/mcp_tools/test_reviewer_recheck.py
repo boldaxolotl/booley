@@ -20,6 +20,7 @@ from booley.mcp.base import McpToolResult
 from booley.mcp.server import _params_to_argv
 from booley.runtime.booley_dir import resolve_common_booley_dir
 from booley.specialists.reviewer import ReviewerSpecialist
+from tests.agent_call_fake import install_agent
 
 BASE_ARGS = ["--scope", "rtl/dut.sv", "--category", "rtl", "--focus", "bugs"]
 RESET = "Wrong reset value"
@@ -464,13 +465,7 @@ def test_recheck_grants_only_scope_files_that_still_exist(
         yield params, None
 
     monkeypatch.setattr("booley.specialists.specialist.isolated_agent_workspace", recording)
-    monkeypatch.setattr(
-        "booley.specialists.specialist._call_agent_sync",
-        lambda *_a, **_k: SimpleNamespace(
-            output=json.dumps({"verdicts": [verdict(ids[RESET], "fixed")]}),
-            captured_agent_capability_calls={},
-        ),
-    )
+    install_agent(monkeypatch, {"verdicts": [verdict(ids[RESET], "fixed")]})
     reviewer = ReviewerSpecialist()
     reviewer.parse_args(["--work-dir", str(project), "--recheck", str(path)])
     result = reviewer._run()
@@ -619,7 +614,10 @@ def test_invalid_waiver_proposal_is_refused(
     cases = {
         "unknown": (["--waive", "0123456789abcdef", WHY], "0123456789abcdef"),
         "advisory": (["--waive", ids[NAMING], WHY], ids[NAMING]),
-        "repeated": (["--waive", ids[RESET], WHY, "--waive", ids[RESET], "Again"], ids[RESET]),
+        "repeated": (
+            ["--waive", ids[RESET], WHY, "--waive", ids[RESET], "Again"],
+            ids[RESET],
+        ),
         "blank": (["--waive", ids[RESET], "  "], ids[RESET]),
     }
     for case, (flags, named) in cases.items():

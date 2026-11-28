@@ -12,7 +12,10 @@ from tests.conftest import MINIMAL_FST_BYTES
 from tests.time_budget import hang_guard_s
 
 from booley.flows.sim.adapter_contract import PreparedSimulationWork
-from booley.flows.sim.adapter_transport import AdapterTransportIdentity, read_adapter_result
+from booley.flows.sim.adapter_transport import (
+    AdapterTransportIdentity,
+    read_adapter_result,
+)
 from booley.flows.sim.backends import shared as backend_shared
 from booley.flows.sim.backends import verilator as vr
 from booley.flows.sim.backends.supervision import SimulatorLaunch

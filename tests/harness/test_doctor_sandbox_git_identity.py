@@ -17,8 +17,7 @@ from booley.harness import sandbox_git_identity
 from booley.harness.sandbox_git_identity import IdentityCheck
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from tests.harness.doctor_host_support import serve_healthy_doctor_host
-from tests.harness.doctor_run_support import enter_sandbox, findings, run_doctor
-from tests.harness.test_doctor import _write_project
+from tests.harness.doctor_run_support import enter_sandbox, findings, run_doctor, write_project
 from tests.subprocess_budget import run_bounded_child
 
 OVERRIDE_ID = "sandbox.git-identity-override"
@@ -36,7 +35,7 @@ class _SandboxGit:
         self.checkout = root / "checkout"
         self.checkout.mkdir()
         run_bounded_child(["git", "init", "-q", str(self.checkout)], check=True)
-        self.booley_dir = _write_project(self.checkout)
+        self.booley_dir = write_project(self.checkout)
         agent_git = f'\n[agent.git]\nname = "{AGENT_NAME}"\nemail = "{AGENT_EMAIL}"\n'
         with (self.booley_dir / "booley.toml").open("ab") as stream:
             stream.write(agent_git.encode())
@@ -83,27 +82,32 @@ def sandbox_git(tmp_path, monkeypatch) -> _SandboxGit:
     return _SandboxGit(tmp_path, monkeypatch)
 
 
-def _inspect(sandbox: _SandboxGit) -> dict[str, IdentityCheck]:
+def _inspect(sandbox: _SandboxGit) -> dict[str, list[IdentityCheck]]:
     """What the three public inspections report for the checkout, by check ID."""
     checkout = sandbox.checkout
     return {
-        OVERRIDE_ID: sandbox_git_identity.inspect_override(checkout, sandbox.booley_dir),
-        GITCONFIG_ID: sandbox_git_identity.inspect_gitconfig_identity(checkout),
+        OVERRIDE_ID: [sandbox_git_identity.inspect_override(checkout, sandbox.booley_dir)],
+        GITCONFIG_ID: [sandbox_git_identity.inspect_gitconfig_identity(checkout)],
         CREDENTIAL_ID: sandbox_git_identity.inspect_credential_helpers(checkout),
     }
 
 
-def _warned(checks: dict[str, IdentityCheck], check_id: str) -> IdentityCheck:
+def _warned(checks: dict[str, list[IdentityCheck]], check_id: str) -> IdentityCheck:
     """The check for *check_id*, which must carry a warning of that ID."""
-    check = checks[check_id]
+    (check,) = checks[check_id]
     assert check.warning is not None, f"expected a {check_id} warning, got {check.passed!r}"
     assert (check.warning.check_id, check.warning.subject) == (check_id, None)
     return check
 
 
-def _passed(checks: dict[str, IdentityCheck], check_id: str) -> str:
-    assert checks[check_id].warning is None, checks[check_id].warning
-    return checks[check_id].passed
+def _passed(checks: dict[str, list[IdentityCheck]], check_id: str) -> str:
+    (check,) = checks[check_id]
+    assert check.warning is None, check.warning
+    return check.passed
+
+
+def _subjects(checks: dict[str, list[IdentityCheck]]) -> list[str | None]:
+    return [c.warning.subject for c in checks[CREDENTIAL_ID] if c.warning is not None]
 
 
 _VISITOR = ("Visitor", "v@example.com")
@@ -179,25 +183,30 @@ def test_gitconfig_identity_is_foreign_unless_it_is_the_image_default(
 _GH = "!f() {\n /usr/bin/gh auth git-credential; }; f"
 
 
-@pytest.mark.parametrize(
-    ("scope", "helper", "url", "shown"),
-    [
-        ("system", "store", None, "store"),
-        ("global", _GH, "https://github.com", "/usr/bin/gh auth git-credential"),
-    ],
-    ids=["system-store", "global-gh"],
-)
-def test_credential_helper_warns(sandbox_git, scope, helper, url, shown):
-    sandbox_git.add_credential_helper(scope, helper, url)
+def test_each_credential_helper_warns_with_its_own_subject_and_file(sandbox_git):
+    sandbox_git.add_credential_helper("system", "store")
+    for helper in ("store", _GH):
+        sandbox_git.add_credential_helper("global", helper, "https://github.com")
     sandbox_git.set_full_override()
 
-    check = _warned(_inspect(sandbox_git), CREDENTIAL_ID)
+    checks = _inspect(sandbox_git)[CREDENTIAL_ID]
 
-    assert shown in check.warning
-    # Git echoes the path as given for some scopes and slash-normalized for others.
-    assert sandbox_git.config_files[scope].as_posix() in check.warning.replace("\\", "/")
-    assert "editor attach" in check.warning
-    assert "dev.containers.gitCredentialHelperConfigLocation" in check.fix
+    assert _subjects({CREDENTIAL_ID: checks}) == [
+        "credential.helper=store",
+        "credential.https://github.com.helper=store",
+        "credential.https://github.com.helper=!f() { /usr/bin/gh auth git-credential; }; f",
+    ]
+    system, global_ = (sandbox_git.config_files[s].as_posix() for s in ("system", "global"))
+    for check, file in zip(checks, (system, global_, global_), strict=True):
+        assert check.warning is not None
+        assert check.warning.check_id == CREDENTIAL_ID
+        # Git echoes the path as given for some scopes and slash-normalized for others.
+        message = check.warning.replace("\\", "/")
+        assert file in message
+        assert (system if file == global_ else global_) not in message
+        assert "editor attach" in message
+        assert "dev.containers.gitCredentialHelperConfigLocation" in check.fix
+        assert "with this warning's subject" in check.fix
 
 
 @pytest.mark.parametrize(
@@ -219,10 +228,7 @@ def test_empty_global_helper_resets_system_helpers_only(sandbox_git):
         sandbox_git.add_credential_helper(scope, helper)
     sandbox_git.set_full_override()
 
-    message = _warned(_inspect(sandbox_git), CREDENTIAL_ID).warning
-
-    assert "'cache'" in message
-    assert "'store'" not in message
+    assert _subjects(_inspect(sandbox_git)) == ["credential.helper=cache"]
 
 
 def test_credential_helper_is_listed_not_run(sandbox_git, tmp_path):
@@ -233,7 +239,7 @@ def test_credential_helper_is_listed_not_run(sandbox_git, tmp_path):
     add = sandbox_git.add_credential_helper
     add("global", f"!sh {script.as_posix()}")
     add("global", "store", "https://user:SECRET2@example.com")
-    add("global", "!f() { echo password=SECRET3; }; f")
+    add("global", "!f() { echo username=SECRET3; }; f")
     add("global", "!f() { echo 'password=SECRET4 SECRET5'; }; f")
     add("global", "store", "https://user:SEC@RET6@example.com")
     before = global_file.read_bytes()
@@ -241,9 +247,22 @@ def test_credential_helper_is_listed_not_run(sandbox_git, tmp_path):
 
     checks = _inspect(sandbox_git)
 
-    assert script.as_posix() in _warned(checks, CREDENTIAL_ID).warning
+    subjects = _subjects(checks)
+    # Git lists the file's order: it groups the plain ``[credential]`` helpers first.
+    assert subjects == [
+        f"credential.helper=!sh {script.as_posix()}",
+        "credential.helper=!f() { echo username=*** }; f",
+        "credential.helper=!f() { echo 'password=*** }; f",
+        "credential.https://***@example.com.helper=store",
+        "credential.https://***@example.com.helper=store",
+    ]
+    for check, subject in zip(checks[CREDENTIAL_ID], subjects, strict=True):
+        key, value = str(subject).split("=", 1)
+        assert f"{key}='{value}'" in str(check.warning)
     assert not marker.exists()
-    everything = "".join(c.passed + str(c.warning) + c.fix for c in checks.values())
+    everything = "".join(
+        c.passed + str(c.warning) + c.fix for results in checks.values() for c in results
+    ) + "".join(map(str, subjects))
     for secret in ("SECRET1", "SECRET2", "SECRET3", "SECRET4", "SECRET5", "RET6"):
         assert secret not in everything
     assert global_file.read_bytes() == before
@@ -292,3 +311,40 @@ def test_doctor_reports_each_git_check_and_honours_its_waiver(
         c: [Severity.WAIVED if c == waived else Severity.WARN] for c in severities
     }
     assert all(c in out for c in severities if c != waived)
+    assert [f.subject for f in findings(result, CREDENTIAL_ID)] == ["credential.helper=store"]
+
+
+_MASKED = "credential.helper=!f() { echo password=*** }; f"
+
+
+@pytest.mark.parametrize(
+    "subject", ["credential.helper=store", None], ids=["one-helper", "every-helper"]
+)
+def test_doctor_helper_waiver_reaches_only_its_subject(sandbox_git, monkeypatch, subject):
+    serve_healthy_doctor_host(monkeypatch, sandbox_git.checkout)
+    enter_sandbox(monkeypatch)
+    monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")
+    sandbox_git.set_full_override()
+    sandbox_git.add_credential_helper("system", "store")
+    # Two helpers that redact identically must stay two warnings.
+    for secret in ("alpha", "beta"):
+        sandbox_git.add_credential_helper("global", f"!f() {{ echo password={secret}; }}; f")
+    target = f'subject = "{subject}"\n' if subject else ""
+    waiver = f'version = 1\n[[waiver]]\ncheck = "{CREDENTIAL_ID}"\n{target}'
+    waiver += 'reason = "#5346"\npermanent = true\n'
+    (sandbox_git.booley_dir / "doctor-waivers.toml").write_bytes(waiver.encode())
+    other = Severity.WARN if subject else Severity.WAIVED
+
+    found = findings(run_doctor(sandbox_git.checkout), CREDENTIAL_ID)
+
+    assert [(f.subject, f.severity) for f in found] == [
+        ("credential.helper=store", Severity.WAIVED),
+        (_MASKED, other),
+        (_MASKED, other),
+    ]
+
+    # Git cannot list a broken gitconfig; only a subject-less waiver covers that.
+    sandbox_git.config_files["global"].write_bytes(b"[credential\n")
+    found = findings(run_doctor(sandbox_git.checkout), CREDENTIAL_ID)
+
+    assert [(f.subject, f.severity) for f in found] == [(None, other)]

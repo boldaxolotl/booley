@@ -24,7 +24,10 @@ from booley.flows.sim.execution import (
     SimulationExecution,
     SimulationOptions,
 )
-from booley.flows.sim.execution.engine import launch_environment, target_test_plan
+from booley.flows.sim.execution.engine import (
+    launch_environment,
+    target_test_plan,
+)
 from booley.targets.domain import TargetHandle
 from tests.flows.sim.launched_work import launched_work
 
@@ -197,7 +200,8 @@ class TestIcarus:
 class TestVariantEnvironment:
     def test_variant_environment_reaches_the_launch_only(self, tmp_path: Path):
         root = _project(
-            tmp_path, '[sim]\ntests = ["stress"]\nenv = { FLAVOR = "a" }\n' + _VARIANTS
+            tmp_path,
+            '[sim]\ntests = ["stress"]\nenv = { FLAVOR = "a" }\n' + _VARIANTS,
         )
         inspection = _inspection("verilator")
         plan = target_test_plan(_handle(root), "verilator", {})
@@ -286,7 +290,8 @@ class TestPreviewMatchesLaunch:
     ):
         """Regression: the previewed command ran the Test Variant without its env."""
         root = _project(
-            tmp_path, '[sim]\ntests = ["stress"]\nenv = { FLAVOR = "a" }\n' + _VARIANTS
+            tmp_path,
+            '[sim]\ntests = ["stress"]\nenv = { FLAVOR = "a" }\n' + _VARIANTS,
         )
         inspection = _inspection("verilator")
         plan = target_test_plan(_handle(root), "verilator", {})

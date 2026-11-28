@@ -61,7 +61,11 @@ def _submodule_project(tmp_path: Path) -> tuple[Path, Path]:
 
 
 def _run_worktree_create(
-    project_root: Path, name: str, *, branch_ref: str = "", on_existing: str = ""
+    project_root: Path,
+    name: str,
+    *,
+    branch_ref: str = "",
+    on_existing: str = "",
 ) -> subprocess.CompletedProcess[str]:
     from booley.runtime.paths import worktree_create_script
     from booley.runtime.platform_paths import bash_bin
@@ -106,7 +110,9 @@ class TestWorktreeCreateScript:
         marker.write_text("preserve\n", encoding="utf-8")
 
         result = _run_worktree_create(
-            project_root, name, branch_ref="refs/heads/booley-generation/0123456789abcdef/missing"
+            project_root,
+            name,
+            branch_ref="refs/heads/booley-generation/0123456789abcdef/missing",
         )
 
         assert result.returncode != 0

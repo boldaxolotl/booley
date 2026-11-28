@@ -267,7 +267,13 @@ class _WindowsSecureTree:  # pragma: no cover
             flags |= _FILE_FLAG_OPEN_REPARSE_POINT
         try:
             handle = win32file.CreateFile(
-                str(path), win32con.GENERIC_READ, share, None, win32con.OPEN_EXISTING, flags, None
+                str(path),
+                win32con.GENERIC_READ,
+                share,
+                None,
+                win32con.OPEN_EXISTING,
+                flags,
+                None,
             )
         except (OSError, pywintypes.error) as exc:
             kind: PathEntryKind = "directory" if expected_directory else "file"

@@ -22,6 +22,7 @@ from tests.timeout_headroom import suggested_budget
 _SLOW_BODY = "time.sleep(0.2)"
 # 0.001 of the 60 s CLI budget is 0.06 s, well below the 0.2 s sleep.
 _TRIP = "--timeout-headroom=0.001"
+_WARN_HALF = "--timeout-headroom-warn=0.5"
 
 
 # Autoload registers pytest-timeout as "timeout"; -p registers "pytest_timeout".
@@ -49,28 +50,40 @@ def test_guard_is_off_without_the_option(tmp_path: Path) -> None:
     assert "timeout headroom" not in result.stdout
 
 
-@pytest.mark.parametrize("workers", [0, 1])
-def test_test_within_headroom_passes_and_is_counted(tmp_path: Path, workers: int) -> None:
-    result = _run_case(tmp_path, ["--timeout-headroom=0.5", "-n", str(workers)])
+@pytest.mark.parametrize(
+    ("option", "workers"),
+    [("--timeout-headroom=0.5", 0), ("--timeout-headroom=0.5", 1), (_WARN_HALF, 1)],
+    ids=["limit-serial", "limit-xdist", "warn-only"],
+)
+def test_test_within_headroom_passes_and_is_counted(
+    tmp_path: Path, option: str, workers: int
+) -> None:
+    result = _run_case(tmp_path, [option, "-n", str(workers)])
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert _counts(result.stdout) == {"passed": 1}
-    assert "timeout headroom: limit 50.0%, 1 tests checked, highest" in result.stdout
+    assert "50.0%, 1 tests checked, highest" in result.stdout
+    assert "timeout headroom warning:" not in result.stdout
 
 
-@pytest.mark.parametrize(("workers", "github"), [(1, True), (0, False)])
+@pytest.mark.parametrize(
+    ("limit", "workers", "github"),
+    [(["--timeout-headroom=0.5"], 1, True), (["--timeout-headroom=0.5"], 0, False), ([], 1, True)],
+    ids=["warn-and-fail-xdist", "warn-and-fail-serial", "warn-only"],
+)
 def test_test_in_warning_band_passes_and_is_reported(
-    tmp_path: Path, workers: int, github: bool
+    tmp_path: Path, limit: list[str], workers: int, github: bool
 ) -> None:
     junit = tmp_path / "junit.xml"
     # The 0.2 s sleep is above the 0.06 s warning limit and below the 30 s failure limit.
-    options = ["--timeout-headroom=0.5", "--timeout-headroom-warn=0.001", "-n", str(workers)]
+    options = [*limit, "--timeout-headroom-warn=0.001", "-n", str(workers)]
     result = _run_case(tmp_path, [*options, f"--junitxml={junit}"], github=github)
 
     output = result.stdout + result.stderr
     assert result.returncode == 0, output
     assert _counts(output) == {"passed": 1}, output
-    assert "limit 50.0%, warning above 0.1%, 1 tests checked" in output
+    assert "warning above 0.1%, 1 tests checked" in output
+    assert ("limit 50.0%, warning above 0.1%" in output) is bool(limit)
     assert "timeout headroom warning: test_case.py::test_case used" in output
     assert "warning above 0.1%). On Windows" in output
     annotation = "::warning title=Timeout headroom::test_case.py::test_case used"
@@ -94,15 +107,20 @@ def test_test_over_failure_limit_is_not_also_a_warning(tmp_path: Path) -> None:
     assert "timeout headroom warning:" not in output
 
 
-@pytest.mark.parametrize(
-    "options",
-    [["--timeout-headroom-warn=0.5"], ["--timeout-headroom=0.5", "--timeout-headroom-warn=0.8"]],
-)
-def test_warning_limit_requires_a_higher_failure_limit(tmp_path: Path, options: list[str]) -> None:
-    result = _run_case(tmp_path, options)
+def test_warning_limit_above_failure_limit_is_a_usage_error(tmp_path: Path) -> None:
+    result = _run_case(tmp_path, ["--timeout-headroom=0.5", "--timeout-headroom-warn=0.8"])
 
     assert result.returncode == pytest.ExitCode.USAGE_ERROR, result.stdout + result.stderr
-    assert "--timeout-headroom-warn requires --timeout-headroom at or above it" in result.stderr
+    assert "--timeout-headroom-warn must not exceed --timeout-headroom" in result.stderr
+
+
+def test_timeout_still_fails_a_test_under_warning_only(tmp_path: Path) -> None:
+    marker = "@pytest.mark.timeout(1)"
+    result = _run_case(tmp_path, [_WARN_HALF], marker=marker, body="time.sleep(5)")
+
+    output = result.stdout + result.stderr
+    assert result.returncode == 1, output
+    assert "Timeout" in output
 
 
 @pytest.mark.parametrize(
@@ -206,19 +224,27 @@ def test_nonpassing_test_is_not_a_headroom_error(
     assert "0 tests checked" in output
 
 
-@pytest.mark.parametrize("value", ["0", "-0.5", "1.5", "nan", "inf", "half"])
-def test_invalid_fraction_is_a_usage_error(tmp_path: Path, value: str) -> None:
-    result = _run_case(tmp_path, [f"--timeout-headroom={value}"])
+@pytest.mark.parametrize(
+    "option",
+    [f"--timeout-headroom={value}" for value in ("0", "-0.5", "1.5", "nan", "inf", "half")]
+    + ["--timeout-headroom-warn=0"],
+)
+def test_invalid_fraction_is_a_usage_error(tmp_path: Path, option: str) -> None:
+    result = _run_case(tmp_path, [option])
 
     assert result.returncode == pytest.ExitCode.USAGE_ERROR, result.stdout + result.stderr
     assert "--timeout-headroom" in result.stderr
 
 
-def test_guard_requires_pytest_timeout(tmp_path: Path) -> None:
-    result = _run_case(tmp_path, ["--timeout-headroom=0.5"], timeout_plugin=False)
+@pytest.mark.parametrize(
+    "option", ["--timeout-headroom=0.5", _WARN_HALF], ids=["limit", "warn-only"]
+)
+def test_guard_requires_pytest_timeout(tmp_path: Path, option: str) -> None:
+    result = _run_case(tmp_path, [option], timeout_plugin=False)
 
     assert result.returncode == pytest.ExitCode.USAGE_ERROR, result.stdout + result.stderr
-    assert "requires the pytest-timeout plugin" in result.stderr
+    option_name = option.partition("=")[0]
+    assert f"{option_name} requires the pytest-timeout plugin" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -281,7 +307,9 @@ def _run_case(
         environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     # Stay well inside this test's own 60 s CI budget (#1202).
     return run_nested_pytest(
-        ["test_case.py", "-q", *plugins, *options], cwd=tmp_path, env=environment
+        ["test_case.py", "-q", *plugins, *options],
+        cwd=tmp_path,
+        env=environment,
     )
 
 

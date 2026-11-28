@@ -8,10 +8,21 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-from booley.core.boundary import BoundaryError, is_str_list, require_dict, require_int, require_str
+from booley.core.boundary import (
+    BoundaryError,
+    is_str_list,
+    require_dict,
+    require_int,
+    require_str,
+)
 from booley.dev_support.toolchain_provenance import validate_toolchain_provenance
 
-__all__ = ["DemoContract", "DemoContractError", "GeneratedInput", "load_contract"]
+__all__ = [
+    "DemoContract",
+    "DemoContractError",
+    "GeneratedInput",
+    "load_contract",
+]
 
 
 class DemoContractError(ValueError):

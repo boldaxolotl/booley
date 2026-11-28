@@ -30,7 +30,10 @@ def scale_coverage_record(point_count: int) -> CoverageRecord:
     collector = replace(base.collector, capabilities=capabilities)
     points = tuple(_scale_point(index) for index in range(point_count))
     return replace(
-        base, collector=collector, points=points, rollups=derive_coverage_rollups(points)
+        base,
+        collector=collector,
+        points=points,
+        rollups=derive_coverage_rollups(points),
     )
 
 

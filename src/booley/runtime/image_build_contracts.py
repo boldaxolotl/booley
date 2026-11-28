@@ -120,7 +120,9 @@ def _embedded_stamp_path() -> Path:
     return Path(__file__).resolve().parents[1] / "_build_commit.py"
 
 
-def expected_image_build_contracts(attribution: VersionAttribution) -> ImageBuildContracts:
+def expected_image_build_contracts(
+    attribution: VersionAttribution,
+) -> ImageBuildContracts:
     """Resolve contracts from the running Booley artifact's authoritative origin."""
     if attribution.origin is VersionOrigin.SOURCE:
         assert attribution.source_root is not None

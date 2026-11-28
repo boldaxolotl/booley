@@ -31,6 +31,7 @@ from booley.flows.artifact_durability import (
 )
 from booley.flows.base import DEFAULT_TIMEOUT_S
 from booley.flows.job_resources import judged_commands_failing_on_error
+from booley.flows.sim import faults
 from booley.flows.sim.backends.cocotb_results import decode_results_payload, reconcile
 from booley.flows.sim.build import BuildOutcome
 from booley.flows.sim.build_session import project_compile_surface
@@ -52,7 +53,9 @@ from booley.flows.sim.execution.engine import (
 )
 from booley.flows.sim.execution.pre_sim import run_pre_sim_commands
 from booley.flows.sim.live_progress import attempt_scope, end_phase
-from booley.flows.sim.record.bundle import verify_bundle_in_place
+from booley.flows.sim.record.bundle import (
+    verify_bundle_in_place,
+)
 from booley.flows.sim.record_files import document_digest
 from booley.flows.sim.runtime_inputs import (
     RuntimeInputBinding,
@@ -80,7 +83,11 @@ from .codec import (
     encode_simulator_bundle,
     reads_simulation_record_documents,
 )
-from .coordinator import SerialWorkExecutor, WorkExecutionRequest, simulation_options_from_policy
+from .coordinator import (
+    SerialWorkExecutor,
+    WorkExecutionRequest,
+    simulation_options_from_policy,
+)
 from .model import (
     AssertionObservation,
     BundleBuildAttempt,
@@ -223,11 +230,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         *,
         invoke: ProcessInvoker,
         execution_factory: Callable[[SimulationOptions], SimulationExecution] | None = None,
-        publication_checkpoint: Callable[[str], None] | None = None,
     ) -> None:
         self._invoke = invoke
         self._execution_factory = execution_factory
-        self._publication_checkpoint = publication_checkpoint or (lambda _boundary: None)
         self._shared_ready: dict[tuple[Path, str, int], _SharedReady] = {}
         self._shared_failure: dict[tuple[Path, str, int], _SharedFailure] = {}
         self._shared_locks: dict[tuple[Path, str, int], threading.Lock] = {}
@@ -238,9 +243,9 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
     def prepare_attempt(self, request: WorkExecutionRequest) -> None:
         """Publish the child-bound attempt before its slot waiter becomes visible."""
         attempt, run_directory = simulation_attempt(request)
-        self._publication_checkpoint("before:simulation_attempt")
+        faults.fault_point("before:simulation_attempt")
         request.store.publish_attempt(request.attempt_directory, attempt)
-        self._publication_checkpoint("after:simulation_attempt")
+        faults.fault_point("after:simulation_attempt")
         with self._prepared_attempts_gate:
             self._prepared_attempts[request.attempt_directory] = run_directory
 
@@ -399,8 +404,14 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             )
             return None
         assert recovered.bundle is not None and recovered.build_execution is not None
+        # Reuse authenticates the bundle in place before runtime inputs are copied
+        # from it (ADR 0064).
+        verify_bundle_in_place(recovered.bundle, recovered.result, recovered.directory)
         ready = _SharedReady(
-            recovered.directory, recovered.result, recovered.bundle, recovered.build_execution
+            recovered.directory,
+            recovered.result,
+            recovered.bundle,
+            recovered.build_execution,
         )
         self._shared_ready[key] = ready
         return ready
@@ -417,7 +428,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             handle, names, work_item_test_runs(request.work_item)
         ) as group:
             _authenticate_planning_disclosure(request, group)
-            captured = self._compile_and_capture(request, directory, attempt, group, workload)
+            captured = self._compile_and_capture(directory, attempt, group, workload)
             if captured is None:
                 return self._shared_build_failure(request, key, directory, attempt, group, started)
         result, bundle = self._publish_ready(
@@ -430,16 +441,15 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
     def _publish_build_attempt(
         self, request: WorkExecutionRequest, directory: Path, scope: BuildScope
     ) -> BundleBuildAttempt:
-        """Publish the build attempt of *scope* between its publication checkpoints."""
+        """Publish the build attempt of *scope* between its publication boundaries."""
         attempt = bundle_build_attempt(request, scope)
-        self._publication_checkpoint("before:build_attempt")
+        faults.fault_point("before:build_attempt")
         request.store.publish_build_attempt(directory, attempt)
-        self._publication_checkpoint("after:build_attempt")
+        faults.fault_point("after:build_attempt")
         return attempt
 
     def _compile_and_capture(
         self,
-        request: WorkExecutionRequest,
         directory: Path,
         attempt: BundleBuildAttempt,
         group: _OrdinaryGroup,
@@ -452,14 +462,14 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         execution_ref = _capture_build_execution(
             directory, cast(str, attempt.document["build_attempt_id"]), build_execution
         )
-        self._publication_checkpoint("before:bundle_evidence")
+        faults.fault_point("before:bundle_evidence")
         artifacts = capture_private_image(
             group.artifact_paths,
             group.build_root,
             directory,
             cast(tuple[Mapping[str, str], ...], workload["runtime_inputs"]),
         )
-        self._publication_checkpoint("after:bundle_evidence")
+        faults.fault_point("after:bundle_evidence")
         return _CapturedBuild(artifacts, execution_ref, build_execution)
 
     def _publish_ready(
@@ -471,13 +481,13 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         execution_ref: dict[str, object],
         started: float,
     ) -> tuple[BundleBuildResult, SimulatorBundle]:
-        """Publish the ready build result between its publication checkpoints."""
+        """Publish the ready build result between its publication boundaries."""
         elapsed = time.monotonic() - started
-        self._publication_checkpoint("before:build_result")
+        faults.fault_point("before:build_result")
         published = publish_ready_build_result(
             request, directory, attempt, artifacts, execution_ref, elapsed
         )
-        self._publication_checkpoint("after:build_result")
+        faults.fault_point("after:build_result")
         return published
 
     def _shared_build_failure(
@@ -492,7 +502,6 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             outcome,
             time.monotonic() - started,
             infrastructure=infrastructure,
-            checkpoint=self._publication_checkpoint,
         )
         failure = _fresh_shared_failure(directory, result, outcome)
         if not work_item_attempt_requeues(passed=False):
@@ -562,7 +571,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             if failure is not None:
                 return failure
         captured = self._compile_and_capture(
-            request, build_directory, build_attempt, group, inputs.workload
+            build_directory, build_attempt, group, inputs.workload
         )
         if captured is None:
             return self._compile_failure(request, build_directory, build_attempt, group, started)
@@ -581,15 +590,17 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         names = cast(tuple[str, ...], selection["names"])
         workload = cast(Mapping[str, object], request.manifest.document["workload"])
         options = simulation_options_from_policy(
-            request.policy, trace=cast(bool, workload["trace"])
+            request.policy,
+            trace=cast(bool, workload["trace"]),
         )
-        # Build and launch commands name paths relative to the record's own
-        # checkout (a Cycle Count baseline's is not the invocation's), so they run there.
+        # Build and launch commands name paths relative to the record's Project Root,
+        # so they run there.
         execution = (
             self._execution_factory(options)
             if self._execution_factory
             else SimulationExecution(
-                invoke=functools.partial(self._invoke, cwd=request.project_root), options=options
+                invoke=functools.partial(self._invoke, cwd=request.project_root),
+                options=options,
             )
         )
         return _GroupInputs(
@@ -603,7 +614,15 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
         )
 
     def _legacy_hook_failure(
-        self, request, build_directory, build_attempt, handle, group, names, options, started
+        self,
+        request,
+        build_directory,
+        build_attempt,
+        handle,
+        group,
+        names,
+        options,
+        started,
     ) -> SimulationResult | None:
         pre_sim = _run_hook(
             handle,
@@ -617,7 +636,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             resource_flags=frozen_resource_flags(request.manifest),
         )
         if pre_sim is not None:
-            publish_pre_sim_firing(request, pre_sim, checkpoint=self._publication_checkpoint)
+            publish_pre_sim_firing(request, pre_sim)
         if pre_sim is None or pre_sim.status == "passed":
             return None
         outcome = _hook_failure_outcome(handle.selector, names, pre_sim)
@@ -632,14 +651,23 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             outcome,
             elapsed,
             infrastructure=infrastructure,
-            checkpoint=self._publication_checkpoint,
         )
         return blocked_result(
-            request, build_directory, result, outcome, elapsed, infrastructure=infrastructure
+            request,
+            build_directory,
+            result,
+            outcome,
+            elapsed,
+            infrastructure=infrastructure,
         )
 
     def _compile_failure(
-        self, request, build_directory, build_attempt, group, started
+        self,
+        request,
+        build_directory,
+        build_attempt,
+        group,
+        started,
     ) -> SimulationResult:
         outcome = group.finish_build_failure()
         elapsed = time.monotonic() - started
@@ -651,14 +679,17 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             outcome,
             elapsed,
             infrastructure=infrastructure,
-            checkpoint=self._publication_checkpoint,
         )
         return blocked_result(
             request, build_directory, result, outcome, elapsed, infrastructure=infrastructure
         )
 
     def _run_ready_group(
-        self, request, build_directory, run_cwd, ready: _ReadyLaunch
+        self,
+        request,
+        build_directory,
+        run_cwd,
+        ready: _ReadyLaunch,
     ) -> SimulationResult:
         token = request.attempt_id.replace("-", "")
         # Only a group that owns a runtime view has this method (the engine's PreparedOrdinaryGroup).
@@ -670,13 +701,17 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             return self._run_ready_group_in_view(request, build_directory, effective_cwd, ready)
 
     def _run_ready_group_in_view(
-        self, request, build_directory, run_cwd, ready: _ReadyLaunch
+        self,
+        request,
+        build_directory,
+        run_cwd,
+        ready: _ReadyLaunch,
     ) -> SimulationResult:
         build_result, bundle, group = ready.build
         handle, names, options = ready.simulation
         workload, access, run_directory, started = ready.policy
         declarations = cast(tuple[dict[str, str], ...], workload["runtime_inputs"])
-        self._publication_checkpoint("before:runtime_inputs")
+        faults.fault_point("before:runtime_inputs")
         with materialize_simulation_record_runtime_inputs(
             bundle_root=build_directory,
             attempt_root=request.attempt_directory,
@@ -685,7 +720,7 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
             owned_run_directory=run_directory.owned,
             booley_dir=resolve_checkout_booley_dir(request.project_root),
         ) as bindings:
-            self._publication_checkpoint("after:runtime_inputs")
+            faults.fault_point("after:runtime_inputs")
             failure = _immutable_hook_failure(
                 request,
                 build_directory,
@@ -699,7 +734,6 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
                 bindings,
                 access,
                 started,
-                self._publication_checkpoint,
             )
             if failure is not None:
                 return failure
@@ -712,13 +746,13 @@ class OrdinaryHdlSerialExecutor(SerialWorkExecutor):
                 run_cwd,
                 bindings,
                 started,
-                self._publication_checkpoint,
             )
 
 
 def _authenticate_planning_disclosure(request: WorkExecutionRequest, group: object) -> None:
     disclosures = cast(
-        tuple[Mapping[str, object], ...], request.manifest.document["planning_disclosures"]
+        tuple[Mapping[str, object], ...],
+        request.manifest.document["planning_disclosures"],
     )
     ordinal = cast(int, request.work_item["ordinal"])
     if disclosures and (
@@ -744,7 +778,6 @@ def _immutable_hook_failure(
     bindings,
     access,
     started,
-    checkpoint,
 ) -> SimulationResult | None:
     if access != "immutable":
         return None
@@ -761,7 +794,7 @@ def _immutable_hook_failure(
         resource_flags=frozen_resource_flags(request.manifest),
     )
     if pre_sim is not None:
-        publish_pre_sim_firing(request, pre_sim, checkpoint=checkpoint)
+        publish_pre_sim_firing(request, pre_sim)
     if project_compile_surface(group.compile_surface) != surface:
         raise SimulationRecordIntegrityError(
             "Project compile inputs changed during immutable Pre-Sim Commands"
@@ -893,7 +926,9 @@ def _hook_infrastructure_outcome(
         elapsed_s=outcome.elapsed_s,
         tests=outcome.tests,
         infrastructure_failure=SimulationInfrastructureFailure(
-            "pre_sim_spawn", "Pre-Sim Commands could not start", detail=detail
+            "pre_sim_spawn",
+            "Pre-Sim Commands could not start",
+            detail=detail,
         ),
     )
 
@@ -905,11 +940,18 @@ def _recovered_shared_failure(directory: Path, result: BundleBuildResult) -> _Sh
     text = detail.get("text", observation["message"])
     if not isinstance(text, str):
         raise SimulationRecordIntegrityError("shared build failure text must be a string")
-    return _SharedFailure(directory, result, FailureClass(cast(str, observation["class"])), text)
+    return _SharedFailure(
+        directory,
+        result,
+        FailureClass(cast(str, observation["class"])),
+        text,
+    )
 
 
 def _fresh_shared_failure(
-    directory: Path, result: BundleBuildResult, outcome: SimulationTargetOutcome
+    directory: Path,
+    result: BundleBuildResult,
+    outcome: SimulationTargetOutcome,
 ) -> _SharedFailure:
     detail = next(
         (
@@ -938,12 +980,15 @@ def _setup_result(
     elapsed: float,
 ) -> SimulationResult:
     selection = cast(Mapping[str, object], request.work_item["selection"])
-    # The codec's _read_strings proves target.selector is a string.
     target = cast(Mapping[str, str], request.manifest.document["target"])
     fallback = "" if selection["kind"] == "unfiltered" else target["selector"]
     tests = tuple(
         SimulationTestOutcome(
-            name=name, verdict="elab_error", passed=False, elab_failed=True, error_tail=detail
+            name=name,
+            verdict="elab_error",
+            passed=False,
+            elab_failed=True,
+            error_tail=detail,
         )
         for name in (names or (fallback,))
     )
@@ -1162,7 +1207,13 @@ def _capture_build_execution(
         )
     path = directory / "evidence" / "build-execution.json"
     _create_immutable(path, raw)
-    return record_reference(path, directory, raw, "simulation_build_execution", build_attempt_id)
+    return record_reference(
+        path,
+        directory,
+        raw,
+        "simulation_build_execution",
+        build_attempt_id,
+    )
 
 
 def publish_failed_build_result(
@@ -1173,14 +1224,18 @@ def publish_failed_build_result(
     elapsed: float,
     *,
     infrastructure: bool,
-    checkpoint: Callable[[str], None],
 ) -> BundleBuildResult:
-    checkpoint("before:build_result")
+    faults.fault_point("before:build_result")
     result = _failed_build_result(
-        request, build_directory, build_attempt, outcome, elapsed, infrastructure=infrastructure
+        request,
+        build_directory,
+        build_attempt,
+        outcome,
+        elapsed,
+        infrastructure=infrastructure,
     )
     request.store.publish_build_result(build_directory, result)
-    checkpoint("after:build_result")
+    faults.fault_point("after:build_result")
     return result
 
 
@@ -1283,7 +1338,9 @@ def blocked_result(
 
 
 def _blocked_shared_result(
-    request: WorkExecutionRequest, failure: _SharedFailure, elapsed: float
+    request: WorkExecutionRequest,
+    failure: _SharedFailure,
+    elapsed: float,
 ) -> SimulationResult:
     selection = cast(Mapping[str, object], request.work_item["selection"])
     names = cast(tuple[str, ...], selection["names"])
@@ -1293,7 +1350,7 @@ def _blocked_shared_result(
         identities = names
     else:
         # The default selection's name is the Target selector; Test Run binding
-        # (discovered_test_run) maps it back to the unnamed invocation; the codec proves it a str.
+        # (discovered_test_run) maps it back to the unnamed invocation.
         identities = (cast(Mapping[str, str], request.manifest.document["target"])["selector"],)
     observations = []
     for index, identity in enumerate(identities):
@@ -1343,7 +1400,6 @@ def _launch_bundle(
     run_cwd: Path,
     bindings: tuple[RuntimeInputBinding, ...],
     started: float,
-    publication_checkpoint: Callable[[str], None],
 ) -> SimulationResult:
     """Launch the record's bundle in place, verifying it before launch and after exit."""
     pre_launch = verify_bundle_in_place(bundle, build_result, build_directory)
@@ -1362,7 +1418,6 @@ def _launch_bundle(
         outcome,
         bindings,
         started,
-        publication_checkpoint,
     )
 
 
@@ -1389,7 +1444,6 @@ def _bundle_result(
     outcome,
     bindings,
     started,
-    publication_checkpoint,
 ) -> SimulationResult:
     observations = (
         _infrastructure_observations(request, outcome)
@@ -1397,9 +1451,9 @@ def _bundle_result(
         else [observation_document(test) for test in outcome.tests]
     )
     state = settled_state(observations)
-    publication_checkpoint("before:execution_evidence")
+    faults.fault_point("before:execution_evidence")
     evidence = _capture_outcome_evidence(request, outcome)
-    publication_checkpoint("after:execution_evidence")
+    faults.fault_point("after:execution_evidence")
     return simulation_result(
         request,
         build_directory,
@@ -1467,7 +1521,10 @@ def simulation_result(
         "observations": observations,
         "grade": _result_grade(observations),
         "diagnostics": _result_diagnostics(diagnostics, trace_warnings),
-        "evidence": [*evidence, *request.store.pre_sim_references(request.attempt_directory)],
+        "evidence": [
+            *evidence,
+            *request.store.pre_sim_references(request.attempt_directory),
+        ],
     }
     return SimulationResult(document)
 
@@ -1477,7 +1534,10 @@ def _result_diagnostics(
 ) -> list[dict[str, object]]:
     """The Result's warning diagnostics: persistence notes, then the waveform's conversion warnings."""
     entries = [
-        ("artifact_persistence" if item.startswith("artifact_persistence:") else "execution", item)
+        (
+            "artifact_persistence" if item.startswith("artifact_persistence:") else "execution",
+            item,
+        )
         for item in diagnostics
     ]
     entries.extend((TRACE_WARNING_CODE, warning) for warning in trace_warnings)
@@ -1753,7 +1813,7 @@ def capture_private_image(
         executable_assigned |= kind == "simulator_executable"
         sources.append((source, kind))
     for declaration in runtime_declarations:
-        # A resumed prerequisite manifest is not re-planned, so refuse a path
+        # The declaration is read back from the stored manifest, so refuse a path
         # that could copy outside the private image before touching the disk.
         try:
             relative = safe_runtime_relative(declaration["source_artifact_path"])
@@ -1896,7 +1956,9 @@ def _decode_cocotb_source(raw: bytes, selected: tuple[str, ...]) -> list[dict[st
 
 
 def _build_result_ref(
-    request: WorkExecutionRequest, build_directory: Path, result: BundleBuildResult
+    request: WorkExecutionRequest,
+    build_directory: Path,
+    result: BundleBuildResult,
 ) -> dict[str, object]:
     build_document = result.document
     build_attempt = cast(Mapping[str, object], build_document["build_attempt"])

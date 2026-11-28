@@ -10,10 +10,12 @@ from types import SimpleNamespace
 import pytest
 
 from booley.runtime import dashboard_tasks as tasks
-from booley.runtime import devcontainer, platform_paths, runtime_context, session_issuance
+from booley.runtime import devcontainer, platform_paths, session_issuance
 from booley.runtime.jsonc import Document
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.conftest import symlink_or_skip
 from tests.devcontainer_spec_support import build_spec
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 _REAL_TASK_FILE_TRACKED = tasks._task_file_tracked
@@ -562,7 +564,10 @@ def test_crlf_task_enable_update_disable_restores_exact_bytes(project, monkeypat
 
 
 def test_owned_task_update_removes_environment_and_keeps_disable_reversible(project, monkeypatch):
-    obsolete = {**tasks.TASK, "options": {"env": {"BOOLEY_" + "GOAL_MODE" + "_PREVIEW": "1"}}}
+    obsolete = {
+        **tasks.TASK,
+        "options": {"env": {"BOOLEY_" + "GOAL_MODE" + "_PREVIEW": "1"}},
+    }
     baseline = project.exclude.read_bytes()
     with monkeypatch.context() as prior:
         prior.setattr(tasks, "TASK", obsolete)
@@ -858,8 +863,7 @@ def test_attach_refusal_names_where_to_run_init(project, monkeypatch):
     ownership = project.data / "runtime/dashboard-task.json"
     owned = ownership.read_bytes()
     for name, where in wording.items():
-        kind = runtime_context.RuntimeLocation[name]
-        monkeypatch.setattr(runtime_context, "runtime_location", lambda kind=kind: kind)
+        place(monkeypatch, RuntimeLocation[name])
 
         ownership.write_text('{"schema": 99}')  # unsupported ownership record
         with pytest.raises(ValueError, match=where):

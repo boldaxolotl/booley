@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-import builtins
+import re
 import sys
 import warnings
 from contextlib import nullcontext
@@ -138,7 +138,9 @@ def _stub_nested_init_services(tmp_path, monkeypatch, image=_CURRENT):
 
     monkeypatch.setattr(lifecycle_lock, "host_lifecycle_lock", lambda _purpose: nullcontext())
     monkeypatch.setattr(
-        issuance_invalidation, "shared_recovery_blocks_command", lambda *, read_only: False
+        issuance_invalidation,
+        "shared_recovery_blocks_command",
+        lambda *, read_only: False,
     )
     return sandbox_calls, docker_cli_absent(monkeypatch)
 
@@ -198,7 +200,11 @@ def test_check_only_predicts_the_link_policy_only_from_a_known_git(
     # Private seam: the host Git version is the real `git --version`; no run_init input sets it.
     monkeypatch.setattr(git_hooks, "_host_git_version", lambda: host_git)
     args = argparse.Namespace(
-        seed=False, check_only=True, provider="claude", auth="subscription", skip_credentials=True
+        seed=False,
+        check_only=True,
+        provider="claude",
+        auth="subscription",
+        skip_credentials=True,
     )
 
     assert init_cmd.run_init(args, tmp_path) == 1
@@ -471,29 +477,13 @@ def test_seed_stops_when_existing_guidance_cannot_be_inspected(
         assert reached == [tmp_path]
 
 
-def _select_at_terminal(root, monkeypatch, capsys):
-    """Run ``booley init --seed`` at a terminal; return its output."""
-    use_terminal_stdin(monkeypatch)
+def _select_at_terminal(root, monkeypatch, capsys, *answers):
+    """Run ``booley init --seed`` at a terminal holding *answers*; return its output."""
+    use_terminal_stdin(monkeypatch, *answers)
     project_config(root)
     stub_host_images(monkeypatch)
     seed_init(root)
     return capsys.readouterr().out
-
-
-def _answer_prompts(monkeypatch, *answers):
-    """Answer each prompt in turn, then end the input; return the prompts asked."""
-    prompts = []
-    remaining = iter(answers)
-
-    def answer(prompt):
-        prompts.append(prompt)
-        try:
-            return next(remaining)
-        except StopIteration:
-            raise EOFError from None
-
-    monkeypatch.setattr(builtins, "input", answer)
-    return prompts
 
 
 _DEFAULT_CLAUDE = b'[agent]\ndefault = "claude"\nauth = "%s"\n'
@@ -528,9 +518,9 @@ def test_terminal_prompts_resolve_or_abort(
         login(_empty_host, "claude")
     if "key" in credentials:
         api_key(monkeypatch, "claude")
-    asked = _answer_prompts(monkeypatch, *answers)
 
-    output = _select_at_terminal(tmp_path, monkeypatch, capsys)
+    output = _select_at_terminal(tmp_path, monkeypatch, capsys, *answers)
+    asked = re.findall(r"Select agent [^\]]*\]", output)
 
     assert len(asked) == prompts
     if len(asked) == 2:

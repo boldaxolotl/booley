@@ -232,7 +232,10 @@ def test_a_terminal_child_also_holds_ctrl_z_and_takes_the_terminal_first(
     with pytest.raises(_ChildExitError):
         foreground_child.run_foreground_child(launch)
 
-    assert seen == {"held": True, "calls": [("setpgid", 0), ("tcsetpgrp", os.getpgrp())]}
+    assert seen == {
+        "held": True,
+        "calls": [("setpgid", 0), ("tcsetpgrp", os.getpgrp())],
+    }
 
 
 @_needs_fork

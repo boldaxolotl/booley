@@ -38,17 +38,17 @@ from booley.measurement.run_key import resolve_measurement_key
 from booley.measurement.run_store import MeasurementStore
 from booley.measurement.verdicts import FlowFailed, FlowValues, evaluate_table
 from booley.runtime import job_records
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.harness.test_checkout_flow import git
 from tests.measurement.metrics_project_support import EXAMPLE_METRICS, write_metrics_project
+from tests.sandbox_venue_fake import place
 from tests.time_budget import scaled
 
 
 def _measure(monkeypatch: pytest.MonkeyPatch, project: Path, *arguments: str) -> int:
     """Run the real entry point as ``booley -C <project> measure <arguments>`` in a Sandbox."""
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
-    # Windows has no mountinfo, which reads as an issued Sandbox that mounts no ``/work``.
-    hand_written = cli.runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX
-    monkeypatch.setattr(cli.runtime_context, "runtime_location", lambda: hand_written)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
+    monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")  # no proxy restoration into os.environ
     monkeypatch.setattr(sys, "argv", ["booley", "-C", str(project), "measure", *arguments])
     monkeypatch.setattr(sys, "excepthook", sys.excepthook)  # main() quiets a Ctrl-C's traceback
     return cli.main()

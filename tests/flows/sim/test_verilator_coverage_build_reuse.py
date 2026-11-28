@@ -134,7 +134,9 @@ def _target(project: Path) -> CoverageTarget:
 
 
 def _build(
-    execution: VerilatorCoverageExecution, project: Path, variant: SimulationBuildVariant = _PLAIN
+    execution: VerilatorCoverageExecution,
+    project: Path,
+    variant: SimulationBuildVariant = _PLAIN,
 ) -> SimulationBuildResult:
     result = execution.build(
         SimulationBuildRequest(_target(project), variant, VERILATOR_COVERAGE_INSTRUMENTATION)

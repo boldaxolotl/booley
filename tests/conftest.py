@@ -1,4 +1,9 @@
-"""Shared fixtures for infrastructure unit tests."""
+"""Shared fixtures for infrastructure unit tests.
+
+Stand-ins here: the terminal, the host memory, the Sandbox venue check, the native B-Wave
+binary, the Sandbox owner inventory, the Feature Flag registry and Project Root
+discovery (rows of docs/internals/TEST_FAKES.md).
+"""
 
 from __future__ import annotations
 
@@ -14,7 +19,7 @@ from typing import TYPE_CHECKING, Any, BinaryIO
 
 import pytest
 
-from tests.memory_budget_support import budget_of, pin_budget
+from tests.memory_budget_support import measure_or_fall_back, pin_budget
 from tests.python_command_support import interpreter_first_path, python_path_entry
 
 if TYPE_CHECKING:
@@ -29,7 +34,9 @@ pytest_plugins = [
     "tests.timeout_evidence",
     "tests.timeout_headroom",
     "tests.sandbox_only",
+    "tests.os_specific",
     "tests.thread_leak_guard",
+    "tests.docker_cli_guard_plugin",
 ]
 
 
@@ -258,7 +265,7 @@ def require_symlinks(tmp_path: Path) -> None:
 # worker with no traceback, so size N by the rule in ``tests/timeout_headroom.py``
 # (3x the slowest Windows CI duration, from the ``time`` values in the
 # ``junit-windows-*`` and ``full-junit-windows-latest-*`` artifacts). The Windows
-# legs fail a passing test that uses more than 80% of its budget.
+# legs warn above 50% of the budget; the budget itself is the hard limit.
 _DEFAULT_TEST_TIMEOUT_S = 120
 _XDIST_WORKER_TEMP: Path | None = None
 
@@ -602,6 +609,30 @@ def pytest_runtest_teardown(item: pytest.Item) -> Iterator[None]:
             pytest.fail("Publication resources leaked past the test:\n" + "\n".join(leaks))
 
 
+@pytest.fixture
+def pinned_project_root(tmp_path: Path) -> Path | None:
+    """The Project Root ``pin_project_root`` answers; override with None for real discovery."""
+    return tmp_path
+
+
+@pytest.fixture
+def pin_project_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pinned_project_root: Path | None
+) -> None:
+    """Run in tmp_path as the Booley Directory with Project Root discovery pinned."""
+    from booley.runtime import shared_infra
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BOOLEY_DIR", str(tmp_path))
+    if pinned_project_root is not None:
+        # No public input pins the root: a synthetic tmp_path proves no checkout ownership.
+        monkeypatch.setattr(
+            shared_infra, "resolve_project_root", lambda fallback_dir=None: pinned_project_root
+        )
+    # Private seam: the project-config cache is a module global with no public reset.
+    monkeypatch.setattr(shared_infra, "_TOML_CACHE", None)
+
+
 @pytest.fixture(autouse=True)
 def _isolate_host_config_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Resolve Booley's host config directory inside each test's tmp_path (#3837).
@@ -728,25 +759,8 @@ def _fresh_target_catalogs(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _memory_budget_is_measurable_everywhere(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Admission tests must not depend on the host exposing ``/proc/meminfo``.
-
-    Windows has no ``/proc``, so the real Memory Budget is unavailable there and
-    every Job would run alone with an extra "Memory Budget unavailable" note in
-    its reports and refusals. Fall back to a fixed 64 GiB budget when measuring
-    fails; tests of the unavailable path patch ``compute_memory_budget`` themselves.
-    """
-    from booley.flows import memory_admission
-    from booley.runtime import memory_budget
-
-    real_compute = memory_budget.compute_memory_budget
-
-    def compute_or_fixed(**kwargs: Any) -> memory_budget.MemoryBudget:
-        try:
-            return real_compute(**kwargs)
-        except OSError:
-            return budget_of(64 * 1024**3)
-
-    monkeypatch.setattr(memory_admission, "compute_memory_budget", compute_or_fixed)
+    """Admission tests must not depend on the host exposing ``/proc/meminfo``."""
+    measure_or_fall_back(monkeypatch)
 
 
 @pytest.fixture
@@ -768,9 +782,18 @@ def _terminal_as_under_capture(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(colors, "COLORS_ENABLED", False)
 
 
-def use_terminal_stdin(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Make ``sys.stdin`` an empty terminal, so ``booley init`` runs interactively."""
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+class _TerminalStdin(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+def use_terminal_stdin(monkeypatch: pytest.MonkeyPatch, *answers: str) -> None:
+    """Make ``sys.stdin`` a terminal, so ``booley init`` runs interactively.
+
+    It holds *answers* as lines: ``input()`` returns each in turn, then raises EOFError.
+    """
+    lines = "".join(f"{answer}\n" for answer in answers)
+    monkeypatch.setattr(sys, "stdin", _TerminalStdin(lines))
 
 
 @pytest.fixture(autouse=True)
@@ -815,64 +838,6 @@ def write_activity_signal(booley_dir: Path, key: str, state: str, at: str, tool:
     return path
 
 
-_FAKE_BWAVE = '''#!{python}
-"""Stand-in for ``bwave build``: modes come from FAKE_BWAVE_MODE."""
-import os
-import sys
-import time
-
-args = sys.argv[1:]
-if args[0] == "list":
-    sys.stdout.write(
-        '{{"data": {{"scope_prefix": "tb", "root_scopes": ["tb"], '
-        '"signal_count": 1, "total_ticks": 1}}}}'
-    )
-    sys.exit(0)
-store = args[args.index("-o") + 1]
-mode = os.environ.get("FAKE_BWAVE_MODE", "ok")
-if mode == "never_read":
-    time.sleep(60)
-if mode == "exit_early":
-    sys.stderr.write("fake bwave refused the input\\n")
-    sys.exit(1)
-data = sys.stdin.buffer.read()
-if b"$enddefinitions" not in data:
-    sys.stderr.write("fake bwave: no VCD header\\n")
-    sys.exit(1)
-if not data.endswith(b"\\n"):
-    offset = data.rfind(b"\\n") + 1
-    sys.stderr.write(
-        "WARNING: input does not end with a newline; the final line "
-        f"(byte {{offset}}) may be a truncated record\\n"
-    )
-sys.stderr.write(f"# wrote {{store}}\\n")
-with open(store, "wb") as out:
-    out.write({store_bytes!r})
-'''
-
-
-@pytest.fixture
-def fake_bwave(tmp_path, monkeypatch):
-    """A POSIX ``bwave build`` fake selected as the native binary (never via PATH).
-
-    It reads stdin to EOF and writes a minimal store when it saw a VCD header,
-    else exits 1; like the real tool it warns on stderr about input without a final
-    newline and reports ``# wrote <store>``, and ``list`` answers a one-signal
-    hierarchy. ``FAKE_BWAVE_MODE`` = ``never_read`` (sleeps without reading
-    stdin) or ``exit_early`` (exits 1 at once).
-    """
-    from booley.bwave import waveform_store
-
-    script = tmp_path / "fake-bin" / "bwave"
-    script.parent.mkdir()
-    script.write_text(
-        _FAKE_BWAVE.format(python=sys.executable, store_bytes=MINIMAL_FST_BYTES), encoding="utf-8"
-    )
-    script.chmod(0o755)
-    monkeypatch.setattr(waveform_store, "native_bwave_binary", lambda: str(script))
-    return script
-
-
 @pytest.fixture
 def fake_sandbox_attachment(
     monkeypatch: pytest.MonkeyPatch,
@@ -891,33 +856,23 @@ def fake_sandbox_attachment(
     return attach
 
 
-def _point_mountinfo_at(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch, text: str
-) -> None:
-    from booley.runtime import runtime_context
-
-    mountinfo = tmp_path_factory.mktemp("mountinfo") / "mountinfo"
-    mountinfo.write_bytes(text.encode())
-    # private: no public seam points the container probe at a fixture mountinfo file.
-    monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo)
-
-
 @pytest.fixture(autouse=True)
-def _issued_sandbox_mounts(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _issued_sandbox_mounts(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inside a Sandbox, a test is a Booley-issued one: its mountinfo holds an issued target.
 
     The real ``/proc/self/mountinfo`` reads as hand-written on a CI runner and as
     issued in a dev Sandbox; ``hand_written_sandbox`` selects the other location.
     """
-    issued = "1 0 0:1 / /work/.devcontainer ro - ext4 /dev/x ro\n"
-    _point_mountinfo_at(tmp_path_factory, monkeypatch, issued)
+    from booley.runtime.runtime_context import RuntimeLocation
+    from tests.sandbox_venue_fake import point_mounts
+
+    point_mounts(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
 
 
 @pytest.fixture
-def hand_written_sandbox(
-    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def hand_written_sandbox(monkeypatch: pytest.MonkeyPatch) -> None:
     """Inside a Sandbox, this test runs in one Booley did not create: no issued mount."""
-    _point_mountinfo_at(tmp_path_factory, monkeypatch, "")
+    from booley.runtime.runtime_context import RuntimeLocation
+    from tests.sandbox_venue_fake import point_mounts
+
+    point_mounts(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)

@@ -11,9 +11,11 @@ import pytest
 from booley.harness import incontainer_register, upgrade_cli, upgrade_review
 from booley.harness.booley import _build_parser
 from booley.harness.dashboard import model as dashboard
-from booley.runtime import runtime_context, sandbox_apply
+from booley.runtime import sandbox_apply
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.booley_checkouts_support import LAYOUTS, RUNTIMES, linked_worktree
+from tests.sandbox_venue_fake import place
 
 
 def _project(tmp_path: Path) -> Path:
@@ -80,11 +82,14 @@ def test_pending_status_is_observation_not_command_failure(
 
 
 def test_human_status_rendering_covers_actionable_conditions(
-    monkeypatch: pytest.MonkeyPatch, hand_written_sandbox: None
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     path = "/project/runtime/upgrade_review.json"
     current = upgrade_review.ReviewStatus(
-        upgrade_review.ReviewCondition.CURRENT, "2.0.0", path, reviewed_through="2.0.0"
+        upgrade_review.ReviewCondition.CURRENT,
+        "2.0.0",
+        path,
+        reviewed_through="2.0.0",
     )
     pending = upgrade_review.ReviewStatus(
         upgrade_review.ReviewCondition.PENDING,
@@ -101,7 +106,10 @@ def test_human_status_rendering_covers_actionable_conditions(
         pending_target="2.0.0",
     )
     corrupt = upgrade_review.ReviewStatus(
-        upgrade_review.ReviewCondition.CORRUPT, "2.0.0", path, diagnostic="bad JSON"
+        upgrade_review.ReviewCondition.CORRUPT,
+        "2.0.0",
+        path,
+        diagnostic="bad JSON",
     )
 
     assert "current through 2.0.0" in upgrade_cli.render_status(current)
@@ -113,7 +121,7 @@ def test_human_status_rendering_covers_actionable_conditions(
     assert "headless, run `booley session refresh` on the host" in stale_text
     assert "corrupt: bad JSON" in upgrade_cli.render_status(corrupt)
 
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     hand_written_text = upgrade_cli.render_status(stale)
     assert sandbox_apply.HAND_WRITTEN_SANDBOX_STEPS in hand_written_text
     assert "on the host" not in hand_written_text

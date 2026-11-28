@@ -625,7 +625,8 @@ _HOST_REFUSALS = [
 
 @_POSIX_HOST
 @pytest.mark.parametrize(
-    ("edit", "kwargs", "match"), [pytest.param(*row[1:], id=row[0]) for row in _HOST_REFUSALS]
+    ("edit", "kwargs", "match"),
+    [pytest.param(*row[1:], id=row[0]) for row in _HOST_REFUSALS],
 )
 def test_host_facts_refuse(
     tmp_path: Path,

@@ -34,6 +34,7 @@ below target the common formats and are intentionally easy to adjust.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import socket
@@ -131,7 +132,10 @@ def inspect_http_server(request: HttpServerInspectionRequest) -> DiagnosticRepor
             "MCP configuration"
         )
         return findings.report()
-    findings.fail(f"Sandbox MCP server not serving on 127.0.0.1:{port}", _not_serving_fix())
+    findings.fail(
+        f"Sandbox MCP server not serving on 127.0.0.1:{port}",
+        _not_serving_fix(),
+    )
     for line in _server_log_tail(request.log_path):
         findings.detail(line, verbose_only=False)
     return findings.report()
@@ -156,7 +160,9 @@ def _server_log_tail(path: Path) -> list[str]:
 
 
 def ensure_http_server(
-    *, timeout_seconds: float = _SERVER_START_TIMEOUT_SECONDS, log_path: str = _SERVER_LOG_PATH
+    *,
+    timeout_seconds: float = _SERVER_START_TIMEOUT_SECONDS,
+    log_path: str = _SERVER_LOG_PATH,
 ) -> str:
     """Start the Developer Agent's HTTP MCP server unless one is already serving.
 
@@ -171,7 +177,11 @@ def ensure_http_server(
         return "running"
     child_env = os.environ.copy()
     child_env[DEVELOPER_AGENT_ENV] = "1"
-    for variable in ("BOOLEY_NESTED_AGENT", "BOOLEY_NESTED_MCP_TOOLS", "BOOLEY_MCP_TOOLS"):
+    for variable in (
+        "BOOLEY_NESTED_AGENT",
+        "BOOLEY_NESTED_MCP_TOOLS",
+        "BOOLEY_MCP_TOOLS",
+    ):
         child_env.pop(variable, None)
     try:
         with Path(log_path).open("ab") as log:
@@ -280,7 +290,10 @@ def upsert_claude(path: Path) -> bool:
 # Per-app skills dir mirrors the host model (host skill reconciliation):
 # Claude Code reads ``~/.claude/skills``; the Codex CLI reads the generic
 # cross-agent ``~/.agents/skills``.
-_SKILLS_REL = {"claude": Path(".claude") / "skills", "codex": Path(".agents") / "skills"}
+_SKILLS_REL = {
+    "claude": Path(".claude") / "skills",
+    "codex": Path(".agents") / "skills",
+}
 
 # Sidecar where the devcontainer spec binds the user's HOST agent skills
 # ([sandbox] mount_host_skills), one read-only child dir per skill. Kept in sync
@@ -295,7 +308,25 @@ def skills_target_dir(app: str, home: Path | None = None) -> Path | None:
     return None if rel is None else (home or _agent_home()) / rel
 
 
-def _link_skills(source: Path, target: Path) -> int:
+def _project_features() -> frozenset[str]:
+    """The Features the Sandbox's Project enables; none when its configuration is unreadable."""
+    from booley.config.feature_flags import enabled_features
+    from booley.core.booley_layout import BooleyLayoutError
+
+    try:
+        return enabled_features()
+    except (BooleyLayoutError, OSError, ValueError):
+        return frozenset()
+
+
+def _unlink_withheld(link: Path) -> None:
+    """Remove *link* when it is a symlink; a real directory or file is left alone."""
+    with contextlib.suppress(OSError):
+        if link.is_symlink():
+            link.unlink()
+
+
+def _link_skills(source: Path, target: Path, withheld: frozenset[str] = frozenset()) -> int:
     """Prune dangling links in *target*, then link each skill dir of *source* not already there.
 
     The skills dir persists across rebuilds (named volume), so a skill renamed,
@@ -304,6 +335,7 @@ def _link_skills(source: Path, target: Path) -> int:
     (including a dangling link, guarded by ``is_symlink``) is left alone, so an
     earlier deployment wins a name clash and the routine stays idempotent.
     Individual link failures are skipped so one bad skill can't block the rest.
+    A skill in *withheld* is not linked, and a symlink of its name is removed.
     Returns the number of skills newly linked.
     """
     target.mkdir(parents=True, exist_ok=True)
@@ -320,6 +352,9 @@ def _link_skills(source: Path, target: Path) -> int:
         if not skill_dir.is_dir() or not (skill_dir / "SKILL.md").is_file():
             continue
         link = target / skill_dir.name
+        if skill_dir.name in withheld:
+            _unlink_withheld(link)
+            continue
         if link.exists() or link.is_symlink():
             continue
         try:
@@ -345,7 +380,9 @@ def deploy_skills(app: str, home: Path | None = None) -> int:
     src = skills_dir()
     if not src.is_dir():
         return 0
-    return _link_skills(src, target)
+    from booley.runtime.skill_links import withheld_skills
+
+    return _link_skills(src, target, withheld_skills(_project_features()))
 
 
 def deploy_host_skills(app: str, home: Path | None = None) -> int:

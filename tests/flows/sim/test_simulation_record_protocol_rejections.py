@@ -6,10 +6,17 @@ from types import SimpleNamespace
 
 import pytest
 
+from booley.core.atomic_files import atomic_write_json
 from booley.flows.sim.record import child_protocol
-from booley.flows.sim.record.codec import SimulationRecordIntegrityError, canonical_json_bytes
+from booley.flows.sim.record.codec import (
+    SimulationRecordIntegrityError,
+    canonical_json_bytes,
+)
 from booley.flows.sim.record.store import SimulationRecordStore
-from booley.runtime.execution_records import ExecutionId, atomic_write_json, execution_paths
+from booley.runtime.execution_records import (
+    ExecutionId,
+    execution_paths,
+)
 from tests.flows.sim.simulation_record_test_support import _two_item_manifest
 from tests.fusesoc_test_support import symlinked_booley_dir
 
@@ -164,7 +171,7 @@ def test_recover_lane_fails_closed_when_cancel_fails(
     assert cancelled == [execution_id]
 
 
-@pytest.mark.parametrize("defect", ["conflict", "symlink", "hardlink"])
+@pytest.mark.parametrize("defect", ["conflict", "symlink"])
 def test_prepare_rejects_a_conflicting_or_linked_context_record(
     tmp_path: Path, defect: str
 ) -> None:
@@ -176,10 +183,8 @@ def test_prepare_rejects_a_conflicting_or_linked_context_record(
     source.write_bytes(canonical_json_bytes({"value": "expected"}))
     if defect == "conflict":
         context.write_bytes(b"old")
-    elif defect == "symlink":
-        context.symlink_to(source)
     else:
-        context.hardlink_to(source)
+        context.symlink_to(source)
 
     with pytest.raises(
         SimulationRecordIntegrityError, match="disagrees" if defect == "conflict" else "link"

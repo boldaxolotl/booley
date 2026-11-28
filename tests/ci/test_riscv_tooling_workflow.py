@@ -349,7 +349,11 @@ def _budget(tmp_path: Path, record: str | None) -> tuple[int, str, str]:
 
 @pytest.mark.parametrize(
     ("source", "warn", "budget"),
-    [("registry", "100", "111"), ("local", "200", "222"), ("local-compat-fallback", "200", "222")],
+    [
+        ("registry", "100", "111"),
+        ("local", "200", "222"),
+        ("local-compat-fallback", "200", "222"),
+    ],
 )
 def test_budget_follows_the_recorded_tooling_source(
     tmp_path: Path, source: str, warn: str, budget: str

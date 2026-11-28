@@ -192,7 +192,10 @@ def test_codex_activity_survives_broken_handle_map(tmp_path):
     path.parent.mkdir(parents=True)
     path.write_text("broken")
     assert hook.record(
-        "codex", {"hook_event_name": "Stop", "session_id": "root"}, project=tmp_path, now=NOW
+        "codex",
+        {"hook_event_name": "Stop", "session_id": "root"},
+        project=tmp_path,
+        now=NOW,
     )
     assert ActivityStore(tmp_path).read("codex:root").state == activity.WAITING_USER
 

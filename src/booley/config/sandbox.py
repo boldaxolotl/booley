@@ -42,10 +42,13 @@ def project_sandbox_image(project_root: Path) -> str:
     except (OSError, tomllib.TOMLDecodeError):
         return project_image_name(project_root)
     sandbox = as_dict(data.get("sandbox"), default={}) or {}
-    return _selected_from_config(project_root, booley_dir, sandbox)
+    return _selected_from_config(project_root, sandbox)
 
 
-def _selected_from_config(project_root: Path, booley_dir: Path, sandbox: dict[str, object]) -> str:
+def _selected_from_config(
+    project_root: Path,
+    sandbox: dict[str, object],
+) -> str:
     raw = sandbox.get("image", "")
     logical = raw.strip() if isinstance(raw, str) and raw.strip() else SANDBOX_IMAGE
     if logical in {SANDBOX_IMAGE, "booley-sandbox-riscv", project_image_name(project_root)}:

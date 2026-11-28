@@ -174,7 +174,10 @@ def _surface_from_catalog(catalog: TargetCatalog) -> TargetSurface:
 
 
 def filter_surface(
-    surface: TargetSurface, *, for_flow: str | None = None, glob: str | None = None
+    surface: TargetSurface,
+    *,
+    for_flow: str | None = None,
+    glob: str | None = None,
 ) -> TargetSurface:
     """Narrow *surface* to Targets *for_flow* could drive and/or a name glob.
 
@@ -193,7 +196,11 @@ def filter_surface(
         if for_flow is not None and for_flow not in entry.drivable_by:
             return False
         if glob is not None:
-            candidates = (entry.name, entry.selector, f"{_vlnv_identity(entry.vlnv)}#{entry.name}")
+            candidates = (
+                entry.name,
+                entry.selector,
+                f"{_vlnv_identity(entry.vlnv)}#{entry.name}",
+            )
             if not any(fnmatch.fnmatchcase(c, glob) for c in candidates):
                 return False
         return True
@@ -287,7 +294,11 @@ def surface_payload(
                 }
             )
         cores.append(
-            {"vlnv": group.vlnv, "core_file": _rel_to(group.core_file, root), "targets": targets}
+            {
+                "vlnv": group.vlnv,
+                "core_file": _rel_to(group.core_file, root),
+                "targets": targets,
+            }
         )
     return {"cores": cores, "warnings": warnings}
 
@@ -373,7 +384,11 @@ def detail_payload(
     build_root = work_root_for(root, "targets", handle.selector)
     try:
         resolved = fusesoc_registry.resolve_target_handle(
-            handle, build_root=build_root, fusesoc_cmd=fusesoc_cmd, env=env, runner=runner
+            handle,
+            build_root=build_root,
+            fusesoc_cmd=fusesoc_cmd,
+            env=env,
+            runner=runner,
         )
     except fusesoc_registry.FuseSocError as exc:
         payload["resolved_error"] = _resolved_error(catalog, handle, exc)

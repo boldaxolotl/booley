@@ -119,7 +119,8 @@ def test_importing_generator_does_not_import_pyslang() -> None:
     )
     package_root = str(Path(booley.__file__).parents[1])  # the source tree under test
     result = run_bounded_child(
-        [sys.executable, "-c", code], env={**os.environ, "PYTHONPATH": package_root}
+        [sys.executable, "-c", code],
+        env={**os.environ, "PYTHONPATH": package_root},
     )
     assert result.returncode == 0, result.stderr
 
@@ -581,7 +582,14 @@ def _elaboration_error_count(text: str) -> int:
 
 # Text that only a mutation of generator version 3 can produce, per new fixture.
 _NEW_KIND_MARKERS = {
-    "polarity.v": ("((b) != 0)", "(|(a))", "((a) | ~(a))", "((a) & ~(a))", "$unsigned", "q, p"),
+    "polarity.v": (
+        "((b) != 0)",
+        "(|(a))",
+        "((a) | ~(a))",
+        "((a) & ~(a))",
+        "$unsigned",
+        "q, p",
+    ),
     "polarity.sv": ("pk::DONE", "unsigned", "((r) != 0)", "b, a"),
 }
 
@@ -749,7 +757,10 @@ def test_operand_drop_skips_impure_operands(tmp_path: Path) -> None:
     ]
 
     # Only `p` is replaced: the increment and the assignment would not run.
-    assert drops == ["  always_comb y = (k++ > 0) && 1'b1;", "  always_comb z = (k = 1) || 1'b0;"]
+    assert drops == [
+        "  always_comb y = (k++ > 0) && 1'b1;",
+        "  always_comb z = (k = 1) || 1'b0;",
+    ]
 
 
 def test_shift_signedness_follows_operand_sign(tmp_path: Path) -> None:
@@ -1252,7 +1263,10 @@ def test_constant_condition_yields_only_variants_that_change_it(tmp_path: Path) 
     # Forcing a constant true (or false) would be a no-op the applier rejects.
     assert sorted(
         (m.line, m.mutated_code) for m in selection.mutants if m.operator == "condition"
-    ) == [(2, "!(1'b1)"), (2, "1'b0")]
+    ) == [
+        (2, "!(1'b1)"),
+        (2, "1'b0"),
+    ]
     _apply_all(tmp_path, [name], selection.mutants)  # the applier accepts every one
 
 
@@ -1265,7 +1279,10 @@ def test_repeated_text_on_one_line_is_anchored_uniquely(tmp_path: Path) -> None:
         if m.operator == "relational"
     }
 
-    assert variants == {"  assign y = (a <= b) | (a < b);", "  assign y = (a < b) | (a <= b);"}
+    assert variants == {
+        "  assign y = (a <= b) | (a < b);",
+        "  assign y = (a < b) | (a <= b);",
+    }
 
 
 def test_latin1_comment_keeps_offsets(tmp_path: Path) -> None:
@@ -1901,7 +1918,11 @@ def test_target_elaboration_takes_the_simulators_builtin_macros(tmp_path: Path) 
 
     plain = generate_mutants(tmp_path, ["leaf.sv"], _ALL, 1, design=_design(*names))
     verilated = generate_mutants(
-        tmp_path, ["leaf.sv"], _ALL, 1, design=_design(*names, builtin_defines={"VERILATOR": "1"})
+        tmp_path,
+        ["leaf.sv"],
+        _ALL,
+        1,
+        design=_design(*names, builtin_defines={"VERILATOR": "1"}),
     )
 
     assert _leaf_facts(plain) == (False, False)

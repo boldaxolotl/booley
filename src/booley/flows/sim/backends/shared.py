@@ -18,11 +18,22 @@ RUN_LOG_PROGRESS_INTERVAL_S = 5.0
 TraceFileSnapshot = dict[Path, tuple[int, int, int]]
 ChildCpuSnapshot = tuple[float, float]
 RunTerminationKind = Literal[
-    "completed", "timeout", "disk_budget", "fatal_init", "sim_time_stall", "trace_stall"
+    "completed",
+    "timeout",
+    "disk_budget",
+    "fatal_init",
+    "sim_time_stall",
+    "trace_stall",
 ]
 RunFailureKind = Literal["", "timeout", "infrastructure", "missing_input"]
 SimulationFailureKind = Literal[
-    "", "design", "infrastructure", "timeout", "inconclusive", "artifact", "missing_input"
+    "",
+    "design",
+    "infrastructure",
+    "timeout",
+    "inconclusive",
+    "artifact",
+    "missing_input",
 ]
 
 _TERMINATION_FAILURE_KINDS: dict[RunTerminationKind, frozenset[SimulationFailureKind]] = {
@@ -78,7 +89,10 @@ def child_cpu_snapshot() -> ChildCpuSnapshot | None:
     return float(usage.ru_utime), float(usage.ru_stime)
 
 
-def child_cpu_marker(started: ChildCpuSnapshot | None, finished: ChildCpuSnapshot | None) -> str:
+def child_cpu_marker(
+    started: ChildCpuSnapshot | None,
+    finished: ChildCpuSnapshot | None,
+) -> str:
     """Format the stable simulator CPU marker for one supervised child run."""
     if started is None or finished is None:
         return ""

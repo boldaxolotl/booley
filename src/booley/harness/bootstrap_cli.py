@@ -20,8 +20,12 @@ from booley.runtime.image_lifecycle import Intent
 from booley.runtime.lifecycle_lock import host_lifecycle_lock
 from booley.runtime.paths import skills_dir
 from booley.runtime.qa_skill_selection import QaSkillSelectionError
-from booley.runtime.qa_skill_selection import disable as disable_qa_skills
-from booley.runtime.qa_skill_selection import enable as enable_qa_skills
+from booley.runtime.qa_skill_selection import (
+    disable as disable_qa_skills,
+)
+from booley.runtime.qa_skill_selection import (
+    enable as enable_qa_skills,
+)
 
 
 def run_bootstrap(args: object) -> int:
@@ -87,7 +91,11 @@ def _check_bootstrap(args: object) -> BootstrapResult:
 
 
 def _mutate_bootstrap(
-    args: object, intent: Intent, update: bool, with_qa: bool, without_qa: bool
+    args: object,
+    intent: Intent,
+    update: bool,
+    with_qa: bool,
+    without_qa: bool,
 ) -> BootstrapResult | None:
     from booley.runtime import issuance_invalidation, session_runtime
     from booley.runtime.issuance_invalidation import shared_recovery_blocks_command
@@ -121,7 +129,9 @@ def _mutate_bootstrap(
         if not _apply_qa_enable(with_qa) or not _record_egress(change):
             return None
         result = reconcile_bootstrap(
-            intent, verbose=getattr(args, "verbose", False), qa_opt_out=without_qa
+            intent,
+            verbose=getattr(args, "verbose", False),
+            qa_opt_out=without_qa,
         )
         return result if _prune_qa_if_opted_out(result, without_qa) else None
 
@@ -224,7 +234,8 @@ def _report_sandboxes_on_old_mode(mode: str) -> None:
 
 def _recovery_error(intent: Intent, error: RuntimeError) -> BootstrapResult:
     return BootstrapResult(
-        intent, (BootstrapFinding("runtime-recovery", BootstrapState.ERROR, str(error)),)
+        intent,
+        (BootstrapFinding("runtime-recovery", BootstrapState.ERROR, str(error)),),
     )
 
 

@@ -8,6 +8,7 @@ from typing import cast
 from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.timefmt import utc_now_rfc3339
 
+from . import faults
 from .coverage_acceptance import coverage_test_run_rows
 from .coverage_invocation import CoverageTargetPlan
 from .coverage_json import FrozenJson, freeze_coverage_mapping
@@ -139,7 +140,6 @@ def run_coverage_target(
     execution: SimulationExecutionPort,
     *,
     embedded_root: Path,
-    publication_checkpoint: Callable[[str], None] | None = None,
 ) -> CoverageTargetOutcome:
     """Collect, evaluate and publish one Target's Coverage Record under the attempt-owned root.
 
@@ -151,17 +151,13 @@ def run_coverage_target(
     collection and evaluation and never turn them into ``blocked``.
     """
     assert plan.invocation_dir is not None and plan.collection_request is not None
-    return _execute_coverage_transaction(
-        plan, execution, embedded_root, publication_checkpoint=publication_checkpoint
-    )
+    return _execute_coverage_transaction(plan, execution, embedded_root)
 
 
 def _execute_coverage_transaction(
     plan: CoverageTargetPlan,
     execution: SimulationExecutionPort,
     root: Path,
-    *,
-    publication_checkpoint: Callable[[str], None] | None,
 ) -> CoverageTargetOutcome:
     result = None
     coverage_record = None
@@ -184,7 +180,6 @@ def _execute_coverage_transaction(
             result,
             root,
             coverage_record,
-            publication_checkpoint=publication_checkpoint,
             coverage_record_published=record_coverage_record_publication,
         )
     except (OSError, ValueError) as exc:
@@ -214,15 +209,13 @@ def _publish(
     root: Path,
     coverage_record: CoverageRecord,
     *,
-    publication_checkpoint: Callable[[str], None] | None,
     coverage_record_published: Callable[[], None],
 ) -> CoverageTargetOutcome:
     coverage_record_path = root / "coverage.json"
-    checkpoint = publication_checkpoint or (lambda _boundary: None)
-    checkpoint("before:coverage_record")
+    faults.fault_point("before:coverage_record")
     publish_coverage_record(root, coverage_record)
     coverage_record_published()
-    checkpoint("after:coverage_record")
+    faults.fault_point("after:coverage_record")
     observed = _has_completed_run(result)
     passed = all(run.simulation_verdict == "pass" for run in result.runs) if observed else None
     detail = _simulation_projection(plan, coverage_record, result, passed)
@@ -303,7 +296,11 @@ def _transaction_error(
     if coverage_record_published and coverage_record is not None:
         detail["coverage_metrics"] = coverage_metrics(coverage_record)
     return CoverageTargetOutcome(
-        plan.handle.selector, 2, root / "coverage.json", freeze_coverage_mapping(detail), True
+        plan.handle.selector,
+        2,
+        root / "coverage.json",
+        freeze_coverage_mapping(detail),
+        True,
     )
 
 

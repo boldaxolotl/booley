@@ -15,7 +15,7 @@ from booley.harness.setup.scaffold import ScaffoldChoices, scaffold_files
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
 from booley.runtime.paths import skills_dir
 from tests.git_command_fake import GitCommandFake
-from tests.harness.test_doctor import _write_project
+from tests.harness.doctor_run_support import write_project
 from tests.subprocess_budget import run_bounded_child
 
 
@@ -25,8 +25,8 @@ def test_doctor_prefers_linked_checkout_project_snapshot(tmp_path, monkeypatch):
     checkout_root = tmp_path / "ticket-checkout"
     canonical_root.mkdir()
     checkout_root.mkdir()
-    canonical_dir = _write_project(canonical_root)
-    checkout_dir = _write_project(checkout_root)
+    canonical_dir = write_project(canonical_root)
+    checkout_dir = write_project(checkout_root)
     checkout_toml = checkout_dir / "booley.toml"
     checkout_toml.write_text(
         checkout_toml.read_text(encoding="utf-8").replace('name = "unit"', 'name = "ticket"'),
@@ -51,8 +51,8 @@ def test_doctor_names_enabled_flags_without_changing_its_verdict(
     flagged_root = tmp_path / "flagged"
     plain_root.mkdir()
     flagged_root.mkdir()
-    _write_project(plain_root)
-    feature_flags.enable(_write_project(flagged_root), "test-flag")
+    write_project(plain_root)
+    feature_flags.enable(write_project(flagged_root), "test-flag")
 
     plain = readiness.load_project(plain_root).report
     flagged = readiness.load_project(flagged_root).report
@@ -113,9 +113,7 @@ def test_stealth_cores_live_only_in_booley_cores(
     if stealth:
         (root / ".booley/booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
         core_projection.reconcile_projected_cores(root)
-    audit = readiness.ProjectAudit(
-        root, root / ".booley", {"stealth": {"enabled": stealth}}, {}, ""
-    )
+    audit = readiness.ProjectAudit(root, root / ".booley", {"stealth": {"enabled": stealth}}, "")
 
     report = readiness.check_stealth_cores(audit)
 
@@ -142,7 +140,7 @@ def _commit_all(root: Path) -> None:
 
 
 def _scaffold_core_findings(root: Path):
-    audit = readiness.ProjectAudit(root, root / ".booley", {"stealth": {"enabled": True}}, {}, "")
+    audit = readiness.ProjectAudit(root, root / ".booley", {"stealth": {"enabled": True}}, "")
     report = readiness.check_stealth_cores(audit)
     return [f for f in report.findings if f.check_id == _SCAFFOLD_CHECK]
 
@@ -275,7 +273,7 @@ def test_guidance_must_scope_booley_tools_to_the_sandbox(
     if links:
         ensure_guidance_links(tmp_path, booley_dir)
 
-    report = readiness.check_guidance(readiness.ProjectAudit(tmp_path, booley_dir, {}, {}, ""))
+    report = readiness.check_guidance(readiness.ProjectAudit(tmp_path, booley_dir, {}, ""))
 
     assert [f.check_id for f in report.findings if f.severity is not Severity.PASS] == warnings
     assert all(f.severity in (Severity.PASS, Severity.WARN) for f in report.findings)

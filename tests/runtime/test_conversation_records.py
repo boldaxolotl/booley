@@ -54,7 +54,8 @@ def test_a_valid_record_is_found_and_live(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "damage", ["schema", "no-cwd", "bad-stamp", "not-json", "not-object", "oversized", "other-id"]
+    "damage",
+    ["schema", "no-cwd", "bad-stamp", "not-json", "not-object", "oversized", "other-id"],
 )
 def test_a_damaged_record_reads_as_absent(tmp_path, damage):
     # Bug caught: a half-written or foreign record crashing a resume or steering it.

@@ -191,7 +191,10 @@ def managed_runtime_view(
 
 
 def _mirror_excluded_ancestor(
-    source: Path, destination: Path, shadow_root: Path, excluded_dir: Path
+    source: Path,
+    destination: Path,
+    shadow_root: Path,
+    excluded_dir: Path,
 ) -> bool:
     """Materialize an ancestor of *excluded_dir* without mirroring it."""
     resolved_source = source.resolve()
@@ -246,12 +249,19 @@ def _mirror_runtime_dir(
         deeper = {parts for parts in remainders if parts}
         if deeper and not (shadow_dir / name).exists():
             _mirror_runtime_dir(
-                source_dir / name, shadow_dir / name, deeper, shadow_root, excluded_dir
+                source_dir / name,
+                shadow_dir / name,
+                deeper,
+                shadow_root,
+                excluded_dir,
             )
 
 
 def stage_bad_run_overlay(
-    booley_dir: Path, flow_name: str, run_cwd: Path, shadow_root: Path
+    booley_dir: Path,
+    flow_name: str,
+    run_cwd: Path,
+    shadow_root: Path,
 ) -> int:
     """Create an isolated runtime view and apply the bad fixture within it.
 

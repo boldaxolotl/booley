@@ -27,8 +27,10 @@ from booley.runtime import (
     vaporview,
 )
 from booley.runtime.booley_dir import reset_cache, resolve_booley_dir
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.timefmt import MACHINE_TIMESTAMP_FORMAT
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.sandbox_venue_fake import place
 from tests.time_budget import hang_guard_s
 
 
@@ -226,6 +228,17 @@ def test_fingerprint_labels_cover_every_input(tmp_path):
     assert set(health.compute_fingerprint(directory, tmp_path)) == set(health._INPUT_LABELS)
 
 
+def test_configs_toml_changes_only_by_presence(tmp_path):
+    directory = _project(tmp_path)
+    configs = directory / "configs.toml"
+    configs.write_text("one")
+    present = health.compute_fingerprint(directory, tmp_path)
+    configs.write_text("two")
+    assert health.compute_fingerprint(directory, tmp_path) == present
+    configs.unlink()
+    assert health.compute_fingerprint(directory, tmp_path) != present
+
+
 def test_changed_input_names_are_ordered_and_bounded(tmp_path):
     directory = _project(tmp_path)
     _report(tmp_path, clean=True, checked_at=datetime.now(tz=UTC))
@@ -273,7 +286,12 @@ def test_execute_persists_structured_report_and_transcript(tmp_path: Path, monke
     monkeypatch.setattr(doctor, "run_doctor_result", run_doctor)
     progress = []
 
-    payload = auto_doctor._execute(tmp_path, booley_dir, "test", progress=progress.append)
+    payload = auto_doctor._execute(
+        tmp_path,
+        booley_dir,
+        "test",
+        progress=progress.append,
+    )
 
     assert payload["clean"] is False
     assert payload["trigger"] == "test"
@@ -370,7 +388,14 @@ def test_run_if_due_records_once_then_stays_current(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(auto_doctor, "_execute", execute)
 
     progress = []
-    assert auto_doctor.run_if_due(tmp_path, trigger="test", progress=progress.append) is not None
+    assert (
+        auto_doctor.run_if_due(
+            tmp_path,
+            trigger="test",
+            progress=progress.append,
+        )
+        is not None
+    )
     assert auto_doctor.run_if_due(tmp_path, trigger="test") is None
     assert calls == ["test"]
     assert deliveries == []
@@ -547,9 +572,7 @@ def _publish_with_real_bridge_check(
             counts=reporter.counts, findings=tuple(reporter.findings or ()), exit_code=0
         )
 
-    from booley.runtime import runtime_context
-
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setattr(vaporview.subprocess, "run", probe_run)
     monkeypatch.setattr(doctor, "run_doctor_result", run_doctor)
     return auto_doctor._execute(project_root, booley_dir, "session-start")

@@ -234,7 +234,11 @@ def test_identical_existing_destination_is_left_untouched(tmp_path: Path, monkey
 
     # Create the destination before the campaign; the launch sees the same file.
     result, _ = _copyto_run(
-        tmp_path, monkeypatch, staged_before=_PAYLOAD, staged_inode=created, launch=_stat_and_pass
+        tmp_path,
+        monkeypatch,
+        staged_before=_PAYLOAD,
+        staged_inode=created,
+        launch=_stat_and_pass,
     )
 
     staged = run_dir / "vectors.hex"

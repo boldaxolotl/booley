@@ -290,7 +290,11 @@ def _change(state_dir: Path, change: str) -> None:
     ],
 )
 def test_only_an_unmodified_published_checkout_is_sent_to_its_runtime_steps(
-    project: Path, send_off: SendOffRunner, origin: str, change: str | None, fetched: bool
+    project: Path,
+    send_off: SendOffRunner,
+    origin: str,
+    change: str | None,
+    fetched: bool,
 ) -> None:
     """A user who changed the published files owns them; the per-step probe decides."""
     _publish(project, origin, CONFIGURED_TOML, fetched=fetched)

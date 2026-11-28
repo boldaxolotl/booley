@@ -7,9 +7,10 @@ import threading
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Protocol, cast, overload
+from typing import Protocol, cast
 
 from booley.flows.endpoint_admission import AdmissionContext
+from booley.flows.sim import faults
 from booley.flows.sim.build_session import SimulationBuildLeaseStoppedError
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.coverage_record import CoverageRecordValidationError
@@ -36,7 +37,6 @@ from .capacity import SimulationRecordCapacity, SimulationRecordCapacityError
 from .child_protocol import recover_interrupted_attempts
 from .codec import (
     SimulationRecordIntegrityError,
-    linked_manifest_path,
     reads_simulation_record_documents,
 )
 from .facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
@@ -50,17 +50,14 @@ from .model import (
     SimulationRecordPlan,
     SimulationResult,
 )
-from .planning import (
-    WorkloadDiagnostic,
-    WorkloadMismatch,
-    compare_manifests,
-    manifest_digest,
-    project_workload_mismatches,
-    verify_workload,
-)
+from .planning import manifest_digest, verify_workload
 from .pre_sim_evidence import PreSimFiring, PreSimFiringDecoder
 from .resume import ValidatedResumeManifest
-from .run_directory import expand_run_directory, literal_run_path, require_literal_run_directory
+from .run_directory import (
+    expand_run_directory,
+    literal_run_path,
+    require_literal_run_directory,
+)
 from .scheduler import BoundedSimulationRecordScheduler, ScheduledAttempt, work_item_label
 from .store import SimulationRecordRecovery, SimulationRecordStore, collect_pre_sim_firings
 from .test_run_binding import observation_test_runs
@@ -80,7 +77,9 @@ class SimulationRecordPolicy:
 
 
 def simulation_options_from_policy(
-    policy: SimulationRecordPolicy, *, trace: bool
+    policy: SimulationRecordPolicy,
+    *,
+    trace: bool,
 ) -> SimulationOptions:
     """Translate one invocation policy into leaf Simulation options."""
     return SimulationOptions(
@@ -123,20 +122,8 @@ class NewSimulationRecordPreviewRequest:
     project_root: Path
     report_root: Path | None
     policy: SimulationRecordPolicy
-
-
-@dataclass(frozen=True, slots=True)
-class ResumeSimulationRecordPreviewRequest:
-    validated: ValidatedResumeManifest
-    current_plan: SimulationRecordPlan
-    project_root: Path
-    report_root: Path | None
-    policy: SimulationRecordPolicy
-
-
-SimulationRecordPreviewRequest = (
-    NewSimulationRecordPreviewRequest | ResumeSimulationRecordPreviewRequest
-)
+    # An existing Simulation Record this run continues.
+    record_directory: Path | None = field(default=None, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,16 +131,6 @@ class NewSimulationRecordRunRequest(NewSimulationRecordPreviewRequest):
     invocation_directory: Path
     admission: AdmissionContext
     pre_sim_firing_published: Callable[[tuple[str, str, str, int]], None] | None = None
-
-
-@dataclass(frozen=True, slots=True)
-class ResumeSimulationRecordRunRequest(ResumeSimulationRecordPreviewRequest):
-    invocation_directory: Path
-    admission: AdmissionContext
-    pre_sim_firing_published: Callable[[tuple[str, str, str, int]], None] | None = None
-
-
-SimulationRecordRunRequest = NewSimulationRecordRunRequest | ResumeSimulationRecordRunRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,19 +157,6 @@ class SimulationRecordRecoveryStatus:
     completed: tuple[str, ...]
     interrupted: tuple[str, ...]
     pending: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ResumeSimulationRecordPreview:
-    recovery: SimulationRecordRecoveryStatus
-    manifest: Mapping[str, object]
-    required_bundle_variants: tuple[str, ...]
-    effective_policy: SimulationRecordPolicy
-    mismatches: tuple[WorkloadMismatch, ...]
-    diagnostic: WorkloadDiagnostic
-
-
-SimulationRecordPreview = NewSimulationRecordPreview | ResumeSimulationRecordPreview
 
 
 @dataclass(frozen=True, slots=True)
@@ -268,7 +232,6 @@ class SimulationRecord:
         self,
         executor: SerialWorkExecutor | None = None,
         *,
-        publication_checkpoint: Callable[[str], None] | None = None,
         manifest_published: Callable[[Path], None] | None = None,
         work_item_request: WorkItemRequest | None = None,
     ) -> None:
@@ -277,35 +240,10 @@ class SimulationRecord:
         self._work_item_request = work_item_request
         self._flow_claim: FlowClaim | None = None
         self._executor = executor
-        self._publication_checkpoint = publication_checkpoint or (lambda _boundary: None)
         self._publication_gate = threading.Lock()
 
-    @overload
-    def preview(
-        self, request: NewSimulationRecordPreviewRequest
-    ) -> NewSimulationRecordPreview: ...
-
-    @overload
-    def preview(
-        self, request: ResumeSimulationRecordPreviewRequest
-    ) -> ResumeSimulationRecordPreview: ...
-
-    def preview(self, request: SimulationRecordPreviewRequest) -> SimulationRecordPreview:
-        if isinstance(request, NewSimulationRecordPreviewRequest):
-            return _new_preview(request)
-        recovery, status = self._inspect_resume(request.validated)
-        mismatches = compare_manifests(request.validated.manifest, request.current_plan.manifest)
-        needed = _required_variants(request.validated.manifest, recovery)
-        return ResumeSimulationRecordPreview(
-            status,
-            request.validated.manifest.document,
-            needed,
-            request.policy,
-            mismatches,
-            project_workload_mismatches(
-                request.validated.manifest, request.current_plan.manifest, mismatches
-            ),
-        )
+    def preview(self, request: NewSimulationRecordPreviewRequest) -> NewSimulationRecordPreview:
+        return _new_preview(request)
 
     def inspect_resume(self, validated: ValidatedResumeManifest) -> SimulationRecordRecoveryStatus:
         """Return an observational recovery status for one validated manifest."""
@@ -320,27 +258,17 @@ class SimulationRecord:
         recovery = store.scan(validated.manifest, validated.sha256)
         return recovery, _recovery_status(validated.path, validated.sha256, recovery)
 
-    def preflight(self, request: SimulationRecordPreviewRequest) -> None:
-        """Fail before any publication or build when a literal run_cwd is unusable.
-
-        A resume checks only the records, the owner and its prerequisites, that
-        still have work left, each against its own bound Project Root.
-        """
-        if isinstance(request, NewSimulationRecordPreviewRequest):
+    def preflight(self, request: NewSimulationRecordPreviewRequest) -> None:
+        """Fail before any publication or build when a literal run_cwd is unusable."""
+        continued = _continued_store(request)
+        if continued is None:
             _preflight_run_directory(request.plan.manifest, request.project_root)
             return
-        validated = request.validated
-        store = SimulationRecordStore(validated.path.parent, booley_dir=validated.booley_dir)
-        recovery = store.scan(validated.manifest, validated.sha256)
-        self._preflight_incomplete(validated.manifest, recovery, request)
-        self._preflight_prerequisites(
-            store,
-            validated.manifest,
-            request,
-            {cast(str, validated.manifest.document["simulation_record_id"])},
-        )
+        # Identity first: a changed workload is reported before a run_cwd problem.
+        stored = _stored_manifest(continued, request.plan.manifest)
+        self._preflight_incomplete(stored, continued.scan(stored), request)
 
-    def run(self, request: SimulationRecordRunRequest) -> SimulationRecordOutcome:
+    def run(self, request: NewSimulationRecordRunRequest) -> SimulationRecordOutcome:
         if self._executor is None:
             raise RuntimeError("SimulationRecord requires a serial work executor")
         current_keys: set[tuple[str, str, str, int]] = set()
@@ -352,9 +280,9 @@ class SimulationRecord:
                 observer(key)
 
         request = replace(request, pre_sim_firing_published=record_firing)
-        store, manifest, authenticated_sha256 = self._open_simulation_record(request)
+        store, manifest = self._open_simulation_record(request)
         with store.mutation_lock():
-            outcome = self._run_locked(store, manifest, authenticated_sha256, request)
+            outcome = self._run_locked(store, manifest, request)
         return replace(
             outcome,
             producer_invocation_directory=request.invocation_directory.absolute(),
@@ -362,39 +290,23 @@ class SimulationRecord:
         )
 
     def _open_simulation_record(
-        self, request: SimulationRecordRunRequest
-    ) -> tuple[SimulationRecordStore, SimulationRecordManifest, str | None]:
-        if isinstance(request, NewSimulationRecordRunRequest):
-            store = _new_store(request)
-            if not store.manifest_path.exists():
-                self._publish_manifest(store, request.plan.manifest)
-            elif store.load_manifest() != request.plan.manifest:
-                raise SimulationRecordIntegrityError(
-                    "record path already contains another manifest"
-                )
+        self, request: NewSimulationRecordRunRequest
+    ) -> tuple[SimulationRecordStore, SimulationRecordManifest]:
+        store = _new_store(request)
+        manifest = _continued_manifest(store, request)
+        if manifest is None:
             manifest = request.plan.manifest
-            authenticated_manifest_sha256 = None
-        else:
-            store = SimulationRecordStore(
-                request.validated.path.parent, booley_dir=request.validated.booley_dir
-            )
-            verify_workload(request.validated.manifest, request.current_plan.manifest)
-            manifest = request.validated.manifest
-            authenticated_manifest_sha256 = request.validated.sha256
-        return store, manifest, authenticated_manifest_sha256
+            self._publish_manifest(store, manifest)
+        return store, manifest
 
     def _run_locked(
         self,
         store: SimulationRecordStore,
         manifest: SimulationRecordManifest,
-        authenticated_sha256: str | None,
-        request: SimulationRecordRunRequest,
+        request: NewSimulationRecordRunRequest,
     ) -> SimulationRecordOutcome:
         self._raise_if_cancelled(request)
-        self._preflight_owner(store, manifest, authenticated_sha256, request)
-        owner = cast(str, manifest.document["simulation_record_id"])
-        self._run_prerequisites(store, manifest, request, frozenset({owner}), set())
-        recovery = store.scan(manifest, authenticated_sha256)
+        recovery = store.scan(manifest)
         self._run_pending(store, manifest, recovery, request)
         self._raise_if_cancelled(request)
         target = cast(Mapping[str, str], manifest.document["target"])
@@ -404,9 +316,7 @@ class SimulationRecord:
         try:
             if coverage:
                 # The one scan that feeds both the reference and any publication failure.
-                work_item_id, result = _committed_coverage_result(
-                    store, manifest, authenticated_sha256
-                )
+                work_item_id, result = _committed_coverage_result(store, manifest)
                 failure = SimulationRecordPublicationFailure(
                     store.root.parent,
                     target["selector"],
@@ -417,25 +327,25 @@ class SimulationRecord:
                     / f"{COVERAGE_RECORD_DIRECTORY}/coverage.json"
                 )
                 failure = replace(failure, nested_coverage_record=nested)
-            self._publication_checkpoint("before:summary_replace")
-            summary = store.regenerate_summary(manifest, authenticated_sha256)
-            self._publication_checkpoint("after:summary_replace")
+            faults.fault_point("before:summary_replace")
+            summary = store.regenerate_summary(manifest)
+            faults.fault_point("after:summary_replace")
             if failure is not None:
                 reference = self._publish_coverage_reference(
                     store, manifest, work_item_id, result, nested
                 )
-                self._publication_checkpoint("after:coverage_reference")
+                faults.fault_point("after:coverage_reference")
         except (OSError, ValueError, RuntimeError) as exc:
             if failure is None:
                 raise
             raise SimulationRecordPublicationError(
                 str(exc), replace(failure, coverage_reference=reference)
             ) from exc
-        final = store.scan(manifest, authenticated_sha256)
+        final = store.scan(manifest)
         return _outcome(store, manifest, summary, final, reference)
 
     @staticmethod
-    def _raise_if_cancelled(request: SimulationRecordRunRequest) -> None:
+    def _raise_if_cancelled(request: NewSimulationRecordRunRequest) -> None:
         if request.admission.cancellation():
             cause = request.admission.cancellation_cause() or "cancellation requested"
             raise SimulationRecordCancellationError(f"Simulation Record cancelled: {cause}")
@@ -468,7 +378,7 @@ class SimulationRecord:
             raise SimulationRecordIntegrityError(
                 "nested Coverage Record cannot be authenticated"
             ) from exc
-        self._publication_checkpoint("before:coverage_reference")
+        faults.fault_point("before:coverage_reference")
         return publish_coverage_record_reference(store.root.parent / "coverage.json", reference)
 
     def _expect_builds(
@@ -498,11 +408,7 @@ class SimulationRecord:
             manifest,
             cast(tuple[Mapping[str, object], ...], manifest.document["work_items"]),
         )
-        if store.manifest_path.exists():
-            if store.load_manifest() != request.plan.manifest:
-                raise SimulationRecordIntegrityError(
-                    "record path already contains another manifest"
-                )
+        if _continued_manifest(store, request) is not None:
             if self._manifest_published is not None:
                 self._manifest_published(store.manifest_path)
             return store.manifest_path
@@ -512,125 +418,31 @@ class SimulationRecord:
     def _publish_manifest(
         self, store: SimulationRecordStore, manifest: SimulationRecordManifest
     ) -> None:
-        self._publication_checkpoint("before:manifest_commit")
+        faults.fault_point("before:manifest_commit")
         store.publish_manifest(manifest)
         if self._manifest_published is not None:
             self._manifest_published(store.manifest_path)
-        self._publication_checkpoint("after:manifest_commit")
-
-    def _preflight_owner(
-        self,
-        store: SimulationRecordStore,
-        manifest: SimulationRecordManifest,
-        authenticated_sha256: str | None,
-        request: SimulationRecordRunRequest,
-    ) -> None:
-        """Reject a missing run_cwd anywhere in the prerequisite tree before any build."""
-        if not manifest.document["prerequisites"]:
-            return  # _run_pending performs the same check for the sole record.
-        recovery = store.scan(manifest, authenticated_sha256)
-        self._preflight_incomplete(manifest, recovery, request)
-        self._preflight_prerequisites(
-            store, manifest, request, {cast(str, manifest.document["simulation_record_id"])}
-        )
+        faults.fault_point("after:manifest_commit")
 
     @staticmethod
     def _preflight_incomplete(
         manifest: SimulationRecordManifest,
         recovery: SimulationRecordRecovery,
-        request: SimulationRecordPreviewRequest,
+        request: NewSimulationRecordPreviewRequest,
     ) -> None:
         """Preflight one record's run_cwd when it still has work to run."""
         if all(item.state == "complete" for item in recovery.items):
             return
-        binding = (
-            request.validated.binding_for(manifest)
-            if isinstance(request, ResumeSimulationRecordPreviewRequest)
-            else None
-        )
-        _preflight_run_directory(
-            manifest, binding.project_root if binding is not None else request.project_root
-        )
-
-    def _preflight_prerequisites(
-        self,
-        owner_store: SimulationRecordStore,
-        manifest: SimulationRecordManifest,
-        request: SimulationRecordPreviewRequest,
-        visited: set[str],
-    ) -> None:
-        """Walk the prerequisite tree read-only, mirroring ``_run_prerequisites``.
-
-        Each record is checked once; ``_run_prerequisites`` rejects cycles.
-        """
-        invocation = owner_store.root.parents[2]
-        for entry in cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"]):
-            simulation_record_id = cast(str, entry["simulation_record_id"])
-            if simulation_record_id in visited:
-                continue
-            visited.add(simulation_record_id)
-            store, prerequisite = _prerequisite_simulation_record(entry, invocation, request)
-            self._preflight_incomplete(prerequisite, store.scan(prerequisite), request)
-            self._preflight_prerequisites(store, prerequisite, request, visited)
-
-    def _run_prerequisites(
-        self,
-        owner_store: SimulationRecordStore,
-        manifest: SimulationRecordManifest,
-        request: SimulationRecordRunRequest,
-        ancestors: frozenset[str],
-        finished: set[str],
-    ) -> None:
-        """Run every prerequisite record once, then require each linked result.
-
-        Several entries may link work items of one record (one per relative
-        Cycle Count Test), so a record is a cycle only when it is its own
-        ancestor; a record already *finished* by a sibling is not rerun.
-        """
-        invocation = owner_store.root.parents[2]
-        for entry in cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"]):
-            simulation_record_id = cast(str, entry["simulation_record_id"])
-            if simulation_record_id in ancestors:
-                raise SimulationRecordIntegrityError("cyclic prerequisite record")
-            prerequisite_store, prerequisite = _prerequisite_simulation_record(
-                entry, invocation, request
-            )
-            if simulation_record_id not in finished:
-                with prerequisite_store.mutation_lock():
-                    self._run_prerequisites(
-                        prerequisite_store,
-                        prerequisite,
-                        request,
-                        ancestors | {simulation_record_id},
-                        finished,
-                    )
-                    recovery = prerequisite_store.scan(prerequisite)
-                    self._run_pending(prerequisite_store, prerequisite, recovery, request)
-                    prerequisite_store.regenerate_summary(prerequisite)
-                finished.add(simulation_record_id)
-            selected = prerequisite_store.scan(prerequisite)
-            match = next(
-                (item for item in selected.items if item.work_item_id == entry["work_item_id"]),
-                None,
-            )
-            if match is None or match.result is None:
-                raise SimulationRecordIntegrityError(
-                    "Cycle Count prerequisite did not publish its selected result"
-                )
+        _preflight_run_directory(manifest, request.project_root)
 
     def _run_pending(
         self,
         store: SimulationRecordStore,
         manifest: SimulationRecordManifest,
         recovery: SimulationRecordRecovery,
-        request: SimulationRecordRunRequest,
+        request: NewSimulationRecordRunRequest,
     ) -> None:
-        binding = (
-            request.validated.binding_for(manifest)
-            if isinstance(request, ResumeSimulationRecordRunRequest)
-            else None
-        )
-        project_root = binding.project_root if binding is not None else request.project_root
+        project_root = request.project_root
         project_data = resolve_checkout_booley_dir(project_root)
         interrupted = {
             work_item_id: attempt.document
@@ -683,7 +495,7 @@ class SimulationRecord:
         manifest: SimulationRecordManifest,
         attempt: ScheduledAttempt,
         invocation: int,
-        request: SimulationRecordRunRequest,
+        request: NewSimulationRecordRunRequest,
         child_execution_id: str,
     ) -> None:
         executor = self._executor
@@ -693,7 +505,12 @@ class SimulationRecord:
             )
         executor.prepare_attempt(
             self._work_execution_request(
-                store, manifest, attempt, invocation, request, child_execution_id
+                store,
+                manifest,
+                attempt,
+                invocation,
+                request,
+                child_execution_id,
             )
         )
 
@@ -718,7 +535,7 @@ class SimulationRecord:
         manifest: SimulationRecordManifest,
         attempt: ScheduledAttempt,
         invocation: int,
-        request: SimulationRecordRunRequest,
+        request: NewSimulationRecordRunRequest,
         child_execution_id: str | None,
     ):
         """Execute one attempt; a killed final attempt is named even when its execution fails."""
@@ -741,7 +558,7 @@ class SimulationRecord:
         manifest: SimulationRecordManifest,
         attempt: ScheduledAttempt,
         invocation: int,
-        request: SimulationRecordRunRequest,
+        request: NewSimulationRecordRunRequest,
         child_execution_id: str | None,
     ) -> bool:
         """Run one attempt and publish its result; ``True`` when it was OOM-killed instead.
@@ -767,7 +584,7 @@ class SimulationRecord:
         raise_if_cancelled_before_publication()
         note_final_work_item_oom_kill(work_item_label(work_item), passed=passed)
         try:
-            self._publish_scheduled_result(store, attempt, work_item_id, result)
+            self._publish_scheduled_result(store, work_item_id, result)
         except (OSError, ValueError, RuntimeError) as exc:
             target = cast(Mapping[str, str], manifest.document["target"])
             coverage = cast(Mapping[str, object], manifest.document["workload"])["coverage"]
@@ -800,13 +617,14 @@ class SimulationRecord:
         return settled
 
     def _work_execution_request(
-        self, store, manifest, attempt, invocation, request, child_execution_id
+        self,
+        store,
+        manifest,
+        attempt,
+        invocation,
+        request,
+        child_execution_id,
     ) -> WorkExecutionRequest:
-        binding = (
-            request.validated.binding_for(manifest)
-            if isinstance(request, ResumeSimulationRecordRunRequest)
-            else None
-        )
         return WorkExecutionRequest(
             store,
             manifest,
@@ -817,24 +635,22 @@ class SimulationRecord:
             invocation,
             request.policy,
             request.admission,
-            binding.project_root if binding is not None else request.project_root,
-            binding.handle if binding is not None else None,
-            child_execution_id,
-            request.pre_sim_firing_published,
-            self._build_settled(store, attempt),
+            request.project_root,
+            child_execution_id=child_execution_id,
+            pre_sim_firing_published=request.pre_sim_firing_published,
+            build_settled=self._build_settled(store, attempt),
         )
 
     def _publish_scheduled_result(
         self,
         store: SimulationRecordStore,
-        attempt: ScheduledAttempt,
         work_item_id: str,
         result: SimulationResult,
     ) -> None:
         with self._publication_gate:
-            self._publication_checkpoint("before:simulation_result")
+            faults.fault_point("before:simulation_result")
             store.publish_result(work_item_id, result)
-            self._publication_checkpoint("after:simulation_result")
+            faults.fault_point("after:simulation_result")
 
 
 def raise_if_cancelled_before_publication() -> None:
@@ -858,9 +674,8 @@ def _invocation_number(directory: Path) -> int:
 def _committed_coverage_result(
     store: SimulationRecordStore,
     manifest: SimulationRecordManifest,
-    authenticated_manifest_sha256: str | None,
 ) -> tuple[str, SimulationResult]:
-    recovery = store.scan(manifest, authenticated_manifest_sha256)
+    recovery = store.scan(manifest)
     completed = [item for item in recovery.items if item.result is not None]
     if len(completed) != 1:
         raise SimulationRecordIntegrityError(
@@ -912,25 +727,44 @@ def _new_preview(request: NewSimulationRecordPreviewRequest) -> NewSimulationRec
     )
 
 
+def _continued_store(request: NewSimulationRecordPreviewRequest) -> SimulationRecordStore | None:
+    if request.record_directory is None:
+        return None
+    return SimulationRecordStore(
+        request.record_directory, booley_dir=simulation_booley_dir(request.project_root)
+    )
+
+
+def _stored_manifest(
+    store: SimulationRecordStore, planned: SimulationRecordManifest
+) -> SimulationRecordManifest:
+    """The record's own manifest, once *planned* has the same workload identity."""
+    stored = store.load_manifest()
+    verify_workload(stored, planned)
+    return stored
+
+
+def _continued_manifest(
+    store: SimulationRecordStore, request: NewSimulationRecordRunRequest
+) -> SimulationRecordManifest | None:
+    """The stored manifest this run continues; None when it publishes its own.
+
+    A named ``record_directory`` never gets a new manifest: a missing one is refused.
+    """
+    if request.record_directory is None and not store.manifest_path.exists():
+        return None
+    return _stored_manifest(store, request.plan.manifest)
+
+
 def _new_store(request: NewSimulationRecordRunRequest) -> SimulationRecordStore:
+    if (continued := _continued_store(request)) is not None:
+        return continued
     target = cast(Mapping[str, str], request.plan.manifest.document["target"])
     selector = target["selector"]
     if target["role"] == "cycle_count_baseline":
         selector = f"{selector}@baseline-{target['revision'][:12]}"
     directory = target_report_directory(request.invocation_directory, selector) / RECORD_DIRECTORY
     return SimulationRecordStore(directory, booley_dir=simulation_booley_dir(request.project_root))
-
-
-def _required_variants(
-    manifest: SimulationRecordManifest, recovery: SimulationRecordRecovery
-) -> tuple[str, ...]:
-    pending = set(recovery.pending) | set(recovery.interrupted)
-    items = cast(tuple[Mapping[str, str], ...], manifest.document["work_items"])
-    return tuple(
-        dict.fromkeys(
-            item["build_variant_id"] for item in items if item["work_item_id"] in pending
-        )
-    )
 
 
 def _outcome(
@@ -959,7 +793,9 @@ def _outcome(
 
 
 def _recovery_status(
-    manifest_path: Path, manifest_sha256: str, recovery: SimulationRecordRecovery
+    manifest_path: Path,
+    manifest_sha256: str,
+    recovery: SimulationRecordRecovery,
 ) -> SimulationRecordRecoveryStatus:
     return SimulationRecordRecoveryStatus(
         manifest_path=manifest_path,
@@ -1024,7 +860,7 @@ def _acceptance_facts(
                 "default_invocation": suite["default_invocation"],
                 "source_sha256": suite["source_sha256"],
             },
-            "prerequisites": _prerequisite_facts(store, manifest),
+            "prerequisites": [],
             "consumed_results": consumed,
             "observations": observations,
             "coverage_reference": _coverage_acceptance_reference(
@@ -1171,145 +1007,6 @@ def _observation_facts(
     return facts
 
 
-def _prerequisite_simulation_record(
-    entry: Mapping[str, object], invocation: Path, request: SimulationRecordPreviewRequest
-) -> tuple[SimulationRecordStore, SimulationRecordManifest]:
-    """Open the record one prerequisite *entry* links, authenticated on resume."""
-    reference = cast(Mapping[str, object], entry["manifest"])
-    node = (
-        request.validated.prerequisite_for(reference)
-        if isinstance(request, ResumeSimulationRecordPreviewRequest)
-        else None
-    )
-    path = node.path if node is not None else linked_manifest_path(invocation, reference)
-    booley_dir = (
-        request.validated.booley_dir
-        if isinstance(request, ResumeSimulationRecordPreviewRequest)
-        else simulation_booley_dir(request.project_root)
-    )
-    store = SimulationRecordStore(path.parent, booley_dir=booley_dir)
-    return store, node.manifest if node is not None else store.load_manifest()
-
-
-def _prerequisite_facts(
-    owner_store: SimulationRecordStore, manifest: SimulationRecordManifest
-) -> list[dict[str, object]]:
-    facts: list[dict[str, object]] = []
-    entries = cast(tuple[Mapping[str, object], ...], manifest.document["prerequisites"])
-    invocation = owner_store.root.parents[2]
-    for entry in entries:
-        manifest_reference = cast(Mapping[str, object], entry["manifest"])
-        store = SimulationRecordStore(
-            linked_manifest_path(invocation, manifest_reference).parent,
-            booley_dir=owner_store.booley_dir,
-        )
-        linked, expected_test, baseline_run = _authenticate_prerequisite_manifest(
-            store, entry, manifest_reference
-        )
-        work_item_id, result = _selected_prerequisite_result(store.scan(linked), entry)
-        result_path = store.work_item_directory(work_item_id) / "result.json"
-        raw = result_path.read_bytes()
-        digest = content_digest(raw)
-        result_reference = {
-            "path_base": "origin_invocation",
-            "path": result_path.relative_to(invocation).as_posix(),
-            "bytes": len(raw),
-            "sha256": digest,
-            "kind": "simulation_result",
-            "owner": result.document["attempt_id"],
-        }
-        observation = _healthy_cycle_observation(result, expected_test)
-        if observation is None:
-            raise SimulationRecordIntegrityError(
-                "Cycle Count prerequisite has no cycle observation"
-            )
-        facts.append(
-            {
-                "role": "cycle_count_baseline",
-                "manifest": manifest_reference,
-                "campaign_id": entry["simulation_record_id"],
-                "target": entry["target"],
-                "work_item_id": entry["work_item_id"],
-                "result": result_reference,
-                "cycle_observation": {
-                    "test": observation["test"],
-                    "cycle_count": observation["cycle_count"],
-                    "unit": "cycles",
-                    **_baseline_test_run_facts(baseline_run),
-                },
-            }
-        )
-    return facts
-
-
-def _baseline_test_run_facts(run: Mapping[str, object]) -> dict[str, object]:
-    """Name the Test Run a baseline observed, so facts show both revisions ran it."""
-    return {"test_run": run["name"], "test_run_fingerprint": run["fingerprint"]}
-
-
-def _authenticate_prerequisite_manifest(
-    store: SimulationRecordStore, entry: Mapping[str, object], reference: Mapping[str, object]
-) -> tuple[SimulationRecordManifest, str, Mapping[str, object]]:
-    linked = store.load_manifest()
-    if manifest_digest(linked) != reference["sha256"]:
-        raise SimulationRecordIntegrityError(
-            "Cycle Count prerequisite manifest reference is unauthenticated"
-        )
-    if (
-        linked.document["simulation_record_id"] != entry["simulation_record_id"]
-        or linked.document["target"] != entry["target"]
-    ):
-        raise SimulationRecordIntegrityError("Cycle Count prerequisite identity is mismatched")
-    items = cast(tuple[Mapping[str, object], ...], linked.document["work_items"])
-    selected = next(
-        (item for item in items if item["work_item_id"] == entry["work_item_id"]), None
-    )
-    if selected is None or selected["role"] != "cycle_count_baseline":
-        raise SimulationRecordIntegrityError(
-            "Cycle Count prerequisite work-item binding is mismatched"
-        )
-    selection = cast(Mapping[str, object], selected["selection"])
-    names = cast(tuple[str, ...], selection["names"])
-    if len(names) != 1:
-        raise SimulationRecordIntegrityError(
-            "Cycle Count prerequisite must select exactly one test"
-        )
-    runs = cast("tuple[Mapping[str, object], ...]", selected["test_runs"])
-    if len(runs) != 1:
-        raise SimulationRecordIntegrityError(
-            "Cycle Count prerequisite must run exactly one Test Run"
-        )
-    return linked, names[0], runs[0]
-
-
-def _selected_prerequisite_result(
-    recovery: SimulationRecordRecovery, entry: Mapping[str, object]
-) -> tuple[str, SimulationResult]:
-    selected = next(
-        (item for item in recovery.items if item.work_item_id == entry["work_item_id"]), None
-    )
-    if selected is None or selected.result is None:
-        raise SimulationRecordIntegrityError("Cycle Count prerequisite result is unavailable")
-    return selected.work_item_id, selected.result
-
-
-def _healthy_cycle_observation(
-    result: SimulationResult, expected_test: str
-) -> Mapping[str, object] | None:
-    return next(
-        (
-            item
-            for item in result_observations(result)
-            if item["test"] == expected_test
-            and item["cycle_count"] is not None
-            and item["execution"] == "completed"
-            and item["functional"] == "pass"
-            and item["assertions"] == "clean"
-        ),
-        None,
-    )
-
-
 def _new_uuid() -> str:
     import uuid
 
@@ -1320,15 +1017,9 @@ __all__ = [
     "NewSimulationRecordPreview",
     "NewSimulationRecordPreviewRequest",
     "NewSimulationRecordRunRequest",
-    "ResumeSimulationRecordPreview",
-    "ResumeSimulationRecordPreviewRequest",
-    "ResumeSimulationRecordRunRequest",
     "SerialWorkExecutor",
     "SimulationRecord",
     "SimulationRecordOutcome",
     "SimulationRecordPolicy",
-    "SimulationRecordPreview",
-    "SimulationRecordPreviewRequest",
-    "SimulationRecordRunRequest",
     "WorkExecutionRequest",
 ]

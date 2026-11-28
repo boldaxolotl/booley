@@ -147,9 +147,14 @@ def main() -> int:
         description="Validate a commit message against the Project's Stealth policy.",
         epilog="Exit code 0 = valid, 1 = invalid (errors printed to stderr).",
     )
-    parser.add_argument("message", help="commit message to validate")
     parser.add_argument(
-        "--no-diff", action="store_true", help="skip scanning staged diff for banned words"
+        "message",
+        help="commit message to validate",
+    )
+    parser.add_argument(
+        "--no-diff",
+        action="store_true",
+        help="skip scanning staged diff for banned words",
     )
     parsed = parser.parse_args()
 

@@ -238,7 +238,8 @@ class TestRelativePaths:
         source = tmp_path / "source"
         source.mkdir()
         (source / "pyproject.toml").write_text(
-            "[tool.booley]\nsource_checkout = true\n", encoding="utf-8"
+            "[tool.booley]\nsource_checkout = true\n",
+            encoding="utf-8",
         )
 
         with pytest.raises(RuntimeError, match="cannot be initialized or used as a Project"):
@@ -270,7 +271,9 @@ class TestRelativePaths:
 
 class TestWorkRootLease:
     def test_open_failure_is_an_infrastructure_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         def fail_open(*_args, **_kwargs):
             raise OSError("cannot open lock")
@@ -284,7 +287,9 @@ class TestWorkRootLease:
             pytest.fail("unreachable")
 
     def test_acquisition_failure_is_an_infrastructure_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ):
         def fail_acquire(_handle):
             raise OSError("cannot acquire lock")
@@ -315,7 +320,9 @@ class TestWorkRootLease:
 
         with work_root_lease(work_root, timeout_s=hang_guard_s()):
             result = run_bounded_child(
-                [sys.executable, "-c", probe, str(work_root)], check=True, env=env
+                [sys.executable, "-c", probe, str(work_root)],
+                check=True,
+                env=env,
             )
 
         assert result.stdout.strip() == "busy"
@@ -349,10 +356,12 @@ class TestWorkRootLease:
         waiter_acquired = ctx.Event()
         work_root = str(tmp_path / "synth" / "toy")
         holder = ctx.Process(
-            target=_hold_work_root, args=(work_root, holder_acquired, release_holder)
+            target=_hold_work_root,
+            args=(work_root, holder_acquired, release_holder),
         )
         waiter = ctx.Process(
-            target=_wait_for_work_root, args=(work_root, waiter_blocked, waiter_acquired)
+            target=_wait_for_work_root,
+            args=(work_root, waiter_blocked, waiter_acquired),
         )
         holder.start()
         try:
@@ -382,7 +391,8 @@ class TestWorkRootLease:
         never_release = ctx.Event()
         work_root = tmp_path / "synth" / "toy"
         holder = ctx.Process(
-            target=_hold_work_root, args=(str(work_root), acquired, never_release)
+            target=_hold_work_root,
+            args=(str(work_root), acquired, never_release),
         )
         holder.start()
         assert acquired.wait(hang_guard_s())

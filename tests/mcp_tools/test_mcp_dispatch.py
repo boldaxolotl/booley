@@ -9,13 +9,19 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from booley.mcp import catalog, endpoint_process, job_lifecycle, job_results, report_encoding
+from booley.mcp import (
+    catalog,
+    endpoint_process,
+    job_lifecycle,
+    job_results,
+    report_encoding,
+)
 from booley.runtime.session_paths import session_jobs_dir
+from tests import mcp_runner_fake
 from tests.flows.sim.test_verilator_build_reuse_record import flow_project
 from tests.runtime.test_sandbox_layout import project_alias
 from tests.time_budget import hang_guard_s, scaled
@@ -138,11 +144,19 @@ class TestExitDisposition:
     def test_invalid_work_dir_is_mcp_error(self, tmp_path):
         import asyncio
 
-        definition = {"module": "lint", "is_flow": True, "default_timeout": 60}
+        definition = {
+            "module": "lint",
+            "is_flow": True,
+            "default_timeout": 60,
+        }
 
         result = asyncio.run(
             mcp_server._dispatch_booley_mcp_tool(
-                "lint", {"work_dir": str(tmp_path / "missing")}, definition, {}, MagicMock()
+                "lint",
+                {"work_dir": str(tmp_path / "missing")},
+                definition,
+                {},
+                MagicMock(),
             )
         )
 
@@ -158,10 +172,20 @@ class TestExitDisposition:
             "_mcp_tool_timeout_seconds",
             MagicMock(side_effect=ValueError("bad timeout")),
         )
-        definition = {"module": "lint", "is_flow": True, "default_timeout": 60}
+        definition = {
+            "module": "lint",
+            "is_flow": True,
+            "default_timeout": 60,
+        }
 
         result = asyncio.run(
-            mcp_server._dispatch_booley_mcp_tool("lint", {}, definition, {}, MagicMock())
+            mcp_server._dispatch_booley_mcp_tool(
+                "lint",
+                {},
+                definition,
+                {},
+                MagicMock(),
+            )
         )
 
         assert isinstance(result, mcp_server.McpDispatchResult)
@@ -169,7 +193,12 @@ class TestExitDisposition:
         assert "invalid Flow timeout: bad timeout" in _text(result)
 
     @pytest.mark.parametrize(("exit_code", "is_error"), [(0, False), (1, True), (2, True)])
-    def test_inline_exit_code_sets_mcp_error(self, exit_code, is_error, monkeypatch):
+    def test_inline_exit_code_sets_mcp_error(
+        self,
+        exit_code,
+        is_error,
+        monkeypatch,
+    ):
         import asyncio
 
         monkeypatch.setattr(
@@ -182,12 +211,19 @@ class TestExitDisposition:
             "module": "lint",
             "is_flow": True,
             "default_timeout": 60,
-            "schema": {"type": "object", "properties": {"target": {"type": "string"}}},
+            "schema": {
+                "type": "object",
+                "properties": {"target": {"type": "string"}},
+            },
         }
 
         result = asyncio.run(
             mcp_server._dispatch_booley_mcp_tool(
-                "lint", {"target": "lint_demo"}, definition, {}, MagicMock()
+                "lint",
+                {"target": "lint_demo"},
+                definition,
+                {},
+                MagicMock(),
             )
         )
 
@@ -336,7 +372,9 @@ def _utc_stamp(offset_s: float = 0.0) -> str:
     """A record/report-format UTC stamp offset from now (for freshness tests)."""
     from datetime import UTC, datetime, timedelta
 
-    return (datetime.now(UTC) + timedelta(seconds=offset_s)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (datetime.now(UTC) + timedelta(seconds=offset_s)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ",
+    )
 
 
 @pytest.fixture()
@@ -353,7 +391,9 @@ class TestReportFetch:
 
     def test_latest_report_by_endpoint(self, _report_env):
         _seed_report(
-            _report_env, "sim", {"flow": "sim", "passed": True, "report_text": "RESULT: PASS"}
+            _report_env,
+            "sim",
+            {"flow": "sim", "passed": True, "report_text": "RESULT: PASS"},
         )
         report = _latest_report("sim")
         assert report is not None
@@ -372,16 +412,13 @@ class TestReportFetch:
             started = asyncio.Event()
             release = asyncio.Event()
 
-            async def run(_cmd, *, timeout, on_spawn=None, on_first_active=None, **_kwargs):
-                if on_spawn:
-                    on_spawn(os.getpid())
-                if on_first_active:
-                    on_first_active()
+            async def run(_cmd, *, on_first_active, **_kwargs):
+                on_first_active()
                 started.set()
                 await release.wait()
                 return 0, "ok", "", False
 
-            monkeypatch.setattr(mcp_server, "_run_subprocess", run)
+            mcp_runner_fake.install(monkeypatch, run, pid=os.getpid())
             jobs = _JobManager(_FakeLifetime())
             task = asyncio.create_task(
                 jobs.run_synchronous("lint", ["lint"], 60, context=_call_ctx())
@@ -420,13 +457,7 @@ class TestReportFetch:
     ):
         import asyncio
 
-        seen: dict[str, Any] = {}
-
-        async def run(_cmd, **kwargs):
-            seen.update(kwargs)
-            return 124, "", "timeout", True
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", run)
+        calls = mcp_runner_fake.install(monkeypatch, (124, "", "timeout", True))
 
         result = asyncio.run(
             mcp_server._run_inline_endpoint(
@@ -441,8 +472,9 @@ class TestReportFetch:
         )
 
         assert result == (124, "", "timeout", True)
-        assert seen["timeout"] == 15
-        assert seen["env"]["BOOLEY_DISPLAY_INVOCATION_ID"] == "given-id"
+        (call,) = calls
+        assert call.kwargs["timeout"] == 15
+        assert call.kwargs["env"]["BOOLEY_DISPLAY_INVOCATION_ID"] == "given-id"
 
     def test_latest_report_no_reports_dir(self, tmp_path, monkeypatch):
         monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
@@ -529,7 +561,11 @@ class TestStructuredContent:
     """
 
     def test_dispatch_report_returns_tuple_with_structured(self, _report_env):
-        _seed_report(_report_env, "sim", {"flow": "sim", "passed": True, "exit_code": 0})
+        _seed_report(
+            _report_env,
+            "sim",
+            {"flow": "sim", "passed": True, "exit_code": 0},
+        )
         out = _dispatch_report({"endpoint": "sim"})
         assert isinstance(out, tuple)
         blocks, structured = out
@@ -758,7 +794,11 @@ class TestStructuredContent:
         implementation = {
             "schema_version": 1,
             "identity": {"flow": "synth", "target": "asic"},
-            "status": {"grade": "pass", "passed": True, "diagnostic_excerpt": "large log"},
+            "status": {
+                "grade": "pass",
+                "passed": True,
+                "diagnostic_excerpt": "large log",
+            },
             "metrics": {"area_kge": 12.5},
             "recipe": {"fingerprint": "abc", "snapshot": {"large": "value"}},
             "comparison": {
@@ -793,7 +833,10 @@ class TestStructuredContent:
             "recipe": {},
             "cache": {},
             "metrics": {**{f"metric-{index}": index for index in range(70)}, "ignored": []},
-            "artifacts": {"report": {"path": long_value, "size": 10}, "scalar": "artifact.json"},
+            "artifacts": {
+                "report": {"path": long_value, "size": 10},
+                "scalar": "artifact.json",
+            },
             "comparison": {
                 "requested_ref": "main",
                 "basis_valid": False,
@@ -861,7 +904,10 @@ class TestStructuredContent:
                 "baseline": {
                     "conditions": {
                         "has_critical": False,
-                        "warning_summary": {**warning_summary, "total_warnings": 2},
+                        "warning_summary": {
+                            **warning_summary,
+                            "total_warnings": 2,
+                        },
                     }
                 }
             },
@@ -921,15 +967,15 @@ class TestStructuredContent:
     def test_job_result_attaches_run_id_fresh_report(self, _report_env, monkeypatch):
         # The fake child stamps its report with BOOLEY_RUN_ID like a real
         # endpoint run — identity freshness, no time-window race in the test.
-        async def _run(cmd, *, timeout, on_spawn=None, env=None, **_kwargs):
-            if on_spawn:
-                on_spawn(4242)
+        async def _run(cmd, *, env, **_kwargs):
             _seed_report(
-                _report_env, "sim", {"flow": "sim", "passed": True, "run_id": env["BOOLEY_RUN_ID"]}
+                _report_env,
+                "sim",
+                {"flow": "sim", "passed": True, "run_id": env["BOOLEY_RUN_ID"]},
             )
             return (0, "SIM OK", "", False)
 
-        monkeypatch.setattr(mcp_server, "_run_subprocess", _run)
+        mcp_runner_fake.install(monkeypatch, _run, pid=4242)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
 
         async def scenario():
@@ -950,15 +996,12 @@ class TestStructuredContent:
         # A report predating the job (no run_id, old timestamp) is not fresh:
         # the structured verdict must vouch for THIS run, so nothing attaches.
         _seed_report(
-            _report_env, "sim", {"flow": "sim", "passed": True, "timestamp": _utc_stamp(-3600)}
+            _report_env,
+            "sim",
+            {"flow": "sim", "passed": True, "timestamp": _utc_stamp(-3600)},
         )
 
-        async def _run(cmd, *, timeout, on_spawn=None, **_kwargs):
-            if on_spawn:
-                on_spawn(4242)
-            return (0, "SIM OK", "", False)
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", _run)
+        mcp_runner_fake.install(monkeypatch, (0, "SIM OK", "", False), pid=4242)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
 
         async def scenario():
@@ -971,13 +1014,14 @@ class TestStructuredContent:
         assert isinstance(out, list)
 
     @pytest.mark.parametrize("exit_code", [1, 2])
-    def test_specialist_job_nonzero_exit_is_mcp_error(self, exit_code, _report_env, monkeypatch):
-        async def _run(cmd, *, timeout, on_spawn=None, **_kwargs):
-            if on_spawn:
-                on_spawn(4242)
-            return exit_code, "specialist failed", "", False
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", _run)
+    def test_specialist_job_nonzero_exit_is_mcp_error(
+        self,
+        exit_code,
+        _report_env,
+        monkeypatch,
+    ):
+        answer = (exit_code, "specialist failed", "", False)
+        mcp_runner_fake.install(monkeypatch, answer, pid=4242)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
 
         async def scenario():
@@ -1037,18 +1081,14 @@ def _run_id_from(text: str) -> str:
 class TestAsyncJobDispatch:
     """The submit/poll job model for heavy endpoints (ADR 0027)."""
 
-    def _fast_subprocess(self, exit_code=0, stdout="SIM OK"):
-        async def _run(cmd, *, timeout, on_spawn=None, **_kwargs):
-            if on_spawn:
-                on_spawn(4242)
-            return (exit_code, stdout, "", False)
-
-        return _run
-
-    def test_submit_finishing_inline_returns_full_result(self, _report_env, monkeypatch):
+    def test_submit_finishing_inline_returns_full_result(
+        self,
+        _report_env,
+        monkeypatch,
+    ):
         # A run that completes within the inline window behaves exactly like the
         # old synchronous path: full EXIT_CODE + stdout, no run_id handoff.
-        monkeypatch.setattr(mcp_server, "_run_subprocess", self._fast_subprocess())
+        mcp_runner_fake.install(monkeypatch, (0, "SIM OK", "", False), pid=4242)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
 
         async def scenario():
@@ -1063,19 +1103,18 @@ class TestAsyncJobDispatch:
         assert "SIM OK" in text
         assert "RUNNING" not in text
 
-    def test_slow_submit_detaches_then_poll_resolves(self, _report_env, monkeypatch):
+    def test_slow_submit_detaches_then_poll_resolves(
+        self,
+        _report_env,
+        monkeypatch,
+    ):
         import asyncio
 
         release = asyncio.Event()
 
-        async def _slow(cmd, *, timeout, on_spawn=None, **_kwargs):
-            if on_spawn:
-                on_spawn(4242)
-            await release.wait()
-            return (0, "DONE", "", False)
-
         _seed_report(_report_env, "sim", {"flow": "sim", "report_text": "RESULT: PASS"})
-        monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
+        answer = (0, "DONE", "", False)
+        mcp_runner_fake.install(monkeypatch, answer, pid=4242, gate=release)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
         monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", lambda: _SHORT_POLL_S)
 
@@ -1101,7 +1140,9 @@ class TestAsyncJobDispatch:
         assert "DONE" in text
 
     def test_asic_synthesize_slow_submit_detaches_then_poll_resolves(
-        self, _report_env, monkeypatch
+        self,
+        _report_env,
+        monkeypatch,
     ):
         # Issue 2 (booley_asic_synthesize_issues): a big synth run outlasts the
         # MCP client budget. It must detach (RUNNING + run_id) and resolve via
@@ -1110,12 +1151,6 @@ class TestAsyncJobDispatch:
         import asyncio
 
         release = asyncio.Event()
-
-        async def _slow(cmd, *, timeout, on_spawn=None, **_kwargs):
-            if on_spawn:
-                on_spawn(4242)
-            await release.wait()
-            return (0, "SYNTH DONE", "", False)
 
         # A synth report stamped inside the job's lifetime window, so the poll's
         # freshness gate vouches for it (report_ts >= started_at).
@@ -1129,7 +1164,8 @@ class TestAsyncJobDispatch:
                 "report_text": "RESULT: PASS",
             },
         )
-        monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
+        answer = (0, "SYNTH DONE", "", False)
+        mcp_runner_fake.install(monkeypatch, answer, pid=4242, gate=release)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
         monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", lambda: _SHORT_POLL_S)
 
@@ -1137,7 +1173,11 @@ class TestAsyncJobDispatch:
             life = _FakeLifetime()
             jobs = _JobManager(life)
             submit_out = await _dispatch_async_job(
-                "synth", ["--target", "lite"], 60, jobs, context=_call_ctx()
+                "synth",
+                ["--target", "lite"],
+                60,
+                jobs,
+                context=_call_ctx(),
             )
             assert "RUNNING" in _text(submit_out)
             run_id = _run_id_from(_text(submit_out))
@@ -1153,7 +1193,11 @@ class TestAsyncJobDispatch:
         assert "SYNTH DONE" in text
         assert "RESULT: PASS" in text  # this run's freshness-gated report
 
-    def test_second_heavy_endpoint_spawns_and_detaches(self, _report_env, monkeypatch):
+    def test_second_heavy_endpoint_spawns_and_detaches(
+        self,
+        _report_env,
+        monkeypatch,
+    ):
         # ADR 0028: admission moved into the spawned child (on-disk slot
         # store), so the server no longer refuses a second heavy submit — it
         # spawns it too and the child queues for its class slot. The agent
@@ -1162,13 +1206,7 @@ class TestAsyncJobDispatch:
 
         release = asyncio.Event()
 
-        async def _slow(cmd, *, timeout, on_spawn=None, **_kwargs):
-            if on_spawn:
-                on_spawn(4242)
-            await release.wait()
-            return (0, "DONE", "", False)
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
+        mcp_runner_fake.install(monkeypatch, (0, "DONE", "", False), pid=4242, gate=release)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
 
         async def scenario():
@@ -1188,7 +1226,11 @@ class TestAsyncJobDispatch:
         # A genuinely new job, not an attach onto the first one.
         assert _run_id_from(second_text) != _run_id_from(first_text)
 
-    def test_duplicate_submit_attaches_to_inflight_run(self, _report_env, monkeypatch):
+    def test_duplicate_submit_attaches_to_inflight_run(
+        self,
+        _report_env,
+        monkeypatch,
+    ):
         # Idempotent attach: an identical re-submit (agent lost the handle to
         # its first call) joins the in-flight job via its durable record
         # (_find_attachable_job) instead of spawning a duplicate.
@@ -1198,16 +1240,12 @@ class TestAsyncJobDispatch:
 
         release = asyncio.Event()
 
-        async def _slow(cmd, *, timeout, on_spawn=None, **_kwargs):
-            if on_spawn:
-                on_spawn(4242)
-            await release.wait()
-            return (0, "DONE", "", False)
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
+        mcp_runner_fake.install(monkeypatch, (0, "DONE", "", False), pid=4242, gate=release)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
         monkeypatch.setattr(
-            mcp_server.jobrec, "derive_status", lambda rec, alive, **kw: rec.status
+            mcp_server.jobrec,
+            "derive_status",
+            lambda rec, alive, **kw: rec.status,
         )
 
         async def scenario():
@@ -1228,7 +1266,11 @@ class TestAsyncJobDispatch:
 
         asyncio.run(scenario())
 
-    def test_duplicate_submit_different_argv_spawns_new_job(self, _report_env, monkeypatch):
+    def test_duplicate_submit_different_argv_spawns_new_job(
+        self,
+        _report_env,
+        monkeypatch,
+    ):
         # Attach is for *identical* calls only: same endpoint with different argv
         # is a genuinely new run — ADR 0028 spawns it too and lets the child
         # queue for its class slot instead of refusing with BLOCKED.
@@ -1236,13 +1278,7 @@ class TestAsyncJobDispatch:
 
         release = asyncio.Event()
 
-        async def _slow(cmd, *, timeout, on_spawn=None, **_kwargs):
-            if on_spawn:
-                on_spawn(4242)
-            await release.wait()
-            return (0, "DONE", "", False)
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
+        mcp_runner_fake.install(monkeypatch, (0, "DONE", "", False), pid=4242, gate=release)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
 
         async def scenario():
@@ -1259,7 +1295,11 @@ class TestAsyncJobDispatch:
         assert "RUNNING" in second_text
         assert _run_id_from(second_text) != _run_id_from(first_text)
 
-    def test_poll_wait_seconds_long_poll_returns_result(self, _report_env, monkeypatch):
+    def test_poll_wait_seconds_long_poll_returns_result(
+        self,
+        _report_env,
+        monkeypatch,
+    ):
         # Long-poll (ADR 0027 amendment 2026-07-06): a poll carrying
         # wait_seconds blocks for the running job and returns the final result
         # when it finishes inside the window — one call instead of a poll-loop.
@@ -1267,13 +1307,7 @@ class TestAsyncJobDispatch:
 
         release = asyncio.Event()
 
-        async def _slow(cmd, *, timeout, on_spawn=None, **_kwargs):
-            if on_spawn:
-                on_spawn(4242)
-            await release.wait()
-            return (0, "DONE", "", False)
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
+        mcp_runner_fake.install(monkeypatch, (0, "DONE", "", False), pid=4242, gate=release)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
         # Server default wait pinned to 0 so any blocking observed below is
         # attributable to the wait_seconds argument alone.
@@ -1293,7 +1327,11 @@ class TestAsyncJobDispatch:
         assert "DONE" in text
         assert "RUNNING" not in text
 
-    def test_poll_wait_seconds_zero_returns_running_immediately(self, _report_env, monkeypatch):
+    def test_poll_wait_seconds_zero_returns_running_immediately(
+        self,
+        _report_env,
+        monkeypatch,
+    ):
         # wait_seconds=0 overrides the server default wait and answers with the
         # current status at once — the job releases only 0.2s later, so a leaked
         # default wait (pinned to 5s here) would return the result instead.
@@ -1301,13 +1339,7 @@ class TestAsyncJobDispatch:
 
         release = asyncio.Event()
 
-        async def _slow(cmd, *, timeout, on_spawn=None, **_kwargs):
-            if on_spawn:
-                on_spawn(4242)
-            await release.wait()
-            return (0, "DONE", "", False)
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
+        mcp_runner_fake.install(monkeypatch, (0, "DONE", "", False), pid=4242, gate=release)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: 0.0)
         monkeypatch.setattr(mcp_server, "_job_poll_wait_seconds", hang_guard_s)
 
@@ -1576,7 +1608,11 @@ class TestAttachSurvivesRestart:
     instead of double-spawning a multi-minute EDA run.
     """
 
-    def test_duplicate_submit_attaches_to_surviving_job(self, _report_env, monkeypatch):
+    def test_duplicate_submit_attaches_to_surviving_job(
+        self,
+        _report_env,
+        monkeypatch,
+    ):
         # The lost-handle retry across a server restart: identical argv joins
         # the surviving job (resolved from its durable record) instead of
         # spawning a duplicate. derive_status is pinned RUNNING because a
@@ -1585,7 +1621,9 @@ class TestAttachSurvivesRestart:
         import os
 
         monkeypatch.setattr(
-            mcp_server.jobrec, "derive_status", lambda rec, alive, **kw: jobrec.STATUS_RUNNING
+            mcp_server.jobrec,
+            "derive_status",
+            lambda rec, alive, **kw: jobrec.STATUS_RUNNING,
         )
         # The adopted-job path now honors the inline wait as a disk long-poll
         # (pinned RUNNING would otherwise block the full 240s default here).
@@ -1668,12 +1706,7 @@ class TestAttachSurvivesRestart:
         )
         assert mcp_server._find_attachable_job("sim", ["c"]) is None
 
-        async def _fast(cmd, *, timeout, on_spawn=None, **_kwargs):
-            if on_spawn:
-                on_spawn(4242)
-            return (0, "FRESH RUN", "", False)
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", _fast)
+        mcp_runner_fake.install(monkeypatch, (0, "FRESH RUN", "", False), pid=4242)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", hang_guard_s)
         jobs = _JobManager(_FakeLifetime())
         text = _text(asyncio.run(_dispatch_async_job("sim", ["c"], 60, jobs, context=_call_ctx())))
@@ -1822,7 +1855,10 @@ class TestCancel:
             # Waiter entry, never refreshed → stays queued at position 0.
             # argv=[] skips the /proc identity check for the fake claim.
             job_slots.SlotStore(root).submit(
-                job_slots.CLASS_MEMORY, pid=child.pid, argv=[], memory=_RUN_ALONE
+                job_slots.CLASS_MEMORY,
+                pid=child.pid,
+                argv=[],
+                memory=_RUN_ALONE,
             )
             out = self._cancel({"run_id": "simulate-c-3"})
             text = _text(out)
@@ -1845,22 +1881,19 @@ class TestCancel:
                 child.wait(timeout=hang_guard_s())
 
     def test_in_process_running_job_cancels_supervisor_and_persists_outcome(
-        self, _report_env, monkeypatch
+        self,
+        _report_env,
+        monkeypatch,
     ):
         import asyncio
 
         async def scenario():
             started = asyncio.Event()
-
-            async def _slow(_cmd, *, timeout, on_spawn=None, **_kwargs):
-                if on_spawn:
-                    on_spawn(4242)
-                started.set()
-                await asyncio.Event().wait()
-
-            monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
+            mcp_runner_fake.install(monkeypatch, pid=4242, started=started, gate=asyncio.Event())
             monkeypatch.setattr(
-                jobrec, "derive_status", lambda _rec, _alive, **_kwargs: jobrec.STATUS_RUNNING
+                jobrec,
+                "derive_status",
+                lambda _rec, _alive, **_kwargs: jobrec.STATUS_RUNNING,
             )
             jobs = _JobManager(_FakeLifetime())
             run_id = jobs.submit("sim", ["fake-endpoint"], 600, context=_call_ctx())
@@ -1876,20 +1909,15 @@ class TestCancel:
         assert not list(_report_env.glob("*.jsonl"))
 
     def test_server_shutdown_cancellation_is_not_mislabeled_as_user_cancel(
-        self, _report_env, monkeypatch
+        self,
+        _report_env,
+        monkeypatch,
     ):
         import asyncio
 
         async def scenario():
             started = asyncio.Event()
-
-            async def _slow(_cmd, *, timeout, on_spawn=None, **_kwargs):
-                if on_spawn:
-                    on_spawn(4242)
-                started.set()
-                await asyncio.Event().wait()
-
-            monkeypatch.setattr(mcp_server, "_run_subprocess", _slow)
+            mcp_runner_fake.install(monkeypatch, pid=4242, started=started, gate=asyncio.Event())
             jobs = _JobManager(_FakeLifetime())
             run_id = jobs.submit("sim", ["fake-endpoint"], 600, context=_call_ctx())
             await started.wait()
@@ -1933,7 +1961,11 @@ class TestCancel:
         final = jobrec.read_record(rec.run_id, root=session_jobs_dir())
         assert final is not None and final.status == jobrec.STATUS_CANCELLED
 
-    def test_adopted_cancel_preserves_completion_that_wins_race(self, _report_env, monkeypatch):
+    def test_adopted_cancel_preserves_completion_that_wins_race(
+        self,
+        _report_env,
+        monkeypatch,
+    ):
         import asyncio
         import os
 
@@ -2000,7 +2032,10 @@ class TestJobPhase:
         root = job_slots.slots_dir()
         assert root is not None
         job_slots.SlotStore(root).submit(
-            job_slots.CLASS_MEMORY, pid=os.getpid(), argv=[], memory=_RUN_ALONE
+            job_slots.CLASS_MEMORY,
+            pid=os.getpid(),
+            argv=[],
+            memory=_RUN_ALONE,
         )
         assert _job_phase("simulate-p-1") == (
             "QUEUED (position 1): waits to run alone (memory estimate unknown or above the Memory Budget)"
@@ -2145,13 +2180,7 @@ class TestMemoryAdmittedEndpointsRunAsJobs:
 
     @staticmethod
     def _stand_in_child(monkeypatch, pid: int, release: asyncio.Event | None):
-        async def run(_cmd, *, timeout, on_spawn=None, **_kwargs):
-            on_spawn(pid)
-            if release is not None:
-                await release.wait()
-            return 0, "CHILD DONE", "", False
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", run)
+        mcp_runner_fake.install(monkeypatch, (0, "CHILD DONE", "", False), pid=pid, gate=release)
         monkeypatch.setattr(mcp_server, "_job_inline_wait_seconds", lambda: _SHORT_POLL_S)
 
     def test_queued_call_hands_back_run_id_and_poll_follows_the_job(
@@ -2221,7 +2250,15 @@ def test_every_builtin_endpoint_is_memory_admitted():
     )
     assert not errors
     admitted = {d["name"] for d in definitions if d["memory_admitted"]}
-    assert admitted == {"sim", "lint", "synth", "fpga", "mutation", "reviewer", "coverage_analyst"}
+    assert admitted == {
+        "sim",
+        "lint",
+        "synth",
+        "fpga",
+        "mutation",
+        "reviewer",
+        "coverage_analyst",
+    }
     for name in admitted:
         assert name in catalog._POLL_MCP_TOOL_DESCRIPTION
 
@@ -2408,7 +2445,9 @@ class TestAttachStripsTranscriptDir:
         import os
 
         monkeypatch.setattr(
-            mcp_server.jobrec, "derive_status", lambda rec, alive, **kw: jobrec.STATUS_RUNNING
+            mcp_server.jobrec,
+            "derive_status",
+            lambda rec, alive, **kw: jobrec.STATUS_RUNNING,
         )
         jobrec.write_record(
             jobrec.JobRecord(
@@ -2429,7 +2468,9 @@ class TestAttachStripsTranscriptDir:
         import os
 
         monkeypatch.setattr(
-            mcp_server.jobrec, "derive_status", lambda rec, alive, **kw: jobrec.STATUS_RUNNING
+            mcp_server.jobrec,
+            "derive_status",
+            lambda rec, alive, **kw: jobrec.STATUS_RUNNING,
         )
         jobrec.write_record(
             jobrec.JobRecord(
@@ -2475,7 +2516,9 @@ class TestJobReportIdentity:
         import json as _json
 
         reports = _seed_report(
-            _report_env, "sim", {"flow": "sim", "run_id": "simulate-OTHER", "passed": False}
+            _report_env,
+            "sim",
+            {"flow": "sim", "run_id": "simulate-OTHER", "passed": False},
         )
         ours = reports / "sim" / "2"
         ours.mkdir(parents=True)
@@ -2498,7 +2541,11 @@ class TestJobReportIdentity:
     def test_killed_matrix_falls_back_to_run_scoped_progress(self, _report_env):
         import json as _json
 
-        reports = _seed_report(_report_env, "sim", {"flow": "sim", "run_id": "simulate-OTHER"})
+        reports = _seed_report(
+            _report_env,
+            "sim",
+            {"flow": "sim", "run_id": "simulate-OTHER"},
+        )
         ours = reports / "sim" / "2"
         ours.mkdir(parents=True)
         (ours / "progress.json").write_text(
@@ -2524,7 +2571,13 @@ class TestJobReportIdentity:
         import json as _json
 
         reports = _seed_report(
-            _report_env, "sim", {"flow": "sim", "timestamp": _utc_stamp(-3600), "passed": True}
+            _report_env,
+            "sim",
+            {
+                "flow": "sim",
+                "timestamp": _utc_stamp(-3600),
+                "passed": True,
+            },
         )
         ours = reports / "sim" / "2"
         ours.mkdir(parents=True)
@@ -2595,7 +2648,9 @@ class TestJobReportIdentity:
             run_started_at=_utc_stamp(-300),  # but only ran for the last 300s
         )
         _seed_report(
-            _report_env, "sim", {"flow": "sim", "timestamp": _utc_stamp(-10), "passed": True}
+            _report_env,
+            "sim",
+            {"flow": "sim", "timestamp": _utc_stamp(-10), "passed": True},
         )
         report, fresh = mcp_server._job_report(rec)
         assert fresh is True
@@ -2621,7 +2676,9 @@ class TestDiskLongPoll:
         jobrec.write_record(rec, root=session_jobs_dir())
         statuses = iter([jobrec.STATUS_RUNNING, jobrec.STATUS_RUNNING, jobrec.STATUS_DONE])
         monkeypatch.setattr(
-            mcp_server.jobrec, "derive_status", lambda r, alive, **kw: next(statuses)
+            mcp_server.jobrec,
+            "derive_status",
+            lambda r, alive, **kw: next(statuses),
         )
         jobs = _JobManager(_FakeLifetime())
         result = asyncio.run(
@@ -2646,7 +2703,9 @@ class TestDiskLongPoll:
         )
         jobrec.write_record(rec, root=session_jobs_dir())
         monkeypatch.setattr(
-            mcp_server.jobrec, "derive_status", lambda r, alive, **kw: jobrec.STATUS_RUNNING
+            mcp_server.jobrec,
+            "derive_status",
+            lambda r, alive, **kw: jobrec.STATUS_RUNNING,
         )
         jobs = _JobManager(_FakeLifetime())
         result = asyncio.run(mcp_server._poll_from_disk("simulate-d-2", jobs, wait_seconds=0.0))
@@ -2660,14 +2719,7 @@ class TestSubmitEnvStamp:
         # child's holder-deadline anchor. Both must reach the subprocess.
         import asyncio
 
-        captured = {}
-
-        async def _capture(cmd, *, timeout, on_spawn=None, env=None, **_kwargs):
-            captured["env"] = env
-            captured["timeout"] = timeout
-            return 0, "ok", "", False
-
-        monkeypatch.setattr(mcp_server, "_run_subprocess", _capture)
+        calls = mcp_runner_fake.install(monkeypatch)
 
         async def scenario():
             jobs = _JobManager(_FakeLifetime())
@@ -2676,8 +2728,9 @@ class TestSubmitEnvStamp:
             return run_id
 
         run_id = asyncio.run(scenario())
-        assert captured["env"]["BOOLEY_RUN_ID"] == run_id
-        assert captured["env"]["BOOLEY_SLOT_TIMEOUT_S"] == "60"
+        (call,) = calls
+        assert call.kwargs["env"]["BOOLEY_RUN_ID"] == run_id
+        assert call.kwargs["env"]["BOOLEY_SLOT_TIMEOUT_S"] == "60"
 
 
 def test_late_interactive_logging_and_job_completion_keep_the_selected_root(tmp_path, monkeypatch):
@@ -2694,13 +2747,12 @@ def test_late_interactive_logging_and_job_completion_keep_the_selected_root(tmp_
     root = session_jobs_dir()
     assert root is not None
 
-    async def run(cmd, *, timeout, on_spawn, **kwargs):
-        on_spawn(4242)
+    async def run(cmd, **kwargs):
         # Another scoped invocation must not redirect this manager's completion record.
         monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(tmp_path / "other-runtime"))
         return 0, "done", "", False
 
-    monkeypatch.setattr(mcp_server, "_run_subprocess", run)
+    mcp_runner_fake.install(monkeypatch, run, pid=4242)
 
     async def scenario():
         manager = _JobManager(_FakeLifetime())
@@ -2800,7 +2852,10 @@ def test_endpoint_environment_without_project_uses_runtime_fallback(
     environment = endpoint_process._endpoint_subprocess_env(_call_ctx())
 
     assert environment["BOOLEY_RUNTIME_DIR"]
-    assert Path(environment["PYTHONPYCACHEPREFIX"]).parts[-2:] == ("python-artifacts", "bytecode")
+    assert Path(environment["PYTHONPYCACHEPREFIX"]).parts[-2:] == (
+        "python-artifacts",
+        "bytecode",
+    )
 
 
 def test_mcp_simulation_dispatch_reaches_alias_normalization(

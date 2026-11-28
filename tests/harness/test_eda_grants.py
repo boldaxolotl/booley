@@ -65,7 +65,8 @@ def _patch_revoke(
 
 
 def test_revoke_runs_recovery_prepare_journal_commit_then_cleanup_under_lifecycle_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     identity = str((tmp_path / "stored-project").resolve())
     grant = authority.ProjectGrant(identity, "vivado", "registered", "site")
@@ -87,7 +88,8 @@ def test_revoke_runs_recovery_prepare_journal_commit_then_cleanup_under_lifecycl
 
 
 def test_revoke_commit_failure_keeps_journal_pending(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     identity = str((tmp_path / "stored-project").resolve())
     events: list[str] = []
@@ -106,7 +108,9 @@ def test_revoke_commit_failure_keeps_journal_pending(
 
 @pytest.mark.parametrize("failure", ["validation", "invalidation"])
 def test_failed_add_commits_nothing_and_writes_no_journal(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
 ) -> None:
     project = tmp_path / "project"
     (project / ".git").mkdir(parents=True)
@@ -164,7 +168,8 @@ def test_pending_recovery_probe_translates_runtime_failure(monkeypatch) -> None:
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
 def test_pending_recovery_probe_preserves_private_store_diagnostic(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     config_root = tmp_path / "config"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(config_root))

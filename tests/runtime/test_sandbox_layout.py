@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 from tests.conftest import require_symlinks, symlink_or_skip
 
-from booley.runtime import sandbox_layout
+from booley.core import sandbox_layout
 
 
 def configure_project_alias(
@@ -87,7 +87,10 @@ def test_alias_traversal_is_refused(project_alias):
 
 def test_other_prefixes_and_relative_paths_are_unchanged(project_alias):
     alias, _target = project_alias
-    for path in (Path("booley/reports"), alias.with_name(alias.name + "-other") / "reports"):
+    for path in (
+        Path("booley/reports"),
+        alias.with_name(alias.name + "-other") / "reports",
+    ):
         assert sandbox_layout.canonical_project_alias_path(path) == path
 
 
@@ -118,7 +121,6 @@ def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
     from booley.flows.sim.coverage_reference import (
         CoverageRecordReferenceError,
         resolve_coverage_record_reference,
-        resolve_persisted_coverage_record_reference,
     )
     from booley.flows.sim.record import SimulationRecordIntegrityError
     from booley.flows.sim.record.resume import validate_resume_manifest
@@ -127,10 +129,9 @@ def test_alias_traversal_uses_reader_domain_errors(project_alias) -> None:
     path = alias / "child/../coverage.json"
     for reader, error in (
         (load_coverage_record, CoverageRecordStoreError),
-        (lambda selected: load_coverage_record_bytes(selected, b"{}"), CoverageRecordStoreError),
         (
-            lambda selected: resolve_persisted_coverage_record_reference(selected, {}),
-            CoverageRecordReferenceError,
+            lambda selected: load_coverage_record_bytes(selected, b"{}"),
+            CoverageRecordStoreError,
         ),
         (read_coverage_record, CoverageAnalysisError),
         (resolve_coverage_record_reference, CoverageRecordReferenceError),

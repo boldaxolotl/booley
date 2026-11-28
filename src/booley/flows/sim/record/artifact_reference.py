@@ -3,16 +3,16 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping, Set
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import cast
 
 from booley.flows.sim.coverage_json import content_digest
 from booley.flows.sim.record_files import read_bounded
 from booley.flows.sim.record_reports import is_report_link
 
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-_FIELDS = {"path_base", "path", "bytes", "sha256", "kind", "owner"}
 
 
 class ArtifactReferenceError(ValueError):
@@ -86,71 +86,27 @@ def resolve_artifact_reference(
     value: object,
     *,
     bases: Mapping[str, Path],
-    allowed_bases: Set[str],
     expected_kind: str,
     expected_owner: str,
     maximum: int,
     booley_dir: Path | None = None,
 ) -> ResolvedArtifact:
-    """Resolve and authenticate a reference under one profile's exact bases."""
-    reference = _reference(value, allowed_bases)
-    if reference.kind != expected_kind or reference.owner != expected_owner:
+    """Resolve a recorded reference below its named base and match its bytes.
+
+    The reference mapping is trusted as recorded; a malformed one fails at use.
+    """
+    reference = cast(Mapping[str, object], value)
+    if reference["kind"] != expected_kind or reference["owner"] != expected_owner:
         raise ArtifactReferenceError("artifact kind or owner disagrees")
     try:
-        base = bases[reference.path_base].absolute()
+        base = bases[cast(str, reference["path_base"])].absolute()
     except KeyError as exc:
         raise ArtifactReferenceError("artifact base is unavailable") from exc
-    path = _contained_path(base, reference.path)
+    path = base / cast(str, reference["path"])
     raw = read_bounded(path, limit=maximum, error=ArtifactReferenceError, booley_dir=booley_dir)
-    if len(raw) != reference.bytes or content_digest(raw) != reference.sha256:
+    if len(raw) != reference["bytes"] or content_digest(raw) != reference["sha256"]:
         raise ArtifactReferenceError("artifact bytes disagree with reference")
     return ResolvedArtifact(path, raw)
-
-
-def resolve_report_artifact_reference(
-    report_path: Path,
-    value: object,
-    *,
-    expected_kind: str,
-    expected_owner: str,
-    maximum: int,
-    external_origin_target: Path | None = None,
-    booley_dir: Path | None = None,
-) -> ResolvedArtifact:
-    """Resolve a report reference from the location of its containing document."""
-    invocation = report_path.absolute().parent
-    if report_path.name != "report.json" or not invocation.name.isdecimal():
-        raise ArtifactReferenceError("expected a numbered invocation report.json")
-    bases = {"report_invocation": invocation, "reports_root": invocation.parent.parent}
-    if external_origin_target is not None:
-        bases["external_origin_target"] = external_origin_target
-    return resolve_artifact_reference(
-        value,
-        bases=bases,
-        allowed_bases={"report_invocation", "reports_root", "external_origin_target"},
-        expected_kind=expected_kind,
-        expected_owner=expected_owner,
-        maximum=maximum,
-        booley_dir=booley_dir,
-    )
-
-
-def _reference(value: object, allowed_bases: Set[str]) -> ArtifactReference:
-    if isinstance(value, ArtifactReference):
-        value = encode_artifact_reference(value)
-    if not isinstance(value, dict) or set(value) != _FIELDS:
-        raise ArtifactReferenceError("artifact reference fields are invalid")
-    reference = _artifact_reference(
-        path_base=value["path_base"],
-        path=value["path"],
-        bytes_=value["bytes"],
-        sha256=value["sha256"],
-        kind=value["kind"],
-        owner=value["owner"],
-    )
-    if reference.path_base not in allowed_bases:
-        raise ArtifactReferenceError("artifact reference base is not allowed")
-    return reference
 
 
 def _artifact_reference(
@@ -164,7 +120,12 @@ def _artifact_reference(
     if not isinstance(sha256, str) or not _DIGEST.fullmatch(sha256):
         raise ArtifactReferenceError("artifact digest is invalid")
     return ArtifactReference(
-        base, relative, bytes_, sha256, _nonempty(kind, "kind"), _nonempty(owner, "owner")
+        base,
+        relative,
+        bytes_,
+        sha256,
+        _nonempty(kind, "kind"),
+        _nonempty(owner, "owner"),
     )
 
 
@@ -213,5 +174,4 @@ __all__ = [
     "build_artifact_reference",
     "encode_artifact_reference",
     "resolve_artifact_reference",
-    "resolve_report_artifact_reference",
 ]

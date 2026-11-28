@@ -5,18 +5,21 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
+from booley.core.atomic_files import Durability, atomic_write_text
 from booley.runtime.endpoint_execution import EXIT_ERROR, EndpointOutcome
-from booley.runtime.filesystem_utils import make_directories
 from booley.runtime.platform_paths import posix_relpath
 
-from .implementation_report import ENVELOPE_KEY, SCHEMA_VERSION, ImplementationReport
+from .implementation_report import (
+    ENVELOPE_KEY,
+    SCHEMA_VERSION,
+    ImplementationReport,
+)
 from .progress_lifecycle import (
     ProgressLifecycle,
     ProgressPublicationError,
@@ -68,7 +71,11 @@ class ImplementationProgressRun:
     def __enter__(self) -> ImplementationProgressRun:
         self._lifecycle.__enter__()
         self._publish(
-            self.current_results, self.baseline_results, "starting", self.baseline_ref, False
+            self.current_results,
+            self.baseline_results,
+            "starting",
+            self.baseline_ref,
+            False,
         )
         return self
 
@@ -91,7 +98,13 @@ class ImplementationProgressRun:
         return outcome
 
     def _publish_terminal(self, phase: str) -> None:
-        self._publish(self.current_results, self.baseline_results, phase, self.baseline_ref, True)
+        self._publish(
+            self.current_results,
+            self.baseline_results,
+            phase,
+            self.baseline_ref,
+            True,
+        )
 
 
 def target_report_slug(target: str) -> str:
@@ -110,14 +123,9 @@ def target_report_path(flow: str, target: str, report_dir: Path) -> Path:
     return report_dir / f"{flow}_{target_report_slug(target)}.json"
 
 
-def _atomic_write_json(path: Path, payload: Mapping[str, Any]) -> None:
-    make_directories(path.parent)
-    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    try:
-        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        temporary.replace(path)
-    finally:
-        temporary.unlink(missing_ok=True)
+def _publish_json(path: Path, payload: Mapping[str, Any]) -> None:
+    text = json.dumps(payload, indent=2)
+    atomic_write_text(path, text, mode=None, durability=Durability.NONE)
 
 
 def _published_canonical(
@@ -160,7 +168,9 @@ def _validate_numbered_log(artifacts: dict[str, Any], publisher: ImplementationP
 
 
 def _validate_numbered_logs(
-    payload: dict[str, Any], publisher: ImplementationPublisher, invocation_path: Path | None
+    payload: dict[str, Any],
+    publisher: ImplementationPublisher,
+    invocation_path: Path | None,
 ) -> None:
     if invocation_path is None:
         return
@@ -184,7 +194,9 @@ class ImplementationPublisher:
     invocation_dir: Path | None
 
     def publish_report(
-        self, report: ImplementationReport, legacy_payload: Mapping[str, Any]
+        self,
+        report: ImplementationReport,
+        legacy_payload: Mapping[str, Any],
     ) -> PublishedReport:
         """Atomically publish immutable evidence, then its stable alias."""
         if self.report_dir is None:
@@ -202,8 +214,8 @@ class ImplementationPublisher:
         payload[ENVELOPE_KEY] = canonical
         _validate_numbered_logs(payload, self, invocation)
         if invocation is not None:
-            _atomic_write_json(invocation, payload)
-        _atomic_write_json(stable, payload)
+            _publish_json(invocation, payload)
+        _publish_json(stable, payload)
         return PublishedReport(stable, invocation, payload)
 
     def publish_progress(self, progress: ImplementationProgress) -> Path | None:

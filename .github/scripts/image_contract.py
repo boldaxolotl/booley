@@ -515,7 +515,11 @@ def _layer_link_audit(image: str, groups: list[list[str]]) -> tuple[list[dict], 
 def _layer_contract(image: ImageIdentity, base: ImageIdentity | None) -> LayerContract:
     image_layers = image["rootfs_diff_ids"]
     if base is None:
-        return LayerContract(base_reference=None, prefix_match=None, additional_layer_count=None)
+        return LayerContract(
+            base_reference=None,
+            prefix_match=None,
+            additional_layer_count=None,
+        )
     base_layers = base["rootfs_diff_ids"]
     prefix_match = image_layers[: len(base_layers)] == base_layers
     additional = len(image_layers) - len(base_layers)

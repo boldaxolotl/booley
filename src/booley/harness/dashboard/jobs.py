@@ -111,10 +111,18 @@ class JobReader:
     """Compose retained history and display policy over one persistent observer."""
 
     def __init__(
-        self, booley_dir: Path, *, slots_root: Path | None = None, proc_root: Path = Path("/proc")
+        self,
+        booley_dir: Path,
+        *,
+        slots_root: Path | None = None,
+        proc_root: Path = Path("/proc"),
     ) -> None:
         self._booley_dir = booley_dir
-        self._observer = JobObserver(booley_dir, slots_root=slots_root, proc_root=proc_root)
+        self._observer = JobObserver(
+            booley_dir,
+            slots_root=slots_root,
+            proc_root=proc_root,
+        )
 
     def read(
         self,

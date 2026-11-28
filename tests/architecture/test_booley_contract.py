@@ -13,9 +13,14 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
     allowed = (
         _dependency("booley.flows.sim.flow", "booley.flows.sim.backends.icarus"),
         _dependency(
-            "booley.flows.sim.backends.cocotb", "booley.flows.sim.backends.cocotb_results"
+            "booley.flows.sim.backends.cocotb",
+            "booley.flows.sim.backends.cocotb_results",
         ),
-        _dependency("booley.flows.sim", "booley.flows.sim.flow", path="flows/sim/__init__.py"),
+        _dependency(
+            "booley.flows.sim",
+            "booley.flows.sim.flow",
+            path="flows/sim/__init__.py",
+        ),
         _dependency("booley.flows.shared.policy", "booley.flows.sim.flow"),
     )
 
@@ -55,14 +60,24 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D5", "booley.runtime.agent", "booley.mcp.base", "seed.py"),
         ("D25", "booley.core.file_lock", "booley.mcp.server", "seed.py"),
         ("D7", "booley.flows.target_campaign", "booley.harness.cli", "seed.py"),
-        ("D7", "booley.flows.target_test_suite", "booley.harness.booley", "seed.py"),
+        (
+            "D7",
+            "booley.flows.target_test_suite",
+            "booley.harness.booley",
+            "seed.py",
+        ),
         ("D8", "booley.flows.sim.flow", "booley.flows.lint.flow", "seed.py"),
         ("D8", "booley.flows.lint.flow", "booley.flows.fpga.flow", "seed.py"),
         ("D8", "booley.flows.fpga.flow", "booley.flows.synth.flow", "seed.py"),
         ("D8", "booley.flows.synth.flow", "booley.flows.sim.flow", "seed.py"),
         ("D9", "booley.flows", "booley.flows.sim.flow", "flows/__init__.py"),
         ("D9", "booley.flows.policy", "booley.flows.fpga.flow", "flows/policy.py"),
-        ("D10", "booley.flows.sim.backends.cocotb", "booley.flows.sim.backends.icarus", "seed.py"),
+        (
+            "D10",
+            "booley.flows.sim.backends.cocotb",
+            "booley.flows.sim.backends.icarus",
+            "seed.py",
+        ),
         (
             "D10",
             "booley.flows.sim.backends.cocotb_results",
@@ -93,8 +108,18 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
             "booley.flows.synth.backends.openroad.step",
             "seed.py",
         ),
-        ("D11", "booley.flows.synth.backends.openroad.step", "booley.flows.synth.flow", "seed.py"),
-        ("D11", "booley.flows.synth.backends.yosys.step", "booley.flows.synth.flow", "seed.py"),
+        (
+            "D11",
+            "booley.flows.synth.backends.openroad.step",
+            "booley.flows.synth.flow",
+            "seed.py",
+        ),
+        (
+            "D11",
+            "booley.flows.synth.backends.yosys.step",
+            "booley.flows.synth.flow",
+            "seed.py",
+        ),
         ("D12", "booley.targets.domain", "booley.fusesoc.registry", "seed.py"),
         ("D12", "booley.targets.selection", "booley.flows.sim.flow", "seed.py"),
         ("D12", "booley.targets.selection", "booley.flows.synth.flow", "seed.py"),
@@ -112,6 +137,7 @@ def test_flow_rule_selectors_preserve_same_flow_and_adapter_set_edges() -> None:
         ("D19", "booley.eda.policy", "booley.flows.execution", "seed.py"),
         ("D20", "booley.eda.policy", "booley.runtime.session_issuance", "seed.py"),
         ("D20", "booley.eda.policy", "booley.runtime.issuance_invalidation", "seed.py"),
+        ("D25", "booley.core.atomic_files", "booley.runtime.timefmt", "seed.py"),
         ("D23", "booley.config.seed", "booley.eda.provisioning.authority", "seed.py"),
         ("D24", "booley.eda.seed", "booley.runtime.agent", "seed.py"),
         ("D31", "booley.flows.sim.rogue", "booley.flows.sim.record.store", "seed.py"),
@@ -163,7 +189,9 @@ def test_every_direction_rule_selector_family_finds_a_forbidden_edge(
 
 def test_simulation_record_storage_rule_allows_public_facade_import(tmp_path: Path) -> None:
     root = _simulation_record_rule_seed(
-        tmp_path, "flows/sim/rogue.py", "from booley.flows.sim import record\n"
+        tmp_path,
+        "flows/sim/rogue.py",
+        "from booley.flows.sim import record\n",
     )
 
     problems = evaluate_contract(analyze_imports(root), BOOLEY_SOURCE_DEPENDENCY_CONTRACT)
@@ -189,7 +217,9 @@ def test_target_separation_allows_downward_mechanisms() -> None:
 
 
 def test_approved_target_group_cannot_recombine_with_execution() -> None:
-    contract = ArchitectureContract(approved_sccs=BOOLEY_SOURCE_DEPENDENCY_CONTRACT.approved_sccs)
+    contract = ArchitectureContract(
+        approved_sccs=BOOLEY_SOURCE_DEPENDENCY_CONTRACT.approved_sccs,
+    )
     separate = (
         _dependency("booley.targets.catalog", "booley.fusesoc.fusesoc_registry"),
         _dependency("booley.fusesoc.fusesoc_registry", "booley.targets.domain"),

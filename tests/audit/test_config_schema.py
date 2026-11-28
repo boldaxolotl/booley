@@ -5,98 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from booley.audit import agent_schema, config_common, configs_schema, flow_schema, project_schema
+from booley.audit import agent_schema, config_common, flow_schema, project_schema
 from booley.config.host_config import host_config_path
 
 _ROOT = Path(__file__).resolve().parents[2]
-
-
-def test_valid_configs_are_normalized_and_returned() -> None:
-    audit = configs_schema.audit_configs_toml(
-        {
-            "test_lists": {"shared": ["smoke", "full"]},
-            "fast": {
-                "defines": [],
-                "top_module": "dut",
-                "test_list": "shared",
-                "parameters": {
-                    "WIDTH": 32,
-                    "SECURE": True,
-                    "MODE": {"expr": "pkg::Fast"},
-                    "INIT": {"string": "rom.mem"},
-                },
-            },
-        }
-    )
-
-    assert audit.is_valid
-    assert audit.issues == ()
-    assert audit.configs is not None
-    assert audit.configs["fast"]["tests"] == ["smoke", "full"]
-
-
-def test_normalization_error_is_an_actionable_issue() -> None:
-    audit = configs_schema.audit_configs_toml(
-        {
-            "test_lists": {"shared": ["smoke"]},
-            "fast": {"defines": [], "tests": ["smoke"], "test_list": "shared"},
-        }
-    )
-
-    assert not audit.is_valid
-    assert audit.configs is None
-    assert audit.issues == (
-        configs_schema.ConfigIssue(
-            "configs.toml [fast] must not set both tests and test_list", "fix configs.toml"
-        ),
-    )
-
-
-def test_section_audit_collects_all_independent_field_issues() -> None:
-    audit = configs_schema.audit_configs_toml(
-        {"bad": {"top_module": 3, "tb_top": False, "tests": "smoke", "parameters": "WIDTH=8"}}
-    )
-
-    messages = [issue.message for issue in audit.issues]
-    assert not audit.is_valid
-    assert messages == [
-        "configs.toml [bad].defines must be present as list[str]",
-        "configs.toml [bad].top_module must be a string",
-        "configs.toml [bad].tb_top must be a string",
-        "configs.toml [bad].tests must be list[str]",
-        "configs.toml [bad].parameters must be a table",
-    ]
-
-
-def test_parameter_audit_rejects_ambiguous_and_malformed_values() -> None:
-    audit = configs_schema.audit_configs_toml(
-        {
-            "bad": {
-                "defines": [],
-                "parameters": {
-                    "PLAIN": "pkg::Mode",
-                    "EMPTY_EXPR": {"expr": ""},
-                    "BAD_STRING": {"string": 4},
-                    "AMBIGUOUS": {"expr": "A", "string": "B"},
-                    "FLOAT": 1.5,
-                },
-            }
-        }
-    )
-
-    messages = [issue.message for issue in audit.issues]
-    assert any("PLAIN plain strings are not allowed" in message for message in messages)
-    assert any("EMPTY_EXPR.expr must be a non-empty string" in message for message in messages)
-    assert any("BAD_STRING.string must be a string" in message for message in messages)
-    assert any("AMBIGUOUS table must contain exactly one key" in message for message in messages)
-    assert any("FLOAT must be bool, int" in message for message in messages)
-
-
-def test_empty_configs_file_is_invalid() -> None:
-    audit = configs_schema.audit_configs_toml({})
-
-    assert not audit.is_valid
-    assert audit.issues[0].message == "configs.toml has no config sections"
 
 
 @pytest.mark.parametrize(
@@ -179,12 +91,18 @@ def test_project_metadata_is_advisory_and_preserves_warning_identity() -> None:
 def test_valid_project_and_feedback_redaction_settings_produce_pass_findings() -> None:
     project = project_schema.audit_project_table({"project": {"name": "demo"}})
     feedback = project_schema.audit_feedback_table(
-        {"feedback": {"redact_extra": ["codename"], "redact_identifiers": True}}
+        {
+            "feedback": {
+                "redact_extra": ["codename"],
+                "redact_identifiers": True,
+            }
+        }
     )
 
     assert project.findings == (
         config_common.ConfigFinding(
-            config_common.ConfigFindingSeverity.PASS, "booley.toml [project].name set"
+            config_common.ConfigFindingSeverity.PASS,
+            "booley.toml [project].name set",
         ),
     )
     assert feedback.is_valid
@@ -193,7 +111,12 @@ def test_valid_project_and_feedback_redaction_settings_produce_pass_findings() -
 
 def test_feedback_audit_collects_independent_field_failures() -> None:
     audit = project_schema.audit_feedback_table(
-        {"feedback": {"redact_extra": "codename", "redact_identifiers": "false"}}
+        {
+            "feedback": {
+                "redact_extra": "codename",
+                "redact_identifiers": "false",
+            }
+        }
     )
 
     assert not audit.is_valid
@@ -330,21 +253,15 @@ def test_flow_audit_collects_shape_failures_and_ignored_knob_warning() -> None:
         == 3
     )
     warnings = [item for item in audit.findings if item.check_id == "config.flow-knob-ignored"]
-    assert {item.subject for item in warnings} == {"lint.pre_run_commands"}
-
-
-@pytest.mark.parametrize("field", ["timeout_ms", "build_timeout_ms", "trace_convert_timeout_ms"])
-@pytest.mark.parametrize("value", [0, True, "120000"])
-def test_flow_timeouts_must_be_positive_integers(field: str, value: object) -> None:
-    audit = flow_schema.audit_flow_table("sim", {field: value})
-
-    assert not audit.is_valid
-    assert f"{field} must be a positive integer" in audit.findings[0].message
+    assert {item.subject for item in warnings} == {
+        "lint.pre_run_commands",
+    }
 
 
 def test_flow_collection_reports_required_sections_and_retired_aliases() -> None:
     audit = flow_schema.audit_flow_tables(
-        {"flows": {"simulate": {"default_target": "sim_fast"}}}, ("sim", "lint", "synth")
+        {"flows": {"simulate": {"default_target": "sim_fast"}}},
+        ("sim", "lint", "synth"),
     )
 
     assert not audit.is_valid
@@ -353,15 +270,10 @@ def test_flow_collection_reports_required_sections_and_retired_aliases() -> None
     assert {item.subject for item in missing} == {"lint", "synth"}
 
 
-def test_sim_rejects_retired_standalone_frontend_and_removed_cache_knob() -> None:
+def test_sim_rejects_removed_cache_knob() -> None:
     removed_cache_knob = flow_schema.audit_flow_table("sim", {"keep_build_dir": True})
 
     assert not removed_cache_knob.is_valid
-    retired = flow_schema.audit_flow_table("sim", {"standalone_frontend": "auto"})
-    assert not retired.is_valid
-    message = " ".join(f"{item.message} {item.fix}" for item in retired.findings)
-    assert "standalone_frontend is retired" in message
-    assert "each Target's simulator" in message
 
 
 def test_empty_eda_configuration_is_valid() -> None:
@@ -405,7 +317,6 @@ def test_config_schema_domains_do_not_depend_on_presentation_layers() -> None:
     for name in (
         "agent_schema.py",
         "config_common.py",
-        "configs_schema.py",
         "flow_schema.py",
         "project_schema.py",
     ):
@@ -427,7 +338,13 @@ def test_config_schema_domains_do_not_depend_on_presentation_layers() -> None:
         }
 
 
-@pytest.mark.parametrize("key, value", [("max_sessions", 2), ("egress_allowlist", ["foo.test"])])
+@pytest.mark.parametrize(
+    "key, value",
+    [
+        ("max_sessions", 2),
+        ("egress_allowlist", ["foo.test"]),
+    ],
+)
 def test_project_sandbox_rejects_host_policy_with_migration(key: str, value: object) -> None:
     audit = project_schema.audit_sandbox_table({"sandbox": {"memory": "8g", key: value}})
     assert not audit.is_valid

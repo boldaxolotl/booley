@@ -9,7 +9,8 @@ from pathlib import Path
 import pytest
 
 SPEC = importlib.util.spec_from_file_location(
-    "qa_record_faults", Path(__file__).resolve().parents[2] / "qa/shared/coverage/faults/record.py"
+    "qa_record_faults",
+    Path(__file__).resolve().parents[2] / "qa/shared/coverage/faults/record.py",
 )
 faults = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(faults)

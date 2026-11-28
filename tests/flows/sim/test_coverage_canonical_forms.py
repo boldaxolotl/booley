@@ -26,8 +26,14 @@ from booley.flows.sim.coverage_policy import (
     evaluate_coverage_record,
 )
 from booley.flows.sim.coverage_provenance import coverage_digest
-from booley.flows.sim.coverage_record import DurableTargetIdentity, decode_coverage_point_id
-from booley.flows.sim.coverage_record_store import load_coverage_record, publish_coverage_record
+from booley.flows.sim.coverage_record import (
+    DurableTargetIdentity,
+    decode_coverage_point_id,
+)
+from booley.flows.sim.coverage_record_store import (
+    load_coverage_record,
+    publish_coverage_record,
+)
 from booley.flows.sim.coverage_reference import (
     CoverageRecordReference,
     encode_coverage_record_reference,

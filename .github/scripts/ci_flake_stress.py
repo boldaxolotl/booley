@@ -11,37 +11,47 @@ binary and run only in bwave-integration, and the job deselects that marker.
 Only ordinary pull requests run the job: pushes, scheduled and manual runs, and
 Mergify queue drafts skip it. A failed repetition fails ``ci-required``.
 
+The Windows leg repeats only the changed modules registered as OS-specific.
+
 Cost cap: one repeat count serves the whole job, sized so the estimated serial
-Windows test time stays within ``BUDGET_SECONDS``. The Windows timing model
-records only slow tests, so each test function costs its recorded time or the
-model's default, floored per module at ``MODULE_FLOOR_SECONDS``. The count is
-at most ``MAX_COUNT``. When even ``MIN_COUNT`` repeats of every changed module would
-exceed the budget (a broad refactor), only the added modules are stressed; if
-they still do not fit, nothing is stressed. ``unstressed`` names the modules
+test time of every changed module stays within ``BUDGET_SECONDS``. The timing
+models record only slow tests, so each test function costs the larger of its
+recorded Windows and Linux times, or the default, floored per module at
+``MODULE_FLOOR_SECONDS``. The count is at most ``MAX_COUNT``. When even
+``MIN_COUNT`` repeats of every changed module would exceed the budget (a broad
+refactor), only the added modules are stressed; if they still do not fit,
+nothing is stressed. ``unstressed`` names the modules
 the cap dropped so the classifier can report them.
 """
 
 from __future__ import annotations
 
 import ast
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from ci_test_shards import load_timings
+from ci_test_shards import TimingModel, load_timings
 
 MAX_COUNT = 10
 MIN_COUNT = 3
-# Serial test-seconds on a Windows runner; four xdist workers make this roughly
+# Serial test-seconds on a runner; four xdist workers make this roughly
 # ten minutes of wall time, inside the job's 25-minute timeout.
 BUDGET_SECONDS = 2400.0
 MODULE_FLOOR_SECONDS = 5.0
 # Mergify validates queued pull requests on draft PRs from these branches. The
 # PR already passed flake-stress, so the queue skips it.
 QUEUE_BRANCH_PREFIX = "mergify/merge-queue/"
-# One repeat count serves both operating systems, so it is sized from the Windows
-# model, which therefore keeps the Sandbox-only entries Windows skips.
-TIMING_MODEL = Path(__file__).parents[2] / ".github/ci/windows-test-timings.json"
+# One repeat count serves both operating systems. The Windows model holds only the
+# OS-specific modules, so the Linux model prices the rest. The first model's
+# default prices a function neither records.
+TIMING_MODELS = tuple(
+    Path(__file__).parents[2] / f".github/ci/{system}-test-timings.json"
+    for system in ("windows", "linux")
+)
+# A literal tuple there, read without importing the module.
+_REGISTRY = "tests/os_specific.py"
+_REGISTRY_NAME = "OS_SPECIFIC_TESTS"
 # tests/fixtures/ holds sample projects whose tests run only inside them.
 _EXCLUDED_PREFIXES = ("tests/fixtures/",)
 _ADDED_STATUSES = frozenset("AC")
@@ -130,22 +140,53 @@ def _test_functions(tree: ast.Module | None) -> list[str]:
     return names
 
 
-def module_costs(
-    modules: Iterable[str], repo: Path, model_path: Path = TIMING_MODEL
-) -> dict[str, float]:
-    """Estimate each module's serial Windows seconds for one repetition."""
-    timings = load_timings(model_path)
-    recorded: dict[str, float] = {}  # parametrized cases summed per function
+def _recorded_per_function(timings: TimingModel) -> dict[str, float]:
+    """Sum the model's parametrized cases per test function."""
+    recorded: dict[str, float] = {}
     for node_id, seconds in timings.tests.items():
         function = node_id.split("[", 1)[0]
         recorded[function] = recorded.get(function, 0.0) + seconds
+    return recorded
+
+
+def module_costs(
+    modules: Iterable[str], repo: Path, model_paths: Sequence[Path] = TIMING_MODELS
+) -> dict[str, float]:
+    """Estimate each module's serial seconds for one repetition."""
+    models = [load_timings(path) for path in model_paths]
+    default = models[0].default_seconds
+    recorded: dict[str, float] = {}
+    for timings in models:
+        for function, seconds in _recorded_per_function(timings).items():
+            recorded[function] = max(seconds, recorded.get(function, 0.0))
     return {
         module: sum(
-            recorded.get(f"{module}::{name}", timings.default_seconds)
+            recorded.get(f"{module}::{name}", default)
             for name in _test_functions(_parse(repo / module))
         )
         for module in modules
     }
+
+
+def os_specific_modules(modules: Sequence[str], repo: Path) -> tuple[str, ...]:
+    """Keep the modules that ``repo``'s OS-specific registry lists.
+
+    The registry is parsed, not imported: importing it imports pytest, which the
+    ``changes`` job does not install.
+    """
+    if not modules:
+        return ()
+    source = repo / _REGISTRY
+    for node in ast.parse(source.read_bytes(), filename=str(source)).body:
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.target.id == _REGISTRY_NAME
+            and node.value is not None
+        ):
+            registered: tuple[str, ...] = ast.literal_eval(node.value)
+            return tuple(module for module in modules if module in registered)
+    raise ValueError(f"{_REGISTRY} assigns no {_REGISTRY_NAME}")
 
 
 def _fitting_count(modules: Iterable[str], costs: Mapping[str, float]) -> int:

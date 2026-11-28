@@ -191,7 +191,15 @@ def producer_run(
     url: str = "https://ci.example/run/100",
 ) -> watch_pr.ProducerRun:
     return watch_pr.ProducerRun(
-        workflow, event, status, conclusion, head_sha, attempt, created_at, database_id, url
+        workflow,
+        event,
+        status,
+        conclusion,
+        head_sha,
+        attempt,
+        created_at,
+        database_id,
+        url,
     )
 
 
@@ -249,8 +257,14 @@ def run_watch(
 def test_ci_waits_for_required_checks_and_uses_sixty_second_cadence() -> None:
     transport = FakeTransport(
         ci=[
-            snapshot(required_check_names={"ci-required"}, producer_runs=(producer_run(),)),
-            snapshot(checks=(check(bucket="pass"),), required_check_names={"ci-required"}),
+            snapshot(
+                required_check_names={"ci-required"},
+                producer_runs=(producer_run(),),
+            ),
+            snapshot(
+                checks=(check(bucket="pass"),),
+                required_check_names={"ci-required"},
+            ),
         ]
     )
     clock = FakeClock()
@@ -264,7 +278,10 @@ def test_ci_waits_for_required_checks_and_uses_sixty_second_cadence() -> None:
 
 @pytest.mark.parametrize(
     "state",
-    [snapshot(), snapshot(checks=(check(bucket="pass"),), required_check_names=set())],
+    [
+        snapshot(),
+        snapshot(checks=(check(bucket="pass"),), required_check_names=set()),
+    ],
     ids=["no-checks", "visible-checks"],
 )
 def test_ci_empty_required_rules_fail_closed(state: watch_pr.Snapshot) -> None:
@@ -293,7 +310,10 @@ def test_ci_waits_while_producer_requires_approval(status: str, conclusion: str 
     )
 
     result = run_watch(
-        FakeTransport(ci=[pending, pending, pending]), FakeClock(), mode="ci", timeout=180
+        FakeTransport(ci=[pending, pending, pending]),
+        FakeClock(),
+        mode="ci",
+        timeout=180,
     )
 
     assert result.outcome == "timeout"
@@ -349,7 +369,11 @@ def test_ci_uses_newest_producer_attempt() -> None:
     )
 
     decision = watch_pr.classify_missing_producers(
-        state, HEAD, watch_pr.CiMemory(), now=500, registration_grace_seconds=120
+        state,
+        HEAD,
+        watch_pr.CiMemory(),
+        now=500,
+        registration_grace_seconds=120,
     )
 
     assert decision.outcome == "pending"
@@ -456,7 +480,10 @@ def test_ci_expands_an_abbreviated_expected_head() -> None:
 
 @pytest.mark.parametrize(
     ("state", "expected"),
-    [(snapshot(head=NEXT_HEAD), "head_changed"), (snapshot(state="closed"), "closed")],
+    [
+        (snapshot(head=NEXT_HEAD), "head_changed"),
+        (snapshot(state="closed"), "closed"),
+    ],
 )
 def test_ci_returns_head_change_and_closure(state: watch_pr.Snapshot, expected: str) -> None:
     assert watch_pr.classify_ci(state, HEAD).outcome == expected
@@ -612,7 +639,10 @@ def test_queue_snapshot_reads_label_events_only_for_a_lone_dequeued_label(
     undated = {"id": 1, "body": "@mergifyio queue", "user": {"login": "owner"}}
     answer_reads(
         gh,
-        pull=[open_pull(labels=[{"name": "queued"}]), open_pull(labels=[{"name": "dequeued"}])],
+        pull=[
+            open_pull(labels=[{"name": "queued"}]),
+            open_pull(labels=[{"name": "dequeued"}]),
+        ],
         comments=json.dumps([[undated, comment], []]),
     )
     events = [
@@ -832,7 +862,13 @@ def test_cli_scenarios(
 
 
 def ci_argv(timeout: int, grace: int) -> list[str]:
-    return [*cli()[2:], *CI_MODE, str(grace), "--timeout-seconds", str(timeout)]
+    return [
+        *cli()[2:],
+        *CI_MODE,
+        str(grace),
+        "--timeout-seconds",
+        str(timeout),
+    ]
 
 
 @pytest.mark.parametrize(
@@ -903,7 +939,12 @@ def test_cancel_interrupts_quiet_polling_sleep(gh: PathToolFake) -> None:
     answer_reads(gh)
     # The test drives this Popen itself (SIGTERM, communicate).
     process = subprocess.Popen(
-        cli(*CI_MODE, str(2 * hang_guard_s()), "--timeout-seconds", str(4 * hang_guard_s())),
+        cli(
+            *CI_MODE,
+            str(2 * hang_guard_s()),
+            "--timeout-seconds",
+            str(4 * hang_guard_s()),
+        ),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

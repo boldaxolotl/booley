@@ -212,7 +212,9 @@ def metrics_from_document(raw: object) -> FlowMetricValues | MetricsUnavailable 
     )
 
 
-def metrics_by_target(detail: dict[str, Any]) -> dict[str, FlowMetricValues | MetricsUnavailable]:
+def metrics_by_target(
+    detail: dict[str, Any],
+) -> dict[str, FlowMetricValues | MetricsUnavailable]:
     """Each Target's values from a report's ``detail.metrics`` map; the inverse of the writer."""
     values: dict[str, FlowMetricValues | MetricsUnavailable] = {}
     for target, raw in (as_dict(detail.get("metrics")) or {}).items():

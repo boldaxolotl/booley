@@ -1,11 +1,11 @@
-"""A fake of the operating-system process a Checkout Flow child wraps."""
+"""A fake of the process-control boundary: an operating-system process a patched ``Popen`` returns."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
 
-@dataclass
+@dataclass(eq=False)  # hashed by identity, as a ``Popen`` is
 class FakeProcess:
     """A ``Popen`` stand-in for a Flow child that never existed: ``wait`` ends it at once.
 

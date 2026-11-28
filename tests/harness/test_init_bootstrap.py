@@ -21,7 +21,6 @@ from booley.runtime.image_lifecycle import (
     LifecycleResult,
     Status,
 )
-from tests.docker_cli_guard import forbid_docker_cli
 from tests.harness.init_agent_support import (
     empty_host,
     login,
@@ -48,7 +47,8 @@ def _args(**overrides: object) -> argparse.Namespace:
 
 
 def _finding(
-    state: init_cmd.BootstrapState, resource: str = "resource"
+    state: init_cmd.BootstrapState,
+    resource: str = "resource",
 ) -> bootstrap.BootstrapFinding:
     return bootstrap.BootstrapFinding(resource, state, state.value)
 
@@ -61,7 +61,10 @@ def test_init_coordinators_fit_on_a_screen(coordinator: str) -> None:
 
 
 def _host_setup_run(
-    operation: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invoked: list[str]
+    operation: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    invoked: list[str],
 ) -> Callable[[], int]:
     if operation == "init":
         # private: stands for everything after the lock, which needs Docker-backed
@@ -76,7 +79,8 @@ def _host_setup_run(
         bootstrap_cli,
         "register_host_installation",
         lambda *_args, **_kwargs: SimpleNamespace(
-            version="1.0", payload_fingerprint="abcdef123456"
+            version="1.0",
+            payload_fingerprint="abcdef123456",
         ),
     )
     monkeypatch.setattr(
@@ -104,7 +108,10 @@ def test_host_setup_waits_for_lifecycle_lock(
     )
     run = _host_setup_run(operation, tmp_path, monkeypatch, invoked)
 
-    with held_lifecycle_lock(lock_path) as holder, ThreadPoolExecutor(max_workers=1) as executor:
+    with (
+        held_lifecycle_lock(lock_path) as holder,
+        ThreadPoolExecutor(max_workers=1) as executor,
+    ):
         result = executor.submit(run)
         assert waiting.wait(hang_guard_s())
         assert not result.done()
@@ -227,7 +234,8 @@ def test_retired_project_policy_fails_before_project_mutation(
     booley_dir.mkdir()
     config = booley_dir / "booley.toml"
     config.write_text(
-        f"[{table}]\nidle_timeout_seconds = 600\nmax_sessions = 2\n", encoding="utf-8"
+        f"[{table}]\nidle_timeout_seconds = 600\nmax_sessions = 2\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(
         init_cmd,
@@ -244,7 +252,8 @@ def test_retired_project_policy_fails_before_project_mutation(
 
 
 @pytest.mark.parametrize(
-    ("force", "outcome"), [(True, "current"), (False, "external"), (True, "capacity")]
+    ("force", "outcome"),
+    [(True, "current"), (False, "external"), (True, "capacity")],
 )
 def test_init_image_step_records_each_reconciliation_outcome(
     tmp_path: Path,
@@ -304,7 +313,6 @@ def test_seed_refuses_uncurrent_images_without_repair_or_spec_write(
     repair: str,
 ) -> None:
     empty_host(tmp_path, monkeypatch)
-    forbid_docker_cli(monkeypatch)
     project_config(tmp_path, b'[agent]\ndefault = "claude"\n')
     spec = tmp_path / ".devcontainer" / "devcontainer.json"
     spec.parent.mkdir()
@@ -436,16 +444,20 @@ def test_seed_accepts_absent_proxy_and_network_under_unproxied(
     from booley.config.host_config import SandboxHostPolicy
     from booley.harness import host_sidecars
     from tests.harness.test_bootstrap import _wire_current
-    from tests.harness.test_host_sidecars import _egress_docker
+    from tests.harness.test_host_sidecars import _add_sidecar, _egress_docker, _mutations
 
     reconcile_sidecars = host_sidecars.reconcile_sidecars
     _wire_current(monkeypatch)
     monkeypatch.setattr(host_sidecars, "reconcile_sidecars", reconcile_sidecars)
     policy = SandboxHostPolicy(egress="unproxied")
     monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: policy)
-    docker = _egress_docker(monkeypatch)
-    docker.add_sidecar(
-        host_sidecars.legacy.REAPER_CONTAINER, "reaper", host_sidecars.legacy.REAPER_IMAGE, policy
+    docker = _egress_docker(tmp_path / "docker", monkeypatch)
+    _add_sidecar(
+        docker,
+        host_sidecars.legacy.REAPER_CONTAINER,
+        "reaper",
+        host_sidecars.legacy.REAPER_IMAGE,
+        policy,
     )
     ctx = init_cmd.InitContext(project_root=tmp_path)
 
@@ -455,4 +467,4 @@ def test_seed_accepts_absent_proxy_and_network_under_unproxied(
 
     assert result is not None, "absent proxy and network are current under unproxied"
     assert "run `booley bootstrap`" not in capsys.readouterr().out
-    assert docker.mutations() == []
+    assert _mutations(docker) == []

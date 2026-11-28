@@ -110,7 +110,10 @@ def test_conflicting_cross_file_renames_are_not_resolved() -> None:
     changes = {
         "a.py": ("class CampaignStore:\n    pass\n", "class RecordStore:\n    pass\n"),
         "b.py": ("class CampaignStore:\n    pass\n", "class RecordCache:\n    pass\n"),
-        "__init__.py": ("from .a import CampaignStore\n", "from .a import RecordStore\n"),
+        "__init__.py": (
+            "from .a import CampaignStore\n",
+            "from .a import RecordStore\n",
+        ),
     }
     assert sorted(excluded_paths(changes)) == ["a.py", "b.py"]
 

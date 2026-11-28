@@ -124,7 +124,10 @@ _SUBSCRIPTION_CREDS = {
 # (Claude: settings.json ``env``; Codex: ``auth.json``). Kept outside the
 # app's state dir (``~/.claude``/``~/.codex``) to dodge state-volume nesting,
 # same as the subscription-creds seed sidecars.
-TOKEN_SEED_BASENAME = {APP_CLAUDE: ".booley-oauth-token-seed", APP_CODEX: ".booley-api-key-seed"}
+TOKEN_SEED_BASENAME = {
+    APP_CLAUDE: ".booley-oauth-token-seed",
+    APP_CODEX: ".booley-api-key-seed",
+}
 
 
 def credential_for_app(app: str) -> AppCredential | None:
@@ -221,7 +224,11 @@ def _env_or_stored_source(app: str, cred: AppCredential, env_token: str) -> str:
 
 
 def _api_key_policy_credential(
-    app: str, cred: AppCredential, env_token: str, stored: str | None, api_key_is_distinct: bool
+    app: str,
+    cred: AppCredential,
+    env_token: str,
+    stored: str | None,
+    api_key_is_distinct: bool,
 ) -> EffectiveCredential | None:
     """Resolve under ``[agent] auth = "api_key"``, where only the API key may bill.
 

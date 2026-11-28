@@ -23,13 +23,19 @@ def test_report_binds_checks_and_runtime_state_to_candidate() -> None:
 
     assert payload == {
         "schema": 1,
-        "candidate": {"sha": "candidate-sha", "images": {"sandbox": "sha256:image"}},
+        "candidate": {
+            "sha": "candidate-sha",
+            "images": {"sandbox": "sha256:image"},
+        },
         "checks": [
             {"id": "demo.lint", "status": "pass"},
             {"id": "demo.simulation", "status": "pass"},
         ],
         "identity": {"uid": 1000, "gid": 1000},
-        "cleanup": {"container_removed": True, "workspace_ownership_restored": True},
+        "cleanup": {
+            "container_removed": True,
+            "workspace_ownership_restored": True,
+        },
     }
 
 
@@ -38,9 +44,14 @@ def test_report_rejects_ambiguous_or_incomplete_evidence() -> None:
         evidence.report(candidate_sha="sha", images={}, check_ids=["check"])
     with pytest.raises(ValueError, match="unique"):
         evidence.report(
-            candidate_sha="sha", images={"sandbox": "digest"}, check_ids=["same", "same"]
+            candidate_sha="sha",
+            images={"sandbox": "digest"},
+            check_ids=["same", "same"],
         )
     with pytest.raises(ValueError, match="provided together"):
         evidence.report(
-            candidate_sha="sha", images={"sandbox": "digest"}, check_ids=["check"], uid=1000
+            candidate_sha="sha",
+            images={"sandbox": "digest"},
+            check_ids=["check"],
+            uid=1000,
         )

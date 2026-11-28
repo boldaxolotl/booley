@@ -24,6 +24,7 @@ from importlib import resources
 from pathlib import Path
 from typing import BinaryIO
 
+from booley.core.file_hash import file_sha256
 from booley.runtime.auth_token import config_dir
 
 REVISION = "a008522d88b669ac4c985609533cf5a3d2649222"
@@ -115,14 +116,6 @@ def secure_config_dir_for_cache(root: Path) -> bool:
     return not existed or (os.name != "nt" and previous_mode != 0o700)
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def _license_bytes() -> bytes:
     return resources.files("booley").joinpath("data", "licenses", LICENSE_FILENAME).read_bytes()
 
@@ -142,7 +135,7 @@ def _inspect_member(root: Path, item: PinnedFile) -> CacheInspection:
             return CacheInspection(
                 (), (f"cache file conflicts with nonregular path {path}; remove or rename {path}",)
             )
-        actual = _sha256(path)
+        actual = file_sha256(path)
     except FileNotFoundError:
         return CacheInspection((f"missing {item.destination}",), ())
     except OSError as exc:
@@ -189,7 +182,7 @@ def validation_errors(root: Path | None = None) -> tuple[str, ...]:
             errors.append(f"missing {item.destination}")
             continue
         try:
-            actual = _sha256(path)
+            actual = file_sha256(path)
         except OSError as exc:
             errors.append(f"cannot read {item.destination}: {exc}")
             continue
@@ -273,7 +266,11 @@ def _manifest_bytes() -> bytes:
         "revision": REVISION,
         "source_repository": "https://github.com/The-OpenROAD-Project/OpenROAD",
         "files": [
-            {"destination": item.destination, "sha256": item.sha256, "url": item.url}
+            {
+                "destination": item.destination,
+                "sha256": item.sha256,
+                "url": item.url,
+            }
             for item in FILES
         ],
     }

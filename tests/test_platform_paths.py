@@ -57,8 +57,8 @@ from tests.time_budget import SCALE_VARIABLE, hang_guard_s, scaled
         (False, lambda: native_binary(Path("/bin"), "bwave").as_posix(), "/bin/bwave"),
         (True, lambda: native_binary(Path("/bin"), "bwave").as_posix(), "/bin/bwave.exe"),
         (False, popen_new_group_kwargs, {"start_new_session": True}),
-        # 0x200 is the Win32 CREATE_NEW_PROCESS_GROUP flag.
-        (True, popen_new_group_kwargs, {"creationflags": 0x200}),
+        # Win32 CREATE_NEW_PROCESS_GROUP (0x200) and CREATE_SUSPENDED (0x4).
+        (True, popen_new_group_kwargs, {"creationflags": 0x200 | 0x4}),
         (
             False,
             lambda: host_path_from_docker_mount("/home/dev/project").as_posix(),
@@ -129,7 +129,13 @@ def test_cargo_bin_falls_back_to_msys2_only_on_windows(
 @pytest.mark.skipif(sys.platform == "win32", reason="os.killpg is a POSIX API")
 def test_kill_process_tree_kills_descendants_after_wrapper_exits():
     proc = type(
-        "Proc", (), {"pid": 123, "poll": lambda self: None, "wait": lambda self, timeout: 0}
+        "Proc",
+        (),
+        {
+            "pid": 123,
+            "poll": lambda self: None,
+            "wait": lambda self, timeout: 0,
+        },
     )()
     signals: list[tuple[int, int]] = []
 
@@ -139,7 +145,11 @@ def test_kill_process_tree_kills_descendants_after_wrapper_exits():
     with patch("os.killpg", side_effect=fake_killpg):
         kill_process_tree(proc)
 
-    assert signals == [(123, signal.SIGTERM), (123, 0), (123, signal.SIGKILL)]
+    assert signals == [
+        (123, signal.SIGTERM),
+        (123, 0),
+        (123, signal.SIGKILL),
+    ]
 
 
 def test_run_captured_bounded_kills_the_tree_when_interrupted():
@@ -206,7 +216,9 @@ def test_run_captured_bounded_runs_in_cwd_with_env(tmp_path: Path):
 # ---------------------------------------------------------------------------
 
 
-def test_same_host_path_spelling_decides_before_the_filesystem(monkeypatch: pytest.MonkeyPatch):
+def test_same_host_path_spelling_decides_before_the_filesystem(
+    monkeypatch: pytest.MonkeyPatch,
+):
     monkeypatch.setattr(os.path, "normcase", ntpath.normcase)
     assert platform_paths.same_host_path("C:/Users/Dev", Path("c:\\users\\dev"))
 

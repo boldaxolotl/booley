@@ -120,7 +120,10 @@ _DEFAULT = _files(("docs/internals/ARCHITECTURE.md", "postreview", "default"))
 
 
 def _main(
-    gh: FakeGh, monkeypatch: pytest.MonkeyPatch, *argv: str, classifier: Any = _DEFAULT
+    gh: FakeGh,
+    monkeypatch: pytest.MonkeyPatch,
+    *argv: str,
+    classifier: Any = _DEFAULT,
 ) -> int:
     monkeypatch.setenv("GH_REPO", "o/r")
     return digest.main(["--cutoff", _CUTOFF, *argv], gh=gh, classify_pr=classifier)
@@ -378,7 +381,10 @@ def test_dry_run_prints_digest_and_writes_nothing(
     ],
 )
 def test_failure_opens_no_issue_and_exits_1(
-    failure: str, message: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    failure: str,
+    message: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     def broken(sha: str) -> dict[str, object]:
         raise ClassifierError("git diff failed")

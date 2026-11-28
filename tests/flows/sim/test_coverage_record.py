@@ -95,7 +95,7 @@ def _valid_tests() -> dict[str, object]:
                 "simulation_verdict": "pass",
                 "collection": "included",
                 "raw_artifact": "artifact:raw-reset",
-            }
+            },
         ],
     }
 
@@ -199,7 +199,10 @@ def _codes(document: dict[str, object]) -> list[tuple[str, str]]:
 def test_known_literal_decodes_to_immutable_coverage_record_and_encodes_canonically() -> None:
     document = _valid_document()
 
-    coverage_record = decode_document(copy.deepcopy(document), _TARGET)
+    coverage_record = decode_document(
+        copy.deepcopy(document),
+        _TARGET,
+    )
 
     assert coverage_record.coverage_record_id == "campaign:sim_counter:2026-09-01T10:30:00Z"
     assert coverage_record.target.identity == "acme:demo:counter:1.0#sim_counter"
@@ -219,7 +222,11 @@ def test_evaluated_coverage_record_preserves_exact_metric_evidence() -> None:
         "status": "pass",
         "criterion_fingerprint": _fingerprint("c"),
         "approved_waiver_set_digest": _fingerprint("d"),
-        "suite": {"status": "match", "required": ["reset"], "selected": ["reset"]},
+        "suite": {
+            "status": "match",
+            "required": ["reset"],
+            "selected": ["reset"],
+        },
         "thresholds": {"line": 100},
         "metrics": [
             {
@@ -278,7 +285,10 @@ def test_evaluated_metrics_use_fixed_order_independent_of_threshold_key_order() 
                 },
                 "hierarchy": "TOP.counter",
                 "subject": {"outcome": "true"},
-                "collector": {"record_type": "v_branch", "native_key": "12:branch-true"},
+                "collector": {
+                    "record_type": "v_branch",
+                    "native_key": "12:branch-true",
+                },
             },
             "hits_by_run": {"run:reset": 1},
             "disposition": {"kind": "eligible"},
@@ -323,7 +333,10 @@ def test_evaluated_metrics_use_fixed_order_independent_of_threshold_key_order() 
         "diagnostics": [],
     }
 
-    coverage_record = decode_document(document, _TARGET)
+    coverage_record = decode_document(
+        document,
+        _TARGET,
+    )
 
     assert [item["metric"] for item in coverage_record.evaluation["metrics"]] == ["line", "branch"]
 
@@ -337,7 +350,10 @@ def test_decoder_aggregates_semantic_findings_with_stable_json_pointers() -> Non
     document["points"][0]["hits_by_run"] = {"run:ghost": 0}
 
     with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(document, _TARGET)
+        decode_document(
+            document,
+            _TARGET,
+        )
 
     assert [(finding.code, finding.pointer) for finding in caught.value.findings] == [
         ("COV_TARGET_MISMATCH", "/target/identity"),
@@ -397,7 +413,10 @@ def test_invalid_coverage_record_message_names_all_point_defects_in_stable_order
     )
 
     with pytest.raises(CoverageRecordValidationError) as caught:
-        decode_document(document, _TARGET)
+        decode_document(
+            document,
+            _TARGET,
+        )
 
     error = caught.value
     duplicate_text = "COV_POINT_ID_DUPLICATE at /points/1/id"
@@ -436,7 +455,10 @@ def test_unknown_native_record_is_retained_without_blocking_known_evidence() -> 
         }
     ]
 
-    coverage_record = decode_document(document, _TARGET)
+    coverage_record = decode_document(
+        document,
+        _TARGET,
+    )
 
     assert coverage_record.collector.capabilities[-1].status == "reported"
     assert coverage_record.normalization["unrecognized_records"][0]["record_ordinal"] == 27
@@ -457,7 +479,10 @@ def test_incompatible_native_format_round_trips_without_normalized_evidence() ->
     document["evaluation"]["status"] = "blocked"
     document["evaluation"]["diagnostics"] = ["COV_NATIVE_FORMAT_INCOMPATIBLE"]
 
-    coverage_record = decode_document(document, _TARGET)
+    coverage_record = decode_document(
+        document,
+        _TARGET,
+    )
 
     assert coverage_record.points == ()
     assert coverage_record.normalization["status"] == "incompatible"
@@ -505,7 +530,10 @@ def test_encoder_canonicalizes_legacy_invocation_timestamp() -> None:
     document = _valid_document()
     document["invocation"]["started_at"] = "2026-09-01T14:30:00.987654+04:00"
 
-    coverage_record = decode_document(document, _TARGET)
+    coverage_record = decode_document(
+        document,
+        _TARGET,
+    )
 
     encoded = encode_coverage_record(coverage_record)
     assert encoded["invocation"]["started_at"] == "2026-09-01T10:30:00Z"
@@ -516,7 +544,12 @@ def test_points_require_reported_capabilities_and_exact_dispositions() -> None:
     document["collector"]["capabilities"][0]["status"] = "maybe"
     document["points"][0]["disposition"] = {"kind": "waived"}
     document["rollups"][0].update(
-        {"eligible_points": 0, "covered_points": 0, "waived_points": 1, "percent": None}
+        {
+            "eligible_points": 0,
+            "covered_points": 0,
+            "waived_points": 1,
+            "percent": None,
+        }
     )
 
     assert _codes(document) == [
@@ -590,7 +623,12 @@ def test_a_scored_verdict_without_a_matching_suite_is_refused_before_its_require
         "suite": {"status": "complete"},
         "thresholds": {"line": 50.0},
         "metrics": [
-            {"metric": "line", "actual_percent": 100.0, "minimum_percent": 50.0, "verdict": "fail"}
+            {
+                "metric": "line",
+                "actual_percent": 100.0,
+                "minimum_percent": 50.0,
+                "verdict": "fail",
+            }
         ],
         "diagnostics": [],
     }
@@ -610,10 +648,19 @@ def test_encoder_canonicalizes_nested_json_object_key_order() -> None:
     first = _valid_document()
     second = copy.deepcopy(first)
     source = second["source_closure"]["rtl"][0]
-    second["source_closure"]["rtl"][0] = {"sha256": source["sha256"], "path": source["path"]}
+    second["source_closure"]["rtl"][0] = {
+        "sha256": source["sha256"],
+        "path": source["path"],
+    }
 
-    first_coverage_record = decode_document(first, _TARGET)
-    second_coverage_record = decode_document(second, _TARGET)
+    first_coverage_record = decode_document(
+        first,
+        _TARGET,
+    )
+    second_coverage_record = decode_document(
+        second,
+        _TARGET,
+    )
 
     assert json.dumps(encode_coverage_record(first_coverage_record)) == json.dumps(
         encode_coverage_record(second_coverage_record)

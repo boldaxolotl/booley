@@ -44,7 +44,9 @@ def _has_jobs_option(tokens: Sequence[str]) -> bool:
 
 
 def verilator_backend_arguments(
-    inspection: TargetInspection, *, lane_kind: LaneKind = "admitted"
+    inspection: TargetInspection,
+    *,
+    lane_kind: LaneKind = "admitted",
 ) -> tuple[str, ...]:
     """Return only Booley-owned backend options for one Verilator setup.
 

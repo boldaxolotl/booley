@@ -84,7 +84,8 @@ def test_windows_open_does_not_require_missing_pywin32_constant(
         return (0,)
 
     win32file = SimpleNamespace(
-        CreateFile=create_file, GetFileInformationByHandle=file_information
+        CreateFile=create_file,
+        GetFileInformationByHandle=file_information,
     )
     _fake_pywin32(monkeypatch, win32file, OSError)
 
@@ -334,10 +335,15 @@ def test_unreadable_configured_directory_is_rejected(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("link_kind", "expected_code"),
-    [("directory", "COV_WAIVER_DIRECTORY_SYMLINK"), ("file", "COV_WAIVER_FILE_SYMLINK")],
+    [
+        ("directory", "COV_WAIVER_DIRECTORY_SYMLINK"),
+        ("file", "COV_WAIVER_FILE_SYMLINK"),
+    ],
 )
 def test_nested_symlinks_are_rejected_without_loading_targets(
-    tmp_path: Path, link_kind: str, expected_code: str
+    tmp_path: Path,
+    link_kind: str,
+    expected_code: str,
 ) -> None:
     roots = _roots(tmp_path)
     waiver_directory = roots.project_data_repository / "coverage-waivers"
@@ -464,7 +470,9 @@ def test_unknown_target_inexact_binding_bad_timestamp_and_missing_proof_aggregat
     ]
 
 
-def test_incomplete_canonical_point_identity_is_rejected_during_loading(tmp_path: Path) -> None:
+def test_incomplete_canonical_point_identity_is_rejected_during_loading(
+    tmp_path: Path,
+) -> None:
     roots = _roots(tmp_path)
     waiver_file = _write_valid_approval(roots)
     document = waiver_file.read_text(encoding="utf-8").replace(_POINT_ID, _incomplete_point_id())
@@ -718,7 +726,10 @@ def test_one_stale_match_blocks_evaluation_and_applies_no_valid_sibling(tmp_path
     assert [item["code"] for item in evaluated.evaluation["diagnostics"]] == [
         "COV_WAIVER_POINT_STALE"
     ]
-    assert [point.disposition["kind"] for point in evaluated.points] == ["eligible", "eligible"]
+    assert [point.disposition["kind"] for point in evaluated.points] == [
+        "eligible",
+        "eligible",
+    ]
     assert evaluated.rollups[0].waived_points == 0
 
 
@@ -771,7 +782,10 @@ def test_exact_match_applies_approval_provenance_and_passes_policy(
     ],
 )
 def test_ambiguous_or_ineligible_match_blocks_without_applying(
-    tmp_path: Path, case: str, expected_code: str, expected_message: str
+    tmp_path: Path,
+    case: str,
+    expected_code: str,
+    expected_message: str,
 ) -> None:
     roots = _roots(tmp_path)
     _write_valid_approval(roots)
@@ -832,7 +846,8 @@ def test_known_other_target_approval_is_valid_but_inapplicable(tmp_path: Path) -
     roots = _roots(tmp_path)
     waiver_file = _write_valid_approval(roots)
     waiver_file.write_text(
-        waiver_file.read_text(encoding="utf-8").replace(str(_TARGET), str(other)), encoding="utf-8"
+        waiver_file.read_text(encoding="utf-8").replace(str(_TARGET), str(other)),
+        encoding="utf-8",
     )
     approved = _load(roots, (_TARGET, other))
 
@@ -856,7 +871,8 @@ def test_digest_is_stable_for_creation_order_and_sensitive_to_exact_file_bytes(
     first = _load(first_roots)
     second = _load(second_roots)
     second_file.write_text(
-        f"# reviewed formatting edit\n{second_file.read_text(encoding='utf-8')}", encoding="utf-8"
+        f"# reviewed formatting edit\n{second_file.read_text(encoding='utf-8')}",
+        encoding="utf-8",
     )
     formatted = _load(second_roots)
 
@@ -864,7 +880,10 @@ def test_digest_is_stable_for_creation_order_and_sensitive_to_exact_file_bytes(
     assert formatted.digest != second.digest
     assert formatted.waivers[0].waiver_fingerprint != second.waivers[0].waiver_fingerprint
     assert (
-        replace(formatted.waivers[0], waiver_fingerprint=second.waivers[0].waiver_fingerprint)
+        replace(
+            formatted.waivers[0],
+            waiver_fingerprint=second.waivers[0].waiver_fingerprint,
+        )
         == second.waivers[0]
     )
 

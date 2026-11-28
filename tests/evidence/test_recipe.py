@@ -1,6 +1,10 @@
 from pathlib import Path
 
-from booley.evidence.recipe import jsonable, recipe_changes, recipe_snapshot_fingerprint
+from booley.evidence.recipe import (
+    jsonable,
+    recipe_changes,
+    recipe_snapshot_fingerprint,
+)
 
 
 def test_jsonable_and_fingerprint_are_deterministic() -> None:

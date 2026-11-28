@@ -6,7 +6,12 @@ from pathlib import Path
 from rich.console import Console
 from rich.style import Style
 
-from booley.harness.dashboard.app import SEMANTIC_STYLE, DashboardApp, job_detail, job_paths
+from booley.harness.dashboard.app import (
+    SEMANTIC_STYLE,
+    DashboardApp,
+    job_detail,
+    job_paths,
+)
 from booley.harness.dashboard.jobs import JobView
 from booley.harness.dashboard.links import linked_text
 from booley.presentation.report_results import ResultLine, present_report, project_facts
@@ -76,7 +81,7 @@ def test_details_never_dump_structures():
                     "report_text": "{\"bad\": 1}\n{'bad': 2}\n\x1b[31mbad",
                 }
             )
-        )
+        ),
     ]
     for text in texts:
         assert "{'" not in text and '{"' not in text and "json.dumps" not in text, (

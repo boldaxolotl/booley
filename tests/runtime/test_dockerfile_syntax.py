@@ -5,7 +5,10 @@ from __future__ import annotations
 import pytest
 
 from booley.runtime import dockerfile_syntax
-from booley.runtime.dockerfile_syntax import build_context_imports, logical_instructions
+from booley.runtime.dockerfile_syntax import (
+    build_context_imports,
+    logical_instructions,
+)
 
 
 def test_continuations_skip_interior_comments_and_blank_lines() -> None:

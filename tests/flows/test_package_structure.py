@@ -132,7 +132,10 @@ def test_backend_adapters_do_not_import_sibling_adapters() -> None:
             "icarus": ("icarus.py",),
             "verilator": ("verilator.py",),
         },
-        "synth": {"openroad": ("openroad",), "yosys": ("yosys",)},
+        "synth": {
+            "openroad": ("openroad",),
+            "yosys": ("yosys",),
+        },
     }
     for flow, adapters in owners.items():
         backends = FLOWS_ROOT / flow / "backends"

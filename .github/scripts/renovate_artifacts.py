@@ -84,7 +84,12 @@ def _run_tool(argv: list[str], cwd: Path) -> None:
     name = argv[0]
     try:
         result = subprocess.run(
-            argv, cwd=cwd, capture_output=True, text=True, timeout=_TIMEOUT_SECONDS, check=False
+            argv,
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            timeout=_TIMEOUT_SECONDS,
+            check=False,
         )
     except subprocess.TimeoutExpired as error:
         raise ArtifactError(f"{name} timed out after {_TIMEOUT_SECONDS}s") from error

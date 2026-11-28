@@ -329,7 +329,9 @@ def _core_schema_findings(
     return findings, rejection
 
 
-def _fusesoc_core_rejection(core_file: Path) -> fusesoc_registry.FuseSocCoreRejection | None:
+def _fusesoc_core_rejection(
+    core_file: Path,
+) -> fusesoc_registry.FuseSocCoreRejection | None:
     """FuseSoC's verdict on a readable ``.core``; unreadable files have their own row."""
     try:
         fusesoc_registry.read_core(core_file)

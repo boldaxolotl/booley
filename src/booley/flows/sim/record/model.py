@@ -18,7 +18,9 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 FrozenJson: TypeAlias = JsonScalar | tuple["FrozenJson", ...] | Mapping[str, "FrozenJson"]
 
 
-def simulation_status_from_observations(observations: tuple[Mapping[str, object], ...]) -> str:
+def simulation_status_from_observations(
+    observations: tuple[Mapping[str, object], ...],
+) -> str:
     """Reduce Simulation Record observations to the endpoint simulation vocabulary."""
     executions = {item["execution"] for item in observations}
     functional = {item["functional"] for item in observations}
@@ -183,11 +185,15 @@ class SimulationRecordPlan:
         instance = object.__new__(cls)
         object.__setattr__(instance, "manifest", manifest)
         object.__setattr__(
-            instance, "work_item_ids", tuple(cast(str, item["work_item_id"]) for item in items)
+            instance,
+            "work_item_ids",
+            tuple(cast(str, item["work_item_id"]) for item in items),
         )
         return instance
 
 
-def create_simulation_record_plan(manifest: SimulationRecordManifest) -> SimulationRecordPlan:
+def create_simulation_record_plan(
+    manifest: SimulationRecordManifest,
+) -> SimulationRecordPlan:
     """Derive the immutable scheduled work-item order of a decoded manifest."""
     return SimulationRecordPlan._from_validated_manifest(manifest)

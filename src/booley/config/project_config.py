@@ -1,7 +1,7 @@
 """Project configuration — single source of truth loaded from project/ TOMLs.
 
 Shared by simulation, synthesis, Flows, MCP tools, and pipeline scripts. Any config-related
-change should happen in booley.toml and configs.toml in the Booley Directory.
+change should happen in booley.toml and tests.toml in the Booley Directory.
 """
 
 from __future__ import annotations
@@ -57,7 +57,14 @@ _CONFIG_CACHE: dict[str, Any] | None = None
 # Names resolved lazily from project config. Exposed via ``__getattr__`` and
 # read internally via ``_get`` (which honors test monkeypatches).
 _LAZY_NAMES = frozenset(
-    {"PROJECT_NAME", "ENV_PREFIX", "TEST_NAMES", "TEST_SELECT", "TEST_SKIP", "TEST_ENV"}
+    {
+        "PROJECT_NAME",
+        "ENV_PREFIX",
+        "TEST_NAMES",
+        "TEST_SELECT",
+        "TEST_SKIP",
+        "TEST_ENV",
+    }
 )
 
 
@@ -71,8 +78,7 @@ def _load_config() -> dict[str, Any]:
     defaults (``rtl_project`` name, human-in-the-loop on, no tests).
 
     ``tests.toml`` holds verification-intent (a ``(Target, plusarg)`` pair) keyed
-    by Target name — not design-description, which lives in the ``.core``
-    (ADR 0022 decisions 15/16).
+    by Target name — not design-description, which lives in the ``.core``.
     """
     global _CONFIG_CACHE
     if _CONFIG_CACHE is not None:
@@ -193,65 +199,24 @@ def project_name(work_dir: Path | None = None) -> str:
 TEST_LISTS_TABLE = "test_lists"
 
 
-def normalize_configs_toml(raw: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
-    """Resolve configs.toml-local test list references.
-
-    ``[test_lists]`` is a reserved top-level table. Config sections may keep
-    using inline ``tests = [...]`` or reference one shared list with
-    ``test_list = "name"``.
-    """
-    if not isinstance(raw, Mapping):
-        raise ValueError("configs.toml must contain TOML tables")
-
-    test_lists = _normalize_test_lists(raw.get(TEST_LISTS_TABLE, {}))
-    return {
-        config_name: _normalize_config_section(config_name, section, test_lists)
-        for config_name, section in raw.items()
-        if config_name != TEST_LISTS_TABLE
-    }
-
-
-def _normalize_test_lists(
-    raw_test_lists: Any, *, source: str = "configs.toml"
-) -> dict[str, list[str]]:
+def _normalize_test_lists(raw_test_lists: Any) -> dict[str, list[str]]:
     if raw_test_lists is None:
         raw_test_lists = {}
     if not isinstance(raw_test_lists, Mapping):
-        raise ValueError(f"{source} [test_lists] must be a table")
+        raise ValueError("tests.toml [test_lists] must be a table")
 
     test_lists: dict[str, list[str]] = {}
     for list_name, tests in raw_test_lists.items():
         if not isinstance(list_name, str) or not list_name.strip():
-            raise ValueError(f"{source} [test_lists] names must be non-empty strings")
+            raise ValueError("tests.toml [test_lists] names must be non-empty strings")
         if not is_str_list(tests):
-            raise ValueError(f"{source} [test_lists].{list_name} must be list[str]")
+            raise ValueError(f"tests.toml [test_lists].{list_name} must be list[str]")
         test_lists[list_name] = list(tests)
     return test_lists
 
 
-def _normalize_config_section(
-    config_name: str, section: Any, test_lists: Mapping[str, list[str]]
-) -> dict[str, Any]:
-    if not isinstance(section, Mapping):
-        raise ValueError(f"configs.toml [{config_name}] must be a table")
-    normalized = dict(section)
-    list_ref = normalized.pop("test_list", None)
-    if list_ref is None:
-        return normalized
-    if "tests" in normalized:
-        raise ValueError(f"configs.toml [{config_name}] must not set both tests and test_list")
-    if not isinstance(list_ref, str) or not list_ref.strip():
-        raise ValueError(f"configs.toml [{config_name}].test_list must be a non-empty string")
-    if list_ref not in test_lists:
-        raise ValueError(
-            f"configs.toml [{config_name}].test_list references unknown test list '{list_ref}'"
-        )
-    normalized["tests"] = list(test_lists[list_ref])
-    return normalized
-
-
 # ---------------------------------------------------------------------------
-# tests.toml — Booley-owned per-Target test registry (ADR 0022 decision 16)
+# tests.toml — Booley-owned per-Target test registry
 # ---------------------------------------------------------------------------
 
 # Default per-Target test selector. Preserves the legacy ``+test_id=N`` TB
@@ -327,8 +292,7 @@ def normalize_tests_toml(raw: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """Normalize tests.toml — the per-Target test registry (decisions 15/16).
 
     Each Target section may declare an ordered ``tests = [...]`` list (or
-    reference a shared ``[test_lists]`` entry via ``test_list = "name"``, the
-    same mechanism configs.toml used) plus an optional single-token ``select``
+    reference a shared ``[test_lists]`` entry via ``test_list = "name"``) plus an optional single-token ``select``
     option template, an optional ``skip = [...]`` known-hang exclusion list, and an
     optional ``env = { NAME = "value" }`` table injected into the simulator
     process. ``[test_lists]`` is a reserved top-level table.
@@ -339,7 +303,7 @@ def normalize_tests_toml(raw: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
     """
     if not isinstance(raw, Mapping):
         raise ValueError("tests.toml must contain TOML tables")
-    test_lists = _normalize_test_lists(raw.get(TEST_LISTS_TABLE, {}), source="tests.toml")
+    test_lists = _normalize_test_lists(raw.get(TEST_LISTS_TABLE, {}))
     for list_name, names in test_lists.items():
         _validate_test_names(f"[{TEST_LISTS_TABLE}].{list_name}", names)
     return {
@@ -379,7 +343,10 @@ def load_test_configuration(work_dir: Path | str) -> dict[str, dict[str, Any]]:
         return {}
 
 
-def load_test_configuration_field(work_dir: Path | str, field: str) -> TargetFieldMap:
+def load_test_configuration_field(
+    work_dir: Path | str,
+    field: str,
+) -> TargetFieldMap:
     """Project-root-scoped mapping for one normalized ``tests.toml`` field."""
     return _field_map(load_test_configuration(work_dir), field)
 
@@ -430,7 +397,9 @@ def _validate_unique_tests(where: str, names: list[str]) -> None:
 
 
 def _resolve_test_list(
-    target: str, normalized: dict[str, Any], test_lists: Mapping[str, list[str]]
+    target: str,
+    normalized: dict[str, Any],
+    test_lists: Mapping[str, list[str]],
 ) -> str | None:
     """Replace ``test_list`` by the shared list's ``tests``; return the list name."""
     list_ref = normalized.pop("test_list", None)
@@ -449,7 +418,9 @@ def _resolve_test_list(
 
 
 def _normalize_tests_section(
-    target: str, section: Any, test_lists: Mapping[str, list[str]]
+    target: str,
+    section: Any,
+    test_lists: Mapping[str, list[str]],
 ) -> dict[str, Any]:
     if not isinstance(section, Mapping):
         raise ValueError(f"tests.toml [{target}] must be a table")
@@ -556,7 +527,10 @@ def _validate_variants(target: str, normalized: Mapping[str, Any]) -> dict[str, 
 
 
 def _validate_variant_inputs(
-    where: str, variant: TestVariant, reserved: Mapping[str, str], target_env: Mapping[str, str]
+    where: str,
+    variant: TestVariant,
+    reserved: Mapping[str, str],
+    target_env: Mapping[str, str],
 ) -> None:
     """Refuse a Variant argument or variable that something else already owns."""
     for argument in variant.args:

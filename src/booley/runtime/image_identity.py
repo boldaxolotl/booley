@@ -188,11 +188,15 @@ def _mismatch(expected: BooleyBuildIdentity, observed: BooleyBuildIdentity) -> C
         and value != observed_values[field]
     }
     differing_observed = {field: observed_values[field] for field in differing_expected}
-    return Comparison(Status.MISMATCH, format_differences(differing_expected, differing_observed))
+    return Comparison(
+        Status.MISMATCH,
+        format_differences(differing_expected, differing_observed),
+    )
 
 
 def compare_build_identity(
-    expected: BooleyBuildIdentity, observed: BooleyBuildIdentity
+    expected: BooleyBuildIdentity,
+    observed: BooleyBuildIdentity,
 ) -> Comparison:
     """Compare only same-kind content identities, with clean revision as fallback."""
     for field in ("wheel_source_fingerprint", "payload_fingerprint"):

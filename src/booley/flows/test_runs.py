@@ -44,7 +44,12 @@ from booley.config.tests_toml_rules import (
     validate_seed,
     validate_test_or_variant_name,
 )
-from booley.core.boundary import BoundaryError, as_dict, is_str_list, require_str_value
+from booley.core.boundary import (
+    BoundaryError,
+    as_dict,
+    is_str_list,
+    require_str_value,
+)
 
 __all__ = [
     "DEFAULT_SEED",
@@ -284,7 +289,11 @@ def declared_inputs_fingerprint(args: tuple[str, ...], env: Mapping[str, str]) -
     """
     document = {"args": list(args), "env": dict(env)}
     encoded = json.dumps(
-        document, ensure_ascii=False, allow_nan=False, sort_keys=True, separators=(",", ":")
+        document,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
     )
     return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -450,7 +459,10 @@ test_run_from_document.__test__ = False  # type: ignore[attr-defined]
 
 
 def draw_seeds(
-    count: int, *, exclude: Collection[int] = (), rng: random.Random | None = None
+    count: int,
+    *,
+    exclude: Collection[int] = (),
+    rng: random.Random | None = None,
 ) -> tuple[int, ...]:
     """Draw *count* distinct seeds in ``1..MAX_SEED``, none of them in *exclude*.
 

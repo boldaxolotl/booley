@@ -10,7 +10,10 @@ from booley.config.pricing import estimate_cost
 
 
 def format_usage_log(
-    input_tokens: int, cached_tokens: int, output_tokens: int, cost_usd: float
+    input_tokens: int,
+    cached_tokens: int,
+    output_tokens: int,
+    cost_usd: float,
 ) -> str:
     """Format a compact usage string for log lines."""
     parts = [f"{input_tokens // 1000}k in"]

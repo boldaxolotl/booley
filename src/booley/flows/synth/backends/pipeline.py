@@ -168,7 +168,10 @@ def configure_synthesis(spec: SynthSpec, build_dir: Path) -> SynthPlan:
         _render_makefile(spec, build_dir, attempt_token), encoding="utf-8"
     )
     return SynthPlan(
-        build_dir=build_dir, spec=spec, warnings=tuple(warnings), attempt_token=attempt_token
+        build_dir=build_dir,
+        spec=spec,
+        warnings=tuple(warnings),
+        attempt_token=attempt_token,
     )
 
 
@@ -540,7 +543,8 @@ def _render_makefile(spec: SynthSpec, build_dir: Path, token: str) -> str:
 
 
 def _fresh_text_reader(
-    build_dir: Path, is_stale: Callable[[Path], bool]
+    build_dir: Path,
+    is_stale: Callable[[Path], bool],
 ) -> Callable[[str], str | None]:
     """Return a reader that rejects missing, stale, and unreadable artifacts."""
 
@@ -557,7 +561,8 @@ def _fresh_text_reader(
 
 
 def _collect_yosys_sections(
-    plan: SynthPlan, fresh_text: Callable[[str], str | None]
+    plan: SynthPlan,
+    fresh_text: Callable[[str], str | None],
 ) -> tuple[list[str], str | None, str | None]:
     """Collect fresh frontend/Yosys/stat/ABC evidence for one run."""
     spec = plan.spec
@@ -677,7 +682,8 @@ def _missing_output_marker(
     ]
     if spec.frontend == "sv2v":
         required_outputs.insert(
-            0, ("sv2v", syn_core.SV2V_OUTPUT_NAME, fresh_text(syn_core.SV2V_OUTPUT_NAME))
+            0,
+            ("sv2v", syn_core.SV2V_OUTPUT_NAME, fresh_text(syn_core.SV2V_OUTPUT_NAME)),
         )
     if physical:
         required_outputs.extend(
@@ -706,7 +712,8 @@ def _missing_output_marker(
 
 
 def _boundary_sections(
-    plan: SynthPlan, fresh_text: Callable[[str], str | None]
+    plan: SynthPlan,
+    fresh_text: Callable[[str], str | None],
 ) -> tuple[list[str], str | None, str | None, dict[str, str]]:
     """Collect authenticated tool artifacts for interpretation."""
     spec = plan.spec
@@ -806,7 +813,8 @@ def _generic_master_diagnostic(text: str) -> str | None:
 
 
 def _diagnostic_sources(
-    plan: SynthPlan, fresh_text: Callable[[str], str | None]
+    plan: SynthPlan,
+    fresh_text: Callable[[str], str | None],
 ) -> dict[str, str]:
     """Return fresh, stage-labelled EDA text for warning interpretation."""
     names = {
@@ -824,7 +832,10 @@ def _diagnostic_sources(
     return sources
 
 
-def _abc_delay_marker(design: str, fresh_text: Callable[[str], str | None]) -> str | None:
+def _abc_delay_marker(
+    design: str,
+    fresh_text: Callable[[str], str | None],
+) -> str | None:
     """Build a marker from the dedicated final liberty-mapped ABC log."""
     abc_text = fresh_text(f"log_abc_{design}.txt")
     if abc_text is None:
@@ -837,7 +848,8 @@ _RTLIL_ZERO_RE = re.compile(r"(?:0|[0-9]+'s?0+)")
 
 
 def _effective_parameter_sections(
-    spec: SynthSpec, fresh_text: Callable[[str], str | None]
+    spec: SynthSpec,
+    fresh_text: Callable[[str], str | None],
 ) -> tuple[list[str], str | None]:
     """Effective-parameter evidence plus any enabled-but-zero diagnostic."""
     name = syn_core.effective_params_filename(spec.design_name)
@@ -898,7 +910,10 @@ def _recipe_summary(spec: SynthSpec) -> str:
     )
 
 
-def _timing_sections(plan: SynthPlan, fresh_text: Callable[[str], str | None]) -> list[str]:
+def _timing_sections(
+    plan: SynthPlan,
+    fresh_text: Callable[[str], str | None],
+) -> list[str]:
     """OpenROAD log sections plus re-derived physical STA markers."""
     report_dir = plan.build_dir / "reports" / "timing"
     parts: list[str] = []

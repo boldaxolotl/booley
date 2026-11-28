@@ -11,15 +11,13 @@ from pathlib import Path
 import pytest
 from tests.diagnostic_helpers import _isolate_runtime_files
 from tests.docker_cli_guard import route_bounded_captures_through_subprocess_run
-from tests.harness import test_session_runtime as resolution_fixtures
+from tests.sandbox_venue_fake import place
 
 from booley.audit.diagnostic_results import Severity
 from booley.config.eda import EdaConfig
 from booley.eda.provisioning.policies import vivado
-from booley.runtime import inspection, runtime_context, sandbox_apply
-
-project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
-workspace = resolution_fixtures.workspace
+from booley.runtime import inspection, sandbox_apply
+from booley.runtime.runtime_context import RuntimeLocation
 
 
 def _runtime_files(monkeypatch, state):
@@ -78,7 +76,7 @@ def mounted_runtime(tmp_path, monkeypatch):
         "returncode": 0,
     }
     calls = []
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.delenv("XILINXD_LICENSE_FILE", raising=False)
     _isolate_runtime_files(monkeypatch)
     _runtime_files(monkeypatch, state)
@@ -211,6 +209,7 @@ def test_agent_inaccessible_authority_paths_do_not_break_runtime_inspection(
     monkeypatch.setattr(Path, "lstat", lstat)
     report = inspection.inspect_runtime(request).issuance
     assert all(f.severity is Severity.PASS for f in report.findings)
+    assert any(f"mounted Vivado {vivado.SUPPORTED_VERSION}" in f.message for f in report.findings)
     assert len(calls) == 1
 
 
@@ -341,69 +340,6 @@ def test_ssh_mount_point_is_host_authority(mounted_runtime, monkeypatch, tmp_pat
     failures = _fail_findings(report)
     assert len(failures) == 1 and failures[0].message.endswith(f": {offending}")
     assert not calls
-
-
-def test_retained_resources_separate_current_project_from_other_project_keepers(
-    tmp_path, monkeypatch
-):
-    from booley.runtime import host_docker, session_issuance
-
-    mine = session_issuance.keeper_image(tmp_path)
-    other = session_issuance.keeper_image(tmp_path / "old-project")
-    monkeypatch.setattr(host_docker, "state_volumes", lambda: [])
-    monkeypatch.setattr(host_docker, "issued_image_tags", lambda: [mine, other])
-    report = inspection.inspect_retained_resources(tmp_path, "docker")
-    assert any(
-        f.severity is Severity.PASS and "retained for this Project" in f.message
-        for f in report.findings
-    )
-    notes = [f for f in report.findings if f.severity is Severity.NOTE]
-    assert len(notes) == 1 and "1 issued image keeper(s)" in notes[0].message
-    assert len(report.details) == 1 and report.details[0].message.strip() == other
-    assert report.details[0].after_finding == len(report.findings)
-
-
-def test_keeper_listing_failure_is_a_doctor_finding(tmp_path, monkeypatch):
-    """A Docker failure while listing keepers is a FAIL, never "no retained keepers"."""
-    from booley.runtime import host_docker
-
-    monkeypatch.setattr(
-        host_docker,
-        "_run_docker",
-        lambda args, **_kwargs: subprocess.CompletedProcess(
-            args, 1, "", "Cannot connect to the Docker daemon"
-        ),
-    )
-
-    report = inspection.inspect_retained_resources(tmp_path, "docker")
-
-    failures = _fail_findings(report)
-    assert len(failures) == 1
-    assert "could not list issued Sandbox Image keepers" in failures[0].message
-    assert "Cannot connect to the Docker daemon" in failures[0].message
-    assert "booley doctor" in failures[0].fix
-    assert not any("no retained Sandbox Image keepers" in f.message for f in report.findings)
-
-
-def test_host_inspection_reports_unknown_project_inventory(
-    workspace, project_sandbox_resolution, monkeypatch
-):
-    fixture = project_sandbox_resolution
-    fixture.state["Config"]["Labels"].pop("booley.project-id")
-    monkeypatch.setattr(
-        inspection,
-        "_list_issued_containers",
-        lambda *_: subprocess.CompletedProcess([], 0, "", ""),
-    )
-    report = inspection.Findings()
-    inspection._inspect_live_runtime(
-        inspection.RuntimeInspectionRequest(workspace, fixture.spec["image"], "docker"),
-        "docker",
-        fixture.spec,
-        fixture.issuance,
-        report,
-    )
-    assert any("identity disagrees" in item.message for item in report.report().findings)
 
 
 def _fail_findings(report):

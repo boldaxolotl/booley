@@ -28,7 +28,10 @@ RELEASE_PIN_PATTERNS = (
     re.compile(rf"emits\s+`[^`]*{_TAG}[^`]*`", re.IGNORECASE),
     re.compile(rf"/{_TAG}/crates/bwave/schema/bwave\.json"),
 )
-SCHEMA_FILES = ("crates/bwave/src/output.rs", "crates/bwave/schema/bwave.json")
+SCHEMA_FILES = (
+    "crates/bwave/src/output.rs",
+    "crates/bwave/schema/bwave.json",
+)
 
 
 def _release_tag() -> str:

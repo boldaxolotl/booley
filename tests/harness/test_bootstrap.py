@@ -25,6 +25,7 @@ from booley.runtime.image_lifecycle import ImageCleanup, Intent, LifecycleResult
 from booley.runtime.skill_links import Outcome, SkillLinkEvent, SkillLinkReport
 from tests.conftest import require_symlinks
 from tests.docker_cli_guard import route_bounded_capture_through_subprocess_run
+from tests.fake_docker_executable import install_fake_docker
 from tests.python_modules import set_importable
 
 
@@ -41,7 +42,9 @@ def _current(resource: str) -> bootstrap.BootstrapFinding:
 def _current_sidecars() -> bootstrap.host_sidecars.SidecarResult:
     findings = tuple(
         bootstrap.host_sidecars.SidecarFinding(
-            resource, bootstrap.host_sidecars.SidecarState.CURRENT, "current"
+            resource,
+            bootstrap.host_sidecars.SidecarState.CURRENT,
+            "current",
         )
         for resource in ("proxy-image", "reaper-image", "network", "proxy", "reaper")
     )
@@ -89,7 +92,9 @@ def _wire_current(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     monkeypatch.setattr(bootstrap.subprocess, "run", run)
     monkeypatch.setattr(
-        bootstrap, "reconcile_host_skills", lambda *_args, **_kwargs: calls.append("skills") or ()
+        bootstrap,
+        "reconcile_host_skills",
+        lambda *_args, **_kwargs: calls.append("skills") or (),
     )
     nangate = bootstrap.nangate_pdk
     monkeypatch.setattr(nangate, "cache_root", lambda: Path("nangate-cache"))
@@ -140,7 +145,13 @@ def _skill_event(outcome: Outcome, detail: str = "") -> SkillLinkEvent:
 def test_bootstrap_reconciles_resources_in_fixed_order(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _wire_current(monkeypatch)
     result = bootstrap.reconcile_bootstrap(Intent.CHECK)
-    assert calls == ["vscode-dev-containers", "skills", "nangate45", "base-image", "sidecars"]
+    assert calls == [
+        "vscode-dev-containers",
+        "skills",
+        "nangate45",
+        "base-image",
+        "sidecars",
+    ]
     assert [finding.resource for finding in result.findings] == [
         "host-config",
         "git",
@@ -170,7 +181,9 @@ def test_bootstrap_refuses_aggregate_image_plan_before_first_build(
     reaper = DockerBuildRequest("reaper", "reaper", BuildEstimateClass.THIN_OVERLAY)
     monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: (base, sandbox))
     monkeypatch.setattr(
-        bootstrap.host_sidecars, "plan_image_builds", lambda _intent, **_kwargs: (proxy, reaper)
+        bootstrap.host_sidecars,
+        "plan_image_builds",
+        lambda _intent, **_kwargs: (proxy, reaper),
     )
     observed = []
 
@@ -250,7 +263,9 @@ def test_bootstrap_threads_aggregate_plan_through_every_build(
     proxy = DockerBuildRequest("proxy", "proxy", BuildEstimateClass.THIN_OVERLAY)
     monkeypatch.setattr(bootstrap, "host_capacity_requests", lambda _intent: (base,))
     monkeypatch.setattr(
-        bootstrap.host_sidecars, "plan_image_builds", lambda _intent, **_kwargs: (proxy,)
+        bootstrap.host_sidecars,
+        "plan_image_builds",
+        lambda _intent, **_kwargs: (proxy,),
     )
     monkeypatch.setattr(bootstrap, "ensure_docker_build_capacity", lambda *_a, **_kw: None)
     observed = []
@@ -302,7 +317,9 @@ def test_unproxied_capacity_plan_omits_proxy_image(monkeypatch: pytest.MonkeyPat
     )
 
 
-def test_noncanonical_install_stops_before_host_mutation(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_noncanonical_install_stops_before_host_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(bootstrap, "load_host_policy", lambda **_kwargs: SandboxHostPolicy())
     monkeypatch.setattr(
         bootstrap,
@@ -338,7 +355,9 @@ def test_check_only_rejects_qa_selection_flags(flag: str, capsys) -> None:
     assert "cannot be combined" in capsys.readouterr().out
 
 
-def test_opt_out_prunes_qa_before_failing_prerequisites(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_opt_out_prunes_qa_before_failing_prerequisites(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = _wire_current(monkeypatch)
     monkeypatch.setattr(
         bootstrap,
@@ -406,7 +425,9 @@ def test_qa_selection_flags_order_and_status(
             raise error_type(selection_error)
 
     monkeypatch.setattr(
-        bootstrap_cli, "register_host_installation", lambda *_a, **_kw: observed.append("register")
+        bootstrap_cli,
+        "register_host_installation",
+        lambda *_a, **_kw: observed.append("register"),
     )
     monkeypatch.setattr(
         bootstrap_cli,
@@ -602,7 +623,9 @@ def test_public_adapter_recovers_before_registering_installation(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr(
-        issuance_invalidation, "shared_recovery_blocks_command", lambda *, read_only: not read_only
+        issuance_invalidation,
+        "shared_recovery_blocks_command",
+        lambda *, read_only: not read_only,
     )
     monkeypatch.setattr(
         bootstrap_cli,
@@ -625,7 +648,12 @@ def test_public_adapter_recovers_before_registering_installation(
 
 def test_public_adapter_rejects_update_in_check_only(capsys):
     status = bootstrap_cli.run_bootstrap(
-        SimpleNamespace(force=False, check_only=True, verbose=False, update=True)
+        SimpleNamespace(
+            force=False,
+            check_only=True,
+            verbose=False,
+            update=True,
+        )
     )
 
     assert status == 2
@@ -698,7 +726,11 @@ def test_public_adapter_reports_registration_failure(monkeypatch, capsys):
     )
 
     status = bootstrap_cli.run_bootstrap(
-        SimpleNamespace(force=False, check_only=False, verbose=False)
+        SimpleNamespace(
+            force=False,
+            check_only=False,
+            verbose=False,
+        )
     )
 
     assert status == 2
@@ -751,7 +783,9 @@ def test_skill_conflicts_name_each_entry_and_fix_in_bootstrap_and_doctor(
     ],
 )
 def test_bootstrap_stops_after_each_failed_dependency(
-    monkeypatch: pytest.MonkeyPatch, failed_resource: str, expected_calls: list[str]
+    monkeypatch: pytest.MonkeyPatch,
+    failed_resource: str,
+    expected_calls: list[str],
 ) -> None:
     calls = _wire_current(monkeypatch)
     wired_run = subprocess.run
@@ -810,7 +844,8 @@ def test_bootstrap_stops_after_each_failed_dependency(
     ],
 )
 def test_parse_git_version_is_strict_capability_evidence(
-    version_line: str, expected: tuple[int, int, int] | None
+    version_line: str,
+    expected: tuple[int, int, int] | None,
 ) -> None:
     assert bootstrap.parse_git_version(version_line) == expected
 
@@ -1544,7 +1579,12 @@ def _inspection_environment(monkeypatch, tmp_path, *, recorded=True, skills_curr
         issuance_invalidation, "shared_recovery_blocks_command", lambda **_kwargs: False
     )
     monkeypatch.setattr(editor, "resolve_editor_management_command", lambda: "/fake/code")
-    monkeypatch.setattr(bootstrap.shutil, "which", lambda name: "/fake/" + name)
+    real_which = shutil.which  # the Windows fake's launcher shim looks docker up with path=
+    monkeypatch.setattr(
+        bootstrap.shutil,
+        "which",
+        lambda name, **where: real_which(name, **where) if where else "/fake/" + name,
+    )
     if skills_current:
         bootstrap.reconcile_host_skills(source, dry_run=False, allow_retarget=True)
     calls = []
@@ -1555,9 +1595,16 @@ def _inspection_environment(monkeypatch, tmp_path, *, recorded=True, skills_curr
     monkeypatch.setattr(bootstrap, "reconcile_images", lambda *_a, **_kw: base)
     cache = _inspection_cache(monkeypatch, tmp_path)
 
-    docker = _InspectionDocker()
-    # private: the sidecar adapter is the only Docker seam; there is no public factory to fake.
-    monkeypatch.setattr(bootstrap.host_sidecars, "_docker_adapter", lambda: docker)
+    docker = install_fake_docker(
+        tmp_path.with_name(tmp_path.name + "-docker"),  # outside the snapshotted tree
+        monkeypatch,
+        {
+            "": (2, "fake docker: a check-only inspection runs only inspect calls"),
+            "version": (0, "linux\tDocker Engine"),
+            "context inspect": (0, "unix:///var/run/docker.sock"),
+            "inspect": (1, "Error: No such object"),
+        },
+    )
     return SimpleNamespace(
         home=home,
         identity_path=path,
@@ -1579,7 +1626,13 @@ def _inspection_installation(monkeypatch, tmp_path, recorded):
     (source / "example").mkdir(parents=True)
     (source / "example" / "SKILL.md").write_text("# Example\n", encoding="utf-8")
     identity = host_install.HostInstallationIdentity(
-        1, "/opt/bin/booley", "/opt/bin/python", "/opt/site-packages", "1.0", "abc123", "f" * 64
+        1,
+        "/opt/bin/booley",
+        "/opt/bin/python",
+        "/opt/site-packages",
+        "1.0",
+        "abc123",
+        "f" * 64,
     )
     # private: the eligibility gate reads the interpreter's install layout; no public seam.
     monkeypatch.setattr(host_install, "_eligibility_error", lambda _source: None)
@@ -1623,35 +1676,17 @@ def _inspection_subprocess(calls):
     return run
 
 
-class _InspectionDocker:
-    def __init__(self):
-        self.failure = None
-        self.calls = []
-
-    def run(self, args, *, timeout=30):
-        assert timeout
-        assert "inspect" in args, args
-        self.calls.append(args)
-        resource = (
-            "proxy-image"
-            if args[2] == bootstrap.host_sidecars.legacy.PROXY_IMAGE
-            else "reaper-image"
-            if args[2] == bootstrap.host_sidecars.legacy.REAPER_IMAGE
-            else "network"
-            if args[0] == "network"
-            else "proxy"
-            if args[2] == bootstrap.host_sidecars.legacy.PROXY_CONTAINER
-            else "reaper"
-        )
-        if resource == self.failure:
-            raise bootstrap.host_sidecars.SidecarError("access denied " + resource)
-        return subprocess.CompletedProcess(args, 1, "", "No such object")
-
-
 def _run_inspection(capsys):
     status = bootstrap_cli.run_bootstrap(SimpleNamespace(check_only=True))
     output = capsys.readouterr().out
     return status, output
+
+
+def _assert_inspect_only(docker):
+    """A check-only run asks Docker only to inspect: no call may change the host."""
+    assert docker.calls
+    for call in docker.calls:
+        assert call[0] == "version" or "inspect" in call[:2], call
 
 
 def _assert_complete(output):
@@ -1691,7 +1726,7 @@ def _snapshot_bytes(path, reader=Path.open):
 
 
 def test_check_only_fresh_config_reports_all_pending_without_writes(monkeypatch, tmp_path, capsys):
-    _inspection_environment(monkeypatch, tmp_path, recorded=False)
+    environment = _inspection_environment(monkeypatch, tmp_path, recorded=False)
     before = _tree_snapshot(tmp_path)
     status, output = _run_inspection(capsys)
     assert status == 1, "fresh eligible wheel must be pending"
@@ -1700,6 +1735,7 @@ def test_check_only_fresh_config_reports_all_pending_without_writes(monkeypatch,
         if "  +  " in line:
             assert "booley bootstrap" in line
     assert _tree_snapshot(tmp_path) == before
+    _assert_inspect_only(environment.docker)
 
 
 def _deny_cache_read(monkeypatch, environment):

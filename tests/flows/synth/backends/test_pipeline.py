@@ -55,7 +55,8 @@ def _spec(
         authored_sdc = tmp_path / "constraints" / "dut.sdc"
         authored_sdc.parent.mkdir(exist_ok=True)
         authored_sdc.write_text(
-            "create_clock -name clk -period 4.0 [get_ports clk]\n", encoding="utf-8"
+            "create_clock -name clk -period 4.0 [get_ports clk]\n",
+            encoding="utf-8",
         )
         sdc = (authored_sdc,)
     return syn_make.SynthSpec(
@@ -70,7 +71,11 @@ def _spec(
         abc_recipe="balanced",
         frontend=frontend,
         slang_options=slang_options,
-        timing=StaTimingConfig(mode=mode, sdc=sdc, repair_timing=repair_timing),
+        timing=StaTimingConfig(
+            mode=mode,
+            sdc=sdc,
+            repair_timing=repair_timing,
+        ),
     )
 
 
@@ -104,7 +109,12 @@ class TestConfigureSynthesis:
         Regression (ravenoc halt #2b tail): the slang_options knob was dropped
         on the configure path, so the rendered script lacked --single-unit.
         """
-        params = {"NAME": ParameterValue("str", 'a" b\\c; d'), "N": "12", "B": "1", "R": "1.25"}
+        params = {
+            "NAME": ParameterValue("str", 'a" b\\c; d'),
+            "N": "12",
+            "B": "1",
+            "R": "1.25",
+        }
         slang = dataclasses.replace(
             _spec(tmp_path, frontend="slang", slang_options=_SLANG_OPTIONS), params=params
         )
@@ -419,14 +429,18 @@ class TestGeneratedMakefile:
 class TestBoundarySdc:
     def test_physical_requires_target_owned_sdc(self, tmp_path: Path):
         spec = _spec(tmp_path, mode="logical")
-        spec = dataclasses.replace(spec, timing=StaTimingConfig(mode="physical", sdc=()))
+        spec = dataclasses.replace(
+            spec,
+            timing=StaTimingConfig(mode="physical", sdc=()),
+        )
         with pytest.raises(BoundaryError, match="Target-owned SDC"):
             syn_make.configure_synthesis(spec, _build_dir(tmp_path))
 
     def test_static_when_authored_sdc_names_its_clock(self, tmp_path: Path):
         authored = tmp_path / "dut.sdc"
         authored.write_text(
-            "create_clock -name sys_clk -period 2.0 [get_ports clk]\n", encoding="utf-8"
+            "create_clock -name sys_clk -period 2.0 [get_ports clk]\n",
+            encoding="utf-8",
         )
         plan = syn_make.configure_synthesis(_spec(tmp_path, sdc=(authored,)), _build_dir(tmp_path))
         script = (plan.build_dir / "run_openroad.tcl").read_text(encoding="utf-8")
@@ -469,7 +483,8 @@ class TestBoundaryOutput:
     def test_collects_warning_summary_and_preserves_early_loop_evidence(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path), _build_dir(tmp_path))
         (plan.build_dir / "yosys.log").write_text(
-            "Warning: found logic loop in module dut:\n    wire \\feedback\n", encoding="utf-8"
+            "Warning: found logic loop in module dut:\n    wire \\feedback\n",
+            encoding="utf-8",
         )
         (plan.build_dir / "premap_check_dut.txt").write_text(
             "Found and reported 0 problems.\n", encoding="utf-8"
@@ -521,7 +536,8 @@ class TestBoundaryOutput:
     def test_emits_delay_marker_from_final_liberty_mapped_abc_log(self, tmp_path: Path):
         plan = syn_make.configure_synthesis(_spec(tmp_path, mode="logical"), _build_dir(tmp_path))
         (plan.build_dir / "log_abc_dut.txt").write_text(
-            "ABC: netlist : i/o = 4/2 area =10.0 delay =83.15 lev = 3\n", encoding="utf-8"
+            "ABC: netlist : i/o = 4/2 area =10.0 delay =83.15 lev = 3\n",
+            encoding="utf-8",
         )
 
         outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
@@ -541,9 +557,16 @@ class TestBoundaryOutput:
 
     def test_recipe_summary_includes_all_expert_controls(self, tmp_path: Path):
         base = _spec(tmp_path)
-        timing = base.timing._replace(setup_margin_ns=0.2, repair_tns_percent=75.0)
+        timing = base.timing._replace(
+            setup_margin_ns=0.2,
+            repair_tns_percent=75.0,
+        )
         spec = dataclasses.replace(
-            base, abc_recipe=None, abc_script="+strash;map", abc_delay_ps=3333, timing=timing
+            base,
+            abc_recipe=None,
+            abc_script="+strash;map",
+            abc_delay_ps=3333,
+            timing=timing,
         )
         plan = syn_make.configure_synthesis(spec, _build_dir(tmp_path))
         outcome = syn_make.boundary_output(plan, 0, is_stale=_fresh)
@@ -764,7 +787,8 @@ class TestResolveSpec:
         lib = tmp_path / "fake.lib"
         lib.write_text("library(fake) {}\n", encoding="utf-8")
         spec = run_yosys_syn.resolve_spec(
-            self._args(tmp_path, ["--liberty", str(lib)]), project_root=tmp_path
+            self._args(tmp_path, ["--liberty", str(lib)]),
+            project_root=tmp_path,
         )
         assert spec.sources == ((tmp_path / "rtl" / "dut.sv").resolve(),)
         assert spec.design_name == "dut"

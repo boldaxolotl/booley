@@ -57,7 +57,8 @@ BWAVE_BIN = str(
 # Platform-aware: read tool roots from env vars with OS-appropriate defaults.
 _OSS_CAD_ROOT = Path(
     os.environ.get(
-        "OSS_CAD_SUITE", r"C:\oss-cad-suite" if sys.platform == "win32" else "/opt/oss-cad-suite"
+        "OSS_CAD_SUITE",
+        r"C:\oss-cad-suite" if sys.platform == "win32" else "/opt/oss-cad-suite",
     )
 )
 _PATH_SEP = ";" if sys.platform == "win32" else ":"
@@ -65,7 +66,11 @@ _PATH_SEP = ";" if sys.platform == "win32" else ":"
 if sys.platform == "win32":
     ICARUS_ENV = {
         "PATH": _PATH_SEP.join(
-            [str(_OSS_CAD_ROOT / "bin"), str(_OSS_CAD_ROOT / "lib"), os.environ.get("PATH", "")]
+            [
+                str(_OSS_CAD_ROOT / "bin"),
+                str(_OSS_CAD_ROOT / "lib"),
+                os.environ.get("PATH", ""),
+            ]
         ),
         "YOSYSHQ_ROOT": str(_OSS_CAD_ROOT) + os.sep,
         "TEMP": os.environ.get("TEMP", tempfile.gettempdir()),
@@ -77,7 +82,11 @@ if sys.platform == "win32":
 else:
     ICARUS_ENV = {
         "PATH": _PATH_SEP.join(
-            [str(_OSS_CAD_ROOT / "bin"), str(_OSS_CAD_ROOT / "lib"), os.environ.get("PATH", "")]
+            [
+                str(_OSS_CAD_ROOT / "bin"),
+                str(_OSS_CAD_ROOT / "lib"),
+                os.environ.get("PATH", ""),
+            ]
         ),
         "HOME": os.environ.get("HOME", ""),
     }
@@ -122,7 +131,11 @@ else:
     VERILATOR_ENV = {
         **os.environ,
         "PATH": _PATH_SEP.join(
-            [str(_OSS_CAD_ROOT / "bin"), str(_OSS_CAD_ROOT / "lib"), os.environ.get("PATH", "")]
+            [
+                str(_OSS_CAD_ROOT / "bin"),
+                str(_OSS_CAD_ROOT / "lib"),
+                os.environ.get("PATH", ""),
+            ]
         ),
         "VERILATOR_ROOT": _VERILATOR_ROOT,
     }
@@ -313,10 +326,17 @@ class VcdOracle:
                 continue
 
             # Section markers
-            in_dumpvars, in_dumpoff = self._parse_body_line(stripped, in_dumpvars, in_dumpoff)
+            in_dumpvars, in_dumpoff = self._parse_body_line(
+                stripped,
+                in_dumpvars,
+                in_dumpoff,
+            )
 
     def _parse_body_line(
-        self, line: str, in_dumpvars: bool, in_dumpoff: bool
+        self,
+        line: str,
+        in_dumpvars: bool,
+        in_dumpoff: bool,
     ) -> tuple[bool, bool]:
         """Parse a single non-timestamp body line, return updated flags."""
         if line.startswith("$"):
@@ -326,7 +346,10 @@ class VcdOracle:
         return in_dumpvars, in_dumpoff
 
     def _handle_directive(
-        self, line: str, in_dumpvars: bool, in_dumpoff: bool
+        self,
+        line: str,
+        in_dumpvars: bool,
+        in_dumpoff: bool,
     ) -> tuple[bool, bool]:
         """Process a VCD $ directive, return updated (in_dumpvars, in_dumpoff)."""
         if line.startswith("$dumpvars"):
@@ -366,16 +389,23 @@ class VcdOracle:
             v = v[-width:]
         return v
 
-    def _record_transition(self, vcd_id: str, value: str, is_real: bool = False) -> None:
+    def _record_transition(
+        self,
+        vcd_id: str,
+        value: str,
+        is_real: bool = False,
+    ) -> None:
         if vcd_id not in self._transitions:
             return
         prior = self._transitions[vcd_id]
         # The FST store keeps value *changes*: same-value VCD rewrites
         # (combinational re-evals, $dumpon re-dumps) are dropped at write
         # time. The oracle mirrors that so transition counts are comparable.
-        if prior and self._canon_value(vcd_id, prior[-1][1], is_real) == self._canon_value(
-            vcd_id, value, is_real
-        ):
+        if prior and self._canon_value(
+            vcd_id,
+            prior[-1][1],
+            is_real,
+        ) == self._canon_value(vcd_id, value, is_real):
             return
         prior.append((self._current_time, value))
         self._events.append((self._current_time, vcd_id, value))
@@ -664,9 +694,9 @@ def _bwave_for_vcd(vcd_path: str) -> str:
 
     src = Path(vcd_path)
     stat = src.stat()
-    key = hashlib.sha1(f"{src.resolve()}:{stat.st_mtime_ns}:{stat.st_size}".encode()).hexdigest()[
-        :16
-    ]
+    key = hashlib.sha1(
+        f"{src.resolve()}:{stat.st_mtime_ns}:{stat.st_size}".encode(),
+    ).hexdigest()[:16]
     cache_dir = Path(tempfile.gettempdir()) / "bwave_oracle_tests"
     cache_dir.mkdir(parents=True, exist_ok=True)
     bwave_path = cache_dir / f"{src.stem}_{key}.fst"
@@ -702,7 +732,13 @@ def _replace_vcd_inputs(args: list[str]) -> list[str]:
 def run_bwave(args: list[str], timeout: int = 30) -> tuple[str, str]:
     """Run current bwave v0.2 subcommand args, return (stdout, stderr)."""
     cmd = [BWAVE_BIN, *_replace_vcd_inputs(args)]
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        timeout=timeout,
+        check=False,
+    )
     if result.returncode != 0:
         raise AssertionError(
             f"bwave command failed rc={result.returncode}\n"
@@ -1108,10 +1144,19 @@ def _make_test_class(design: str, simulator: str) -> type:
                 edge_idx = reset_deassert_edge + cycle_num - 1
                 if edge_idx >= len(rising):
                     continue
-                self._check_at_cycle(oracle, oracle_signals, rising[edge_idx], cycle_num)
+                self._check_at_cycle(
+                    oracle,
+                    oracle_signals,
+                    rising[edge_idx],
+                    cycle_num,
+                )
 
         def _check_at_cycle(
-            self, oracle: VcdOracle, oracle_signals: dict[str, int], timestamp: int, cycle_num: int
+            self,
+            oracle: VcdOracle,
+            oracle_signals: dict[str, int],
+            timestamp: int,
+            cycle_num: int,
         ) -> None:
             """Compare bwave snapshot at *cycle_num* against oracle."""
             # bwave displays the value stable BEFORE the rising edge
@@ -1144,7 +1189,11 @@ def _make_test_class(design: str, simulator: str) -> type:
 
         @staticmethod
         def _oracle_find_cycles(
-            oracle: VcdOracle, rising: list[int], reset_edge: int, signal: str, value: str
+            oracle: VcdOracle,
+            rising: list[int],
+            reset_edge: int,
+            signal: str,
+            value: str,
         ) -> set[int]:
             """Return set of post-reset cycle numbers where *signal* == *value*."""
             cycles: set[int] = set()
@@ -1172,7 +1221,8 @@ def _make_test_class(design: str, simulator: str) -> type:
             # Pick a suitable signal to search: prefer known control signals
             target_value = "1"
             target_signal = _find_signal_by_leaf(
-                oracle_signals, lambda leaf: leaf in {"enable", "wr_en", "walk_request"}
+                oracle_signals,
+                lambda leaf: leaf in {"enable", "wr_en", "walk_request"},
             )
             if target_signal is None:
                 # Fall back to any 1-bit signal that isn't clock/reset
@@ -1188,7 +1238,11 @@ def _make_test_class(design: str, simulator: str) -> type:
 
             reset_deassert_edge = _find_reset_edge(oracle)
             oracle_cycles = self._oracle_find_cycles(
-                oracle, rising, reset_deassert_edge, target_signal, target_value
+                oracle,
+                rising,
+                reset_deassert_edge,
+                target_signal,
+                target_value,
             )
 
             if not oracle_cycles:
@@ -1196,7 +1250,14 @@ def _make_test_class(design: str, simulator: str) -> type:
                 return
 
             leaf_name = target_signal.split(".")[-1]
-            stdout, _stderr = run_bwave(["find", self.vcd_path, f"*{leaf_name}*", target_value])
+            stdout, _stderr = run_bwave(
+                [
+                    "find",
+                    self.vcd_path,
+                    f"*{leaf_name}*",
+                    target_value,
+                ]
+            )
             # The oracle numbers grid cycles from 1; cycle 0 (the tick before reset
             # deasserts) is covered by crates/bwave/tests/clock_grid.rs.
             extract_cycles = {r[0] for r in parse_find_value_output(stdout) if r[0] >= 1}
@@ -1268,7 +1329,8 @@ def _make_test_class(design: str, simulator: str) -> type:
 
             # Pick a specific signal for wave comparison
             wave_signal = _find_signal_by_leaf(
-                oracle_signals, lambda leaf: leaf in {"count", "lfsr_out", "state"}
+                oracle_signals,
+                lambda leaf: leaf in {"count", "lfsr_out", "state"},
             )
             if wave_signal is None:
                 # Fall back to any multi-bit non-clock/reset signal
@@ -1287,7 +1349,14 @@ def _make_test_class(design: str, simulator: str) -> type:
             wave_width = oracle_signals[wave_signal]
 
             stdout, _stderr = run_bwave(
-                ["wave", self.vcd_path, "-t", "1:5", "-s", f"*{leaf_name}"]
+                [
+                    "wave",
+                    self.vcd_path,
+                    "-t",
+                    "1:5",
+                    "-s",
+                    f"*{leaf_name}",
+                ]
             )
             wave_data = parse_wave_output(stdout)
 
@@ -1296,7 +1365,13 @@ def _make_test_class(design: str, simulator: str) -> type:
                 return
 
             self._check_wave_data(
-                oracle, wave_signal, wave_width, leaf_name, wave_data, rising, reset_deassert_edge
+                oracle,
+                wave_signal,
+                wave_width,
+                leaf_name,
+                wave_data,
+                rising,
+                reset_deassert_edge,
             )
 
         def _check_wave_data(
@@ -1635,7 +1710,13 @@ class TestVirtualSignalGroundTruth(unittest.TestCase):
             "--virtual",
             virtual_def,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30, check=False)
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
         # bwave uses 1-based cycle numbering; oracle uses 0-based
         return {r[0] - 1 for r in parse_find_value_output(result.stdout)}
 

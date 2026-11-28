@@ -28,7 +28,11 @@ from booley.flows.sim.config import literal_run_cwd_problem, parse_run_cwd_templ
 from booley.flows.sim.record_presentation import _attach_failure_reference
 from booley.mcp.catalog import Exposure
 from booley.mcp.flow_adapter import flow_schema
-from booley.presentation.report_results import present_job_report, present_report, project_facts
+from booley.presentation.report_results import (
+    present_job_report,
+    present_report,
+    project_facts,
+)
 from booley.runtime import owned_scratch
 from booley.runtime.pid import capture_process_identity
 from booley.specialists import coverage_analyst as coverage_analyst_module

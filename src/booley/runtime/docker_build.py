@@ -246,7 +246,10 @@ def run_docker_build(
 ) -> DockerBuildResult:
     """Run one Docker build while keeping useful progress observable."""
     ensure_docker_build_capacity(
-        command, image=image, current_request=current_request, remaining_plan=remaining_plan
+        command,
+        image=image,
+        current_request=current_request,
+        remaining_plan=remaining_plan,
     )
     sink = sys.stdout if output is None else output
     return _run_captured(command, image=image, verbose=verbose, timeout=timeout, output=sink)

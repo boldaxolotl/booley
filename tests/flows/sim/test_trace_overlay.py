@@ -152,7 +152,10 @@ class TestTraceOverlayVlnv:
 class TestWriteTraceOverlay:
     @pytest.mark.parametrize("resource_kind", ["missing", "directory"])
     def test_packaged_dump_source_must_resolve_to_regular_file(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, resource_kind: str
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        resource_kind: str,
     ) -> None:
         refs = tmp_path / "refs"
         refs.mkdir()
@@ -265,14 +268,29 @@ class TestWriteTraceOverlay:
         [
             ("--trace-fst, --trace-vcd", "both native FST and VCD"),
             ("--trace-saif", "SAIF tracing is not supported"),
-            ("-CFLAGS, -DVM_TRACE_FMT_FST", "VM_TRACE_FMT_FST.*requires --trace-fst"),
-            ("--trace-vcd, -CFLAGS, -DVM_TRACE_FMT_FST", "FST CFLAG.*VCD trace option"),
-            ("--trace-fst, -CFLAGS, -DVM_TRACE_FMT_VCD", "VCD CFLAG.*native FST trace option"),
-            ("-CFLAGS, '-DVM_TRACE_FMT_FST -DVM_TRACE_FMT_VCD'", "both FST and VCD CFLAGS"),
+            (
+                "-CFLAGS, -DVM_TRACE_FMT_FST",
+                "VM_TRACE_FMT_FST.*requires --trace-fst",
+            ),
+            (
+                "--trace-vcd, -CFLAGS, -DVM_TRACE_FMT_FST",
+                "FST CFLAG.*VCD trace option",
+            ),
+            (
+                "--trace-fst, -CFLAGS, -DVM_TRACE_FMT_VCD",
+                "VCD CFLAG.*native FST trace option",
+            ),
+            (
+                "-CFLAGS, '-DVM_TRACE_FMT_FST -DVM_TRACE_FMT_VCD'",
+                "both FST and VCD CFLAGS",
+            ),
         ],
     )
     def test_rejects_unsupported_authored_trace_recipe(
-        self, tmp_path: Path, options: str, message: str
+        self,
+        tmp_path: Path,
+        options: str,
+        message: str,
     ):
         core = _CORE_TEXT.replace(
             "    flow_options:\n      tool: verilator\n",
@@ -406,7 +424,10 @@ class TestWriteTraceOverlay:
             overlay.cleanup()
         assert not overlay.extra_files[0].exists()  # swept up with the .core
 
-    def test_native_core_isolation_keeps_icarus_dump_source_after_cleanup(self, tmp_path: Path):
+    def test_native_core_isolation_keeps_icarus_dump_source_after_cleanup(
+        self,
+        tmp_path: Path,
+    ):
         pytest.importorskip("fusesoc")
         handle = _isolated_icarus_target(tmp_path, self._ICARUS_CORE, cocotb=False)
         project = handle.project_root
@@ -431,7 +452,10 @@ class TestWriteTraceOverlay:
 
     @pytest.mark.parametrize("cocotb", [False, True], ids=["ordinary", "cocotb"])
     def test_native_core_isolation_discloses_packaged_dump_source_for_simulation_record(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cocotb: bool
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        cocotb: bool,
     ) -> None:
         pytest.importorskip("fusesoc")
         handle = _isolated_icarus_target(tmp_path, self._ICARUS_CORE, cocotb=cocotb)

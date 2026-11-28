@@ -1,9 +1,11 @@
-"""Shared setup for the agent selection and auth tests of ``booley init``."""
+"""Shared setup for the agent selection and auth tests of ``booley init``.
+
+It fakes Host Bootstrap and the Sandbox Image chain.
+"""
 
 from __future__ import annotations
 
 import argparse
-import builtins
 import json
 import sys
 from collections.abc import Iterator
@@ -42,10 +44,6 @@ def empty_host(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     ):
         monkeypatch.delenv(name, raising=False)
 
-    def no_terminal(_prompt: str = "") -> str:
-        raise EOFError
-
-    monkeypatch.setattr(builtins, "input", no_terminal)
     init_cmd.reset_cache()
     return home
 

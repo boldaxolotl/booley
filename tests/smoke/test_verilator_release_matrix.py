@@ -34,7 +34,11 @@ pytestmark = pytest.mark.skipif(
 
 
 def _run(
-    argv: list[str], cwd: Path, *, env: dict[str, str] | None = None, check: bool = True
+    argv: list[str],
+    cwd: Path,
+    *,
+    env: dict[str, str] | None = None,
+    check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     result = run_bounded_child(argv, cwd=cwd, env=env, timeout=4 * hang_guard_s())
     if check and result.returncode != 0:
@@ -189,7 +193,9 @@ def test_pinned_release_compiles_and_runs(
     assert expected in result.stdout
 
 
-def test_generated_main_native_coverage_is_per_instance_and_mergeable(tmp_path: Path) -> None:
+def test_generated_main_native_coverage_is_per_instance_and_mergeable(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "coverage_top.sv"
     _write_generated_coverage_source(source)
     binary = _compile_binary(source, tmp_path / "build", *_COVERAGE_FLAGS)
@@ -199,12 +205,20 @@ def test_generated_main_native_coverage_is_per_instance_and_mergeable(tmp_path: 
 
     for seed, raw in (("11", raw_one), ("29", raw_two)):
         result = _run(
-            [str(binary), f"+verilator+seed+{seed}", f"+verilator+coverage+file+{raw}"], tmp_path
+            [
+                str(binary),
+                f"+verilator+seed+{seed}",
+                f"+verilator+coverage+file+{raw}",
+            ],
+            tmp_path,
         )
         assert "PASS generated coverage" in result.stdout
         assert raw.is_file()
 
-    _run(["verilator_coverage", "--write", str(merged), str(raw_one), str(raw_two)], tmp_path)
+    _run(
+        ["verilator_coverage", "--write", str(merged), str(raw_one), str(raw_two)],
+        tmp_path,
+    )
     text = merged.read_text(encoding="utf-8")
     assert text.startswith("# SystemC::Coverage-3\n")
     assert "\x01h\x02coverage_top.one" in text

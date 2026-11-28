@@ -49,7 +49,10 @@ def _require_docker() -> None:
 
 
 def _wait_for_tcp_listeners(
-    container: str, ports: tuple[int, ...], *, timeout: float = _HANG_S
+    container: str,
+    ports: tuple[int, ...],
+    *,
+    timeout: float = _HANG_S,
 ) -> None:
     checks = " && ".join(f"netstat -ltn | grep -Eq ':{port}[[:space:]]'" for port in ports)
     deadline = time.monotonic() + timeout
@@ -91,7 +94,15 @@ def test_production_relay_lifecycle_is_healthy_labeled_and_hardened() -> None:
     resources = provision_relay(profile, identity, issuance_labels=labels, runner=relay_docker)
     try:
         created = _docker(
-            "container", "run", "-d", "--name", session, "--entrypoint", "sleep", RELAY_IMAGE, "60"
+            "container",
+            "run",
+            "-d",
+            "--name",
+            session,
+            "--entrypoint",
+            "sleep",
+            RELAY_IMAGE,
+            "60",
         )
         assert created.returncode == 0, created.stderr
         connect_session(resources, session, runner=relay_docker)
@@ -210,7 +221,11 @@ def test_production_relay_forwards_both_ports_without_direct_or_unrelated_access
         # Session has no direct path to the synthetic license server or public
         # internet; the relay's private DNS alias is the only successful route.
         direct = _docker(
-            "exec", session, "sh", "-c", f"! nc -z -w 1 {ip} {first} && ! nc -z -w 1 1.1.1.1 443"
+            "exec",
+            session,
+            "sh",
+            "-c",
+            f"! nc -z -w 1 {ip} {first} && ! nc -z -w 1 1.1.1.1 443",
         )
         _assert_ok(direct)
 
@@ -239,7 +254,16 @@ def test_production_relay_forwards_both_ports_without_direct_or_unrelated_access
             listener.close()
 
         _assert_ok(
-            _docker("run", "-d", "--name", unrelated, "--entrypoint", "sleep", RELAY_IMAGE, "60")
+            _docker(
+                "run",
+                "-d",
+                "--name",
+                unrelated,
+                "--entrypoint",
+                "sleep",
+                RELAY_IMAGE,
+                "60",
+            )
         )
         isolated = _docker(
             "exec",
@@ -257,7 +281,11 @@ def test_production_relay_forwards_both_ports_without_direct_or_unrelated_access
 
         _assert_ok(_docker("stop", created_resources.relay_container))
         failed_closed = _docker(
-            "exec", session, "sh", "-c", f"! nc -z -w 1 booley-license-xilinx {first}"
+            "exec",
+            session,
+            "sh",
+            "-c",
+            f"! nc -z -w 1 booley-license-xilinx {first}",
         )
         _assert_ok(failed_closed)
     finally:
@@ -311,7 +339,11 @@ def test_idle_reaper_removes_licensed_vscode_container_and_owned_topology() -> N
                 return subprocess.CompletedProcess(args, 0, f"{container_id}\t{session}\n", "")
             return _docker(*args)
 
-        stopped = reaper.reap_once(now=time.time() + 120, idle_timeout=1, run=isolated_run)
+        stopped = reaper.reap_once(
+            now=time.time() + 120,
+            idle_timeout=1,
+            run=isolated_run,
+        )
         assert stopped == [container_id]
         for kind, name in (
             ("container", session),

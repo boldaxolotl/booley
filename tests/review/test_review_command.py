@@ -17,6 +17,7 @@ import pytest
 
 from booley.harness import booley as cli
 from booley.measurement import base as base_module
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.specialists.review_change import ReviewChangeError
 from tests.conftest import FeatureFlagHelper
 from tests.mcp_tools.reviewer_support import ScriptedAgent, install_agent, issue
@@ -29,6 +30,7 @@ from tests.runtime.test_commit_export import (
     new_repository,
     write,
 )
+from tests.sandbox_venue_fake import place
 
 A_V1 = "module a(input logic x);\n  // v1\n  assign y = x;\nendmodule\n"
 A_V2 = "module a(input logic x);\n  // v2 committed edit\n  assign y = x;\nendmodule\n"
@@ -64,9 +66,9 @@ def agent(monkeypatch: pytest.MonkeyPatch) -> ScriptedAgent:
 
 def review(monkeypatch: pytest.MonkeyPatch, project: Path, *arguments: str) -> int:
     """Run ``booley -C <project> review <arguments>`` in a Sandbox; return its exit status."""
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
-    hand_written = cli.runtime_context.RuntimeLocation.HAND_WRITTEN_SANDBOX
-    monkeypatch.setattr(cli.runtime_context, "runtime_location", lambda: hand_written)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
+    monkeypatch.setenv("BOOLEY_EGRESS", "unproxied")  # no proxy restoration into os.environ
+    monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")  # the Sandbox spec hand-off
     monkeypatch.setattr(cli, "_host_install_authority_error", lambda *_: None)
     # The parser reads the ambient Project's Feature Flags; dispatch reads the selected one's.
     monkeypatch.chdir(project)
@@ -149,7 +151,11 @@ def test_review_runs_needed_reviews_in_the_export_and_keeps_every_run(
     rtl, tb = run["reviews"]
     assert (rtl["role"], rtl["focus"], rtl["outcome"]) == ("rtl", "code_style", "pass")
     assert rtl["targets"] == [
-        {"target": SIM_CORE_ID, "files": ["rtl/a.sv", "rtl/b.sv", "rtl/gen/c.sv"], "needed": True},
+        {
+            "target": SIM_CORE_ID,
+            "files": ["rtl/a.sv", "rtl/b.sv", "rtl/gen/c.sv"],
+            "needed": True,
+        },
         {
             "target": "::sim_core:0#sim_fifo",
             "files": ["rtl/a.sv", "rtl/b.sv", "rtl/gen/c.sv"],

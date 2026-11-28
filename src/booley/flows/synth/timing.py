@@ -181,7 +181,8 @@ def detect_clock_port(netlist: Path) -> str | None:
         return None
     inputs = set()
     for match in re.finditer(
-        r"\binput\b\s*(?:wire\s+|reg\s+|logic\s+)?(?:\[[^\]]+\]\s*)?([^;]+);", text
+        r"\binput\b\s*(?:wire\s+|reg\s+|logic\s+)?(?:\[[^\]]+\]\s*)?([^;]+);",
+        text,
     ):
         for raw_name in match.group(1).split(","):
             name = raw_name.strip().split()[-1].lstrip("\\")

@@ -21,7 +21,9 @@ from booley.flows import base as flow_base
 from booley.flows.base import BooleyFlow, SubprocessResult
 from booley.mcp.base import EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS, McpToolResult
 from booley.runtime.endpoint_execution import ExecutionResult
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.memory_budget_support import fail_budget
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import STALL_DUMP_S
 from tests.time_budget import hang_guard_s, scaled
 
@@ -52,7 +54,10 @@ class EchoFlow(BooleyFlow):
         if result.timed_out:
             return McpToolResult(exit_code=EXIT_ERROR, report_text="Timed out")
         if result.returncode == 0:
-            return McpToolResult(exit_code=EXIT_SUCCESS, detail={"output": result.stdout.strip()})
+            return McpToolResult(
+                exit_code=EXIT_SUCCESS,
+                detail={"output": result.stdout.strip()},
+            )
         return McpToolResult(exit_code=EXIT_FAILURE)
 
 
@@ -77,7 +82,11 @@ class CommandFlow(EchoFlow):
 
 
 def _run_command(
-    root: Path, command: list[str], monkeypatch: pytest.MonkeyPatch, *, booley_dir: bool = True
+    root: Path,
+    command: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    booley_dir: bool = True,
 ) -> tuple[ExecutionResult, list[SubprocessResult]]:
     """Run *command* as a Custom Flow through its public CLI entry point."""
     if booley_dir:
@@ -94,9 +103,8 @@ class TestBooleyFlowExecution:
     def test_host_entry_is_rejected_before_flow_execution(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
-        from booley.runtime import runtime_context
 
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+        place(monkeypatch, RuntimeLocation.HOST)
         flow = CommandFlow()
         flow.command = ["false"]
         exit_code = flow.main(["--target", "test", "--work-dir", str(tmp_path)])
@@ -141,7 +149,10 @@ class TestResourceEvidence:
         reset_cache()
 
         result, _seen = _run_command(
-            session_runtime, [sys.executable, "-c", "print('ok')"], monkeypatch, booley_dir=False
+            session_runtime,
+            [sys.executable, "-c", "print('ok')"],
+            monkeypatch,
+            booley_dir=False,
         )
 
         assert result.exit_code == EXIT_SUCCESS, result.outcome.report_text

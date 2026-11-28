@@ -8,10 +8,12 @@ from booley.flows.base import SubprocessResult
 
 _BUILD_MILLISECONDS_RE = re.compile(r"^BOOLEY_BUILD_MILLISECONDS: (\d+)$", re.MULTILINE)
 _RUN_STAGE_RE = re.compile(
-    r"^BOOLEY_RUN_STAGE token=[0-9a-f]+ rc=-?\d+ duration_ms=(\d+)$", re.MULTILINE
+    r"^BOOLEY_RUN_STAGE token=[0-9a-f]+ rc=-?\d+ duration_ms=(\d+)$",
+    re.MULTILINE,
 )
 _SIM_CPU_RE = re.compile(
-    r"^BOOLEY_SIM_CPU_SECONDS: user=(\d+(?:\.\d+)?) system=(\d+(?:\.\d+)?)$", re.MULTILINE
+    r"^BOOLEY_SIM_CPU_SECONDS: user=(\d+(?:\.\d+)?) system=(\d+(?:\.\d+)?)$",
+    re.MULTILINE,
 )
 
 
@@ -36,7 +38,10 @@ def parse_sim_cpu_seconds(output: str) -> tuple[float, float] | None:
     return float(user_s), float(system_s)
 
 
-def process_resources(output: str, process: SubprocessResult) -> dict[str, float | int | None]:
+def process_resources(
+    output: str,
+    process: SubprocessResult,
+) -> dict[str, float | int | None]:
     """Normalize process-tree and simulator-child resource observations."""
     resources: dict[str, float | int | None] = {
         "command_peak_rss_mb": process.peak_rss_mb,

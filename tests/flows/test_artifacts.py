@@ -33,7 +33,10 @@ class TestDurablePublication:
         invocation = tmp_path / "reports/lint/1"
 
         relative = artifacts.publish_bytes(
-            invocation, ("artifacts", "../../target", "run.log"), b"evidence", work_dir=tmp_path
+            invocation,
+            ("artifacts", "../../target", "run.log"),
+            b"evidence",
+            work_dir=tmp_path,
         )
 
         published = tmp_path / relative
@@ -48,7 +51,12 @@ class TestDurablePublication:
         source.write_bytes(b"evidence")
         source.chmod(0o600)
 
-        relative = artifacts.publish_file(invocation, ("copy",), source, work_dir=tmp_path)
+        relative = artifacts.publish_file(
+            invocation,
+            ("copy",),
+            source,
+            work_dir=tmp_path,
+        )
 
         _assert_host_readable(tmp_path / relative)
 

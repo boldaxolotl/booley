@@ -6,10 +6,19 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import replace
 from pathlib import Path
 
-from booley.config.project_config import lookup_target_section
-from booley.flows.target_test_plan import batch_test_runs
+from booley.config.project_config import (
+    lookup_target_section,
+)
+from booley.flows.target_test_plan import (
+    batch_test_runs,
+)
 from booley.flows.target_test_plan_loading import load_target_test_plan
-from booley.flows.test_runs import SeedCount, SeedRequest, parse_seed_request, parse_test_selector
+from booley.flows.test_runs import (
+    SeedCount,
+    SeedRequest,
+    parse_seed_request,
+    parse_test_selector,
+)
 from booley.fusesoc import fusesoc_registry
 from booley.targets.catalog import PreparedTargetSelection, TargetCatalog
 from booley.targets.selection import TargetSectionConflictError
@@ -102,7 +111,9 @@ def _resolved_work_units(
         work_dir, target, identity=identity, adapter="cocotb" if cocotb else "verilator"
     )
     plan = replace(
-        plan, tests=tuple(registered), skipped=tuple(name for name in registered if name in skips)
+        plan,
+        tests=tuple(registered),
+        skipped=tuple(name for name in registered if name in skips),
     )
     drawn: set[int] = set()
 

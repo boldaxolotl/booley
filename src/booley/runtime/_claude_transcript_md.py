@@ -83,7 +83,9 @@ def _claude_md_usage_lines(usage: dict) -> list[str]:
 
 
 def _claude_write_markdown(
-    transcript_path: Path | None, *, markdown_path: Path | None = None
+    transcript_path: Path | None,
+    *,
+    markdown_path: Path | None = None,
 ) -> None:
     """Read back JSONL and write human-readable Markdown to the human log tree."""
     if transcript_path is None or not transcript_path.exists():

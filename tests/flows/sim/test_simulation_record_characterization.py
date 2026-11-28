@@ -92,7 +92,8 @@ class _SessionBoundaryExecution(SimulationExecution):
         identity = self.identities[-1]
         if "BOOLEY_BUILD_STAGE" in command[-1]:
             return SubprocessResult(
-                returncode=0, stdout=f"BOOLEY_BUILD_STAGE token={identity.attempt_token} rc=0\n"
+                returncode=0,
+                stdout=f"BOOLEY_BUILD_STAGE token={identity.attempt_token} rc=0\n",
             )
         write_adapter_result(
             identity,
@@ -133,7 +134,8 @@ class _AdapterAbortExecution(_SessionBoundaryExecution):
         if "BOOLEY_BUILD_STAGE" in command[-1]:
             identity = self.identities[-1]
             return SubprocessResult(
-                returncode=0, stdout=f"BOOLEY_BUILD_STAGE token={identity.attempt_token} rc=0\n"
+                returncode=0,
+                stdout=f"BOOLEY_BUILD_STAGE token={identity.attempt_token} rc=0\n",
             )
         identity = work_transport_identity(launched_work(command))
         assert identity is not None
@@ -266,7 +268,8 @@ class _NativeAdapterExecution(_AdapterAbortExecution):
 def _run_simulation_record_result(tmp_path: Path, plan: Any, execution: Any) -> Any:
     """Run ``plan`` through the ordinary executor and return the scanned result."""
     executor = OrdinaryHdlSerialExecutor(
-        invoke=lambda *_args, **_kwargs: None, execution_factory=lambda _options: execution
+        invoke=lambda *_args, **_kwargs: None,
+        execution_factory=lambda _options: execution,
     )
     invocation = tmp_path / "reports/1"
     invocation.mkdir(parents=True)

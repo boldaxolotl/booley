@@ -23,7 +23,10 @@ from booley.core.build_paths import work_root_for
 from booley.flows import edam as edam_layer
 from booley.flows.fpga.backends.vivado import cache as fpga_cache
 from booley.flows.fpga.flow import FpgaImplFlow
-from booley.flows.implementation_comparison import TargetExecutionRef, resolve_target_execution_ref
+from booley.flows.implementation_comparison import (
+    TargetExecutionRef,
+    resolve_target_execution_ref,
+)
 from booley.flows.lint.flow import LintFlow
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.fusesoc import fusesoc_registry
@@ -91,7 +94,11 @@ def _core(
 
 
 def _write_project(
-    root: Path, variant: str, *, symlinked_booley: Path | None = None, **core_kwargs
+    root: Path,
+    variant: str,
+    *,
+    symlinked_booley: Path | None = None,
+    **core_kwargs,
 ) -> Path:
     """Create a Project: ``isolated``, ``projected`` (stealth, native core) or ``plain``."""
     root.mkdir(parents=True, exist_ok=True)

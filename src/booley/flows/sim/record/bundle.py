@@ -124,4 +124,7 @@ def _regular_child(root: Path, relative: str) -> Path:
     return path
 
 
-__all__ = ["require_bundle_inventory", "verify_bundle_in_place"]
+__all__ = [
+    "require_bundle_inventory",
+    "verify_bundle_in_place",
+]

@@ -54,7 +54,7 @@ class FakeHost:
         if args == ["container", "ls", "--all", "--quiet", "--no-trunc"]:
             return "".join(f"{name}\n" for name in self.containers)
         if args[:2] == ["container", "inspect"]:
-            return self.containers[args[2]][0] + "\n"
+            return json.dumps(self.containers[args[2]][0]) + "\n"
         if args[:2] == ["volume", "ls"]:
             return "".join(f"{name}\n" for name in self.volumes)
         if args[:3] == ["container", "ls", "--all"] and "--filter" in args:
@@ -81,7 +81,7 @@ class FakeHost:
 
     def _remove_or_count_layers(self, args: list[str]) -> str:
         if args[:2] == ["image", "inspect"]:
-            return f"{self.layers.get(args[-1], 1)}\n"
+            return f"{self.layers.get(args[2], 1)}\n"
         self.removals.append(args[-1])
         if args[0] == "volume":
             if self.fail_volume_rm:
@@ -329,7 +329,10 @@ def test_leftovers_lists_legacy_policy_volumes(tmp_path: Path, host: FakeHost) -
 
     found = project_resources.leftovers(root)
 
-    assert [item.name for item in found if item.kind == "volume"] == [base, f"{base}-subscription"]
+    assert [item.name for item in found if item.kind == "volume"] == [
+        base,
+        f"{base}-subscription",
+    ]
     # A subscription Sandbox now owns the unsuffixed volume; the old name is the legacy one.
     assert state_volume_mount("claude", project_name_id(root), "subscription") == (
         f"source={base},target=/home/agent/.claude,type=volume"

@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import sys
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field, replace
@@ -21,7 +22,11 @@ from typing import Any
 import pytest
 
 from booley.flows import endpoint_admission
-from booley.flows.endpoint_admission import AdmissionContext, AdmissionGate, AdmissionIdentityError
+from booley.flows.endpoint_admission import (
+    AdmissionContext,
+    AdmissionGate,
+    AdmissionIdentityError,
+)
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.endpoint_state import EndpointState
 from booley.flows.fpga.flow import FpgaImplFlow
@@ -35,6 +40,9 @@ from booley.runtime.endpoint_execution import (
     ExecutionResult,
 )
 from booley.runtime.execution_records import RUNTIME_EXECUTION_ENV, ExecutionId
+from booley.runtime.filesystem_utils import safe_rmtree
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.flows.run_root_removal_support import NEEDS_PROC, RemovalRun, wait_until
 from tests.memory_budget_support import fail_budget
 from tests.oom_priority_support import (
     PROC_PATH,
@@ -42,6 +50,8 @@ from tests.oom_priority_support import (
     inert_oom_proc,  # noqa: F401  (fixture, used by memory_runtime)
     oom_priority,
 )
+from tests.sandbox_venue_fake import place
+from tests.time_budget import hang_guard_s
 
 FLOW_TYPES = {"sim": SimulateFlow, "synth": AsicSynthesizeFlow, "fpga": FpgaImplFlow}
 
@@ -49,9 +59,8 @@ FLOW_TYPES = {"sim": SimulateFlow, "synth": AsicSynthesizeFlow, "fpga": FpgaImpl
 @pytest.fixture
 def runtime(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Path:
     """A session runtime with no ambient identity, slot or state variables."""
-    from booley.runtime import runtime_context
 
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.chdir(tmp_path)
     for name in (
         "BOOLEY_TICKET_FILE",
@@ -247,15 +256,36 @@ def _cancel() -> EndpointOutcome:
         pytest.param("success", EndpointOutcome, id="success"),
         pytest.param("failure", _fail, id="failure"),
         pytest.param("cancelled", _cancel, id="cancelled"),
+        pytest.param("checkout-removed", None, id="checkout-removed", marks=NEEDS_PROC),
+        pytest.param(
+            "agent-cli-checkout-removed", None, id="agent-cli-checkout-removed", marks=NEEDS_PROC
+        ),
     ),
 )
 def test_slot_released_when_run_ends(
-    harness: _Harness, memory_runtime: Path, ending: str, behavior: Callable[[], EndpointOutcome]
+    harness: _Harness,
+    memory_runtime: Path,
+    ending: str,
+    behavior: Callable[[], EndpointOutcome] | None,
 ) -> None:
-    harness.behavior = behavior
+    checkout = memory_runtime.parent / "checkout"
+    agent_cli = ending.startswith("agent-cli")
+    removal = RemovalRun(checkout, memory_runtime.parent, agent_cli=agent_cli)
+    if behavior is None:
+        checkout.mkdir()
+        harness.request = replace(harness.request, work_dir=checkout)
+    else:
+        removal.close()  # these endings never run it
+    harness.behavior = behavior or removal
     stdout_before = sys.stdout
 
-    if ending == "cancelled":
+    if behavior is None:
+        try:
+            assert harness.execute().exit_code == EXIT_ERROR
+            removal.assert_stopped()
+        finally:
+            removal.close()
+    elif ending == "cancelled":
         with pytest.raises(KeyboardInterrupt):
             harness.execute()
     else:
@@ -269,6 +299,41 @@ def test_slot_released_when_run_ends(
     assert isinstance(borrowed.outer_token, job_slots.SlotToken)
     assert _held(memory_runtime, job_slots.CLASS_MEMORY) == []
     assert sys.stdout is stdout_before
+
+
+def test_queued_job_whose_checkout_is_removed_stops_waiting(
+    harness: _Harness, memory_runtime: Path
+) -> None:
+    checkout = memory_runtime.parent / "checkout"
+    checkout.mkdir()
+    harness.request = replace(harness.request, work_dir=checkout)
+    store = job_slots.SlotStore(job_slots.slots_dir(memory_runtime))
+    whole_budget = job_slots.MemoryClaim(budget_mb=1000.0, run_alone=True)
+    holder = store.acquire(job_slots.CLASS_MEMORY, pid=os.getpid(), memory=whole_budget)
+    finished = threading.Event()
+
+    def remove_once_queued() -> None:
+        try:
+            wait_until(lambda: store.observe(job_slots.CLASS_MEMORY)[1], "the Job never queued")
+            safe_rmtree(checkout)
+            finished.wait(hang_guard_s() / 2)
+        finally:
+            store.release(holder)
+
+    remover = threading.Thread(target=remove_once_queued)
+    remover.start()
+    try:
+        result = harness.execute()
+    finally:
+        finished.set()
+        remover.join()
+
+    assert harness.invocations == [], "the queued Job ran its body"
+    assert result.exit_code == EXIT_ERROR
+    assert result.outcome.report_text == (
+        f"{harness.flow.name} failed: checkout {checkout} was removed during the run"
+    )
+    assert store.observe(job_slots.CLASS_MEMORY) == ([], [])
 
 
 def _prepared() -> PreparedExecution:
@@ -340,7 +405,10 @@ def test_no_slot_cases_admit_unmanaged(case: str, monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.parametrize(
     "failure",
-    (job_slots.ClaimLostError("vanished"), AdmissionIdentityError("mismatch")),
+    (
+        job_slots.ClaimLostError("vanished"),
+        AdmissionIdentityError("mismatch"),
+    ),
     ids=("claim_lost", "identity"),
 )
 def test_body_failures_are_not_remapped_to_admission_rejections(
@@ -471,7 +539,10 @@ def _selection_prepared(flow: AsicSynthesizeFlow, work_dir: Path) -> PreparedExe
 
 
 def _prepared_for(invocation: Any) -> PreparedExecution:
-    return PreparedExecution(non_persisting_dry_run=False, invocation=invocation)
+    return PreparedExecution(
+        non_persisting_dry_run=False,
+        invocation=invocation,
+    )
 
 
 @contextmanager
@@ -909,7 +980,10 @@ def test_cli_prints_an_admission_refusal_once(
 
 
 def test_fpga_job_queues_for_its_vivado_seat_while_memory_fits(
-    memory_runtime: Path, runtime: Path, queued_once: None, capsys: pytest.CaptureFixture[str]
+    memory_runtime: Path,
+    runtime: Path,
+    queued_once: None,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     _write_jobs(memory_runtime, "vivado = 1")
     _seed_records(memory_runtime, ("a", "fpga_impl", 400))
@@ -940,7 +1014,10 @@ def test_fpga_job_runs_beside_another_vivado_job_under_a_cap_of_two(
     flow, prepared = _fpga_prepared(runtime)
     seat = job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=100.0, seats=(("vivado", 2),))
 
-    with _holding(memory_runtime, seat) as (first,), AdmissionGate(flow, prepared).enter():
+    with (
+        _holding(memory_runtime, seat) as (first,),
+        AdmissionGate(flow, prepared).enter(),
+    ):
         holders = _held(memory_runtime, job_slots.CLASS_MEMORY)
         (mine,) = (token for token in holders if token.seq != first.seq)
         assert mine.memory == job_slots.MemoryClaim(
@@ -1525,7 +1602,10 @@ def test_memory_admitted_job_keeps_a_project_set_thread_count(
 ) -> None:
     with _holding(memory_runtime, job_slots.MemoryClaim(budget_mb=1000.0, reservation_mb=50.0)):
         authored, plain = _verilator_arguments_in_admitted_job(
-            memory_runtime, runtime, _verilator_inspection("-j2"), _verilator_inspection()
+            memory_runtime,
+            runtime,
+            _verilator_inspection("-j2"),
+            _verilator_inspection(),
         )
 
     # The authored -j2 passes through untouched; the same Job's other Target is shared.

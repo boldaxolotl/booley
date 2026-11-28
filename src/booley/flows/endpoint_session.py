@@ -8,8 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from booley.core.sandbox_layout import canonical_project_alias_path
 from booley.flows.endpoint_cli import runtime_report_root
 from booley.flows.endpoint_reporting import _StdoutWitness, removed_root, report_root_removed
+from booley.flows.run_root_watchdog import RunRootWatchdog
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EndpointOutcome,
@@ -22,7 +24,6 @@ from booley.runtime.exception_diagnostics import (
     write_exception_diagnostic,
 )
 from booley.runtime.filesystem_utils import run_roots
-from booley.runtime.sandbox_layout import canonical_project_alias_path
 
 if TYPE_CHECKING:
     from booley.flows.endpoint_state import EndpointState
@@ -115,6 +116,7 @@ def _record_run_roots(endpoint: EndpointState) -> None:
     if booley_dir is not None and not booley_dir.is_dir():
         booley_dir = None
     endpoint._run_roots = (checkout, booley_dir)
+    endpoint._removed_run_root = None
 
 
 def _live_roots(endpoint: EndpointState) -> list[Path]:
@@ -122,7 +124,9 @@ def _live_roots(endpoint: EndpointState) -> list[Path]:
     return [root for root in endpoint._run_roots or () if root is not None]
 
 
-def prepare_execution(endpoint: EndpointState) -> PreparedExecution | EndpointOutcome:
+def prepare_execution(
+    endpoint: EndpointState,
+) -> PreparedExecution | EndpointOutcome:
     """Adapt CLI arguments into one prepared execution request."""
     endpoint.reset_report_metadata()
     endpoint._requeue_cleanup_errors.clear()
@@ -156,7 +160,8 @@ def _prepared_execution(
 ) -> PreparedExecution:
     """Carry the prepared invocation once all preparation gates have succeeded."""
     return PreparedExecution(
-        non_persisting_dry_run=endpoint._is_non_persisting_dry_run(), invocation=invocation
+        non_persisting_dry_run=endpoint._is_non_persisting_dry_run(),
+        invocation=invocation,
     )
 
 
@@ -171,7 +176,9 @@ def _transcript_diagnostic_path(endpoint: EndpointState) -> Path | None:
 
 
 def _exception_outcome(
-    endpoint: EndpointState, prepared: PreparedExecution, exc: Exception
+    endpoint: EndpointState,
+    prepared: PreparedExecution,
+    exc: Exception,
 ) -> EndpointOutcome:
     logger.debug("Endpoint %s failed with exception", endpoint.name, exc_info=True)
     persist = not prepared.non_persisting_dry_run
@@ -193,6 +200,30 @@ def _exception_outcome(
     )
 
 
+def _run_watched(
+    endpoint: EndpointState, prepared: PreparedExecution, admission: object | None
+) -> EndpointOutcome:
+    """Run the invocation, stopping it when a run root is removed.
+
+    ``finish_execution`` names the removed root, so the stopped run fails; it is
+    not cancelled, unlike one the user interrupted.
+    """
+    watchdog = RunRootWatchdog(lambda: removed_root(endpoint))
+    result = EndpointOutcome(exit_code=EXIT_ERROR)
+    try:
+        with watchdog:
+            try:
+                invocation = prepared.invocation
+                result = invocation.run(admission if invocation.borrows_admission else None)
+            except Exception as exc:  # noqa: BLE001 — normalize the endpoint plugin boundary
+                result = _exception_outcome(endpoint, prepared, exc)
+    except KeyboardInterrupt:
+        watchdog.close()  # the interrupt may have cut the exit's join short
+        if watchdog.removed is None:
+            raise
+    return result
+
+
 def invoke_endpoint(
     endpoint: EndpointState,
     prepared: PreparedExecution,
@@ -202,17 +233,12 @@ def invoke_endpoint(
 ) -> EndpointOutcome:
     """Run the prepared invocation under the neutral coordinator."""
     endpoint._start_time = started
-    result = EndpointOutcome(exit_code=EXIT_ERROR)
     witness = _StdoutWitness(sys.stdout)
     endpoint._stdout_witness = witness
     sys.stdout = witness  # type: ignore[assignment]
     try:
         with run_roots(*_live_roots(endpoint)):
-            try:
-                invocation = prepared.invocation
-                result = invocation.run(admission if invocation.borrows_admission else None)
-            except Exception as exc:  # noqa: BLE001 — normalize the endpoint plugin boundary
-                result = _exception_outcome(endpoint, prepared, exc)
+            result = _run_watched(endpoint, prepared, admission)
     finally:
         sys.stdout = witness.wrapped
     _attach_memory_warning(result, admission)
@@ -237,7 +263,9 @@ def _attach_memory_warning(result: EndpointOutcome, admission: object | None) ->
 
 
 def finish_execution(
-    endpoint: EndpointState, prepared: PreparedExecution, outcome: EndpointOutcome
+    endpoint: EndpointState,
+    prepared: PreparedExecution,
+    outcome: EndpointOutcome,
 ) -> ExecutionResult:
     """Publish completion: refresh the report, then the console report."""
     for cleanup_error in endpoint._requeue_cleanup_errors:

@@ -120,7 +120,9 @@ def wire_frontend(monkeypatch, action):
 def untracked_and_modified(root):
     """Return Git's porcelain status of *root*, listing every untracked file."""
     return run_bounded_child(
-        ["git", "status", "--porcelain", "--untracked-files=all"], cwd=root, check=True
+        ["git", "status", "--porcelain", "--untracked-files=all"],
+        cwd=root,
+        check=True,
     ).stdout
 
 
@@ -375,7 +377,8 @@ def test_unresolved_stamp_return_prevents_frontend(checkout, monkeypatch, capsys
 def test_linked_worktree_remains_supported(checkout, tmp_path, monkeypatch):
     linked = tmp_path / "linked"
     run_bounded_child(
-        ["git", "-C", str(checkout), "worktree", "add", "-b", "linked", str(linked)], check=True
+        ["git", "-C", str(checkout), "worktree", "add", "-b", "linked", str(linked)],
+        check=True,
     )
     # private: the fixture mirrors the build stamp's input set; write_build_stamp reads exactly
     # these paths.

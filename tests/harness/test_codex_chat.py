@@ -27,7 +27,9 @@ def installed(tmp_path, monkeypatch):
     # Simulate the launcher platform without changing the host's file-lock backend.
     monkeypatch.setattr(codex_chat, "sys", SimpleNamespace(platform="linux", stderr=sys.stderr))
     monkeypatch.setattr(
-        codex_chat.shutil, "which", lambda name: str(executable) if name == "codex" else str(node)
+        codex_chat.shutil,
+        "which",
+        lambda name: str(executable) if name == "codex" else str(node),
     )
     monkeypatch.setattr(
         codex_chat, "capture_process_identity", lambda _pid: ProcessIdentity(123, "fixture", 7)
@@ -189,7 +191,7 @@ def test_shim_preserves_arguments_environment_and_exit_status(tmp_path, monkeypa
     shim = Path(codex_chat.__file__).parents[1] / "data/codex_chat.mjs"
     # The default bound leaves Node startup headroom on slow CI runners.
     result = run_bounded_child(
-        [node, str(shim), "S123", str(entrypoint), "argument with spaces", "--no-daemon"]
+        [node, str(shim), "S123", str(entrypoint), "argument with spaces", "--no-daemon"],
     )
     assert result.returncode == 17
     assert json.loads(result.stdout) == {

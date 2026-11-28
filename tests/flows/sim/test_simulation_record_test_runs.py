@@ -22,7 +22,12 @@ from booley.flows.sim.record.flow_planning import (
 )
 from booley.flows.sim.record.test_run_binding import work_item_test_runs
 from booley.flows.sim.request import SimRequest
-from booley.flows.test_runs import TestRun, TestRunLimitError, build_test_run, test_run_document
+from booley.flows.test_runs import (
+    TestRun,
+    TestRunLimitError,
+    build_test_run,
+    test_run_document,
+)
 from tests.flows.sim import test_simulation_record_resume_diagnostics as resume_support
 from tests.flows.sim.test_simulation_record_flow_planning import _planning_fixture
 
@@ -39,7 +44,10 @@ def _hdl_plan(
         tuple(run.test for run in group if run.test is not None) for group in run_groups
     )
     preview = replace(
-        preview, groups=groups, run_groups=run_groups, commands=tuple(("run",) for _ in run_groups)
+        preview,
+        groups=groups,
+        run_groups=run_groups,
+        commands=tuple(("run",) for _ in run_groups),
     )
     return plan_ordinary_hdl_simulation_record(
         handle=handle,

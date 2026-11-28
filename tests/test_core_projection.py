@@ -130,7 +130,8 @@ def test_reconcile_refreshes_and_removes_owned_stale_projection(tmp_path: Path) 
     core.write_text(_CORE.replace("demo:0", "demo:1"), encoding="utf-8")
     stale = root / ".booley-projected-old.core"
     stale.write_text(
-        "CAPI=2:\n# Booley stealth core projection: .booley/cores/old.core\n", encoding="utf-8"
+        "CAPI=2:\n# Booley stealth core projection: .booley/cores/old.core\n",
+        encoding="utf-8",
     )
 
     result = reconcile_projected_cores(root)
@@ -266,7 +267,9 @@ def test_isolated_registry_rejects_nonliteral_fileset_path(tmp_path: Path) -> No
         reconcile_isolated_registry(root)
 
 
-def test_isolated_registry_keeps_files_below_symlinked_booley_dir_lexical(tmp_path: Path) -> None:
+def test_isolated_registry_keeps_files_below_symlinked_booley_dir_lexical(
+    tmp_path: Path,
+) -> None:
     """A fileset path under a linked ``.booley`` renders through the entry, not its target.
 
     Only the entry itself is followed: a link below it that points outside the

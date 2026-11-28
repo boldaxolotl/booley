@@ -117,7 +117,9 @@ def _criterion(minimum: Fraction = Fraction(50)) -> CoverageCriterion:
 
 def _empty_waivers() -> ApprovedWaiverSet:
     return ApprovedWaiverSet(
-        configuration=MappingProxyType({"status": "disabled"}), digest="sha256:empty", waivers=()
+        configuration=MappingProxyType({"status": "disabled"}),
+        digest="sha256:empty",
+        waivers=(),
     )
 
 
@@ -154,7 +156,9 @@ def _two_metric_coverage_record() -> CoverageRecord:
 
 def test_exact_threshold_pass_preserves_failed_simulation_truth() -> None:
     evaluated = evaluate_coverage_record(
-        _coverage_record(simulation_verdict="fail"), _criterion(), _empty_waivers()
+        _coverage_record(simulation_verdict="fail"),
+        _criterion(),
+        _empty_waivers(),
     )
 
     assert evaluated.evaluation["status"] == "pass"
@@ -179,7 +183,9 @@ def test_exact_threshold_pass_preserves_failed_simulation_truth() -> None:
 
 def test_threshold_miss_uses_exact_rational_not_display_percentage() -> None:
     evaluated = evaluate_coverage_record(
-        _coverage_record(), _criterion(Fraction(500001, 10000)), _empty_waivers()
+        _coverage_record(),
+        _criterion(Fraction(500001, 10000)),
+        _empty_waivers(),
     )
 
     assert evaluated.evaluation["status"] == "fail"
@@ -205,7 +211,9 @@ def test_invalid_threshold_is_rejected_at_criterion_construction(
 
 
 @pytest.mark.parametrize(
-    "metrics", [(), ("line", "line"), ("line", "mutation")], ids=["empty", "duplicate", "unknown"]
+    "metrics",
+    [(), ("line", "line"), ("line", "mutation")],
+    ids=["empty", "duplicate", "unknown"],
 )
 def test_criterion_without_unique_v1_metrics_is_rejected_at_construction(
     metrics: tuple[str, ...],
@@ -380,7 +388,8 @@ def test_ungated_partial_normalization_leaves_waivers_unmatched() -> None:
 
 def test_blocked_gated_coverage_record_still_resolves_approved_dispositions() -> None:
     coverage_record = replace(
-        _coverage_record(), collection=MappingProxyType({"status": "incomplete"})
+        _coverage_record(),
+        collection=MappingProxyType({"status": "incomplete"}),
     )
     waivers = replace(_empty_waivers(), waivers=(_approval("point-1"),))
 
@@ -393,13 +402,16 @@ def test_blocked_gated_coverage_record_still_resolves_approved_dispositions() ->
 
 
 @pytest.mark.parametrize(
-    ("collection_status", "expected_status"), [("complete", "pass"), ("incomplete", "blocked")]
+    ("collection_status", "expected_status"),
+    [("complete", "pass"), ("incomplete", "blocked")],
 )
 def test_gated_evaluation_records_approved_waiver_set_digest(
-    collection_status: str, expected_status: str
+    collection_status: str,
+    expected_status: str,
 ) -> None:
     coverage_record = replace(
-        _coverage_record(), collection=MappingProxyType({"status": collection_status})
+        _coverage_record(),
+        collection=MappingProxyType({"status": collection_status}),
     )
     waivers = replace(_empty_waivers(), digest="sha256:reviewed-waivers")
 
@@ -424,8 +436,14 @@ def test_metrics_use_fixed_order_and_logical_and() -> None:
     )
 
     assert evaluated.evaluation["status"] == "fail"
-    assert [item["metric"] for item in evaluated.evaluation["metrics"]] == ["line", "branch"]
-    assert [item["verdict"] for item in evaluated.evaluation["metrics"]] == ["pass", "fail"]
+    assert [item["metric"] for item in evaluated.evaluation["metrics"]] == [
+        "line",
+        "branch",
+    ]
+    assert [item["verdict"] for item in evaluated.evaluation["metrics"]] == [
+        "pass",
+        "fail",
+    ]
 
 
 def test_fingerprint_ignores_metric_authoring_order_and_numeric_spelling() -> None:

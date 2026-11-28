@@ -49,7 +49,10 @@ def test_inline_styles(text, expected):
             "| Name | Value |\n|---|---|\n| **foo** | `42` |\n| barbaz | 9 |",
             "  Name     Value\n  ──────   ─────\n  foo      42\n  barbaz   9\n",
         ),
-        ("| A | B | C\n| :--- | :---: | ---: |\n| x |", "  A   B   C\n  ─   ─   ─\n  x\n"),
+        (
+            "| A | B | C\n| :--- | :---: | ---: |\n| x |",
+            "  A   B   C\n  ─   ─   ─\n  x\n",
+        ),
     ],
     ids=[
         "h2",

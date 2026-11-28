@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 
 from booley.runtime.endpoint_execution import EndpointOutcome
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.specialists.reviewer import ReviewerSpecialist
 from tests.mcp_tools.reviewer_support import (
     ScriptedAgent,
@@ -22,6 +23,7 @@ from tests.mcp_tools.reviewer_support import (
     run_review,
 )
 from tests.project_runtime_git_support import git
+from tests.sandbox_venue_fake import place
 
 A_SV = "module a(input logic x);\nendmodule\n"
 B_SV = "module b;\n  a u_a (.x(1'b0));\nendmodule\n"
@@ -81,7 +83,10 @@ def base_argv(root: Path, *args: str) -> list[str]:
 
 
 def review(
-    root: Path, agent: ScriptedAgent, args: list[str], issues: list[dict[str, Any]] | None = None
+    root: Path,
+    agent: ScriptedAgent,
+    args: list[str],
+    issues: list[dict[str, Any]] | None = None,
 ) -> EndpointOutcome:
     """Run one discovery review whose agent reports *issues*."""
     agent.answer({"issues": issues or []})
@@ -147,7 +152,8 @@ def test_cli_prints_the_report_once(
     exit_code: int,
     report: str,
 ) -> None:
-    monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
+    monkeypatch.setenv("BOOLEY_PRIMARY_PROVIDER", "claude")  # the Sandbox spec hand-off
     monkeypatch.delenv("BOOLEY_DIR")  # the endpoints conftest points it at a non-Project
     (repo / ".booley").mkdir()
     (repo / "rtl/e.sv").write_text(E_SV + "// outside scope\n", newline="\n")
@@ -309,14 +315,24 @@ def test_pre_existing_findings_do_not_fail_the_review(repo: Path, agent: Scripte
 def test_diff_review_rejects_finding_without_origin(repo: Path, agent: ScriptedAgent) -> None:
     commit_edit(repo, "a.sv", A_SV + "// feature edit\n", "Feature edit")
 
-    result = review(repo, agent, ["--scope", "rtl/a.sv", "--base", "main"], [finding(origin=None)])
+    result = review(
+        repo,
+        agent,
+        ["--scope", "rtl/a.sv", "--base", "main"],
+        [finding(origin=None)],
+    )
 
     assert result.exit_code == 2
     assert "failed the schema" in result.report_text
 
 
 def test_origin_is_ignored_without_base(repo: Path, agent: ScriptedAgent) -> None:
-    result = review(repo, agent, ["--scope", "rtl/a.sv"], [finding(origin="pre_existing")])
+    result = review(
+        repo,
+        agent,
+        ["--scope", "rtl/a.sv"],
+        [finding(origin="pre_existing")],
+    )
 
     assert result.exit_code == 0
     assert result.detail["issues"] == 1

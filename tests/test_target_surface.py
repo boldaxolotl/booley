@@ -35,8 +35,12 @@ from booley.targets.target_surface import (
     filter_surface,
     is_glob,
 )
-from booley.targets.target_surface import detail_payload as _detail_payload
-from booley.targets.target_surface import surface_payload as _surface_payload
+from booley.targets.target_surface import (
+    detail_payload as _detail_payload,
+)
+from booley.targets.target_surface import (
+    surface_payload as _surface_payload,
+)
 from tests.conftest import symlink_or_skip
 from tests.fusesoc_test_support import fusesoc_setup_runner
 from tests.target_test_support import make_target_handle
@@ -194,7 +198,8 @@ def _entry(surface: target_surface.TargetSurface, selector: str) -> TargetHandle
 
 class TestTargetInterface:
     def test_all_target_aware_flows_share_canonical_selection_contract(
-        self, project: Path
+        self,
+        project: Path,
     ) -> None:
         cases = {
             "lint": ("acme:ip:alpha:1.0#lint", "alpha#lint"),
@@ -320,7 +325,8 @@ class TestTargetInterface:
         hidden_root = tmp_path / excluded_tree
         hidden_root.mkdir(parents=True)
         (hidden_root / "hidden.core").write_text(
-            "CAPI=2:\nname: booley::hidden:0\n", encoding="utf-8"
+            "CAPI=2:\nname: booley::hidden:0\n",
+            encoding="utf-8",
         )
         (tmp_path / "top.core").write_text(
             textwrap.dedent(
@@ -352,7 +358,8 @@ class TestTargetInterface:
         projected.write_text(foreign_content, encoding="utf-8")
 
         with pytest.raises(
-            fusesoc_registry.FuseSocError, match="refusing to overwrite non-Booley file"
+            fusesoc_registry.FuseSocError,
+            match="refusing to overwrite non-Booley file",
         ) as failure:
             inspect_target(tmp_path, select_target(tmp_path, "lint"))
 
@@ -481,7 +488,10 @@ class TestTargetInterface:
             )
 
     def test_endpoint_selection_returns_exact_callable_selectors(self, project: Path):
-        selected = select_targets(project, "acme:ip:alpha:1.0#lint,acme:ip:beta:1.0#fpga")
+        selected = select_targets(
+            project,
+            "acme:ip:alpha:1.0#lint,acme:ip:beta:1.0#fpga",
+        )
 
         assert tuple(item.identity for item in selected) == (
             "acme:ip:alpha:1.0#lint",
@@ -568,7 +578,9 @@ class TestCollectSurface:
         assert handle.doctor_private
 
     def test_doctor_authority_is_preserved_by_multi_target_selection(
-        self, project: Path, monkeypatch: pytest.MonkeyPatch
+        self,
+        project: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         with pytest.raises(UnknownTargetError, match="Unknown target"):
             select_targets(project, "lint_selftest_bad")
@@ -645,12 +657,18 @@ class TestFilterSurface:
 
     def test_for_flow_consumes_catalog_drivability_facts(self, project: Path):
         handle = make_target_handle(
-            project, "catalog_owned", flow="lint", eda_tool="verilator", drivable_by=("sim",)
+            project,
+            "catalog_owned",
+            flow="lint",
+            eda_tool="verilator",
+            drivable_by=("sim",),
         )
         surface = target_surface.TargetSurface(
             groups=(
                 target_surface.CoreGroup(
-                    vlnv=handle.vlnv, core_file=handle.core_file, entries=(handle,)
+                    vlnv=handle.vlnv,
+                    core_file=handle.core_file,
+                    entries=(handle,),
                 ),
             ),
             warnings=(),
@@ -738,7 +756,10 @@ class TestToplevelDisplay:
 class TestSurfacePayload:
     def test_shape_and_relative_core_paths(self, project: Path):
         payload = surface_payload(collect_surface(project), project)
-        assert [c["core_file"] for c in payload["cores"]] == ["alpha/alpha.core", "beta/beta.core"]
+        assert [c["core_file"] for c in payload["cores"]] == [
+            "alpha/alpha.core",
+            "beta/beta.core",
+        ]
         sim = next(t for t in payload["cores"][0]["targets"] if t["name"] == "sim")
         assert sim == {
             "name": "sim",

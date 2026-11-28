@@ -5,6 +5,8 @@ Kind: ``standalone <booley_dir> <run_id>`` runs the Flow or Specialist request
 the submitter's pid-less record and writes the terminal state like a shell run.
 A Specialist runs with its worktree's agent settings and a transcript directory
 beside ``job.log``.
+The worker keeps the Sandbox activity heartbeat fresh while its Job runs or
+waits for admission.
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from booley.config.settings import set_agent_settings, worktree_agent_settings
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.boundary import BoundaryError, require_dict, require_list, require_str
 from booley.harness.standalone_job import (
     RUN_ID_ENV,
@@ -31,8 +34,8 @@ from booley.harness.standalone_job import (
     standalone_transcript_dir,
 )
 from booley.runtime import detached_job, job_records
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.handles import register_job
+from booley.runtime.heartbeat import reaper_heartbeat
 from booley.runtime.timefmt import compact_utc_now, utc_now_rfc3339
 
 _KINDS = frozenset({"flow", "specialist"})
@@ -41,6 +44,9 @@ _ENDPOINT_PATTERN = re.compile(r"[A-Za-z0-9_-]+")
 _FALLBACK_STEM = "standalone"
 _PARENT_WATCHDOG_ENV = "BOOLEY_PARENT_WATCHDOG"
 _START_FAILURE_EXIT_CODE = 2
+# Far below any useful host idle timeout (2 h by default, any positive
+# number of seconds allowed) and still only one tiny file write per tick.
+_JOB_HEARTBEAT_SECONDS = 10
 _USAGE = "usage: standalone_worker standalone <booley_dir> <run_id>"
 
 
@@ -156,7 +162,8 @@ def _run_standalone(booley_dir: Path, run_id: str) -> int:
         sys.stdout.reconfigure(line_buffering=True)
     request_path = standalone_request_path(booley_dir, run_id)
     transcript_dir = standalone_transcript_dir(booley_dir, run_id)
-    return job.run(lambda: _start_request(request_path, transcript_dir))
+    with reaper_heartbeat(_JOB_HEARTBEAT_SECONDS):
+        return job.run(lambda: _start_request(request_path, transcript_dir))
 
 
 def main(argv: list[str] | None = None) -> int:

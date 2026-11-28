@@ -1,9 +1,12 @@
-"""Shared builders and fakes for the Simulation Record suites."""
+"""Shared builders and fakes for the Simulation Record suites: its executor, execution, sizing,
+admission endpoint and store.
+"""
 
 from __future__ import annotations
 
 import copy
 import hashlib
+import itertools
 import json
 import os
 import shutil
@@ -53,7 +56,9 @@ from booley.flows.sim.record.coordinator import (
     SimulationRecordRecoveryStatus,
     WorkExecutionRequest,
 )
-from booley.flows.sim.record.coverage_execution import CoverageAggregateExecutor
+from booley.flows.sim.record.coverage_execution import (
+    CoverageAggregateExecutor,
+)
 from booley.flows.sim.record.facts import ACCEPTANCE_FACTS_SCHEMA, AcceptanceFacts
 from booley.flows.sim.record.flow_planning import plan_coarse_simulation_record
 from booley.flows.sim.record.model import (
@@ -62,18 +67,24 @@ from booley.flows.sim.record.model import (
     create_simulation_record_plan,
 )
 from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
-from booley.flows.sim.record.resume import (
-    ValidatedManifestNode,
-    ValidatedResumeManifest,
-    ValidatedTargetBinding,
+from booley.flows.sim.record.scheduler import (
+    ScheduledAttempt,
 )
-from booley.flows.sim.record.scheduler import ScheduledAttempt
-from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
+from booley.flows.sim.record.serial_execution import (
+    OrdinaryHdlSerialExecutor,
+)
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationBuildResult
 from booley.flows.test_runs import TestRun, build_test_run, discovered_test_run
-from booley.runtime.execution_records import ExecutionId
-from booley.runtime.job_slots import CLASS_MEMORY, MemoryClaim, SlotStore, SlotToken
+from booley.runtime.execution_records import (
+    ExecutionId,
+)
+from booley.runtime.job_slots import (
+    CLASS_MEMORY,
+    MemoryClaim,
+    SlotStore,
+    SlotToken,
+)
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import TargetHandle, TargetInput, TargetInspection
 from tests.flows.sim.test_coverage_invocation import project
@@ -88,7 +99,11 @@ from tests.time_budget import hang_guard_s
 
 def _recovery_status(tmp_path: Path) -> SimulationRecordRecoveryStatus:
     return SimulationRecordRecoveryStatus(
-        tmp_path / "manifest.json", "sha256:" + "1" * 64, (), (), ()
+        tmp_path / "manifest.json",
+        "sha256:" + "1" * 64,
+        (),
+        (),
+        (),
     )
 
 
@@ -309,7 +324,10 @@ def _named_manifest(names: tuple[str, ...]) -> object:
         "kind": "templated",
         "placeholders": ["test", "attempt"],
     }
-    runtime_identity = {"source_artifact_path": "input.bin", "destination": "inputs/input.bin"}
+    runtime_identity = {
+        "source_artifact_path": "input.bin",
+        "destination": "inputs/input.bin",
+    }
     document["workload"]["runtime_inputs"] = [  # type: ignore[index]
         {
             "declaration_id": "sha256:"
@@ -409,7 +427,10 @@ def _work_item(ordinal: int, name: str, target: object, variant_id: object) -> d
 
 def _handle(project: Path) -> SimpleNamespace:
     return SimpleNamespace(
-        identity="acme:lib:dut:1#sim", project_root=project, selector="sim", eda_tool="icarus"
+        identity="acme:lib:dut:1#sim",
+        project_root=project,
+        selector="sim",
+        eda_tool="icarus",
     )
 
 
@@ -864,11 +885,9 @@ def _executor(
     *,
     mutate_bundle: str = "",
     disclosures: dict[str, object] | None = None,
-    checkpoint=None,
     launched_bundles: list[Path] | None = None,
 ) -> OrdinaryHdlSerialExecutor:
     return OrdinaryHdlSerialExecutor(
-        publication_checkpoint=checkpoint,
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: _Execution(
             build_root,
@@ -956,7 +975,11 @@ def _hook_publication_request(root, names=("alpha", "beta"), invocation=1):
     store = SimulationRecordStore(root / "record")
     store.publish_manifest(plan.manifest)
     request = _request(
-        store, plan.manifest, plan.manifest.document["work_items"][0], root, invocation=invocation
+        store,
+        plan.manifest,
+        plan.manifest.document["work_items"][0],
+        root,
+        invocation=invocation,
     )
     _executor(root / "build", {}).prepare_attempt(request)
     return request
@@ -976,7 +999,7 @@ def _publish_request_hook(request, name="alpha", ordinal=1, status="passed", ret
 def _observe_pre_sim_reads(monkeypatch):
     from collections import Counter
 
-    from booley.flows.sim.record.pre_sim_evidence import PreSimFiringDecoder
+    from booley.flows.sim.record import store as store_module
 
     accesses, decodes, results = Counter(), Counter(), Counter()
 
@@ -995,18 +1018,16 @@ def _observe_pre_sim_reads(monkeypatch):
             results[path] += 1
         return read_bytes(store, path, **kwargs)
 
-    decode = PreSimFiringDecoder.decode
+    decode = store_module.decode_pre_sim_firing
 
-    def count_decode(decoder, raw, item, attempt):
-        document = decode(decoder, raw, item, attempt)
+    def count_decode(raw):
+        document = decode(raw)
         decodes[(document["attempt_id"], document["ordinal"])] += 1
         return document
 
     monkeypatch.setattr(SimulationRecordStore, "_read", observe(count_results))
-    monkeypatch.setattr(
-        SimulationRecordStore, "_identity", observe(SimulationRecordStore._identity)
-    )
-    monkeypatch.setattr(PreSimFiringDecoder, "decode", count_decode)
+    # No public result exposes how many times a recorded firing is decoded.
+    monkeypatch.setattr(store_module, "decode_pre_sim_firing", count_decode)
     return accesses, decodes, results
 
 
@@ -1168,14 +1189,11 @@ def _scheduled_attempt(store: SimulationRecordStore, item) -> ScheduledAttempt:
 
 
 class _ParallelState:
-    def __init__(self, build_root, run_log, handle, first_finisher, schedule_seed):
+    def __init__(self, build_root, run_log, handle):
         self.build_root = build_root
         self.run_log = run_log
         self.handle = handle
-        self.first_finisher = first_finisher
-        self.schedule_seed = schedule_seed
-        self.barrier = threading.Barrier(2, timeout=_PARALLEL_SYNC_TIMEOUT_S)
-        self.first_finished = threading.Event()
+        self.clock: Callable[[], float] = itertools.count().__next__  # a tick per reading
         self.interval_gate = threading.Lock()
         self.intervals: list[tuple[str, float, float]] = []
         self.completion_order: list[str] = []
@@ -1214,9 +1232,8 @@ class _ParallelGroup:
     def launch_bundle(self, bundle_root: Path, evidence_root: Path, run_cwd: Path):
         del bundle_root, evidence_root, run_cwd
         name = self.names[0]
-        started = time.monotonic()
-        self._coordinate(name)
-        finished = time.monotonic()
+        started = self.state.clock()
+        finished = self.state.clock()
         with self.state.interval_gate:
             self.state.intervals.append((name, started, finished))
             self.state.completion_order.append(name)
@@ -1234,18 +1251,6 @@ class _ParallelGroup:
             0.1,
             (test,),
         )
-
-    def _coordinate(self, name: str) -> None:
-        # The first item builds under the Flow's claim, then the others are admitted beside
-        # it; only the last two meet here.
-        if name not in {"beta", "gamma"}:
-            return
-        self.state.barrier.wait()
-        time.sleep(0.001 * self.state.schedule_seed)
-        if name == self.state.first_finisher:
-            self.state.first_finished.set()
-        else:
-            assert self.state.first_finished.wait(timeout=_PARALLEL_SYNC_TIMEOUT_S)
 
 
 class _ParallelExecution:
@@ -1281,21 +1286,12 @@ class _SimulationRecordAdmissionEndpoint:
         return _Claim(self._slots, token)
 
 
-def _validated_simulation_record(store, manifest, project, handle) -> ValidatedResumeManifest:
-    node = ValidatedManifestNode(store.manifest_path, manifest, manifest_digest(manifest))
-    return ValidatedResumeManifest(
-        node, (), (handle,), (ValidatedTargetBinding(node, project.resolve(), handle),)
-    )
-
-
 def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
     manifest = _three_item_manifest(runtime_execution_id or "")
     plan = create_simulation_record_plan(manifest)
-    project, state = _parallel_environment(tmp_path, "beta", 0)
-    monkeypatch.setattr(
-        "booley.flows.sim.record.serial_execution.TargetCatalog.build",
-        lambda _root: SimpleNamespace(select=lambda *_args, **_kwargs: state.handle),
-    )
+    project, state = _parallel_environment(tmp_path)
+    _write_cocotb_core(project)
+    state.handle = TargetCatalog.build(project).select("sim", for_flow="sim")
     executor = OrdinaryHdlSerialExecutor(
         invoke=lambda *_args, **_kwargs: None,  # type: ignore[arg-type]
         execution_factory=lambda _options: _ParallelExecution(state),  # type: ignore[arg-type,return-value]
@@ -1350,7 +1346,6 @@ def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
     finally:
         slots.release(outer)
     store = SimulationRecordStore(invocation / "targets/sim/record")
-    validated = _validated_simulation_record(store, manifest, project, state.handle)
     return SimpleNamespace(
         simulation_record=simulation_record,
         fault_enabled=fault_enabled,
@@ -1361,7 +1356,6 @@ def _interrupted_simulation_record(tmp_path, monkeypatch, runtime_execution_id):
         slots=slots,
         state=state,
         store=store,
-        validated=validated,
     )
 
 
@@ -1374,7 +1368,7 @@ def _set_runtime_execution_id(
         monkeypatch.setenv("BOOLEY_RUNTIME_EXECUTION_ID", runtime_execution_id)
 
 
-def _parallel_environment(tmp_path, first_finisher, schedule_seed):
+def _parallel_environment(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
     (project / ".booley").mkdir()
@@ -1385,9 +1379,12 @@ def _parallel_environment(tmp_path, first_finisher, schedule_seed):
     run_log = build_root / "run.log"
     run_log.write_text("PASS\n", encoding="utf-8")
     handle = SimpleNamespace(
-        identity="acme:lib:dut:1#sim", project_root=project, selector="sim", eda_tool="icarus"
+        identity="acme:lib:dut:1#sim",
+        project_root=project,
+        selector="sim",
+        eda_tool="icarus",
     )
-    return project, _ParallelState(build_root, run_log, handle, first_finisher, schedule_seed)
+    return project, _ParallelState(build_root, run_log, handle)
 
 
 def _facts(
@@ -1523,7 +1520,8 @@ def _coverage_simulation_record_plan(
     project_data = root / ".booley"
     project_data.mkdir()
     (project_data / "booley.toml").write_text(
-        "[flows.sim]\npre_run_commands = " + json.dumps(pre_sim_commands) + "\n", encoding="utf-8"
+        "[flows.sim]\npre_run_commands = " + json.dumps(pre_sim_commands) + "\n",
+        encoding="utf-8",
     )
     (project_data / "tests.toml").write_text(
         '[sim_0]\ntests = ["reset", "wrap"]\n', encoding="utf-8"
@@ -1564,7 +1562,6 @@ def _run_coverage_simulation_record(
     *,
     runtime_input: bool = False,
     pre_sim_commands: tuple[str, ...] = (),
-    publication_checkpoint=None,
 ):
     plan, target = _coverage_simulation_record_plan(
         root, runtime_input=runtime_input, pre_sim_commands=pre_sim_commands
@@ -1584,7 +1581,6 @@ def _run_coverage_simulation_record(
     executor = CoverageAggregateExecutor(
         plans={target.handle.identity: target},
         execution_factory=execution_factory,
-        publication_checkpoint=publication_checkpoint,
     )
     invocation = root / "reports" / "1"
     invocation.mkdir(parents=True)
@@ -1789,7 +1785,10 @@ def _common(request: WorkExecutionRequest) -> dict[str, object]:
 
 
 def _retained_invocation(
-    tmp_path: Path, *, reports: Path | None = None, booley_dir: Path | None = None
+    tmp_path: Path,
+    *,
+    reports: Path | None = None,
+    booley_dir: Path | None = None,
 ) -> tuple[Path, Path, SimulationRecordStore]:
     source = tmp_path / "source"
     source.mkdir()
@@ -1884,15 +1883,6 @@ def _own_attempt_run_directory(
     return run.path, document
 
 
-def _validated_resume(store, plan, target, root: Path) -> ValidatedResumeManifest:
-    node = ValidatedManifestNode(
-        store.manifest_path, plan.manifest, manifest_digest(plan.manifest)
-    )
-    return ValidatedResumeManifest(
-        node, (), (target.handle,), (ValidatedTargetBinding(node, root.resolve(), target.handle),)
-    )
-
-
 @dataclass(frozen=True)
 class CoverageInvocation:
     """One completed coverage run in the embedded layout the Simulation Flow writes."""
@@ -1949,7 +1939,7 @@ def coverage_invocation(tmp_path, monkeypatch, *, prepare=None) -> CoverageInvoc
 def prerequisite_documents(plan: Any, manifest_path: Path) -> list[Mapping[str, object]]:
     """The ``cycle_count_baseline`` prerequisite documents a record of *plan* would be given.
 
-    A record that kept baseline prerequisites still resumes; this builds that format.
+    Resume refuses a record with prerequisites; this builds that format.
     """
     raw = encode_simulation_record_manifest(plan.manifest)
     manifest_ref = {

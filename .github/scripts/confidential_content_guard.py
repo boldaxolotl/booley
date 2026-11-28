@@ -320,7 +320,7 @@ def _config_bytes(repo: Path) -> bytes:
         raise GuardError(str(exc)) from exc
 
 
-def _string_list(value: object, field: str) -> list[str]:
+def _string_list(value: object) -> list[str]:
     if value is None:
         return []
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
@@ -335,12 +335,12 @@ def _config_lists(document: dict) -> tuple[list[str], list[str], list[str]]:
     for name, section in document.items():
         if not isinstance(section, dict):
             continue
-        terms.extend(_string_list(section.get("words"), f"{name}.words"))
-        terms.extend(_string_list(section.get("banned_words"), f"{name}.banned_words"))
+        terms.extend(_string_list(section.get("words")))
+        terms.extend(_string_list(section.get("banned_words")))
         if name in {"guard", "stealth"}:
-            authors.extend(_string_list(section.get("allowed_authors"), f"{name}.allowed_authors"))
-            ignored.extend(_string_list(section.get("ignored_paths"), f"{name}.ignored_paths"))
-    terms.extend(_string_list(document.get("banned_words"), "banned_words"))
+            authors.extend(_string_list(section.get("allowed_authors")))
+            ignored.extend(_string_list(section.get("ignored_paths")))
+    terms.extend(_string_list(document.get("banned_words")))
     return terms, authors, ignored
 
 
@@ -760,7 +760,10 @@ def _commit_entries(
 
 
 def inspect_commits(
-    repo: Path, commits: Iterable[str], config: GuardConfig, provenance: Provenance = NO_PROVENANCE
+    repo: Path,
+    commits: Iterable[str],
+    config: GuardConfig,
+    provenance: Provenance = NO_PROVENANCE,
 ) -> list[Finding]:
     """Inspect every commit fact and changed tree entry, de-duplicating blobs."""
     findings: list[Finding] = []
@@ -829,7 +832,8 @@ def _outside_attribution(repo: Path, revision: str, owner: str) -> Provenance:
     enforced.
     """
     raw = _run_git(
-        repo, ["log", "--first-parent", "-z", "--format=%H %P%n%B", "--end-of-options", revision]
+        repo,
+        ["log", "--first-parent", "-z", "--format=%H %P%n%B", "--end-of-options", revision],
     )
     outside: set[str] = set()
     attributing: set[str] = set()
@@ -924,7 +928,12 @@ def _open_pulls_with_head(pull_request: dict[str, object]) -> list[object]:
     if not isinstance(head_sha, str) or _OID_RE.fullmatch(head_sha) is None:
         raise GuardError("the pull-request head revision is invalid")
     output = _gh_api(
-        ["--paginate", f"repos/{full_name}/pulls?state=open&per_page=100", "--jq", _OPEN_PULLS_JQ],
+        [
+            "--paginate",
+            f"repos/{full_name}/pulls?state=open&per_page=100",
+            "--jq",
+            _OPEN_PULLS_JQ,
+        ],
         "head-commit lookup",
     )
     return [
@@ -1138,7 +1147,11 @@ def _local_destination_tips(repo: Path, remote_location: str) -> list[str]:
 
 
 def outgoing_commits(
-    repo: Path, local_sha: str, remote_sha: str, *, destination_tips: Iterable[str] = ()
+    repo: Path,
+    local_sha: str,
+    remote_sha: str,
+    *,
+    destination_tips: Iterable[str] = (),
 ) -> list[str]:
     """Return commits newly exposed by one ref update."""
     exclusions = [] if _is_zero_sha(remote_sha) else [remote_sha]
@@ -1478,7 +1491,10 @@ def pre_push_hook_main(
                 continue
             commits.extend(
                 outgoing_commits(
-                    root, update.local_sha, update.remote_sha, destination_tips=destination_tips
+                    root,
+                    update.local_sha,
+                    update.remote_sha,
+                    destination_tips=destination_tips,
                 )
             )
         if pull_request_event is not None:

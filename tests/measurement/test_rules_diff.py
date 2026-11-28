@@ -4,14 +4,20 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import pytest
 
-if TYPE_CHECKING:
-    from booley.measurement.rules_diff import RulesDiff
-    from booley.measurement.run_key import KeyedCommit
-
+from booley.measurement.base import BaseChoice, changed_files, protected_edits, resolve_base
+from booley.measurement.protected_set import protected_set
+from booley.measurement.rules_diff import (
+    AmberReason,
+    RulesDiff,
+    header_amber,
+    paired_protected_edits,
+    rules_diff,
+)
+from booley.measurement.run_key import KeyedCommit, resolve_measurement_key
+from booley.runtime.commit_export import export_commit
 from tests.runtime.test_commit_export import (
     commit_all,
     git,
@@ -35,9 +41,6 @@ def commit_pair(
 
     Returns the repository, the head's Measurement Key, the base and the head commit.
     """
-    from booley.measurement.base import resolve_base
-    from booley.measurement.run_key import resolve_measurement_key
-
     repo = new_repository(tmp_path / "repo")
     write(repo / ".booley" / "booley.toml", "[project]\n")
     write(repo / "rtl.v", "rtl\n")
@@ -55,8 +58,6 @@ def commit_pair(
 
 def metrics_diff(tmp_path: Path, base: str | None, head: str) -> RulesDiff:
     """The rules diff between two ``metrics.toml`` texts (``None``: the file is absent)."""
-    from booley.measurement.rules_diff import rules_diff
-
     base_files = {} if base is None else {".booley/metrics.toml": base}
     repo, keyed, base_commit, _ = commit_pair(tmp_path, base_files, {".booley/metrics.toml": head})
     return rules_diff(repo, keyed, base_commit)
@@ -231,6 +232,8 @@ def test_each_metrics_change_is_classified_with_its_note(tmp_path: Path) -> None
     for row, (base, head, kind, direction, key, old, new, note) in ROWS.items():
         diff = metrics_diff(tmp_path / row, base, head)
 
+        amber = (AmberReason.RULES_LOOSENED,) if direction == "loosened" else ()
+        assert header_amber(diff) == amber, row
         if kind is None:  # the same rules respelled as a different number type
             assert diff.changes == (), row
             continue
@@ -243,8 +246,6 @@ def test_each_metrics_change_is_classified_with_its_note(tmp_path: Path) -> None
 
 
 def test_unreadable_base_metrics_is_reported_and_amber(tmp_path: Path) -> None:
-    from booley.measurement.rules_diff import AmberReason, header_amber
-
     diff = metrics_diff(tmp_path / "bad", "[synth_core.synth\n", SYNTH + AREA)
     missing = metrics_diff(tmp_path / "missing", None, SYNTH + AREA)
 
@@ -257,8 +258,6 @@ def test_unreadable_base_metrics_is_reported_and_amber(tmp_path: Path) -> None:
 
 
 def test_unplaceable_base_booley_directory_is_reported(tmp_path: Path) -> None:
-    from booley.measurement.rules_diff import AmberReason, header_amber, rules_diff
-
     repo, keyed, base, _ = commit_pair(
         tmp_path,
         {".booley/metrics.toml": SYNTH + AREA, "booley.toml": '[project]\ndir = "../outside"\n'},
@@ -272,8 +271,6 @@ def test_unplaceable_base_booley_directory_is_reported(tmp_path: Path) -> None:
 
 
 def test_respelled_key_is_a_removal_and_an_addition(tmp_path: Path) -> None:
-    from booley.measurement.rules_diff import AmberReason, header_amber
-
     table = "[sim_core.sim]\n"
     diff = metrics_diff(
         tmp_path, table + SMOKE_CYCLES, table + '"smoke@1.cycle_count_max" = 1000\n'
@@ -283,23 +280,7 @@ def test_respelled_key_is_a_removal_and_an_addition(tmp_path: Path) -> None:
     assert header_amber(diff) == (AmberReason.RULES_LOOSENED,)
 
 
-def test_max_raised_turns_header_amber_lowered_and_notes_do_not(tmp_path: Path) -> None:
-    from booley.measurement.rules_diff import header_amber
-
-    cases = {
-        "raised": (SYNTH + "area_kge_max = 80\n", ["rules loosened"]),
-        "lowered": (SYNTH + "area_kge_max = 50\n", []),
-        "notes": (SYNTH + 'area_kge_max = 60\nnotes = { area_kge_max = "why" }\n', []),
-    }
-    for name, (head, amber) in cases.items():
-        diff = metrics_diff(tmp_path / name, SYNTH + AREA, head)
-
-        assert [reason.value for reason in header_amber(diff)] == amber, name
-
-
 def test_tests_toml_change_is_reported_with_diff_and_amber(tmp_path: Path) -> None:
-    from booley.measurement.rules_diff import AmberReason, header_amber, rules_diff
-
     repo, keyed, base, _ = commit_pair(
         tmp_path,
         {".booley/tests.toml": '[sim_core]\ntests = ["smoke"]\n'},
@@ -317,8 +298,6 @@ def test_tests_toml_change_is_reported_with_diff_and_amber(tmp_path: Path) -> No
 
 
 def test_tests_toml_diff_without_final_newline_keeps_lines_apart(tmp_path: Path) -> None:
-    from booley.measurement.rules_diff import rules_diff
-
     repo, keyed, base, _ = commit_pair(
         tmp_path,
         {".booley/tests.toml": 'tests = ["smoke"]'},
@@ -332,9 +311,6 @@ def test_tests_toml_diff_without_final_newline_keeps_lines_apart(tmp_path: Path)
 
 
 def test_tests_toml_added_or_invalid_bytes_still_show_a_diff(tmp_path: Path) -> None:
-    from booley.measurement.rules_diff import AmberReason, header_amber, rules_diff
-    from booley.measurement.run_key import resolve_measurement_key
-
     repo, keyed, base, _ = commit_pair(
         tmp_path / "added", {}, {".booley/tests.toml": 'tests = ["smoke"]\n'}
     )
@@ -355,8 +331,6 @@ def test_tests_toml_added_or_invalid_bytes_still_show_a_diff(tmp_path: Path) -> 
 
 
 def test_directory_named_like_a_rules_file_is_unreadable_not_a_crash(tmp_path: Path) -> None:
-    from booley.measurement.rules_diff import AmberReason, header_amber, rules_diff
-
     repo, keyed, base, _ = commit_pair(
         tmp_path, {".booley/metrics.toml/x": "x"}, {".booley/metrics.toml/x": "y"}
     )
@@ -368,8 +342,6 @@ def test_directory_named_like_a_rules_file_is_unreadable_not_a_crash(tmp_path: P
 
 
 def test_unreadable_measured_metrics_is_reported_and_amber(tmp_path: Path) -> None:
-    from booley.measurement.rules_diff import AmberReason, header_amber
-
     diff = metrics_diff(tmp_path, SYNTH + AREA, "[synth_core.synth\n")
 
     assert diff.unreadable is not None and "measured metrics.toml" in diff.unreadable
@@ -377,11 +349,6 @@ def test_unreadable_measured_metrics_is_reported_and_amber(tmp_path: Path) -> No
 
 
 def test_booley_and_reviews_toml_edits_leave_header_unchanged(tmp_path: Path) -> None:
-    from booley.measurement.base import changed_files, protected_edits
-    from booley.measurement.protected_set import protected_set
-    from booley.measurement.rules_diff import header_amber, paired_protected_edits, rules_diff
-    from booley.runtime.commit_export import export_commit
-
     metrics = {".booley/metrics.toml": SYNTH + AREA}
     repo, keyed, base, head = commit_pair(
         tmp_path,
@@ -435,41 +402,9 @@ def push_origin(booley_repository: Path, commit: str) -> None:
     git(booley_repository, "remote", "set-head", "origin", "main")
 
 
-def test_versioned_booley_directory_loosened_rule_and_protected_edit(tmp_path: Path) -> None:
-    from booley.measurement.protected_set import protected_set
-    from booley.measurement.rules_diff import (
-        AmberReason,
-        header_amber,
-        paired_protected_edits,
-        rules_diff,
-    )
-    from booley.measurement.run_key import resolve_measurement_key
-    from booley.runtime.commit_export import export_commit
-
-    for layout in ("standalone", "paired-checkout"):
-        root = tmp_path / layout
-        root.mkdir()
-        checkout, _ = versioned_case(root, layout)
-        head = git(checkout, "rev-parse", "HEAD")
-        keyed = resolve_measurement_key(checkout, head)
-
-        diff = rules_diff(checkout, keyed, None)  # no base run, no RTL base
-        protected = protected_set(export_commit(checkout, head, root / "out").root)
-        edits = paired_protected_edits(checkout, keyed, diff, protected)
-
-        (change,) = diff.changes
-        assert (change.kind.value, change.old, change.new) == ("maximum raised", 60, 80), layout
-        assert header_amber(diff) == (AmberReason.RULES_LOOSENED,), layout
-        assert diff.paired_base is not None and diff.paired_base.no_base is None, layout
-        assert edits == (".booley/booley.toml", ".booley/metrics.toml"), layout
-
-
-def test_versioned_booley_directory_without_default_branch_reports_no_base(tmp_path: Path) -> None:
-    from booley.measurement.protected_set import protected_set
-    from booley.measurement.rules_diff import header_amber, paired_protected_edits, rules_diff
-    from booley.measurement.run_key import resolve_measurement_key
-    from booley.runtime.commit_export import export_commit
-
+def test_versioned_booley_directory_without_default_branch_reports_no_base(
+    tmp_path: Path,
+) -> None:
     checkout, booley = versioned_case(tmp_path, "standalone")
     git(booley, "branch", "-m", "feature", "trunk")  # neither origin/HEAD nor main remains
     git(booley, "branch", "-D", "main")
@@ -487,8 +422,6 @@ def test_versioned_booley_directory_without_default_branch_reports_no_base(tmp_p
 
 
 def test_booley_commit_without_a_versioned_booley_directory_is_refused(tmp_path: Path) -> None:
-    from booley.measurement.rules_diff import rules_diff
-
     repo, keyed, base, head = commit_pair(tmp_path, {}, {"rtl.v": "rtl2\n"})
 
     with pytest.raises(ValueError, match="Versioned Booley Directory"):
@@ -496,25 +429,15 @@ def test_booley_commit_without_a_versioned_booley_directory_is_refused(tmp_path:
 
 
 @pytest.mark.parametrize("layout", ["standalone", "paired-checkout"])
-@pytest.mark.parametrize("origin_at", ["lagging", "in-sync"])
+@pytest.mark.parametrize("origin_at", ["lagging", "in-sync", "absent"])
 def test_versioned_booley_directory_ahead_of_its_origin_reports_the_loosened_bound(
     tmp_path: Path, layout: str, origin_at: str
 ) -> None:
-    from booley.measurement.base import BaseChoice
-    from booley.measurement.protected_set import protected_set
-    from booley.measurement.rules_diff import (
-        AmberReason,
-        header_amber,
-        paired_protected_edits,
-        rules_diff,
-    )
-    from booley.measurement.run_key import resolve_measurement_key
-    from booley.runtime.commit_export import export_commit
-
     checkout, booley = versioned_case(tmp_path, layout)
     main_repository = booley if layout == "standalone" else tmp_path / "main" / ".booley"
     main = git(booley, "rev-parse", "main")
-    push_origin(main_repository, f"{main}~1" if origin_at == "lagging" else main)
+    if origin_at != "absent":
+        push_origin(main_repository, f"{main}~1" if origin_at == "lagging" else main)
     head = git(checkout, "rev-parse", "HEAD")
     keyed = resolve_measurement_key(checkout, head)
 
@@ -528,7 +451,7 @@ def test_versioned_booley_directory_ahead_of_its_origin_reports_the_loosened_bou
     assert diff.tests_diff is None
     assert diff.paired_base is not None and diff.paired_base.commit == main
     assert diff.paired_base.choice is (
-        BaseChoice.LOCAL_MAIN if origin_at == "lagging" else BaseChoice.REMOTE_DEFAULT
+        BaseChoice.REMOTE_DEFAULT if origin_at == "in-sync" else BaseChoice.LOCAL_MAIN
     )
     assert edits == (".booley/booley.toml", ".booley/metrics.toml")
 
@@ -536,9 +459,6 @@ def test_versioned_booley_directory_ahead_of_its_origin_reports_the_loosened_bou
 def test_versioned_booley_directory_ahead_of_its_origin_has_no_change_under_its_default_branch_rules(
     tmp_path: Path,
 ) -> None:
-    from booley.measurement.rules_diff import header_amber, rules_diff
-    from booley.measurement.run_key import resolve_measurement_key
-
     checkout, booley = versioned_case(tmp_path, "standalone")
     main = git(booley, "rev-parse", "main")
     push_origin(booley, f"{main}~1")

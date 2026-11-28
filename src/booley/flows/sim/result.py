@@ -202,7 +202,10 @@ def format_summary(
     inconclusive: bool = False,
 ) -> str:
     """Build a [SIM_SUMMARY] JSON line for stdout emission."""
-    payload: SimSummary = {"passed": passed, "sva_errors": sva_errors}
+    payload: SimSummary = {
+        "passed": passed,
+        "sva_errors": sva_errors,
+    }
     if vrfc_warnings:
         payload["vrfc_warnings"] = vrfc_warnings
     if inconclusive:

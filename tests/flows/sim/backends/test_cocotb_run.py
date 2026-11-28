@@ -40,7 +40,10 @@ from booley.flows.sim.result import SIM_INFRA_ERROR_PREFIX
 class TestBuildCocotbTestFilter:
     @pytest.mark.parametrize(
         ("module", "names", "expected"),
-        [("test_counter", ["a", "b"], r"^test_counter\.(a|b)$"), ("m", ["only"], r"^m\.(only)$")],
+        [
+            ("test_counter", ["a", "b"], r"^test_counter\.(a|b)$"),
+            ("m", ["only"], r"^m\.(only)$"),
+        ],
     )
     def test_names_are_anchored_to_the_module(self, module, names, expected):
         # Fully-qualified anchoring (spike S4): cocotb matches the filter
@@ -318,7 +321,10 @@ def test_stale_results_xml_removed_before_run(tmp_path: Path):
 
 
 def test_document_fields_reach_run_cocotb_sim(tmp_path: Path, monkeypatch):
-    from booley.flows.sim.adapter_contract import PreparedSimulationWork, encode_simulation_work
+    from booley.flows.sim.adapter_contract import (
+        PreparedSimulationWork,
+        encode_simulation_work,
+    )
 
     seen: dict[str, object] = {}
 
@@ -718,7 +724,11 @@ _RUNTIME_SKIPS = (
         "skipped at runtime: requires WIDTH=32\nrebuild with WIDTH=32",
     ),
 )
-_DECORATOR_SKIP = ("test_decorator_skip", "inconclusive", "skipped by its decorator (skip=True)")
+_DECORATOR_SKIP = (
+    "test_decorator_skip",
+    "inconclusive",
+    "skipped by its decorator (skip=True)",
+)
 
 
 @pytest.mark.parametrize(
@@ -780,7 +790,12 @@ def test_a_skip_reason_survives_output_past_the_tail_cap(
     )
     identity = _identity(tmp_path, ["test_runtime_skip"])
 
-    _run(tmp_path, tests=["test_runtime_skip"], transport=identity, cocotb_module="skip_cases")
+    _run(
+        tmp_path,
+        tests=["test_runtime_skip"],
+        transport=identity,
+        cocotb_module="skip_cases",
+    )
 
     (item,) = read_adapter_result(identity).test_results
     assert item.detail == "skipped at runtime: early"

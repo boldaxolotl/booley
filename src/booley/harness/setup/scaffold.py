@@ -35,7 +35,13 @@ from pathlib import Path
 import tomlkit
 
 from booley.core.booley_dir import BOOLEY_DIR_NAME
-from booley.harness.setup.common import InitContext, err, info, ok, warn
+from booley.harness.setup.common import (
+    InitContext,
+    err,
+    info,
+    ok,
+    warn,
+)
 from booley.harness.setup.plan import (
     FilesystemMutation,
     InitFilesystemRequest,
@@ -100,7 +106,7 @@ class ScaffoldChoices:
 
 
 class _ScaffoldHostProbe:
-    def is_tracked(self, root: Path, path: Path) -> bool:
+    def is_tracked(self, root: Path, path: Path) -> bool:  # noqa: ARG002 — implements the init plan's host probe protocol
         return False
 
 
@@ -122,7 +128,8 @@ def _plan_scaffold_files(ctx: InitContext, files: dict[str, str]) -> InitPlan:
             )
         )
     return plan_init_filesystem(
-        InitFilesystemRequest(root=ctx.project_root, targets=tuple(targets)), _ScaffoldHostProbe()
+        InitFilesystemRequest(root=ctx.project_root, targets=tuple(targets)),
+        _ScaffoldHostProbe(),
     )
 
 
@@ -234,7 +241,7 @@ def _flag_or_default(args, flag: str, default: str, label: str) -> str:
     return default
 
 
-def gather_scaffold_choices(args, ctx: InitContext) -> ScaffoldChoices | None:
+def gather_scaffold_choices(args) -> ScaffoldChoices | None:
     """Resolve the scaffold answers from CLI flags and the documented defaults.
 
     Init asks no design questions (``/booley-setup new`` does, and passes every
@@ -1138,7 +1145,7 @@ class _PreparedScaffold:
 
 def _prepare_scaffold(ctx: InitContext, args) -> _PreparedScaffold | None:
     """Run every refusal in order; ``None`` means refused with nothing changed."""
-    choices = gather_scaffold_choices(args, ctx)
+    choices = gather_scaffold_choices(args)
     if choices is None:
         ctx.record("scaffold", "err", "invalid scaffold options")
         return None

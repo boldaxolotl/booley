@@ -217,7 +217,9 @@ def _endpoint_subprocess_env(
             runtime_root = Path(tempfile.gettempdir()) / "booley-runtime"
         env["BOOLEY_RUNTIME_DIR"] = str(runtime_root)
     return relocate_python_artifacts(
-        env, runtime_root / "python-artifacts", pytest_scope=pytest_scope
+        env,
+        runtime_root / "python-artifacts",
+        pytest_scope=pytest_scope,
     )
 
 
@@ -466,7 +468,10 @@ async def _async_process_snapshot(pid: int) -> str:
     return "\n".join(selected[:80])
 
 
-def _signal_kill_process_group(proc: asyncio.subprocess.Process, group: ProcessGroup) -> None:
+def _signal_kill_process_group(
+    proc: asyncio.subprocess.Process,
+    group: ProcessGroup,
+) -> None:
     """Best-effort SIGKILL of the child's process group, no awaits.
 
     Safe to call while this coroutine is being cancelled (unlike
@@ -479,7 +484,10 @@ def _signal_kill_process_group(proc: asyncio.subprocess.Process, group: ProcessG
     force_async_process_group_now(proc, group)
 
 
-async def _kill_async_process_tree(proc: asyncio.subprocess.Process, group: ProcessGroup) -> None:
+async def _kill_async_process_tree(
+    proc: asyncio.subprocess.Process,
+    group: ProcessGroup,
+) -> None:
     """Terminate an asyncio subprocess and its process group."""
     await force_async_process_group(proc, group)
 
@@ -498,4 +506,7 @@ async def _cancel_adopted_process_group(
     pid: int, grace_seconds: float = CANCEL_GRACE_SECONDS
 ) -> None:
     """Cancel a disk-only job by its session-leader PID."""
-    await terminate_adopted_process_group(ProcessGroup(pid), grace_seconds=grace_seconds)
+    await terminate_adopted_process_group(
+        ProcessGroup(pid),
+        grace_seconds=grace_seconds,
+    )

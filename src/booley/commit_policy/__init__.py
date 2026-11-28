@@ -14,7 +14,10 @@ from booley.commit_policy.policy import (
     stealth_enabled,
     stealth_policy,
 )
-from booley.commit_policy.validation import body_length_errors, validate_message
+from booley.commit_policy.validation import (
+    body_length_errors,
+    validate_message,
+)
 
 __all__ = [
     "BANNED_PHRASES",

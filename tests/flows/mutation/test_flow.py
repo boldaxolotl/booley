@@ -40,18 +40,20 @@ from booley.flows.sim.adapter_contract import PreparedSimulationWork
 from booley.flows.sim.build import PreparedSimulationBuild, SimulationBuildPreparationError
 from booley.flows.target_test_suite import NoRunnableTestsError
 from booley.fusesoc import fusesoc_registry
-from booley.runtime import resource_history, runtime_context
+from booley.runtime import resource_history
 from booley.runtime.endpoint_execution import (
     EXIT_ERROR,
     EXIT_FAILURE,
     EXIT_SUCCESS,
     EndpointOutcome,
 )
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.targets.catalog import TargetCatalog
 from booley.targets.domain import IncompatibleTargetError
 from tests.canned_process_support import canned_command
 from tests.conftest import require_symlinks, symlink_or_skip
 from tests.flows.sim.launched_work import launched_work
+from tests.sandbox_venue_fake import place
 from tests.target_test_support import write_two_core_sim_project
 
 # The parameters the fake ``.core`` Target declares; a test may add plusargs.
@@ -104,7 +106,14 @@ def _make_endpoint(
     logs_dir = tmp_path / "logs"
     logs_dir.mkdir(exist_ok=True)
     report_dir = tmp_path / "reports"
-    argv = ["--work-dir", str(tmp_path), "--report-dir", str(report_dir), "--target", target]
+    argv = [
+        "--work-dir",
+        str(tmp_path),
+        "--report-dir",
+        str(report_dir),
+        "--target",
+        target,
+    ]
     if scope is not None:
         argv.extend(["--scope", scope])
     if count is not None:
@@ -130,7 +139,8 @@ def _make_endpoint(
         endpoint.parse_args(argv)
     if monkeypatch is not None:
         monkeypatch.setattr(
-            "booley.flows.mutation.flow.tb_top_for_target", lambda *_args, **_kwargs: tb_top
+            "booley.flows.mutation.flow.tb_top_for_target",
+            lambda *_args, **_kwargs: tb_top,
         )
     return endpoint
 
@@ -293,7 +303,7 @@ def test_auto_dry_run_with_long_scope_paths_succeeds(tmp_path, monkeypatch):
     runtime_dir = tmp_path / "runtime"
     runtime_dir.mkdir()
     monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(runtime_dir))
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     _patch_fake_simulation(monkeypatch)
     _make_endpoint(tmp_path, monkeypatch)  # the run's environment and Target top
 
@@ -445,7 +455,10 @@ def _patch_resolve_target(
         edam_path = root / "fixture.eda.yml"
         edam_path.write_text(
             yaml.safe_dump(
-                {"cores": {"acme:test:fixture:1": {"core_file": str(core_file)}}, "files": entries}
+                {
+                    "cores": {"acme:test:fixture:1": {"core_file": str(core_file)}},
+                    "files": entries,
+                }
             )
         )
         resolved = types.SimpleNamespace(
@@ -487,7 +500,10 @@ def _patch_resolve_target(
             )()
         ),
     )
-    monkeypatch.setattr("booley.flows.mutation.flow.prepare_simulation_build", _fake_prepare)
+    monkeypatch.setattr(
+        "booley.flows.mutation.flow.prepare_simulation_build",
+        _fake_prepare,
+    )
     # No faked test spawns a real `verilator`: the baseline build's version is `verilator`.
     monkeypatch.setattr(
         "booley.flows.mutation.flow.verilator_version",
@@ -707,7 +723,9 @@ def test_baseline_build_runs_the_exact_command_of_the_shared_preparer(
     ),
 )
 def test_baseline_surfaces_shared_preparation_failures(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, message: str
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    message: str,
 ) -> None:
     def failing_prepare(*args, **kwargs):
         raise SimulationBuildPreparationError(message)
@@ -1284,7 +1302,11 @@ def test_replaced_build_failures_leave_a_full_count_that_passes(
     _prepare_scope_files(tmp_path, [_SCOPE])
     ranked = _candidates(tmp_path)
     _, result, fake = _campaign(
-        tmp_path, monkeypatch, count=10, run=_detects_every_mutant, build=_failing_builds(2, 5, 8)
+        tmp_path,
+        monkeypatch,
+        count=10,
+        run=_detects_every_mutant,
+        build=_failing_builds(2, 5, 8),
     )
 
     # The 3 candidates that did not build are replaced: all 10 kept Mutants are scored
@@ -1855,7 +1877,11 @@ def test_auto_count_names_formula_and_cap_and_keeps_the_identity(
 ) -> None:
     """32 source lines give formula 6; a 450 s timeout caps the count at 3."""
     _, auto, _ = _campaign(
-        tmp_path, monkeypatch, count="auto", min_detected=0, extra_args=["--timeout-ms", "450000"]
+        tmp_path,
+        monkeypatch,
+        count="auto",
+        min_detected=0,
+        extra_args=["--timeout-ms", "450000"],
     )
     _, explicit, _ = _campaign(tmp_path, monkeypatch, count=3, min_detected=0)
 

@@ -34,8 +34,14 @@ from booley.flows.synth.timing import (
 )
 from booley.flows.target_parameters import ParameterValue
 from booley.runtime.booley_dir import resolve_checkout_booley_dir
-from booley.runtime.shared_infra import check_paths as _check_paths
-from booley.runtime.shared_infra import get_rtl_dir, get_syn_output_dir, resolve_project_root
+from booley.runtime.shared_infra import (
+    check_paths as _check_paths,
+)
+from booley.runtime.shared_infra import (
+    get_rtl_dir,
+    get_syn_output_dir,
+    resolve_project_root,
+)
 
 # ============================================================================
 # High-level actions
@@ -116,7 +122,11 @@ def _resolve_syn_workdir(
 
 def resolve_ppa_settings(
     args: argparse.Namespace,
-) -> tuple[str, yosys_ppa_options.YosysPpaSettings, OpenRoadPpaSettings]:
+) -> tuple[
+    str,
+    yosys_ppa_options.YosysPpaSettings,
+    OpenRoadPpaSettings,
+]:
     """Resolve a generic profile plus explicit backend overrides.
 
     Raises :class:`BoundaryError` for a value the backend rejects.
@@ -130,7 +140,8 @@ def resolve_ppa_settings(
         abc_delay_ps=getattr(args, "abc_delay_ps", None),
     )
     openroad = openroad_ppa_options.with_openroad_overrides(
-        openroad_ppa_options.openroad_profile(profile), **_openroad_cli_overrides(args)
+        openroad_ppa_options.openroad_profile(profile),
+        **_openroad_cli_overrides(args),
     )
     _validate_resolved_ppa(yosys, openroad)
     return profile, yosys, openroad
@@ -153,7 +164,8 @@ def _openroad_cli_overrides(args: argparse.Namespace) -> dict[str, object]:
 
 
 def _validate_resolved_ppa(
-    yosys: yosys_ppa_options.YosysPpaSettings, openroad: OpenRoadPpaSettings
+    yosys: yosys_ppa_options.YosysPpaSettings,
+    openroad: OpenRoadPpaSettings,
 ) -> None:
     """Range-check resolved PPA values before rendering backend commands."""
     if yosys.abc_delay_ps is not None and yosys.abc_delay_ps <= 0:
@@ -192,7 +204,9 @@ def _legacy_timing_fallbacks(args: argparse.Namespace) -> tuple[bool, bool]:
 
 
 def _resolve_syn_timing(
-    args: argparse.Namespace, openroad: OpenRoadPpaSettings, project_root: Path | None = None
+    args: argparse.Namespace,
+    openroad: OpenRoadPpaSettings,
+    project_root: Path | None = None,
 ) -> StaTimingConfig:
     """Resolve validated timing configuration for logical or physical synthesis."""
     mode = SynthMode(args.synth_mode)
@@ -209,7 +223,10 @@ def _resolve_syn_timing(
 
 
 def resolve_spec(
-    args: argparse.Namespace, *, project_root: Path | None = None, require_liberty: bool = True
+    args: argparse.Namespace,
+    *,
+    project_root: Path | None = None,
+    require_liberty: bool = True,
 ) -> syn_make.SynthSpec:
     """Resolve parsed configure options into a :class:`SynthSpec`.
 

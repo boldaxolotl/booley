@@ -10,6 +10,8 @@ env:
   IMAGE_NAME: boldaxolotl/booley-sandbox
   BASE_IMAGE_NAME: boldaxolotl/booley-sandbox-base
   RISCV_IMAGE_NAME: boldaxolotl/booley-sandbox-riscv
+  # Network retries for package downloads (#4420): pip backs off about 4 minutes.
+  PIP_RETRIES: "10"
 
 # Push runs (release tags) share one group: a newer release cancels an
 # older in-flight run before its promotion job can move `latest`
@@ -70,6 +72,9 @@ jobs:
       - name: Resolve compatible stable runtime base
         id: published
         if: steps.decide.outputs.publish != 'true'
+        # A dispatch builds a candidate base when this second lookup fails; a
+        # release-tag push never does, so its mismatch or registry error stops it.
+        continue-on-error: ${{ github.event_name == 'workflow_dispatch' }}
         shell: bash
         env:
           BASE_REF: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}:main
@@ -80,7 +85,7 @@ jobs:
 
       - name: Compute candidate stable-base metadata
         id: candidate-metadata
-        if: steps.decide.outputs.publish == 'true'
+        if: steps.decide.outputs.publish == 'true' || steps.published.outcome == 'failure'
         run: |
           {
             echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -92,7 +97,7 @@ jobs:
       # pushed only under a candidate-scoped tag and without a cache write.
       - name: Build and push candidate stable runtime base
         id: candidate-build
-        if: steps.decide.outputs.publish == 'true'
+        if: steps.decide.outputs.publish == 'true' || steps.published.outcome == 'failure'
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -115,7 +120,7 @@ jobs:
 
       - name: Verify candidate stable runtime base
         id: candidate-verify
-        if: steps.decide.outputs.publish == 'true'
+        if: steps.decide.outputs.publish == 'true' || steps.published.outcome == 'failure'
         shell: bash
         env:
           BASE_IMAGE: ${{ env.REGISTRY }}/${{ env.BASE_IMAGE_NAME }}@${{ steps.candidate-build.outputs.digest }}
@@ -429,7 +434,7 @@ jobs:
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
         run: |
-          docker pull "${IMAGE}"
+          bash .github/scripts/retry.sh docker pull "${IMAGE}"
           docker tag "${IMAGE}" booley-sandbox
       # The standard image must carry the selected runtime base's exact inventory
       # bytes (#829). The base's layers are a prefix of the already pulled
@@ -441,7 +446,7 @@ jobs:
         run: |
           evidence="${RUNNER_TEMP}/standard-image-evidence"
           mkdir -p "${evidence}"
-          docker pull "${RUNTIME_BASE}"
+          bash .github/scripts/retry.sh docker pull "${RUNTIME_BASE}"
           docker run --rm --network none --entrypoint cat "${RUNTIME_BASE}" /usr/local/share/booley/base-package-inventory.json > "${evidence}/base-package-inventory.json"
           docker run --rm --network none --entrypoint cat "${IMAGE}" /usr/local/share/booley/base-package-inventory.json > "${evidence}/package-inventory.json"
           cmp "${evidence}/base-package-inventory.json" "${evidence}/package-inventory.json"
@@ -509,12 +514,12 @@ jobs:
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-and-push.outputs.image-digest }}
         run: |
-          docker pull "${IMAGE}"
+          bash .github/scripts/retry.sh docker pull "${IMAGE}"
           docker tag "${IMAGE}" booley-sandbox
       - name: Provision pinned Nangate45 PDK
         id: nangate
         run: |
-          PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
+          PDK_ROOT="$(bash .github/scripts/retry.sh env PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
           echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
       - name: Verify OpenROAD physical runtime
         env:
@@ -582,7 +587,7 @@ jobs:
           mkdir -p "${root}/home" "${root}/evidence" "${root}/project"
           PYTHONUSERBASE="${root}/home/.local" python -m pip install --user dist/booley_rtl-*.whl
           test -x "${root}/home/.local/bin/booley"
-          docker pull "${IMAGE}"
+          bash .github/scripts/retry.sh docker pull "${IMAGE}"
           docker tag "${IMAGE}" booley-sandbox
           doctor_gid="$(getent passwd 1000 | cut -d: -f4)"
           test -n "${doctor_gid}"
@@ -739,9 +744,9 @@ jobs:
         run: |
           evidence="${RUNNER_TEMP}/riscv-image-evidence"
           mkdir -p "${evidence}"
-          docker pull "${BASE_IMAGE}"
-          docker pull "${STANDARD_SUBSTRATE}"
-          docker pull "${RISCV_IMAGE}"
+          bash .github/scripts/retry.sh docker pull "${BASE_IMAGE}"
+          bash .github/scripts/retry.sh docker pull "${STANDARD_SUBSTRATE}"
+          bash .github/scripts/retry.sh docker pull "${RISCV_IMAGE}"
           docker run --rm --network none --entrypoint cat "${BASE_IMAGE}" /usr/local/share/booley/base-package-inventory.json > "${evidence}/standard-package-inventory.json"
           docker run --rm --network none --entrypoint cat "${RISCV_IMAGE}" /usr/local/share/booley/base-package-inventory.json > "${evidence}/package-inventory.json"
           cmp "${evidence}/standard-package-inventory.json" "${evidence}/package-inventory.json"
@@ -857,7 +862,7 @@ jobs:
       - name: Provision pinned Nangate45 PDK
         id: nangate
         run: |
-          PDK_ROOT="$(PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
+          PDK_ROOT="$(bash .github/scripts/retry.sh env PYTHONPATH=src python -c 'from booley.harness import nangate_pdk as p; root = p.cache_root(); p.fetch(root) if not p.is_ready(root) else None; assert p.is_ready(root); print(root)')"
           echo "root=${PDK_ROOT}" >> "${GITHUB_OUTPUT}"
       - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
         with:

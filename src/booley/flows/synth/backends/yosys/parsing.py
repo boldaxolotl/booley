@@ -68,7 +68,8 @@ _LATCH_RE = re.compile(
     r"\$(?:a?dlatch|dlatchsr|_DLATCH_[NP]+[01]?_|_DLATCHSR_[NP]{3}_)", re.IGNORECASE
 )
 _LATCH_MAPPING_RE = re.compile(
-    r"^\s+\\(?P<cell>\S+)\s+(?P<internal>_DLATCH(?:SR)?_[NP]+[01]?_)\s+\(", re.MULTILINE
+    r"^\s+\\(?P<cell>\S+)\s+(?P<internal>_DLATCH(?:SR)?_[NP]+[01]?_)\s+\(",
+    re.MULTILINE,
 )
 _CHIP_AREA_RE = re.compile(r"Chip area for (?P<module>[^\n:]+):\s*(?P<value>\S+)")
 

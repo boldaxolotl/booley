@@ -46,7 +46,13 @@ def test_every_adapter_launch_is_one_work_document() -> None:
 
 def test_work_document_round_trips_every_field() -> None:
     plain = build_test_run("test_a")
-    varied = build_test_run("test_b", variant="slow", seed=7, args=("+slow",), env={"K": "V"})
+    varied = build_test_run(
+        "test_b",
+        variant="slow",
+        seed=7,
+        args=("+slow",),
+        env={"K": "V"},
+    )
     given: dict[str, Any] = {
         "work_dir": "attempt/evidence",
         "eda_tool": "icarus",

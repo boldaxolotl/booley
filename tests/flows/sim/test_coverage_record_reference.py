@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
 
 from booley.flows.sim import coverage_reference
-from booley.flows.sim.coverage_record import CoverageRecordValidationError, DurableTargetIdentity
-from booley.flows.sim.coverage_record_store import publish_coverage_record
+from booley.flows.sim.coverage_record import (
+    CoverageRecordValidationError,
+    DurableTargetIdentity,
+)
+from booley.flows.sim.coverage_record_store import (
+    publish_coverage_record,
+)
 from booley.flows.sim.coverage_reference import (
     MAX_REFERENCE_BYTES,
     CoverageRecordReference,
@@ -21,7 +25,6 @@ from booley.flows.sim.coverage_reference import (
     encode_coverage_record_reference,
     publish_coverage_record_reference,
     resolve_coverage_record_reference,
-    resolve_persisted_coverage_record_reference,
 )
 from booley.flows.sim.record.codec import UnsupportedSimulationRecordFormatError
 from tests.flows.sim.coverage_record_test_support import (
@@ -84,21 +87,6 @@ def _rewrite_reference(
         json.dumps(document, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
         + b"\n"
     )
-
-
-def _persisted_reference(
-    report_root: Path, public_path: Path, value: CoverageRecordReference
-) -> dict[str, object]:
-    raw = encode_coverage_record_reference(value)
-    nested = value.document["coverage_record"]
-    assert isinstance(nested, Mapping)
-    return {
-        "path_base": "reports_root",
-        "path": public_path.relative_to(report_root).as_posix(),
-        "bytes": len(raw),
-        "sha256": "sha256:" + hashlib.sha256(raw).hexdigest(),
-        "nested_campaign_sha256": nested["sha256"],
-    }
 
 
 @pytest.fixture
@@ -185,7 +173,8 @@ def test_reference_codec_refuses_a_nested_v4_coverage_record_as_an_older_booley_
 
 
 def test_resolving_a_nested_v4_reference_outside_the_report_layout_cannot_name_a_directory(
-    published, tmp_path: Path
+    published,
+    tmp_path: Path,
 ) -> None:
     _, _, value = published
     stray = tmp_path / "stray" / "coverage.json"
@@ -255,64 +244,6 @@ def test_resolver_authenticates_real_nested_coverage_record_at_exact_attempt_pat
     assert resolved.loaded.coverage_record.target.identity == _TARGET_IDENTITY
 
 
-def test_persisted_resolver_authenticates_outer_and_nested_references(tmp_path: Path) -> None:
-    report_root = tmp_path / "reports"
-    target = report_root / "sim" / "1" / "targets" / _TARGET_SELECTOR
-    nested = _nested_coverage_record(target)
-    value = _reference(target, nested)
-    public_path = target / "coverage.json"
-    publish_coverage_record_reference(public_path, value)
-
-    resolved = resolve_persisted_coverage_record_reference(
-        report_root, _persisted_reference(report_root, public_path, value)
-    )
-
-    assert resolved.reference_path == public_path
-    assert resolved.coverage_record_path == nested
-
-
-@pytest.mark.parametrize(
-    ("field", "replacement"),
-    [
-        ("path_base", "origin_target"),
-        ("path", "../outside/coverage.json"),
-        ("bytes", True),
-        ("bytes", 1),
-        ("sha256", "sha256:" + "0" * 64),
-        ("nested_campaign_sha256", "sha256:" + "0" * 64),
-    ],
-)
-def test_persisted_resolver_rejects_wrapper_substitution(
-    tmp_path: Path, field: str, replacement: object
-) -> None:
-    report_root = tmp_path / "reports"
-    target = report_root / "sim" / "1" / "targets" / _TARGET_SELECTOR
-    nested = _nested_coverage_record(target)
-    value = _reference(target, nested)
-    public_path = target / "coverage.json"
-    publish_coverage_record_reference(public_path, value)
-    persisted = _persisted_reference(report_root, public_path, value)
-    persisted[field] = replacement
-
-    with pytest.raises(CoverageRecordReferenceError):
-        resolve_persisted_coverage_record_reference(report_root, persisted)
-
-
-def test_persisted_resolver_rejects_linked_public_reference(tmp_path: Path) -> None:
-    report_root = tmp_path / "reports"
-    target = report_root / "sim" / "1" / "targets" / _TARGET_SELECTOR
-    nested = _nested_coverage_record(target)
-    value = _reference(target, nested)
-    real_path = target / "real-coverage.json"
-    publish_coverage_record_reference(real_path, value)
-    public_path = target / "coverage.json"
-    public_path.symlink_to(real_path.name)
-    persisted = _persisted_reference(report_root, public_path, value)
-
-    with pytest.raises(CoverageRecordReferenceError, match="contains a link"):
-        resolve_persisted_coverage_record_reference(report_root, persisted)
-
-
 def test_resolver_propagates_nested_coverage_record_validation_findings(tmp_path: Path) -> None:
     target = tmp_path / "targets" / _TARGET_SELECTOR
     nested = _nested_coverage_record(target)
@@ -363,29 +294,23 @@ def test_resolver_decodes_authenticated_reference_bytes_during_path_swap(
     assert path.read_bytes() == substitute
 
 
-def test_resolver_rejects_nested_byte_digest_substitution(tmp_path: Path) -> None:
-    target = tmp_path / "targets" / _TARGET_SELECTOR
-    nested = _nested_coverage_record(target)
-    path = target / "coverage.json"
-    publish_coverage_record_reference(path, _reference(target, nested))
-    nested.write_bytes(nested.read_bytes() + b" ")
-
-    with pytest.raises(CoverageRecordReferenceError, match="bytes disagree"):
-        resolve_coverage_record_reference(path)
-
-
-def test_resolver_rejects_reference_digest_substitution_even_for_valid_nested_bytes(
-    published,
-) -> None:
-    target, _, value = published
+def test_resolver_reads_the_nested_coverage_record_without_rehashing_it(published) -> None:
+    target, nested, value = published
     raw = _rewrite_reference(
-        value, ("coverage_record", "sha256"), "sha256:" + hashlib.sha256(b"substitute").hexdigest()
+        value,
+        ("coverage_record", "sha256"),
+        "sha256:" + hashlib.sha256(b"substitute").hexdigest(),
     )
     path = target / "coverage.json"
     path.write_bytes(raw)
 
-    with pytest.raises(CoverageRecordReferenceError, match="bytes disagree"):
-        resolve_coverage_record_reference(path)
+    resolved = resolve_coverage_record_reference(path)
+
+    assert resolved.coverage_record_path == nested
+    assert (
+        resolved.loaded.coverage_record.coverage_record_id
+        == _valid_document()["coverage_record_id"]
+    )
 
 
 def test_resolver_rejects_linked_reference_and_nested_path_components(published) -> None:
@@ -432,7 +357,7 @@ def test_resolver_rejects_attempt_identity_as_unrelated_path_substring(tmp_path:
         resolve_coverage_record_reference(path)
 
 
-def test_image_alias_public_and_persisted_references(project_alias):
+def test_image_alias_public_references(project_alias):
     alias, target = project_alias
     origin = target / "sim/12/targets/sim_counter"
     nested = _nested_coverage_record(origin)
@@ -442,8 +367,6 @@ def test_image_alias_public_and_persisted_references(project_alias):
     resolved = resolve_coverage_record_reference(alias / public.relative_to(target))
     assert resolved.reference_path == public
     assert resolved.coverage_record_path == nested
-    persisted = _persisted_reference(target, public, reference)
-    assert resolve_persisted_coverage_record_reference(alias, persisted) == resolved
     (target / "linked").symlink_to(target, target_is_directory=True)
     with pytest.raises((ValueError, OSError), match=r"link|regular"):
         resolve_coverage_record_reference(alias / "linked" / public.relative_to(target))
@@ -486,7 +409,3 @@ def test_reference_follows_only_the_booley_dir_entry(
     assert publish_coverage_record_reference(public_path, value) == value
     assert publish_coverage_record_reference(public_path, value) == value
     assert resolve_coverage_record_reference(public_path).coverage_record_path == nested
-    persisted = resolve_persisted_coverage_record_reference(
-        reports, _persisted_reference(reports, public_path, value)
-    )
-    assert persisted.reference_path == public_path

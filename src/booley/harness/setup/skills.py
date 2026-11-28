@@ -12,6 +12,7 @@ from booley.runtime.skill_links import (
     QA_MANIFEST_FILENAME,
     SkillLinkReport,
     reconcile_skill_links,
+    withheld_skills,
 )
 
 
@@ -47,7 +48,10 @@ def reconcile_host_skills(
     desired_names: frozenset[str] | None = None,
     adopt_unrecorded: bool = True,
 ) -> tuple[HostSkillReconciliation, ...]:
-    """Reconcile packaged skills across every detected host agent directory."""
+    """Reconcile packaged skills across every detected host agent directory.
+
+    A host skills directory serves no single Project, so every gated skill is left out.
+    """
     return tuple(
         HostSkillReconciliation(
             target,
@@ -59,6 +63,7 @@ def reconcile_host_skills(
                 manifest_name=manifest_name,
                 desired_names=desired_names,
                 adopt_unrecorded=adopt_unrecorded,
+                withheld=withheld_skills(frozenset()),
             ),
         )
         for target in _find_skill_targets()
@@ -66,7 +71,11 @@ def reconcile_host_skills(
 
 
 def reconcile_host_qa_skills(
-    source: Path, *, names: frozenset[str], dry_run: bool, allow_retarget: bool
+    source: Path,
+    *,
+    names: frozenset[str],
+    dry_run: bool,
+    allow_retarget: bool,
 ) -> tuple[HostSkillReconciliation, ...]:
     """Reconcile the independent repository-owned QA skill namespace."""
     return reconcile_host_skills(
@@ -95,7 +104,9 @@ def _deploy_skills(ctx: InitContext) -> None:
         return
 
     reconciliations = reconcile_host_skills(
-        source, dry_run=ctx.check_only, allow_retarget=ctx.force
+        source,
+        dry_run=ctx.check_only,
+        allow_retarget=ctx.force,
     )
     failures = sum(
         sum(event.failed for event in item.report.events)

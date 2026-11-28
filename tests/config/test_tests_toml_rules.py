@@ -100,7 +100,10 @@ def test_env_table_accepts_string_pairs() -> None:
     assert validate_env_table(raw, where="t.env") == raw
 
 
-@pytest.mark.parametrize("name", ["X\n", "\nX", "X ", "MY-VAR", "1X", "", "A=B", "É"])
+@pytest.mark.parametrize(
+    "name",
+    ["X\n", "\nX", "X ", "MY-VAR", "1X", "", "A=B", "É"],
+)
 def test_env_table_refuses_a_non_identifier_name(name: str) -> None:
     with pytest.raises(EnvTableError) as excinfo:
         validate_env_table({name: "1"}, where="tests.toml [sim].env")

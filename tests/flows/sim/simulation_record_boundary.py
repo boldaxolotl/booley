@@ -38,7 +38,6 @@ from booley.flows.sim.backends import cocotb as cocotb_backend
 from booley.flows.sim.backends import cocotb_results
 from booley.flows.sim.backends.shared import RunTermination
 from booley.flows.sim.build import PreparedSimulationBuild
-from booley.flows.sim.build_session import SimulationBuildSession
 from booley.flows.sim.execution import SimulationExecution
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
@@ -48,6 +47,7 @@ from booley.fusesoc.fusesoc_registry import ResolvedTarget
 from booley.runtime.endpoint_execution import ExecutionResult
 from booley.targets.catalog import TargetCatalog
 from tests.flows.sim.launched_work import launched_work
+from tests.flows.sim.leased_session import canned_build_session
 from tests.target_test_support import write_sim_preview_project
 
 # Canned simulator processes shared by the record-path tests.
@@ -160,7 +160,7 @@ def run_simulation_record_sim(
         report_dir = tmp_path / "reports"
     # Undo the fakes before returning: an autouse fixture may have patched the same
     # class attributes, and a test-long undo would restore its patch after it exits.
-    with monkeypatch.context() as scoped:
+    with monkeypatch.context() as scoped, canned_build_session(artifacts=("Vtop",)):
         _install_fakes(scoped, process, build, launches, configured)
         result = flow.execute(SimRequest(work_dir=tmp_path, report_dir=report_dir, **request))
     return SimulationRecordSimRun(result, flow, launches, len(configured))
@@ -242,13 +242,6 @@ def _install_fakes(
     # Private seams: the process boundary and the build have no public injection point.
     monkeypatch.setattr(SimulationExecution, "_prepare_build", prepare_build)
     monkeypatch.setattr(SimulateFlow, "_execute_boundary", boundary)
-    monkeypatch.setattr(SimulationBuildSession, "capture_inputs", lambda *_a, **_k: {})
-    monkeypatch.setattr(SimulationBuildSession, "reusable_key", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        SimulationBuildSession,
-        "authorize_fresh_image",
-        lambda _self, prepared, *_a, **_k: (prepared.build_root / "Vtop",),
-    )
 
 
 def _cocotb_adapter_result(
@@ -303,7 +296,8 @@ def _process_output(process: SubprocessResult) -> str:
 
 
 def adapter_result_for_test_process(
-    names: tuple[str, ...], process: SubprocessResult
+    names: tuple[str, ...],
+    process: SubprocessResult,
 ) -> AdapterResult:
     """The result the native adapter publishes for *process* (sentinels, SVA, return code).
 

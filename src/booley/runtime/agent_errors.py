@@ -34,7 +34,10 @@ CONTEXT_EXHAUSTION_PATTERNS = [
 
 # The gateway (or provider) rejected the credential: Codex reports
 # "unexpected status 401 Unauthorized". 403 is a policy decision, not expiry.
-AUTH_FAILURE_PATTERNS = [re.compile(r"\b401\b"), re.compile(r"unauthori[sz]ed", re.IGNORECASE)]
+AUTH_FAILURE_PATTERNS = [
+    re.compile(r"\b401\b"),
+    re.compile(r"unauthori[sz]ed", re.IGNORECASE),
+]
 
 # The provider refused the requested model: it does not exist or the account
 # cannot use it. Each phrase is what one backend/CLI is observed to print.

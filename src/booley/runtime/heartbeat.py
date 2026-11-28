@@ -1,8 +1,10 @@
-"""Shared heartbeat timer for long-running subprocesses.
+"""Shared heartbeat timers for long-running work.
 
 Used by simulator run-halves and the harness to print periodic progress updates
 so the terminal does not appear stuck. Each tick also refreshes the Sandbox
 activity heartbeat, so long-running Booley Flows count as session activity.
+:func:`reaper_heartbeat` refreshes only that heartbeat, for the lifetime of a
+supervised Sandbox Attachment or a detached Standalone Job worker.
 """
 
 from __future__ import annotations
@@ -10,8 +12,8 @@ from __future__ import annotations
 import os
 import tempfile
 import threading
-from collections.abc import Callable
-from contextlib import suppress
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager, suppress
 from pathlib import Path
 from time import monotonic
 from time import time as wall_clock
@@ -29,8 +31,8 @@ HeartbeatRenderer = Callable[[str, str, str], None]
 
 # Epoch-seconds file the idle reaper (booley.docker.reaper) reads via
 # ``docker exec`` to decide whether the Sandbox container is idle.
-# Touched by MCP servers and supervised Sandbox
-# Attachments while protected work is active.
+# Touched by MCP servers, supervised Sandbox Attachments and detached
+# Standalone Jobs while protected work is active.
 REAPER_HEARTBEAT_PATH = "/tmp/booley_mcp_heartbeat"
 
 
@@ -53,7 +55,10 @@ def touch_reaper_heartbeat(path: str | None = REAPER_HEARTBEAT_PATH) -> None:
             if previous is not None:
                 candidate = max(candidate, previous)
             fd, temporary = tempfile.mkstemp(
-                dir=heartbeat.parent, prefix=f".{heartbeat.name}.", suffix=".tmp", text=True
+                dir=heartbeat.parent,
+                prefix=f".{heartbeat.name}.",
+                suffix=".tmp",
+                text=True,
             )
             with os.fdopen(fd, "w", encoding="ascii") as fh:
                 fh.write(f"{candidate:.0f}\n")
@@ -63,6 +68,29 @@ def touch_reaper_heartbeat(path: str | None = REAPER_HEARTBEAT_PATH) -> None:
         if temporary is not None:
             with suppress(OSError):
                 Path(temporary).unlink()
+
+
+@contextmanager
+def reaper_heartbeat(interval: float) -> Iterator[None]:
+    """Refresh the reaper heartbeat now and every *interval* seconds until the block exits.
+
+    The thread is joined when the block exits, so a finished lifetime stops
+    keeping the Sandbox awake.
+    """
+    stop = threading.Event()
+
+    def refresh() -> None:
+        while not stop.wait(interval):
+            touch_reaper_heartbeat()
+
+    touch_reaper_heartbeat()
+    thread = threading.Thread(target=refresh, daemon=True, name="reaper-heartbeat")
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
 
 
 def _read_valid_epoch(path: Path) -> float | None:

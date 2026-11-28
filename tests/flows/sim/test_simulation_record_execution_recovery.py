@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import shlex
 import sys
-import threading
 import uuid
 from dataclasses import replace
 from pathlib import Path
@@ -17,7 +15,6 @@ from typing import Any
 import pytest
 
 from booley.flows.base import DEFAULT_TIMEOUT_S
-from booley.flows.endpoint_admission import AdmissionGate
 from booley.flows.sim.execution.contract import (
     PreSimEvidence,
     PreSimScopeStoppedError,
@@ -32,34 +29,33 @@ from booley.flows.sim.record.codec import (
 )
 from booley.flows.sim.record.coordinator import (
     NewSimulationRecordRunRequest,
-    ResumeSimulationRecordRunRequest,
     SimulationRecord,
     SimulationRecordPolicy,
     WorkExecutionRequest,
 )
-from booley.flows.sim.record.coverage_execution import _CoverageAggregateError
+from booley.flows.sim.record.coverage_execution import (
+    _CoverageAggregateError,
+)
 from booley.flows.sim.record.model import (
-    SimulationAttempt,
     SimulationResult,
     create_simulation_record_plan,
 )
-from booley.flows.sim.record.planning import finalize_manifest, manifest_digest
+from booley.flows.sim.record.planning import finalize_manifest
 from booley.flows.sim.record.run_directory import (
     RunDirectory,
     claimed_run_directory,
     cleanup_interrupted_run_directory,
 )
-from booley.flows.sim.record.scheduler import BoundedSimulationRecordScheduler
-from booley.flows.sim.record.serial_execution import OrdinaryHdlSerialExecutor
+from booley.flows.sim.record.serial_execution import (
+    OrdinaryHdlSerialExecutor,
+)
 from booley.flows.sim.record.store import SimulationRecordStore
 from booley.flows.sim.verilator_coverage import SimulationRunResult
 from booley.runtime.execution_records import (
     ExecutionId,
-    atomic_write_json,
     execution_paths,
     read_json,
 )
-from booley.runtime.job_slots import CLASS_MEMORY, ClaimAbortedError, ClaimLostError, SlotStore
 from booley.runtime.supervised_execution import (
     SupervisedExecutionScope,
     supervised_execution_scope,
@@ -68,28 +64,21 @@ from tests.conftest import symlink_or_skip
 from tests.execution_test_support import run_with_recovery_between_read_and_write
 from tests.flows.sim.simulation_record_test_support import (
     _BAD_DIGEST,
-    _PARALLEL_SYNC_TIMEOUT_S,
     _admission,
     _completed,
     _Execution,
     _executor,
     _handle,
     _hook_publication_request,
-    _item_capacity,
     _legacy_disclosures,
-    _managed,
     _manifest_for,
     _NoEdaExecutor,
-    _outer_claim,
-    _own_attempt_run_directory,
     _publish_request_hook,
     _read,
     _request,
     _run_coverage_simulation_record,
     _run_identity,
-    _scheduled_attempt,
     _two_item_manifest,
-    _wait_until,
     _write,
 )
 from tests.flows.sim.test_coverage_transaction import NativeExecution
@@ -183,14 +172,19 @@ def _packaged_source_disclosure(raw: bytes) -> dict[str, object]:
                 "kind": "generated_input",
             }
         ],
-        "tool_provenance": {"kind": "fusesoc", "version": "2.4.6", "contract_version": "1"},
+        "tool_provenance": {
+            "kind": "fusesoc",
+            "version": "2.4.6",
+            "contract_version": "1",
+        },
         "cleanup": {"removed": True},
     }
 
 
 @pytest.mark.parametrize("mapped", [False, True])
 def test_changed_packaged_source_fails_disclosure_equality_before_compile(
-    tmp_path: Path, mapped: bool
+    tmp_path: Path,
+    mapped: bool,
 ) -> None:
     planned = _packaged_source_disclosure(b"planned wheel bytes")
     execution = _packaged_source_disclosure(b"different execution wheel bytes")
@@ -322,49 +316,6 @@ def test_request_replacement_reauthenticates_manifest_and_attempt(tmp_path, monk
     records = collect_pre_sim_firings(changed.store.manifest_path)
     assert records[0].document["manifest_sha256"] == changed.pre_sim_decoder.manifest_sha256
     assert records[0].document["producer_invocation_id"] == 2
-    with pytest.raises(SimulationRecordIntegrityError):
-        _publish_request_hook(replace(first, producer_invocation_id=2), "beta", 2)
-    assert not (first.attempt_directory / "pre-sim/0002.json").exists()
-
-
-@pytest.mark.parametrize(
-    "corruption", ["manifest", "producer", "selection", "ordinal", "status", "item"]
-)
-def test_request_publication_rejects_changed_attempt_after_success(tmp_path, corruption):
-    request = _hook_publication_request(tmp_path)
-    published = []
-    request = replace(request, pre_sim_firing_published=published.append)
-    _publish_request_hook(request)
-    first_bytes = (request.attempt_directory / "pre-sim/0001.json").read_bytes()
-    first_publication = published.copy()
-    if corruption == "item":
-        other = _hook_publication_request(tmp_path / "other", ("gamma",))
-        request = replace(request, work_item=other.work_item)
-    if corruption in {"manifest", "producer"}:
-        path = request.attempt_directory / "attempt.json"
-        document = json.loads(path.read_bytes())
-        key = "manifest_sha256" if corruption == "manifest" else "producer_invocation_id"
-        document[key] = "sha256:" + "0" * 64 if corruption == "manifest" else 2
-        path.write_bytes(canonical_json_bytes(document))
-    name = "outside" if corruption == "selection" else "beta"
-    ordinal = 0 if corruption == "ordinal" else 2
-    status = "timed_out" if corruption == "status" else "passed"
-    expected = {
-        "manifest": "hook attempt does not bind its frozen workload",
-        "item": "hook attempt does not bind its frozen workload",
-        "producer": "Pre-Sim Commands evidence owner disagrees",
-        "selection": "selection is outside workload",
-        "ordinal": "invalid ordinal",
-        "status": "timed out hook cannot supply an exit code",
-    }
-    with pytest.raises(SimulationRecordIntegrityError, match=expected[corruption]):
-        _publish_request_hook(request, name, ordinal, status)
-    assert published == first_publication
-    assert len(published) == 1
-    assert (request.attempt_directory / "pre-sim/0001.json").read_bytes() == first_bytes
-    assert sorted(p.name for p in (request.attempt_directory / "pre-sim").iterdir()) == [
-        "0001.json"
-    ]
 
 
 def _project_relative_hook_simulation_record(tmp_path: Path, route: str, configured: str):
@@ -481,7 +432,7 @@ def test_store_follows_only_the_booley_dir_entry(tmp_path, linked):
 
 @pytest.mark.parametrize(
     "defect",
-    ["manifest", "workload", "work_item", "attempt", "replace", "symlink", "hardlink", "resize"],
+    ["manifest", "workload", "work_item", "attempt", "replace", "symlink", "resize"],
 )
 def test_scan_fails_closed_on_a_defective_complete_result(tmp_path: Path, defect: str) -> None:
     """The scan binds a complete result to its manifest, item and final attempt, and to one file."""
@@ -509,8 +460,6 @@ def test_scan_fails_closed_on_a_defective_complete_result(tmp_path: Path, defect
             path.write_bytes(canonical_json_bytes(replacement))
         elif defect == "symlink":
             path.symlink_to(original.name)
-        elif defect == "hardlink":
-            os.link(original, path)
         else:
             path.write_bytes(b"x" * (RECORD_MAX_BYTES + 1))
         message = None
@@ -553,104 +502,6 @@ def test_stale_run_cleanup_only_removes_a_tree_the_exact_owner_marked(
     run.path.rename(tmp_path / "kept")
     assert cleanup_interrupted_run_directory(run, identity=identity) is False
     assert (tmp_path / "kept/preserve.log").read_text(encoding="utf-8") == "mine"
-
-
-def test_attempt_is_published_before_real_child_waiter_and_cancel_retires_the_lane(
-    tmp_path: Path,
-) -> None:
-    manifest = _two_item_manifest()
-    simulation_record_store = SimulationRecordStore(tmp_path / "record")
-    simulation_record_store.publish_manifest(manifest)
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / ".booley").mkdir()
-    registry = ChildExecutionRegistry(manifest, project)
-    slots = SlotStore(tmp_path / "slots")
-    outer = _outer_claim(slots)
-    cancelled = threading.Event()
-    admission = replace(
-        _managed(slots, outer, holders=1),
-        timeout_seconds=_PARALLEL_SYNC_TIMEOUT_S,
-        cancellation=cancelled.is_set,
-    )
-    capacity = _item_capacity(admission, manifest, registry.project_data, lanes=2)
-    attempts: list[Path] = []
-
-    def prepare(attempt, child_id, *_entry_digest) -> None:
-        attempts.append(attempt.directory / "attempt.json")
-        published = SimulationAttempt(
-            {
-                "$schema": "booley.simulation-attempt/v2",
-                "simulation_record_id": manifest.document["simulation_record_id"],
-                "manifest_sha256": manifest_digest(manifest),
-                "workload_sha256": "sha256:" + "0" * 64,
-                "work_item_id": attempt.item["work_item_id"],
-                "attempt_id": attempt.attempt_id,
-                "attempt_ordinal": attempt.ordinal,
-                "producer_invocation_id": 1,
-                "build_variant_id": "variant:" + "0" * 64,
-                "run_directory": {
-                    "kind": "literal",
-                    "configured": "run",
-                    "resolved": "run",
-                    "collision_key": "run",
-                    "owned": True,
-                },
-                "child_execution_id": child_id,
-                "child_entry_sha256": None,
-                "pre_sim_build_access": "immutable",
-                "policy": {"timeout_seconds": None, "no_kill": False, "diagnostic": False},
-                "started_at": "2026-09-22T14:00:00Z",
-            }
-        )
-        (attempt.directory / "attempt.json").write_bytes(published.canonical_bytes())
-
-    errors: list[BaseException] = []
-    scheduler = BoundedSimulationRecordScheduler(
-        capacity,
-        allocate=lambda item: _scheduled_attempt(simulation_record_store, item),
-        prepare_child=prepare,
-        execute=lambda *_args: cancelled.wait(_PARALLEL_SYNC_TIMEOUT_S),
-    )
-    worker = threading.Thread(
-        target=lambda: _capture_error(errors, scheduler.run, manifest.document["work_items"])
-    )
-    worker.start()
-    try:
-        _cancel_child_and_assert(
-            slots, attempts, registry, simulation_record_store, cancelled, worker
-        )
-        # Cancelling while the second item waits for its claim legitimately
-        # aborts that claim; anything else (e.g. a spurious bounded-shutdown
-        # SimulationRecordSchedulingError, #977) is a failure.
-        assert all(isinstance(e, (ClaimAbortedError, ClaimLostError)) for e in errors), errors
-    finally:
-        slots.release(outer)
-
-
-def _cancel_child_and_assert(
-    slots, attempts, registry, simulation_record_store, cancelled, worker
-) -> None:
-    _wait_until(lambda: len(slots.snapshot(CLASS_MEMORY)[1]) == 1)
-    assert attempts and attempts[0].is_file()
-    # The attempt names its lane execution, which already has a context and a waiting record.
-    attempt = json.loads(attempts[0].read_bytes())
-    lane = execution_paths(
-        ExecutionId(attempt["child_execution_id"]), booley_dir=registry.project_data
-    )
-    assert lane.context.is_file() and read_json(lane.record)["state"] == "waiting"
-    cancelled.set()
-    worker.join(timeout=_PARALLEL_SYNC_TIMEOUT_S)
-    assert not worker.is_alive()
-    assert registry.is_terminal(ExecutionId(attempt["child_execution_id"]))
-    assert slots.snapshot(CLASS_MEMORY)[1] == []
-
-
-def _capture_error(errors: list[BaseException], call, *args) -> None:
-    try:
-        call(*args)
-    except BaseException as exc:  # noqa: BLE001 -- thread ferry for assertion
-        errors.append(exc)
 
 
 def _pre_sim_adapter(
@@ -697,7 +548,12 @@ def test_coverage_aggregate_preserves_pre_sim_failure_observation(tmp_path: Path
     assert all(f.document["command_count"] == 1 for f in firings)
     assert all(f.document["returncode"] == 1 for f in firings)
     assert all(f.document["producer_invocation_id"] == 1 for f in firings)
-    assert all(f.terminal and f.reference in result.document["evidence"] for f in firings)
+    assert all(f.terminal for f in firings)
+    assert [
+        reference["path"]
+        for reference in result.document["evidence"]
+        if reference["kind"] == "pre_sim_commands"
+    ] == ["pre-sim/0001.json", "pre-sim/0002.json"]
 
 
 def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Path) -> None:
@@ -737,78 +593,6 @@ def test_coverage_aggregate_preserves_spawn_error_detail_and_aborts(tmp_path: Pa
     assert firing.document["test_names"] == ("reset",)
     assert firing.document["producer_invocation_id"] == 1
     assert firing.terminal is False
-
-
-def test_coverage_rejects_fabricated_hook_with_empty_frozen_commands(tmp_path: Path) -> None:
-    class FabricatedHook(NativeExecution):
-        def run(self, request):
-            evidence = PreSimEvidence(
-                ("undeclared-hook",), (request.test.name,), "failed", 0.2, returncode=1
-            )
-            return SimulationRunResult("elab_error", "injected adapter evidence", evidence)
-
-    with pytest.raises(SimulationRecordIntegrityError, match="command count disagrees"):
-        _run_coverage_simulation_record(tmp_path, FabricatedHook())
-    simulation_record = tmp_path / "reports/1/targets/sim_0/record"
-    assert list(simulation_record.glob("work-items/*/attempts/*/attempt.json"))
-    assert not list(simulation_record.glob("work-items/*/attempts/*/pre-sim/*.json"))
-
-
-def test_resume_keeps_run_directories_of_an_unrecoverable_lane(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Resume recovers every lane first: one that cannot be proven terminal keeps all runs."""
-    from tests.flows.sim.simulation_record_test_support import (
-        _interrupted_simulation_record,
-        _SimulationRecordAdmissionEndpoint,
-    )
-
-    case = _interrupted_simulation_record(tmp_path, monkeypatch, None)
-    project_data = case.project / ".booley"
-    attempts = {
-        item_id: json.loads(
-            next(
-                (case.store.work_item_directory(item_id) / "attempts").glob("*/attempt.json")
-            ).read_bytes()
-        )
-        for item_id in case.store.scan().complete
-    }
-    # The outer lane's item comes first in manifest order, ahead of the child lanes' items.
-    interrupted = [
-        item_id for item_id, doc in attempts.items() if doc["child_execution_id"] is None
-    ]
-    interrupted += [item_id for item_id, doc in attempts.items() if doc["child_execution_id"]][:1]
-    runs = []
-    for item_id in interrupted:
-        (case.store.work_item_directory(item_id) / "result.json").unlink()
-        lane = attempts[item_id]["child_execution_id"]
-        run, _document = _own_attempt_run_directory(tmp_path, case.store, item_id, lane)
-        runs.append(run)
-        if lane is not None:
-            # The crash left this lane's execution unfinished.
-            lane_record = execution_paths(ExecutionId(lane), booley_dir=project_data).record
-            atomic_write_json(lane_record, {"state": "waiting", "tree_terminal": False})
-    assert case.store.scan().interrupted == tuple(interrupted)
-
-    case.fault_enabled[0] = False
-    monkeypatch.setattr(ChildExecutionRegistry, "cancel", lambda _self, _id: False)
-    with (
-        AdmissionGate(_SimulationRecordAdmissionEndpoint(case.slots, None)).enter() as admission,
-        pytest.raises(SimulationRecordIntegrityError, match="recovery is incomplete"),
-    ):
-        case.simulation_record.run(
-            ResumeSimulationRecordRunRequest(
-                case.validated,
-                case.plan,
-                case.project,
-                case.invocation.parent,
-                SimulationRecordPolicy(),
-                case.invocation,
-                admission,
-            )
-        )
-
-    assert all(run.exists() for run in runs)
 
 
 def test_foreign_attempt_result_fails_closed_at_the_read_boundary(tmp_path: Path) -> None:

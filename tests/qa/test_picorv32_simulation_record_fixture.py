@@ -47,7 +47,10 @@ def test_fixture_declares_owned_three_test_icarus_target() -> None:
     assert (
         '[sim_campaign]\ntests = ["quick", "slow", "tail"]' in (FIXTURE / "tests.toml").read_text()
     )
-    assert (FIXTURE / "reverse-tests.txt").read_text().splitlines()[-2:] == ["tail", "quick"]
+    assert (FIXTURE / "reverse-tests.txt").read_text().splitlines()[-2:] == [
+        "tail",
+        "quick",
+    ]
 
 
 def test_fixture_testbench_runs_under_icarus_with_project_sentinel() -> None:
@@ -182,7 +185,10 @@ def _cli_arguments(subcommand: str, tmp_path: Path) -> list[str]:
 
 @pytest.mark.parametrize(
     ("subcommand", "expected_exit", "expected_output"),
-    [("backlinks", 0, ""), ("rejection", 2, "rejection created an attempt")],
+    [
+        ("backlinks", 0, ""),
+        ("rejection", 2, "rejection created an attempt"),
+    ],
 )
 def test_validator_cli_exposes_every_check(
     tmp_path: Path, subcommand: str, expected_exit: int, expected_output: str

@@ -13,7 +13,7 @@ from typing import Any, TypeVar
 
 import pytest
 
-from booley.core import file_lock
+from booley.core import atomic_files, file_lock
 from booley.runtime import execution_records, execution_recovery
 from booley.runtime.execution_records import (
     RUNTIME_EXECUTION_ENV,
@@ -34,14 +34,21 @@ def runtime_env(booley_dir: Path, execution_id: ExecutionId | None = None) -> di
     source_path = str(_SRC_ROOT)
     if python_path:
         source_path = f"{source_path}{os.pathsep}{python_path}"
-    env = {**os.environ, "BOOLEY_DIR": str(booley_dir), "PYTHONPATH": source_path}
+    env = {
+        **os.environ,
+        "BOOLEY_DIR": str(booley_dir),
+        "PYTHONPATH": source_path,
+    }
     if execution_id is not None:
         env[RUNTIME_EXECUTION_ENV] = execution_id
     return env
 
 
 def wait_for_value(
-    probe: Callable[[], ResultT | None], *, failure: str, timeout_s: float = _WAIT_SECONDS
+    probe: Callable[[], ResultT | None],
+    *,
+    failure: str,
+    timeout_s: float = _WAIT_SECONDS,
 ) -> ResultT:
     """Return the first non-None probe result within a bounded interval."""
     deadline = time.monotonic() + timeout_s
@@ -53,13 +60,24 @@ def wait_for_value(
     raise AssertionError(failure)
 
 
-def wait_for(probe: Callable[[], bool], *, failure: str, timeout_s: float = _WAIT_SECONDS) -> None:
+def wait_for(
+    probe: Callable[[], bool],
+    *,
+    failure: str,
+    timeout_s: float = _WAIT_SECONDS,
+) -> None:
     """Wait for a boolean probe within a bounded interval."""
-    wait_for_value(lambda: True if probe() else None, failure=failure, timeout_s=timeout_s)
+    wait_for_value(
+        lambda: True if probe() else None,
+        failure=failure,
+        timeout_s=timeout_s,
+    )
 
 
 def start_supervisor_with_detached_descendant(
-    booley_dir: Path, execution_id: ExecutionId, descendant_pid_file: Path
+    booley_dir: Path,
+    execution_id: ExecutionId,
+    descendant_pid_file: Path,
 ) -> subprocess.Popen[str]:
     """Start a marked supervisor whose SIGINT-resistant descendant calls setsid."""
     descendant_script = (
@@ -116,7 +134,7 @@ class _RecoveryInterleaving:
             target=self._recover, args=(execution_id, booley_dir), daemon=True
         )
         self.real_read = execution_records.read_file_bytes
-        self.real_replace = execution_records.replace_file
+        self.real_replace = atomic_files.replace_file
         self.real_acquire = file_lock.acquire_file_lock
 
     def _recover(self, execution_id: ExecutionId, booley_dir: Path) -> None:
@@ -169,7 +187,7 @@ def run_with_recovery_between_read_and_write(
     """
     hooks = _RecoveryInterleaving(execution_id, booley_dir)
     monkeypatch.setattr(execution_records, "read_file_bytes", hooks.read)
-    monkeypatch.setattr(execution_records, "replace_file", hooks.replace)
+    monkeypatch.setattr(atomic_files, "replace_file", hooks.replace)
     monkeypatch.setattr(file_lock, "acquire_file_lock", hooks.acquire)
     interrupted()
     hooks.thread.join(hang_guard_s())

@@ -13,7 +13,11 @@ def format_heartbeat(description: str, elapsed: str, extra: str = "") -> str:
 
 
 def render_heartbeat(
-    description: str, elapsed: str, extra: str = "", *, style: Callable[[str], str] | None = None
+    description: str,
+    elapsed: str,
+    extra: str = "",
+    *,
+    style: Callable[[str], str] | None = None,
 ) -> None:
     """Render one standalone progress line without Harness presentation state.
 

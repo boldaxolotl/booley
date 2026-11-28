@@ -16,7 +16,12 @@ from contextlib import AbstractContextManager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
-from booley.flows import endpoint_admission, endpoint_reporting, endpoint_session, execution
+from booley.flows import (
+    endpoint_admission,
+    endpoint_reporting,
+    endpoint_session,
+    execution,
+)
 from booley.flows.cli_help import CliHelp, SurfaceHelp
 from booley.flows.endpoint_session import PreparedExecution
 from booley.flows.job_estimates import JobRequest
@@ -112,6 +117,8 @@ class EndpointState(ABC):
         self._reserved_invocation_dir: Path | None = None
         # The checkout and existing Booley Directory a run must not recreate.
         self._run_roots: tuple[Path, Path | None] | None = None
+        # The first of them found removed during the run.
+        self._removed_run_root: Path | None = None
         # Failures retiring a killed attempt's progress; the final result reports them.
         self._requeue_cleanup_errors: list[Exception] = []
         self._skip_report_detail_refresh = False
@@ -145,9 +152,8 @@ class EndpointState(ABC):
         targets = target.split(",") if isinstance(target, str) else target
         self.set_report_targets([item.strip() for item in targets if item.strip()])
 
-    def refresh_report_detail(self, result: EndpointOutcome) -> None:
+    def refresh_report_detail(self, result: EndpointOutcome) -> None:  # noqa: B027 — optional hook with a no-op default
         """Refresh derived report detail before it is written; most endpoints have none."""
-        return
 
     def transcript_path(self) -> Path | None:
         """Path of this invocation's agent transcript, or ``None`` when it keeps none."""
@@ -187,7 +193,7 @@ class EndpointState(ABC):
             raise RuntimeError("execution input has not been prepared")
         return self._args
 
-    def set_criterion(
+    def set_criterion(  # noqa: B027 — optional hook with a no-op default
         self,
         key: str,
         met: bool,
@@ -196,7 +202,6 @@ class EndpointState(ABC):
         source_target: str | None = None,
     ) -> None:
         """Accept a Criterion verdict from a Project endpoint and record nothing."""
-        return
 
     def emit_progress(self, line: str) -> None:
         return endpoint_reporting.emit_progress(self, line)
@@ -232,7 +237,10 @@ class EndpointState(ABC):
             if target:
                 from booley.flows.flow_config import tb_top_for_target
 
-                tb_top = tb_top_for_target(target, getattr(self.args, "work_dir", None))
+                tb_top = tb_top_for_target(
+                    target,
+                    getattr(self.args, "work_dir", None),
+                )
                 if tb_top:
                     self.args.tb_top = tb_top
 
@@ -273,7 +281,7 @@ class EndpointState(ABC):
     ) -> AbstractContextManager[endpoint_admission.AdmissionContext | None]:
         return endpoint_admission.admission(self, prepared, requeued=requeued)
 
-    def may_requeue_after_oom(self, prepared: PreparedExecution, admission: object | None) -> bool:
+    def may_requeue_after_oom(self, prepared: PreparedExecution, admission: object | None) -> bool:  # noqa: ARG002 — implements ExecutableEndpoint.may_requeue_after_oom
         """Whether an own OOM kill of this admitted Job's first attempt requeues it (ADR 0087).
 
         Only a Flow Job holding its own Memory Reservation: not a dry run, not a
@@ -313,18 +321,29 @@ class EndpointState(ABC):
         self._reserved_invocation_dir = None
 
     def invoke_endpoint(
-        self, prepared: PreparedExecution, *, admission: object | None, started: float
+        self,
+        prepared: PreparedExecution,
+        *,
+        admission: object | None,
+        started: float,
     ) -> EndpointOutcome:
         return endpoint_session.invoke_endpoint(
             self, prepared, admission=admission, started=started
         )
 
     def finish_execution(
-        self, prepared: PreparedExecution, outcome: EndpointOutcome
+        self,
+        prepared: PreparedExecution,
+        outcome: EndpointOutcome,
     ) -> ExecutionResult:
         return endpoint_session.finish_execution(self, prepared, outcome)
 
-    def _finish_main(self, result: EndpointOutcome, *, persist_report: bool) -> int:
+    def _finish_main(
+        self,
+        result: EndpointOutcome,
+        *,
+        persist_report: bool,
+    ) -> int:
         return endpoint_reporting._finish_main(self, result, persist_report=persist_report)
 
     # Admission class for this endpoint. None = quick endpoint, no admission.

@@ -157,13 +157,19 @@ class ExecutableEndpoint(Protocol[Prepared_contra]):
         ...
 
     def invoke_endpoint(
-        self, prepared: Prepared_contra, *, admission: object | None, started: float
+        self,
+        prepared: Prepared_contra,
+        *,
+        admission: object | None,
+        started: float,
     ) -> EndpointOutcome:
         """Run the endpoint implementation and finalize its raw outcome."""
         ...
 
     def finish_execution(
-        self, prepared: Prepared_contra, outcome: EndpointOutcome
+        self,
+        prepared: Prepared_contra,
+        outcome: EndpointOutcome,
     ) -> ExecutionResult:
         """Publish completion: refresh the report, then the console report."""
         ...
@@ -363,7 +369,10 @@ def _killed_for_oom(outcome: EndpointOutcome, attempt: _JobAttempt) -> bool:
 
 
 def _attempt_endpoint(
-    endpoint: ExecutableEndpoint[Prepared_contra], request: Prepared_contra, *, requeued: bool
+    endpoint: ExecutableEndpoint[Prepared_contra],
+    request: Prepared_contra,
+    *,
+    requeued: bool,
 ) -> ExecutionResult | None:
     """Admit and run one attempt; ``None`` after releasing its claim to requeue the Job.
 
@@ -396,7 +405,8 @@ def _attempt_endpoint(
 
 
 def execute_endpoint(
-    endpoint: ExecutableEndpoint[Prepared_contra], request: Prepared_contra
+    endpoint: ExecutableEndpoint[Prepared_contra],
+    request: Prepared_contra,
 ) -> ExecutionResult:
     """Execute one endpoint with invariant lifecycle ordering.
 

@@ -21,7 +21,11 @@ def _entry_detail(entry: Any) -> Mapping[str, Any]:
     return detail if isinstance(detail, Mapping) else {}
 
 
-def _finding_row(criterion: str, finding: Mapping[str, Any], disposition: str) -> dict[str, Any]:
+def _finding_row(
+    criterion: str,
+    finding: Mapping[str, Any],
+    disposition: str,
+) -> dict[str, Any]:
     status = finding.get("status", "")
     original = finding.get("disposition", "")
     if (
@@ -70,7 +74,9 @@ def _done_rows(criterion: str, detail: Mapping[str, Any]) -> list[dict[str, Any]
         return []
     return [
         _finding_row(
-            criterion, finding, str(finding.get("status", finding.get("disposition", "reported")))
+            criterion,
+            finding,
+            str(finding.get("status", finding.get("disposition", "reported"))),
         )
         for finding in issues
         if isinstance(finding, Mapping)

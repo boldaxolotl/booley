@@ -21,7 +21,9 @@ from booley.flows.sim.execution.telemetry import (
     parse_run_seconds,
     parse_sim_cpu_seconds,
 )
-from booley.flows.sim.flow import SimulateFlow as ProductionSimulateFlow
+from booley.flows.sim.flow import (
+    SimulateFlow as ProductionSimulateFlow,
+)
 from booley.flows.sim.mode import SimulationMode
 from booley.flows.sim.request import SimRequest
 from booley.flows.sim.watchdog_sizing import resolve_simulation_record_work_units
@@ -80,10 +82,16 @@ def test_simulation_record_work_units_are_summed_over_every_target(tmp_path: Pat
 
 
 @pytest.mark.parametrize(
-    ("mode", "expected"), [(SimulationMode.ELAB_ONLY, 2), (SimulationMode.ELAB_ONLY_STANDALONE, 3)]
+    ("mode", "expected"),
+    [
+        (SimulationMode.ELAB_ONLY, 2),
+        (SimulationMode.ELAB_ONLY_STANDALONE, 3),
+    ],
 )
 def test_simulation_record_work_units_count_elaboration_modes(
-    tmp_path: Path, mode: SimulationMode, expected: int
+    tmp_path: Path,
+    mode: SimulationMode,
+    expected: int,
 ) -> None:
     assert resolve_simulation_record_work_units(tmp_path, "one,two", mode=mode) == expected
 
@@ -116,7 +124,10 @@ def test_job_class_is_memory():
 
 
 def _preview(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, targets: dict[str, list[str]], **request: Any
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    targets: dict[str, list[str]],
+    **request: Any,
 ) -> ExecutionResult:
     """Dry-run ``SimulateFlow.execute`` over one ``.core`` per Target in *targets*.
 
@@ -310,7 +321,13 @@ def _lite_passes_full_fails(launch: Launch) -> SubprocessResult:
             EXIT_FAILURE,
             {"lite": "inconclusive"},
         ),
-        ({"lite": ["smoke", "stress"]}, PASS_PROCESS, "lite", EXIT_SUCCESS, {"lite": "pass"}),
+        (
+            {"lite": ["smoke", "stress"]},
+            PASS_PROCESS,
+            "lite",
+            EXIT_SUCCESS,
+            {"lite": "pass"},
+        ),
         (
             {"lite": ["smoke"], "full": ["smoke"]},
             _lite_passes_full_fails,
@@ -583,7 +600,10 @@ class TestTimeout:
     def test_timeout_results_in_fail(self, tmp_path: Path, monkeypatch):
         # The wrapper killed the launch: no adapter result, only the timed-out process.
         process = SubprocessResult(
-            returncode=-1, stdout="partial output", timed_out=True, duration_s=600.0
+            returncode=-1,
+            stdout="partial output",
+            timed_out=True,
+            duration_s=600.0,
         )
         run = run_simulation_record_sim(
             tmp_path, monkeypatch, {"lite": ["smoke"]}, process, target="lite"

@@ -53,7 +53,10 @@ class TestRunFiles:
 
     def relative_to(self, base: Path) -> dict[str, str | None]:
         """The ``log`` and ``trace`` keys of a report row: POSIX paths from *base*, or ``None``."""
-        return {"log": _relative(self.log, base), "trace": _relative(self.trace, base)}
+        return {
+            "log": _relative(self.log, base),
+            "trace": _relative(self.trace, base),
+        }
 
 
 _NO_FILES = TestRunFiles(None, None)

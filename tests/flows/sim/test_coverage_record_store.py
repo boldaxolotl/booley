@@ -436,7 +436,8 @@ def test_deep_load_validates_the_coverage_record_once(tmp_path: Path, monkeypatc
 
 
 @pytest.mark.parametrize(
-    ("honest", "forged"), [("not_requested", "pass"), ("blocked", "pass"), ("blocked", "fail")]
+    ("honest", "forged"),
+    [("not_requested", "pass"), ("blocked", "pass"), ("blocked", "fail")],
 )
 def test_deep_load_rejects_a_forged_verdict(tmp_path: Path, honest: str, forged: str) -> None:
     coverage_record = (
@@ -603,7 +604,9 @@ def _publish_coverage_record_as_written_by_booley_0_3_0(root: Path):
     return paths
 
 
-def test_a_coverage_record_written_by_booley_0_3_0_is_refused_as_older(tmp_path: Path) -> None:
+def test_a_coverage_record_written_by_booley_0_3_0_is_refused_as_older(
+    tmp_path: Path,
+) -> None:
     paths = _publish_coverage_record_as_written_by_booley_0_3_0(tmp_path)
 
     with pytest.raises(UnsupportedSimulationRecordFormatError) as error:

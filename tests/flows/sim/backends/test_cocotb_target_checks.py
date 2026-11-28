@@ -78,7 +78,8 @@ def _write_project(
 def _request(root: Path, sections: dict[str, Any] | None = None) -> Any:
     """Build the owner's request from the Project's real Targets."""
     return cocotb_target_checks.CocotbTargetRequest(
-        tuple(TargetCatalog.build(root).list()), normalize_tests_toml(sections or {})
+        tuple(TargetCatalog.build(root).list()),
+        normalize_tests_toml(sections or {}),
     )
 
 

@@ -25,9 +25,11 @@ from booley.runtime import health, host_install
 from booley.runtime import project_image as pi
 from booley.runtime.booley_dir import reset_cache
 from booley.runtime.lifecycle_lock import LifecycleLockError
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from booley.runtime.version_attribution import VersionAttribution, VersionOrigin
 from tests.docker_host_support import fake_docker_host
+from tests.sandbox_venue_fake import place, point_mounts
 from tests.subprocess_budget import run_bounded_child
 
 TICKETS_REL = Path(".booley") / "tickets"
@@ -86,7 +88,7 @@ def test_parser_reads_command_flags(argv, expected, monkeypatch):
 
 
 def test_bare_booley_in_the_sandbox_opens_chat(monkeypatch):
-    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     args = _parse_argv(monkeypatch)
     assert (args.command, args.agent_args) == ("chat", [])
 
@@ -99,8 +101,8 @@ def test_bare_booley_in_the_sandbox_opens_chat(monkeypatch):
             "--verbose/-v: not allowed with argument --concise",
         ),
         (["doctor", "--skip-agent-checks"], "--skip-agent-checks requires --deep"),
-        (["init", "--sim-tool", "verilator"], "--sim-tool is retired; use --sim-eda-tool"),
-        (["init", "--lint-tool", "verilator"], "--lint-tool is retired; use --lint-eda-tool"),
+        (["init", "--sim-tool", "verilator"], "unrecognized arguments: --sim-tool verilator"),
+        (["init", "--lint-tool", "verilator"], "unrecognized arguments: --lint-tool verilator"),
         (["init", "--provider", "codex", "--auth", "auto"], "choose subscription or api-key"),
         (["init", "--provider", "codex", "--auth", "visitor"], "choose subscription or api-key"),
         (["bootstrap", "--check-only", "--force"], "not allowed with argument"),
@@ -235,7 +237,7 @@ def host_main(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     reset_cache()
-    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(tlr.runtime_context, "ensure_proxy_env", lambda: False)
     monkeypatch.setattr(host_install, "host_install_error", lambda _source: None)
 
@@ -694,18 +696,13 @@ class TestVersionCommitDate:
 # ===========================================================================
 
 
-def _host_venue(monkeypatch):
-    """Simulate the host: no env marker, no /.dockerenv-style probe hits."""
-    monkeypatch.delenv("BOOLEY_CONTAINER", raising=False)
-    return patch.object(Path, "exists", lambda self: False)
-
-
 class TestEnforceVenue:
     @pytest.mark.parametrize("command", ["chat", "dashboard", "worktree", "flow", "specialist"])
     def test_container_only_command_refused_on_host(self, command, monkeypatch, capsys):
         """Workflow commands on the host -> exit 2 with the actionable fix."""
         monkeypatch.setattr(sys, "argv", ["booley", command])
-        with _host_venue(monkeypatch), pytest.raises(SystemExit) as exc:
+        place(monkeypatch, RuntimeLocation.HOST)
+        with pytest.raises(SystemExit) as exc:
             tlr._enforce_runtime_location(command)
         assert exc.value.code == 2
         err = capsys.readouterr().err
@@ -722,8 +719,8 @@ class TestEnforceVenue:
         """`init` is never venue-refused; a Booley-issued Sandbox refuses it itself."""
         import argparse
 
+        from booley.core import sandbox_detection
         from booley.harness import init_cmd
-        from booley.runtime import runtime_context
 
         cases = (
             ("/work/.devcontainer", "cannot run inside a Booley-issued Sandbox"),
@@ -733,30 +730,28 @@ class TestEnforceVenue:
         for mount_point, message in cases:
             mountinfo = tmp_path / "mountinfo"
             mountinfo.write_text(f"1 0 0:1 / {mount_point} rw - ext4 /dev/x rw\n")
-            monkeypatch.setattr(runtime_context, "_MOUNTINFO", mountinfo, raising=False)
+            # boundary: host/Sandbox mounts
+            monkeypatch.setattr(sandbox_detection, "_MOUNTINFO", mountinfo)
             tlr._enforce_runtime_location("init")  # must not raise
             assert init_cmd.run_init(argparse.Namespace(seed=True), tmp_path) == 2
             assert message in capsys.readouterr().err
 
     @pytest.mark.parametrize(
-        ("mounts", "refused", "init_message"),
+        ("location", "refused", "init_message"),
         [
-            ("/", False, "host init reached"),
-            ("/work/.devcontainer", True, "cannot run inside a Booley-issued Sandbox"),
+            (RuntimeLocation.HOST, False, "host init reached"),
+            (RuntimeLocation.ISSUED_SANDBOX, True, "cannot run inside a Booley-issued Sandbox"),
         ],
         ids=["container-host", "issued-sandbox"],
     )
     def test_container_host_override_reaches_host_commands(
-        self, tmp_path, monkeypatch, capsys, mounts, refused, init_message
+        self, tmp_path, monkeypatch, capsys, location, refused, init_message
     ):
         """BOOLEY_CONTAINER=0 in a container runs host commands, except in an issued Sandbox."""
         from booley.harness import init_cmd
-        from booley.runtime import runtime_context
 
-        (tmp_path / "mountinfo").write_bytes(f"1 0 0:1 / {mounts} rw - ext4 /dev/x rw\n".encode())
-        monkeypatch.setattr(runtime_context, "_MOUNTINFO", tmp_path / "mountinfo")
-        monkeypatch.setenv("BOOLEY_CONTAINER", "0")
-        monkeypatch.setattr(Path, "exists", lambda self: self.as_posix() == "/.dockerenv")
+        place(monkeypatch, RuntimeLocation.HOST, container_host=True)
+        point_mounts(monkeypatch, location)
         # private: the first host-only step of run_init; reaching it proves the host dispatch.
         monkeypatch.setattr(
             init_cmd, "_check_init_layout", Mock(side_effect=OSError(init_message))
@@ -769,14 +764,14 @@ class TestEnforceVenue:
         assert init_message in output.out + output.err
 
     def test_init_allowed_on_host(self, monkeypatch):
-        with _host_venue(monkeypatch):
-            tlr._enforce_runtime_location("init")  # must not raise
+        place(monkeypatch, RuntimeLocation.HOST)
+        tlr._enforce_runtime_location("init")  # must not raise
 
     @pytest.mark.parametrize("command", ["cheat", "doctor", None])
     def test_dual_venue_commands_never_guarded(self, command, monkeypatch):
         """cheat/doctor (and no command at all) run on either side."""
-        with _host_venue(monkeypatch):
-            tlr._enforce_runtime_location(command)  # host: must not raise
+        place(monkeypatch, RuntimeLocation.HOST)
+        tlr._enforce_runtime_location(command)  # host: must not raise
         monkeypatch.setenv("BOOLEY_CONTAINER", "1")
         tlr._enforce_runtime_location(command)  # container: must not raise
 
@@ -801,7 +796,7 @@ class TestEffectiveCommand:
         assert tlr._effective_command(self._parse([])) is None
 
     def test_normalized_sandbox_default_is_chat(self, monkeypatch):
-        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+        place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
         parser = tlr._build_parser()
         args = tlr._normalize_args(parser, parser.parse_args([]))
         assert tlr._effective_command(args) == "chat"
@@ -816,7 +811,8 @@ class TestCmdShell:
     def test_shell_parser_accepts_net_and_command(self):
         parser = tlr._build_parser()
         args = tlr._normalize_args(
-            parser, parser.parse_args(["shell", "--net", "--", "verilator", "-V"])
+            parser,
+            parser.parse_args(["shell", "--net", "--", "verilator", "-V"]),
         )
         assert args.command == "shell"
         assert args.net is True
@@ -846,9 +842,15 @@ class TestCmdShell:
 
         monkeypatch.setattr(cfgmod, "load_agent_settings", _boom)
         sandbox = type("S", (), {"image": "img", "memory": ""})()
-        monkeypatch.setattr(cfgmod, "get_agent_settings", type("C", (), {"sandbox": sandbox}))
         monkeypatch.setattr(
-            sandbox_mod.DockerSandboxConfig, "verify", lambda self: "docker unavailable"
+            cfgmod,
+            "get_agent_settings",
+            type("C", (), {"sandbox": sandbox}),
+        )
+        monkeypatch.setattr(
+            sandbox_mod.DockerSandboxConfig,
+            "verify",
+            lambda self: "docker unavailable",
         )
 
         args = tlr._build_parser().parse_args(["shell"])
@@ -1040,7 +1042,7 @@ class TestCmdFlow:
 
     def test_bare_flow_main_lists_on_stdout(self, tmp_path, monkeypatch, capsys):
         args = self._args(["flow"])
-        monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+        place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
         monkeypatch.setattr(tlr, "_parse_cli", lambda: args)
         monkeypatch.setattr(tlr, "find_project_root", lambda: tmp_path)
         monkeypatch.setattr(tlr, "_reject_source_project_command", lambda *_args: None)
@@ -1299,7 +1301,10 @@ def test_source_project_binding_independent_dispatch(tmp_path, monkeypatch, argv
         assert authority.load_state().installations == {}
 
 
-@pytest.mark.parametrize("argv", [["cheat"], ["cheat", "--list"]])
+@pytest.mark.parametrize(
+    "argv",
+    [["cheat"], ["cheat", "--list"]],
+)
 def test_project_binding_independent_never_discovers(tmp_path, monkeypatch, argv):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     monkeypatch.chdir(tmp_path)
@@ -1319,7 +1324,7 @@ def test_source_project_binding_required_dispatch(tmp_path, monkeypatch, argv):
     (tmp_path / "pyproject.toml").write_text("[tool.booley]\nsource_checkout = true\n")
     (tmp_path / ".git").mkdir()
     (tmp_path / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
-    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("RTL_PROJECT_ROOT", raising=False)
     monkeypatch.setattr(sys, "argv", ["booley", *argv])
@@ -1485,7 +1490,7 @@ def test_host_commands_use_persistent_venv_identity(tmp_path, monkeypatch, comma
         "f" * 64,
     )
     # `init` is dual: its installation check applies on the host only.
-    monkeypatch.setattr(tlr.runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(host_install.sys, "prefix", "/home/user/venv")
     monkeypatch.setattr(host_install.sys, "base_prefix", "/usr")
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
@@ -1635,7 +1640,8 @@ def test_refresh_cli_reports_verified_container_outcome(
 
 
 @pytest.mark.parametrize(
-    "configuration", ['[agent]\nauth="invalid"\n', '[agent]\nprovider="unknown"\n', "[agent\n"]
+    "configuration",
+    ['[agent]\nauth="invalid"\n', '[agent]\nprovider="unknown"\n', "[agent\n"],
 )
 def test_auth_status_cli_refuses_corrupt_owned_project(
     tmp_path, monkeypatch, capsys, configuration

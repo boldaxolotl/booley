@@ -9,9 +9,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from booley.core.atomic_files import atomic_replace_bytes
 from booley.core.boundary import require_dict, require_int, require_str_value
 from booley.core.file_lock import acquire_file_lock, release_file_lock, wait_for_file_lock
-from booley.runtime.atomic_files import atomic_replace_bytes
 from booley.runtime.filesystem_utils import open_with_sharing_retry
 from booley.runtime.job_records import STATUS_RUNNING, JobRecord, parse_stamp
 from booley.runtime.mount_history import MountHistoryError, former_spellings, translate_stored_path
@@ -37,6 +37,8 @@ JOB_TYPES = {
     "lint_rtl": "LINT",
     "fpga": "FPGA",
     "fpga_impl": "FPGA",
+    "measure": "MEAS",
+    "mutation": "MUT",
 }
 
 
@@ -85,7 +87,12 @@ class HandleMap:
         return by_alias | {k: session_title(v, names.get(k)) for k, v in entries.items()}
 
     def reserve(
-        self, key: str, prefix: str, *, predecessors: tuple[str, ...] = (), name: str | None = None
+        self,
+        key: str,
+        prefix: str,
+        *,
+        predecessors: tuple[str, ...] = (),
+        name: str | None = None,
     ) -> str:
         """Reserve *key*'s handle; *name* replaces the stored label, ``None`` keeps it."""
         require_str_value(key, field="handle key")

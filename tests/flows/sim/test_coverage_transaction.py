@@ -18,8 +18,13 @@ from booley.flows.sim.coverage_invocation import (
 )
 from booley.flows.sim.coverage_json import coverage_mapping_document, freeze_coverage_mapping
 from booley.flows.sim.coverage_policy import CoverageCriterion, CoverageThreshold, coverage_metrics
-from booley.flows.sim.coverage_record import NO_DECLARED_INPUTS_FINGERPRINT, DurableTargetIdentity
-from booley.flows.sim.coverage_record_store import load_coverage_record
+from booley.flows.sim.coverage_record import (
+    NO_DECLARED_INPUTS_FINGERPRINT,
+    DurableTargetIdentity,
+)
+from booley.flows.sim.coverage_record_store import (
+    load_coverage_record,
+)
 from booley.flows.sim.coverage_source_gaps import GAP_CODE
 from booley.flows.sim.coverage_transaction import CoverageTargetOutcome, run_coverage_target
 from booley.flows.sim.coverage_waivers import CoverageWaiverConfig, load_approved_waiver_set
@@ -31,6 +36,7 @@ from booley.flows.sim.verilator_coverage import (
     SimulationRunResult,
 )
 from booley.flows.sim.verilator_coverage_execution import VerilatorCoverageExecution
+from tests.flows.sim.fault_point_support import inject_faults
 from tests.flows.sim.test_coverage_invocation import project
 
 
@@ -276,7 +282,8 @@ def _invalid_hook_plan(tmp_path: Path, failure: str, gated: bool):
         custom_main_hooks=("write_hook",) if custom_main else (),
     )
     return replace(
-        plan, collection_request=replace(request, target=target, reset_included=custom_main)
+        plan,
+        collection_request=replace(request, target=target, reset_included=custom_main),
     )
 
 
@@ -585,7 +592,8 @@ def test_merge_failure_keeps_simulation_truth_when_later_publication_fails(tmp_p
         if boundary == "after:coverage_record":
             raise OSError("injected post-merge publication failure")
 
-    outcome = run_target(plan, MergeUnavailable(), publication_checkpoint=checkpoint)
+    with inject_faults(checkpoint):
+        outcome = run_target(plan, MergeUnavailable())
 
     assert outcome.exit_code == 2
     assert outcome.detail["passed"] is True
@@ -641,7 +649,10 @@ def test_target_transaction_never_resumes_existing_native_state(tmp_path):
 
 def persistence_fault(boundary):
     original_replace, original_link = Path.replace, os.link
-    filenames = {"point_store": "coverage-points.jsonl.gz", "coverage_record": "coverage.json"}
+    filenames = {
+        "point_store": "coverage-points.jsonl.gz",
+        "coverage_record": "coverage.json",
+    }
 
     def replace_file(source, destination):
         if Path(destination).name == filenames.get(boundary):
@@ -715,7 +726,11 @@ def test_direct_publication_preserves_source_gaps(tmp_path):
         outcome.exit_code,
         loaded.coverage_record.evaluation,
         loaded.coverage_record.rollups,
-    ) == (baseline.exit_code, other.evaluation, other.rollups)
+    ) == (
+        baseline.exit_code,
+        other.evaluation,
+        other.rollups,
+    )
     assert loaded.coverage_record.evaluation["status"] == "pass"
     assert [r.simulation_verdict for r in loaded.coverage_record.runs] == [
         r.simulation_verdict for r in other.runs
@@ -778,7 +793,8 @@ def test_direct_coverage_outcome_includes_metrics(tmp_path):
             if boundary == "after:coverage_record":
                 raise OSError("publication interrupted")
 
-        retained = run_target(retained_plan, NativeExecution(), publication_checkpoint=checkpoint)
+        with inject_faults(checkpoint):
+            retained = run_target(retained_plan, NativeExecution())
         assert retained.exit_code == 2 and retained.detail["coverage_metrics"] == expected
 
     coverage_record = load_coverage_record(outcome.coverage_record_path).coverage_record

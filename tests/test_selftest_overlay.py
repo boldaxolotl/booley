@@ -194,7 +194,9 @@ def test_stage_bad_run_overlay_excludes_booley_dir_from_mirror(
 
 
 @_SYMLINKS
-def test_stage_bad_run_overlay_excludes_configured_booley_dir_from_mirror(tmp_path: Path) -> None:
+def test_stage_bad_run_overlay_excludes_configured_booley_dir_from_mirror(
+    tmp_path: Path,
+) -> None:
     booley_dir = tmp_path / "project-control" / "data"
     _write_overlay(booley_dir)
     shadow = tmp_path / "build" / selftest_overlay.BAD_RUN_CWD_DIR

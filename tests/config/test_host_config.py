@@ -242,7 +242,10 @@ def test_egress_edit_changes_only_the_egress_value(tmp_path: Path) -> None:
         (b"\xff\xfe", "cannot read file"),
         (b"sandbox = 1\n", "must be a TOML table"),
         (b"[sandbox]\nmax_sessions = 0\n", "must be positive"),
-        (b'[sandbox]\negress_allowlist = ["example.com"]\n', "unproxied cannot be combined"),
+        (
+            b'[sandbox]\negress_allowlist = ["example.com"]\n',
+            "unproxied cannot be combined",
+        ),
         (
             b"[interactive]\nmax_sessions = -1\n",
             r"legacy \[interactive\], rename it to \[sandbox\] first",

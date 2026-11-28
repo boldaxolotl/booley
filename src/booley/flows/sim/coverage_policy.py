@@ -90,7 +90,6 @@ def coverage_threshold(metric: str, stored: int | float) -> CoverageThreshold:
 
 
 def _criterion_fingerprint(
-    coverage_record: CoverageRecord,
     criterion: CoverageCriterion,
     required_tests: tuple[str, ...],
     waivers: ApprovedWaiverSet,
@@ -213,9 +212,7 @@ def _blocked_coverage_record(
     ordered = sorted(criterion.thresholds, key=lambda item: _METRIC_ORDER.index(item.metric))
     evaluation = {
         "status": "blocked",
-        "criterion_fingerprint": _criterion_fingerprint(
-            coverage_record, criterion, required_tests, waivers
-        ),
+        "criterion_fingerprint": _criterion_fingerprint(criterion, required_tests, waivers),
         "approved_waiver_set_digest": waivers.digest,
         "suite": {
             "status": "mismatch"
@@ -232,7 +229,9 @@ def _blocked_coverage_record(
 
 
 def _target_suite_diagnostics(
-    coverage_record: CoverageRecord, criterion: CoverageCriterion, required_tests: tuple[str, ...]
+    coverage_record: CoverageRecord,
+    criterion: CoverageCriterion,
+    required_tests: tuple[str, ...],
 ) -> list[dict[str, str]]:
     diagnostics: list[dict[str, str]] = []
     if str(criterion.target) != coverage_record.target.identity:
@@ -255,7 +254,9 @@ def _target_suite_diagnostics(
 
 
 def _evidence_diagnostics(
-    coverage_record: CoverageRecord, criterion: CoverageCriterion, required_tests: tuple[str, ...]
+    coverage_record: CoverageRecord,
+    criterion: CoverageCriterion,
+    required_tests: tuple[str, ...],
 ) -> list[dict[str, str]]:
     diagnostics = _target_suite_diagnostics(coverage_record, criterion, required_tests)
     if coverage_record.collection.get("status") != "complete":
@@ -320,7 +321,7 @@ def _scored_coverage_record(
     evaluation = {
         "status": score.status,
         "criterion_fingerprint": _criterion_fingerprint(
-            coverage_record, criterion, required_tests, approved_waivers
+            criterion, required_tests, approved_waivers
         ),
         "approved_waiver_set_digest": approved_waivers.digest,
         "suite": {
@@ -380,7 +381,11 @@ def evaluate_coverage_record(
         )
     if diagnostics:
         return _blocked_coverage_record(
-            coverage_record, criterion, approved_waivers, required_tests, diagnostics
+            coverage_record,
+            criterion,
+            approved_waivers,
+            required_tests,
+            diagnostics,
         )
     return _scored_coverage_record(
         coverage_record, criterion, approved_waivers, required_tests, score

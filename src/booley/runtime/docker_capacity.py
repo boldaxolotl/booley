@@ -14,7 +14,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from booley.core.boundary import BoundaryError, require_dict, require_list, require_str_value
+from booley.core import docker_cli
+from booley.core.boundary import (
+    BoundaryError,
+    require_dict,
+    require_list,
+    require_str_value,
+)
 from booley.runtime.platform_paths import run_captured_bounded
 
 GIB = 2**30
@@ -101,10 +107,12 @@ def _is_docker_build(command: Sequence[str]) -> bool:
     return command[1] == "build" or list(command[1:3]) == ["buildx", "build"]
 
 
-def _run_docker_probe(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+def _run_docker_probe(
+    command: Sequence[str], timeout: int = 15
+) -> subprocess.CompletedProcess[str]:
     """Run one bounded Docker inspection command or fail the preflight."""
     try:
-        return run_captured_bounded(list(command), timeout=15)
+        return run_captured_bounded(list(command), timeout=timeout)
     except (FileNotFoundError, OSError, subprocess.SubprocessError) as exc:
         raise DockerCapacityError(
             f"could not run Docker capacity probe {' '.join(command[1:])}: {exc}"
@@ -112,7 +120,7 @@ def _run_docker_probe(command: Sequence[str]) -> subprocess.CompletedProcess[str
 
 
 def _probe_detail(result: subprocess.CompletedProcess[str]) -> str:
-    return (result.stderr or result.stdout).strip() or f"Docker exited {result.returncode}"
+    return docker_cli.failure_detail(result, f"Docker exited {result.returncode}")
 
 
 def _docker_storage(docker: str) -> Path:
@@ -127,24 +135,19 @@ def _docker_storage(docker: str) -> Path:
 
 
 def _image_label(docker: str, image: str, label: str) -> str | None:
-    result = _run_docker_probe(
-        [
-            docker,
-            "image",
-            "inspect",
-            image,
-            "--format",
-            f'{{{{ index .Config.Labels "{label}" }}}}',
-        ]
-    )
-    if result.returncode == 0:
-        return result.stdout.strip() or None
-    detail = _probe_detail(result).lower()
-    if "no such image" in detail or "not found" in detail:
-        return None
-    raise DockerCapacityError(
-        f"could not inspect cache evidence Docker image {image}: {_probe_detail(result)}"
-    )
+    def run(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        return _run_docker_probe([docker, *args], timeout)
+
+    failed = f"could not inspect cache evidence Docker image {image}"
+    try:
+        return docker_cli.inspect_label(run, "image", image, label, timeout=15)
+    except docker_cli.InspectError as exc:
+        if exc.result is None:
+            raise DockerCapacityError(f"{failed}: {exc}: {exc.__cause__}") from exc
+        detail = _probe_detail(exc.result)
+        if "no such image" in detail.lower() or "not found" in detail.lower():
+            return None
+        raise DockerCapacityError(f"{failed}: {detail}") from exc
 
 
 def _has_warm_evidence(docker: str, request: DockerBuildRequest, cache: _BuildCache) -> bool:
@@ -277,7 +280,11 @@ def _request_from_document(entry: object) -> DockerBuildRequest:
     managed_image = require_str_value(document.get("managed_image"), field="managed_image")
     output_tag = require_str_value(document.get("output_tag"), field="output_tag")
     estimate_class = require_str_value(document.get("estimate_class"), field="estimate_class")
-    return DockerBuildRequest(managed_image, output_tag, BuildEstimateClass(estimate_class))
+    return DockerBuildRequest(
+        managed_image,
+        output_tag,
+        BuildEstimateClass(estimate_class),
+    )
 
 
 def _plan_from_file(path: Path, current_index: int) -> tuple[DockerBuildRequest, DockerBuildPlan]:
@@ -314,7 +321,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             if current.output_tag != args.image:
                 raise DockerCapacityError("current plan output tag does not match --image")
         ensure_docker_build_capacity(
-            command, image=args.image, current_request=current, remaining_plan=plan
+            command,
+            image=args.image,
+            current_request=current,
+            remaining_plan=plan,
         )
     except DockerCapacityError as exc:
         print(f"Docker image-build preflight failed: {exc}", file=sys.stderr)

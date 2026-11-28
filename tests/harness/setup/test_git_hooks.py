@@ -38,13 +38,26 @@ from booley.harness.setup.line_endings import (
     reconcile_project_line_endings,
     sample_worktree_cleanliness,
 )
-from booley.harness.setup.line_endings import LineEndingActionKind as ActionKind
-from booley.harness.setup.line_endings import LineEndingActionResult as ActionResult
-from booley.harness.setup.line_endings import LineEndingActionState as ActionState
-from booley.harness.setup.line_endings import LineEndingObservation as Observation
-from booley.harness.setup.line_endings import LineEndingObservationCode as ObservationCode
+from booley.harness.setup.line_endings import (
+    LineEndingActionKind as ActionKind,
+)
+from booley.harness.setup.line_endings import (
+    LineEndingActionResult as ActionResult,
+)
+from booley.harness.setup.line_endings import (
+    LineEndingActionState as ActionState,
+)
+from booley.harness.setup.line_endings import (
+    LineEndingObservation as Observation,
+)
+from booley.harness.setup.line_endings import (
+    LineEndingObservationCode as ObservationCode,
+)
 from booley.harness.setup.plan import InitPlan
-from booley.harness.setup.project_git_hook_bundle import BUNDLE_NAME, build_project_git_hook_bundle
+from booley.harness.setup.project_git_hook_bundle import (
+    BUNDLE_NAME,
+    build_project_git_hook_bundle,
+)
 from booley.harness.setup.project_git_hook_reconcile import step_project_git_hooks
 from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache, resolve_booley_dir
 from booley.runtime.sandbox_apply import shell_command
@@ -68,7 +81,11 @@ def _ctx(root: Path, *, check_only: bool = False, fix_line_endings: bool = False
     )
 
 
-def _run_git(root: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
+def _run_git(
+    root: Path,
+    *args: str,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
     """Run one bounded Git command for integration tests."""
     return run_bounded_child(["git", "-C", str(root), *args], check=check)
 
@@ -119,7 +136,8 @@ def _initialize(
 
 
 @pytest.mark.parametrize(
-    ("before", "status"), [(None, "ok"), ("3.months.ago", "ok"), (WORKTREE_PRUNE_VALUE, "current")]
+    ("before", "status"),
+    [(None, "ok"), ("3.months.ago", "ok"), (WORKTREE_PRUNE_VALUE, "current")],
 )
 def test_prune_guard_disables_pruning_in_both_repositories(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, before: str | None, status: str
@@ -1904,7 +1922,7 @@ def test_paired_hooks_use_main_bundle_without_local_copy(tmp_path, monkeypatch, 
     _tracking_git(repo, "add", "change.v")
     head = _tracking_git(repo, "rev-parse", "HEAD")
     rejected = run_bounded_child(
-        ["git", "-C", str(repo), "commit", "-qm", "fix(core): primaryphrase pairedphrase"]
+        ["git", "-C", str(repo), "commit", "-qm", "fix(core): primaryphrase pairedphrase"],
     )
     # Each checkout's own policy rejects its own phrase and names only that one.
     present, absent = (

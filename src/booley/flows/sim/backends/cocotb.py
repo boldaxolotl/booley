@@ -235,7 +235,10 @@ def _extra_test_diagnostics(extras: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _apply_design_evidence(
-    tests: tuple[AdapterTestResult, ...], sva_errors: int, failure_kind: str, detail: str
+    tests: tuple[AdapterTestResult, ...],
+    sva_errors: int,
+    failure_kind: str,
+    detail: str,
 ) -> tuple[AdapterTestResult, ...]:
     if sva_errors:
         reason = describe_error_message_count(sva_errors)
@@ -270,7 +273,10 @@ def _apply_trace_evidence(
 
 
 def _cocotb_failure_kind(
-    timed_out: bool, functional_failed: bool, trace_failed: bool, inconclusive: bool
+    timed_out: bool,
+    functional_failed: bool,
+    trace_failed: bool,
+    inconclusive: bool,
 ) -> AdapterFailureKind:
     if timed_out:
         return "timeout"
@@ -282,7 +288,8 @@ def _cocotb_failure_kind(
 
 
 def _adapter_test_results(
-    results: CocotbResults | None, names: tuple[str, ...]
+    results: CocotbResults | None,
+    names: tuple[str, ...],
 ) -> tuple[AdapterTestResult, ...]:
     """Normalize Cocotb's result line into the shared per-test transport."""
     if results is None:
@@ -321,7 +328,9 @@ COCOTB_CONFIG_MISSING_MSG = (
 
 
 def _partial_result_publisher(
-    identity: AdapterTransportIdentity | None, selected: list[str], results_file: Path
+    identity: AdapterTransportIdentity | None,
+    selected: list[str],
+    results_file: Path,
 ) -> Callable[[str], None] | None:
     """Publish authenticated Cocotb progress while terminal cleanup is pending."""
     if identity is None:
@@ -335,7 +344,11 @@ def _partial_result_publisher(
         if line and "cocotb.regression" not in line:
             return
         output = "".join(lines)
-        recovered = recover_timeout_progress(output, selected, parse_results_xml(results_file))
+        recovered = recover_timeout_progress(
+            output,
+            selected,
+            parse_results_xml(results_file),
+        )
         names = tuple(selected) or tuple(test.name for test in recovered.tests)
         tests = _adapter_test_results(recovered, names)
         write_adapter_result(
@@ -352,7 +365,10 @@ def _partial_result_publisher(
                     test
                     if test.verdict in {"pass", "fail"}
                     else replace(
-                        test, verdict="timeout", termination="timeout", failure_kind="timeout"
+                        test,
+                        verdict="timeout",
+                        termination="timeout",
+                        failure_kind="timeout",
                     )
                     for test in tests
                 ),
@@ -390,7 +406,12 @@ def _cocotb_config(arg_sets: list[list[str]]) -> list[str]:
     """
     outputs: list[str] = []
     for args in arg_sets:
-        proc = subprocess.run(["cocotb-config", *args], capture_output=True, text=True, check=True)
+        proc = subprocess.run(
+            ["cocotb-config", *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
         outputs.append(proc.stdout.strip())
     return outputs
 
@@ -472,7 +493,11 @@ def _gpi_users(libpython: str, existing: str) -> str:
 
 
 def _build_cocotb_env(
-    build_dir: Path, module: str, tests: list[str], results_file: Path, seed: int | None = None
+    build_dir: Path,
+    module: str,
+    tests: list[str],
+    results_file: Path,
+    seed: int | None = None,
 ) -> dict[str, str]:
     """The cocotb run environment (decision 9's run-stage glue).
 
@@ -510,7 +535,11 @@ def _build_cocotb_env(
 
 
 def _build_run_cmd(
-    *, eda_tool: str, build_dir: Path, plusargs: list[str], vcd: bool
+    *,
+    eda_tool: str,
+    build_dir: Path,
+    plusargs: list[str],
+    vcd: bool,
 ) -> list[str] | None:
     """Assemble the sim invocation for one cocotb run; None when unbuilt.
 
@@ -526,7 +555,15 @@ def _build_run_cmd(
             return None
         (libpath,) = _cocotb_config([["--lib-name-path", "vpi", "icarus"]])
         vvp_bin = shutil.which("vvp") or "vvp"
-        cmd = [vvp_bin, "-n", f"-M{build_dir}", "-m", libpath, str(build_dir / image), *plus]
+        cmd = [
+            vvp_bin,
+            "-n",
+            f"-M{build_dir}",
+            "-m",
+            libpath,
+            str(build_dir / image),
+            *plus,
+        ]
         if vcd and not any(p.lstrip("+") == "trace" for p in plus):
             cmd.append("+trace")
         return cmd
@@ -572,7 +609,10 @@ class _CocotbRun:
 
 
 def _persist_result_transport(
-    results: CocotbResults, work_dir: Path, selected: list[str], focused: bool
+    results: CocotbResults,
+    work_dir: Path,
+    selected: list[str],
+    focused: bool,
 ) -> tuple[str, CocotbResults | None, int]:
     """Write lossless JSON; return the stdout line, what it carries, and the unselected skip count.
 
@@ -582,7 +622,8 @@ def _persist_result_transport(
     """
     full = results_payload(results)
     (work_dir / FULL_RESULTS_JSON_NAME).write_text(
-        json.dumps(full, indent=2) + "\n", encoding="utf-8"
+        json.dumps(full, indent=2) + "\n",
+        encoding="utf-8",
     )
     try:
         transported = decode_results_payload(full)
@@ -600,7 +641,11 @@ def _selected_verdicts(tests: list[str], results) -> tuple[bool, list[str], list
 
 
 def _load_cocotb_results(
-    results_file: Path, output: str, timed_out: bool, tests: list[str], skip_log: str = ""
+    results_file: Path,
+    output: str,
+    timed_out: bool,
+    tests: list[str],
+    skip_log: str = "",
 ) -> CocotbResults:
     """Load current results and replace generic missing-file diagnostics.
 
@@ -714,7 +759,10 @@ def _evaluate_verdict(
         results, output, returncode, termination, tests, infrastructure_error
     )
     results_line, transported, skipped_unselected = _persist_result_transport(
-        results, work_dir, list(assessment.selected), focused
+        results,
+        work_dir,
+        list(assessment.selected),
+        focused,
     )
     output = _persist_cocotb_verdict(
         output,
@@ -793,7 +841,12 @@ def _prepare_invocation(
     """
     try:
         env = _build_cocotb_env(build_dir, cocotb_module, tests, results_file, seed)
-        cmd = _build_run_cmd(eda_tool=eda_tool, build_dir=build_dir, plusargs=plusargs, vcd=vcd)
+        cmd = _build_run_cmd(
+            eda_tool=eda_tool,
+            build_dir=build_dir,
+            plusargs=plusargs,
+            vcd=vcd,
+        )
     except FileNotFoundError:
         return _reported_infra_failure(work_dir, COCOTB_CONFIG_MISSING_MSG)
     except subprocess.CalledProcessError as exc:
@@ -1066,7 +1119,12 @@ def run_cocotb_sim(
         return 1
     _print_run_banner(run.env, run.command, run.run_cwd, cocotb_module, eda_tool, tests)
     lines, proc, termination = _execute_cocotb_run(
-        run, timeout, max_rundir_bytes, sim_time_grace_s, transport, runtime_inputs
+        run,
+        timeout,
+        max_rundir_bytes,
+        sim_time_grace_s,
+        transport,
+        runtime_inputs,
     )
     return _complete_cocotb_run(run, lines, proc, termination, transport, trace_convert_timeout)
 

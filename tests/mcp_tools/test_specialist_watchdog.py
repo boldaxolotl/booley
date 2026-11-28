@@ -115,7 +115,9 @@ def test_thread_stops_with_the_context(monkeypatch):
     before = {t.name for t in threading.enumerate()}
     with parent_death_watchdog("reviewer", interval=0.01):
         assert any(t.name == "parent-watchdog-reviewer" for t in threading.enumerate())
-    assert _wait_for(lambda: {t.name for t in threading.enumerate()} <= before | {"MainThread"})
+    assert _wait_for(
+        lambda: {t.name for t in threading.enumerate()} <= before | {"MainThread"},
+    )
 
 
 def test_is_the_shared_reaper_walk_not_a_second_copy():

@@ -88,14 +88,14 @@ _MANUAL_PINS: dict[str, tuple[str, frozenset[str], frozenset[str]]] = {
             }
         ),
         frozenset({"docker.io/openroad/ubuntu26.04", "docker.io/openroad/ubuntu26.04-dev"}),
-    )
+    ),
 }
 
 # Build inputs with a default that name no upstream dependency.
 _NOT_PINS = {
     ("Dockerfile.project-data-layout", "BOOLEY_LAYOUT_USER"): (
         "build input: src/booley/harness/image_lifecycle.py always passes it as a build argument"
-    )
+    ),
 }
 
 
@@ -205,8 +205,14 @@ _FIXTURES = {
         "# renovate: datasource=github-tags\nARG TOOL_VERSION=1.2.3\n",
         "ARG TOOL_VERSION malformed '# renovate:' annotation",
     ),
-    "exemption-in-other-file": ("ARG OPENROAD_VERSION=1\n", "ARG OPENROAD_VERSION has no"),
-    "arg-on-first-line": ("ARG TOOL_VERSION=1.2.3\n", "1: ARG TOOL_VERSION has no"),
+    "exemption-in-other-file": (
+        "ARG OPENROAD_VERSION=1\n",
+        "ARG OPENROAD_VERSION has no",
+    ),
+    "arg-on-first-line": (
+        "ARG TOOL_VERSION=1.2.3\n",
+        "1: ARG TOOL_VERSION has no",
+    ),
 }
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synchronize, validate, extract, and cut Booley's canonical release notes."""
+"""Validate, extract, and cut Booley's canonical release notes."""
 
 from __future__ import annotations
 
@@ -24,7 +24,6 @@ from booley.runtime.changelog import (
 from booley.runtime.timefmt import format_human_date
 
 DEFAULT_ROOT = REPOSITORY_ROOT / "CHANGELOG.md"
-DEFAULT_PACKAGED = REPOSITORY_ROOT / "src" / "booley" / "data" / "refs" / "CHANGELOG.md"
 UNRELEASED_HEADING = "## Unreleased"
 # Any second-level heading; CRLF files keep their "\r" inside the match.
 SECOND_LEVEL_HEADING = re.compile(r"^## .*$", re.MULTILINE)
@@ -56,12 +55,6 @@ _HEADING_LINE = re.compile(r"^\s*(?:[-*+]\s+)?#{1,6}(?:\s|$)")
 _BULLET_LINE = re.compile(r"^[-*+] ")
 # A column-0 setext underline or rule would turn the line above into a heading.
 _SETEXT_UNDERLINE = re.compile(r"^(?:=+|-+)\s*$")
-
-
-def synchronize(root: Path = DEFAULT_ROOT, packaged: Path = DEFAULT_PACKAGED) -> None:
-    """Make the packaged mirror byte-identical to the canonical changelog."""
-    packaged.parent.mkdir(parents=True, exist_ok=True)
-    packaged.write_bytes(root.read_bytes())
 
 
 def _require_unreleased_first(text: str) -> None:
@@ -171,7 +164,9 @@ def _fragment_lines(path: Path) -> list[str]:
     return lines
 
 
-def read_fragments(directory: Path = REPOSITORY_ROOT / DEFAULT_FRAGMENTS_NAME) -> list[Fragment]:
+def read_fragments(
+    directory: Path = REPOSITORY_ROOT / DEFAULT_FRAGMENTS_NAME,
+) -> list[Fragment]:
     """Read every fragment, held ones too; one error lists every malformed file."""
     fragments: list[Fragment] = []
     problems: list[str] = []
@@ -256,7 +251,6 @@ def _insert_entry(text: str, entry: str) -> str:
 
 def cut(
     root: Path = DEFAULT_ROOT,
-    packaged: Path = DEFAULT_PACKAGED,
     fragments: Path | None = None,
     *,
     target: str,
@@ -280,30 +274,28 @@ def cut(
     parse_releases(updated)  # rejects a second entry for the same version
     _replace_file(root, updated.encode("utf-8"))
     try:
-        _replace_file(packaged, updated.encode("utf-8"))
         for fragment in selected:
             fragment.path.unlink()
     except OSError as exc:
         raise ChangelogError(
-            f"{exc}; {root} was already updated: restore it, the mirror and "
-            "the fragments (git checkout -- <both files> changelog.d) before cutting again, "
+            f"{exc}; {root} was already updated: restore it and the fragments "
+            f"(git checkout -- {root.name} changelog.d) before cutting again, "
             "or the entry would be written twice"
         ) from exc
     return [fragment.path for fragment in selected]
 
 
 def _validate_contract(
-    root: Path, packaged: Path, *, target: str | None = None, notes_file: Path | None = None
+    root: Path,
+    *,
+    target: str | None = None,
+    notes_file: Path | None = None,
 ) -> None:
-    """Validate mirror equality, Unreleased heading, ordering, VERSION bound, target, and notes.
+    """Validate the Unreleased heading, ordering, VERSION bound, target, and notes.
 
     ``VERSION`` is read from the directory holding ``root``.
     """
-    root_bytes = root.read_bytes()
-    packaged_bytes = packaged.read_bytes()
-    if root_bytes != packaged_bytes:
-        raise ChangelogError(f"packaged changelog {packaged} differs from {root}")
-    text = root_bytes.decode("utf-8")
+    text = root.read_bytes().decode("utf-8")
     _require_unreleased_first(text)
     releases = parse_releases(text)
     version = parse_stable_version((root.parent / "VERSION").read_text(encoding="utf-8").strip())
@@ -324,14 +316,13 @@ def _validate_contract(
 
 def validate(
     root: Path = DEFAULT_ROOT,
-    packaged: Path = DEFAULT_PACKAGED,
     *,
     target: str | None = None,
     notes_file: Path | None = None,
     fragments: Path | None = None,
 ) -> None:
     """Validate the changelog contract; with ``target``, also require no fragment ``cut`` would use."""
-    _validate_contract(root, packaged, target=target, notes_file=notes_file)
+    _validate_contract(root, target=target, notes_file=notes_file)
     if target is None:
         return
     directory = fragments if fragments is not None else root.parent / DEFAULT_FRAGMENTS_NAME
@@ -352,7 +343,6 @@ def validate(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
-    parser.add_argument("--packaged", type=Path, default=DEFAULT_PACKAGED)
     parser.add_argument(
         "--fragments", type=Path, help="fragment directory (default: changelog.d next to --root)"
     )
@@ -367,7 +357,6 @@ def _parser() -> argparse.ArgumentParser:
     )
     cut_parser.add_argument("--target", required=True)
     cut_parser.add_argument("--date", type=date.fromisoformat, help="release date, YYYY-MM-DD")
-    commands.add_parser("sync", help="copy the canonical changelog to the package mirror")
     validate_parser = commands.add_parser("validate", help="validate the changelog contract")
     validate_parser.add_argument("--target")
     validate_parser.add_argument("--notes-file", type=Path)
@@ -378,7 +367,7 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _run_cut(args: argparse.Namespace) -> int:
-    used = cut(args.root, args.packaged, args.fragments, target=args.target, released=args.date)
+    used = cut(args.root, args.fragments, target=args.target, released=args.date)
     for path in used:
         print(f"cut {path}")
     if not used:
@@ -390,12 +379,9 @@ def _run_cut(args: argparse.Namespace) -> int:
 def main() -> int:
     args = _parser().parse_args()
     try:
-        if args.command == "sync":
-            synchronize(args.root, args.packaged)
-        elif args.command == "validate":
+        if args.command == "validate":
             validate(
                 args.root,
-                args.packaged,
                 target=args.target,
                 notes_file=args.notes_file,
                 fragments=args.fragments,
@@ -404,7 +390,7 @@ def main() -> int:
             return _run_cut(args)
         else:
             # A published release's notes stay readable while new fragments are pending.
-            _validate_contract(args.root, args.packaged)
+            _validate_contract(args.root)
             body = release_entry(args.root.read_bytes().decode("utf-8"), args.target).body
             if args.output is None:
                 sys.stdout.write(body)

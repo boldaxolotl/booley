@@ -17,7 +17,9 @@ from booley.harness import chat_cmd, codex_chat
 from booley.runtime import handles as handles_module
 from booley.runtime.handles import HandleStore
 from booley.runtime.pid import ProcessIdentity
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.session_activity import process_session_key
+from tests.sandbox_venue_fake import place
 
 
 class _ExecCalledError(Exception):
@@ -178,7 +180,9 @@ def test_run_reports_missing_configured_cli(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(chat_cmd, "load_agent_settings", lambda _root, *, booley_dir: None)
     monkeypatch.setattr(chat_cmd, "get_agent_settings", lambda: config)
     monkeypatch.setattr(
-        chat_cmd.os, "execvp", lambda *_args: (_ for _ in ()).throw(FileNotFoundError)
+        chat_cmd.os,
+        "execvp",
+        lambda *_args: (_ for _ in ()).throw(FileNotFoundError),
     )
 
     assert chat_cmd.run(argparse.Namespace(agent_args=[]), tmp_path) == 2
@@ -214,7 +218,10 @@ def test_run_loads_provider_from_resolved_booley_directory(tmp_path, monkeypatch
     project_root.mkdir()
     booley_dir = tmp_path / "external-project"
     booley_dir.mkdir()
-    (booley_dir / "booley.toml").write_text('[agent]\nprovider = "codex"\n', encoding="utf-8")
+    (booley_dir / "booley.toml").write_text(
+        '[agent]\nprovider = "codex"\n',
+        encoding="utf-8",
+    )
     executed: list[tuple[str, list[str]]] = []
 
     monkeypatch.setattr(chat_cmd, "resolve_checkout_booley_dir", lambda _root: booley_dir)
@@ -432,7 +439,10 @@ def test_codex_launch_paths_append_agent_args(tmp_path, monkeypatch):
     executed = _capture_exec(monkeypatch)
     forwarded = ["resume", "--last"]
     native = ("/native/codex", ["S23", "--no-daemon"])
-    npm = ("/usr/bin/node", ["/usr/bin/node", "/shim.mjs", "S23", "/lib/codex.js", "--no-daemon"])
+    npm = (
+        "/usr/bin/node",
+        ["/usr/bin/node", "/shim.mjs", "S23", "/lib/codex.js", "--no-daemon"],
+    )
     for launch in (native, npm):
         monkeypatch.setattr(
             chat_cmd.codex_chat, "command", lambda _root, launch=launch, **_kw: (*launch, "S23")
@@ -568,7 +578,10 @@ def test_no_cli_flag_launches_default_cli(tmp_path, monkeypatch):
     executed = _capture_exec(monkeypatch)
     monkeypatch.setattr(sys, "argv", ["booley", "chat", "--last"])
 
-    for args in (booley_cli._parse_cli(), argparse.Namespace(agent_args=["--last"])):
+    for args in (
+        booley_cli._parse_cli(),
+        argparse.Namespace(agent_args=["--last"]),
+    ):
         with pytest.raises(_ExecCalledError):
             chat_cmd.run(args, tmp_path)
 
@@ -586,10 +599,9 @@ _GATEWAY_VALUES = {
 
 
 def _gateway_sandbox(monkeypatch, *, record):
-    """A container process with the gateway settings set; *record* is ``BOOLEY_AGENT_CLIS``."""
-    from booley.config import agent as agent_config
+    """A Sandbox process with the gateway settings set; *record* is ``BOOLEY_AGENT_CLIS``."""
 
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     for name, value in _GATEWAY_VALUES.items():
         monkeypatch.setenv(name, value)
     # Register the marker for restoration: the launch writes it straight into os.environ.

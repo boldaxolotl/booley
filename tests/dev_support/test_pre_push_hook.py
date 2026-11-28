@@ -271,7 +271,11 @@ class TestMain:
         assert _push(_commit(repo, "docs: add notes")) == 0
 
     @pytest.mark.parametrize(
-        "relative_path", [".booley_backup/example.md", "docs/.booley/example.md"]
+        "relative_path",
+        [
+            ".booley_backup/example.md",
+            "docs/.booley/example.md",
+        ],
     )
     def test_allows_checkout_project_state_name_lookalikes(self, repo, monkeypatch, relative_path):
         _configure_external_project_state(repo, monkeypatch)

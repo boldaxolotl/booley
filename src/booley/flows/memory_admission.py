@@ -246,7 +246,8 @@ def _read_history_and_budget(
 
 
 def measure_memory_claim(
-    booley_dir: Path | None, requests: Sequence[JobRequest] | None
+    booley_dir: Path | None,
+    requests: Sequence[JobRequest] | None,
 ) -> MemoryAdmissionPlan:
     """Read the Resource History and the Memory Budget, then size the claim."""
     return plan_memory_claim(requests, *_read_history_and_budget(booley_dir))

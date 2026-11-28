@@ -1,4 +1,7 @@
-"""A healthy Doctor host for a Project that lives in a real Git repository."""
+"""A healthy Doctor host for a Project that lives in a real Git repository.
+
+It fakes Doctor's host and Sandbox commands, host inspection and child-process accounting.
+"""
 
 from __future__ import annotations
 
@@ -13,11 +16,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from booley.core.models import AgentCallParams, AgentResult
 from booley.harness import developer_probe, host_diagnostics
-from booley.runtime import agent
 from tests.git_command_fake import REAL_RUN
-from tests.harness.test_doctor import _patch_environment
+from tests.harness.doctor_environment_support import patch_doctor_environment
 
 _VIVADO_STARTUP = re.compile(r"BOOLEY_VIVADO_STARTUP_[0-9a-f]{32}")
 _SANDBOX_MCP_TOOLS = ["synth", "bwave", "coverage_analyst", "lint", "mutation", "reviewer", "sim"]
@@ -26,10 +27,10 @@ _SANDBOX_MCP_TOOLS = ["synth", "bwave", "coverage_analyst", "lint", "mutation", 
 def serve_healthy_doctor_host(monkeypatch: pytest.MonkeyPatch, root: Path) -> list[list[str]]:
     """Answer Doctor's host and Sandbox commands as healthy, but run Git for real.
 
-    ``_patch_environment`` answers Git for a Project with no repository; this Project
+    ``patch_doctor_environment`` answers Git for a Project with no repository; this Project
     has one. Vivado's startup probe gets back the marker it asked the Sandbox to print.
     """
-    calls = _patch_environment(
+    calls = patch_doctor_environment(
         monkeypatch, root, root / ".booley", mcp_tools=[*_SANDBOX_MCP_TOOLS, "fpga"]
     )
     host_run = subprocess.run
@@ -53,7 +54,7 @@ def answer_doctor_commands(
     """Answer Doctor's commands with ``answer(argv, env)``; ``None`` passes one on.
 
     Layers over the fake already installed (``serve_healthy_doctor_host`` or
-    ``_patch_environment``), so a test answers only the commands it is about.
+    ``patch_doctor_environment``), so a test answers only the commands it is about.
     """
     other_commands = subprocess.run
 
@@ -74,29 +75,19 @@ def hide_container_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     inspect_host = host_diagnostics.inspect_host
     monkeypatch.setattr(
-        host_diagnostics, "inspect_host", lambda root: replace(inspect_host(root), docker_exe=None)
+        host_diagnostics,
+        "inspect_host",
+        lambda root: replace(inspect_host(root), docker_exe=None),
     )
     monkeypatch.setattr(shutil, "which", lambda _name: None)
 
 
-def answer_agent_calls(
-    monkeypatch: pytest.MonkeyPatch, answer: Callable[[AgentCallParams], AgentResult]
-) -> list[AgentCallParams]:
-    """Answer each agent call Doctor's probes make with ``answer(params)``.
+def raise_child_peak_rss(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Child-process accounting reads a rising peak, so Doctor's memory probe measures.
 
-    ``answer`` returns an ``AgentResult`` or raises what the backend would raise.
-    Child-process accounting reads a rising peak so the memory probe measures.
-    Returns every call's params.
+    ``resource`` is POSIX-only, so Windows would skip the probe's measurement.
     """
-    calls: list[AgentCallParams] = []
-
-    async def call_agent(params: AgentCallParams) -> AgentResult:
-        calls.append(params)
-        return answer(params)
-
     peak = itertools.count(1024, 1024)
-    monkeypatch.setattr(agent, "call_agent", call_agent)
-    # ``resource`` is POSIX-only, so Windows would skip the probe's measurement.
     monkeypatch.setattr(
         developer_probe,
         "resource",
@@ -104,4 +95,3 @@ def answer_agent_calls(
             RUSAGE_CHILDREN=0, getrusage=lambda _who: SimpleNamespace(ru_maxrss=next(peak))
         ),
     )
-    return calls

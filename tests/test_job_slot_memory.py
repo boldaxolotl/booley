@@ -11,6 +11,7 @@ from typing import Any, cast
 
 import pytest
 
+from booley.core.sharing_retry import read_file_bytes, write_file_text
 from booley.runtime import job_slots
 from booley.runtime.job_slots import (
     HOLDING,
@@ -22,11 +23,11 @@ from booley.runtime.job_slots import (
     TokenState,
 )
 from booley.runtime.timefmt import rfc3339_from_epoch
+from tests.job_slot_steps import held_gate
 from tests.sharing_error_support import hold_opens
 from tests.test_job_slots import (
     PROMOTION_GATE,
     FakeWorld,
-    held_gate,
     interleave,
     is_lease_gate,
     make_store,
@@ -70,7 +71,13 @@ def companion(reservation_mb: float, *, budget_mb: float = BUDGET_MB):
 
 
 def join(
-    store: SlotStore, world: FakeWorld, pid: int, memory, *, role: str = ROLE_INTERACTIVE, job=None
+    store: SlotStore,
+    world: FakeWorld,
+    pid: int,
+    memory,
+    *,
+    role: str = ROLE_INTERACTIVE,
+    job=None,
 ):
     """Start simulated process *pid* and submit its memory claim (with its *job* label)."""
     spawn(world, pid)
@@ -417,7 +424,7 @@ def test_seat_blocked_front_starts_when_the_seat_holder_finishes_so_a_short_clai
 
 def _on_disk_reservation(token) -> float | None:
     """The reservation the token's entry file carries right now."""
-    payload = json.loads(token.path.read_text(encoding="utf-8"))
+    payload = json.loads(read_file_bytes(token.path))
     return payload["memory"]["reservation_mb"]
 
 
@@ -506,7 +513,10 @@ def test_a_requeued_claim_queues_behind_a_long_queue(root, world):
     blocked = [join(store, world, 110 + n, claim(run_alone=True)) for n in range(12)]
     spawn(world, 102)
     requeued = store.submit(
-        job_slots.CLASS_MEMORY, pid=102, memory=claim(run_alone=True), queue_reason=REQUEUE_REASON
+        job_slots.CLASS_MEMORY,
+        pid=102,
+        memory=claim(run_alone=True),
+        queue_reason=REQUEUE_REASON,
     )
     assert store.state_for_pid(102) == TokenState(QUEUED, position=12, reason=REQUEUE_REASON)
     store.release(holder)
@@ -553,9 +563,9 @@ def hold(store: SlotStore, world: FakeWorld, pid: int, memory) -> job_slots.Slot
 
 def start_age(token: job_slots.SlotToken, world: FakeWorld, seconds: float) -> None:
     """Rewrite a holder's promotion stamp to *seconds* before now (the clock stays put)."""
-    payload = json.loads(token.path.read_text(encoding="utf-8"))
+    payload = json.loads(read_file_bytes(token.path))
     payload["promoted_at"] = rfc3339_from_epoch(world.clock - seconds)
-    token.path.write_text(json.dumps(payload), encoding="utf-8")
+    write_file_text(token.path, json.dumps(payload))
 
 
 def test_jumpers_start_in_queue_order(root, world):
@@ -1155,6 +1165,9 @@ def test_a_busy_promotion_gate_leaves_a_takeover_unsubmitted(root, world):
     assert [token.pid for token in store.observe(job_slots.CLASS_MEMORY)[1]] == [102]
     # Once the gate is free the takeover goes through at the holder's place.
     successor = store.acquire(
-        job_slots.CLASS_MEMORY, pid=101, memory=claim(None, run_alone=True), succeeds=flow
+        job_slots.CLASS_MEMORY,
+        pid=101,
+        memory=claim(None, run_alone=True),
+        succeeds=flow,
     )
     assert successor.seq == flow.seq

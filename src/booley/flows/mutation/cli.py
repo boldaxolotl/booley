@@ -31,10 +31,10 @@ class _AccumulateScope(argparse.Action):
 
     def __call__(
         self,
-        parser: argparse.ArgumentParser,
+        parser: argparse.ArgumentParser,  # noqa: ARG002 — argparse.Action.__call__ signature
         namespace: argparse.Namespace,
         values: str | Sequence[str] | None,
-        option_string: str | None = None,
+        option_string: str | None = None,  # noqa: ARG002 — argparse.Action.__call__ signature
     ) -> None:
         previous = getattr(namespace, self.dest, None)
         setattr(namespace, self.dest, values if previous is None else f"{previous},{values}")
@@ -53,7 +53,9 @@ class MutationArguments(BuiltinArguments):
                     "files may be named explicitly",
                 ),
                 HelpOption(
-                    "count", "Default: 10.", "Number of Mutants: a positive integer or 'auto'"
+                    "count",
+                    "Default: 10.",
+                    "Number of Mutants: a positive integer or 'auto'",
                 ),
                 HelpOption(
                     "min_detected",
@@ -73,7 +75,7 @@ class MutationArguments(BuiltinArguments):
     )
 
     @staticmethod
-    def add_args(parser: argparse.ArgumentParser) -> None:
+    def add_args(parser: argparse.ArgumentParser, features: frozenset[str]) -> None:  # noqa: ARG004 — implements BuiltinArguments.add_args
         parser.add_argument(
             "--scope",
             action=_AccumulateScope,

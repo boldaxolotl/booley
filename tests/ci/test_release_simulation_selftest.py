@@ -48,7 +48,10 @@ def test_simulation_selftest_proves_good_and_bad_runtime_views(
         image_digest="sha256:image",
     )
 
-    assert evidence["candidate"] == {"sha": "candidate-sha", "image_digest": "sha256:image"}
+    assert evidence["candidate"] == {
+        "sha": "candidate-sha",
+        "image_digest": "sha256:image",
+    }
     assert evidence["checks"] == [
         {"id": "simulation-selftest.good", "status": "pass"},
         {"id": "simulation-selftest.bad-overlay", "status": "pass"},
@@ -81,7 +84,11 @@ def test_prepare_clone_state_restores_init_owned_local_state(tmp_path: Path) -> 
     project = tmp_path / "project"
     project.mkdir()
     subprocess.run(
-        ["git", "init", "-b", "main"], cwd=project, check=True, capture_output=True, text=True
+        ["git", "init", "-b", "main"],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True,
     )
     (project / ".booley").mkdir()
 

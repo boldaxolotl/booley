@@ -23,7 +23,10 @@ from booley.flows.sim.record import (
 from booley.flows.sim.record.codec import MANIFEST_MAX_BYTES, SimulationRecordIntegrityError
 from booley.flows.sim.record.test_run_files import simulation_record_test_run_files
 from booley.flows.sim.record.test_run_report import evidence_test_run_rows
-from booley.flows.sim.record_reports import simulation_booley_dir, write_compatibility_projection
+from booley.flows.sim.record_reports import (
+    simulation_booley_dir,
+    write_compatibility_projection,
+)
 
 
 class AcceptanceRecordingError(RuntimeError):
@@ -178,7 +181,13 @@ def _coverage_projection_fields(
 
 
 def _artifact_document(
-    path: Path, *, base: Path, kind: str, owner: str, maximum: int, booley_dir: Path | None
+    path: Path,
+    *,
+    base: Path,
+    kind: str,
+    owner: str,
+    maximum: int,
+    booley_dir: Path | None,
 ) -> dict[str, object]:
     reference = build_artifact_reference(
         path,

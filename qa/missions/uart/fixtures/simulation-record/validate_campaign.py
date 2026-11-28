@@ -19,7 +19,9 @@ def _need(condition: bool, message: str) -> None:
 
 
 def validate_runtime_isolation(
-    manifest_path: Path, attempt_paths: list[Path], result_paths: list[Path]
+    manifest_path: Path,
+    attempt_paths: list[Path],
+    result_paths: list[Path],
 ) -> None:
     """Require owned distinct run directories and one shared build binding."""
     manifest = _load(manifest_path)
@@ -59,7 +61,9 @@ def validate_runtime_isolation(
 
 
 def validate_immutable_failure(
-    attempt_path: Path, result_path: Path, environment_path: Path
+    attempt_path: Path,
+    result_path: Path,
+    environment_path: Path,
 ) -> None:
     """Require default immutable mode to refuse build mutation without a pass."""
     attempt = _load(attempt_path)
@@ -72,7 +76,9 @@ def validate_immutable_failure(
 
 
 def validate_legacy_builds(
-    manifest_path: Path, attempt_paths: list[Path], result_paths: list[Path]
+    manifest_path: Path,
+    attempt_paths: list[Path],
+    result_paths: list[Path],
 ) -> None:
     """Require disclosed private per-test builds and forbid shared claims."""
     manifest = _load(manifest_path)
@@ -101,7 +107,10 @@ def validate_legacy_builds(
     _need(len(set(references)) == 2, "legacy tests did not receive distinct private builds")
 
 
-def validate_literal_cwd_serialization(manifest_path: Path, timeline_path: Path) -> None:
+def validate_literal_cwd_serialization(
+    manifest_path: Path,
+    timeline_path: Path,
+) -> None:
     """Require shared literal-CWD attempts to serialize without global serialization."""
     manifest = _load(manifest_path)
     workload = manifest.get("workload")

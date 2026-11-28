@@ -69,7 +69,10 @@ class _LenientCatalog:
             return self._fallback_handle(self.project_root, token)
 
     def select_many(
-        self, target_arg: str | None, *, for_flow: str | None = None
+        self,
+        target_arg: str | None,
+        *,
+        for_flow: str | None = None,
     ) -> tuple[TargetHandle, ...]:
         return tuple(
             self.select(token.strip(), for_flow=for_flow)

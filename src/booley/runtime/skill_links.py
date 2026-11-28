@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
+from booley.config.feature_flags import feature_enabled
 from booley.core.boundary import BoundaryError, require_dict, require_int, require_str
 from booley.runtime.platform_paths import IS_WINDOWS
 
@@ -28,7 +29,14 @@ _BACKUP_PREFIX = ".booley-skill-link-backup-"
 
 SourceKind = Literal["packaged"]
 Outcome = Literal[
-    "created", "adopted", "equivalent", "retargeted", "removed", "unchanged", "conflict", "error"
+    "created",
+    "adopted",
+    "equivalent",
+    "retargeted",
+    "removed",
+    "unchanged",
+    "conflict",
+    "error",
 ]
 
 
@@ -101,6 +109,17 @@ class _Action:
     expected: _Entry
     record_after: _Record | None
     record_on_failure: _Record | None
+
+
+#: Packaged skill name -> the Feature Flag that withholds it (ADR 0095).
+GATED_SKILLS: dict[str, str] = {"booley-reviewed-commit": "reviewed-commits"}
+
+
+def withheld_skills(features: frozenset[str]) -> frozenset[str]:
+    """The gated packaged skills whose Feature Flag *features* leaves off."""
+    return frozenset(
+        name for name, flag in GATED_SKILLS.items() if not feature_enabled(flag, features)
+    )
 
 
 def _name_key(name: str) -> str:
@@ -195,7 +214,11 @@ def _regular_file(path: Path) -> bool:
 
 
 def _discover_source(
-    root: Path, *, manifest_name: str, desired_names: frozenset[str] | None
+    root: Path,
+    *,
+    manifest_name: str,
+    desired_names: frozenset[str] | None,
+    withheld: frozenset[str],
 ) -> tuple[dict[str, _Desired], str | None]:
     try:
         metadata = root.lstat()
@@ -203,7 +226,10 @@ def _discover_source(
             return {}, f"packaged skills path is not a directory: {root}"
         children = sorted(root.iterdir(), key=lambda path: _name_key(path.name))
         return _discover_children(
-            children, manifest_name=manifest_name, desired_names=desired_names
+            children,
+            manifest_name=manifest_name,
+            desired_names=desired_names,
+            withheld=withheld,
         )
     except FileNotFoundError:
         return {}, f"packaged skills directory is missing: {root}"
@@ -212,22 +238,32 @@ def _discover_source(
 
 
 def _discover_children(
-    children: list[Path], *, manifest_name: str, desired_names: frozenset[str] | None
+    children: list[Path],
+    *,
+    manifest_name: str,
+    desired_names: frozenset[str] | None,
+    withheld: frozenset[str],
 ) -> tuple[dict[str, _Desired], str | None]:
     desired: dict[str, _Desired] = {}
     reserved = _name_key(manifest_name)
     allowed = None if desired_names is None else {_name_key(name) for name in desired_names}
+    withheld_keys = {_name_key(name) for name in withheld}
     for child in children:
         if not _regular_directory(child) or not _regular_file(child / "SKILL.md"):
             continue
         if _name_key(child.name) == reserved:
             return {}, f"reserved skill name {child.name!r} in packaged source"
         key = _name_key(child.name)
-        if allowed is not None and key not in allowed:
+        if (allowed is not None and key not in allowed) or key in withheld_keys:
             continue
         if key in desired:
             return {}, f"duplicate skill name {child.name!r} in packaged source"
-        desired[key] = _Desired(child.name, "packaged", child, _normalize_target(child))
+        desired[key] = _Desired(
+            child.name,
+            "packaged",
+            child,
+            _normalize_target(child),
+        )
     return desired, None
 
 
@@ -371,11 +407,19 @@ def _plan_recorded(
 
 
 def _plan_missing_recorded(
-    target_dir: Path, record: _Record, desired: _Desired | None, entry: _Entry
+    target_dir: Path,
+    record: _Record,
+    desired: _Desired | None,
+    entry: _Entry,
 ) -> _Action:
     if desired is None:
         event = _event(
-            record.name, "removed", target_dir, None, entry, "recorded link was already absent"
+            record.name,
+            "removed",
+            target_dir,
+            None,
+            entry,
+            "recorded link was already absent",
         )
         return _Action(event, "none", entry, None, None)
     event = _event(desired.name, "created", target_dir, desired, entry)
@@ -440,9 +484,18 @@ def _plan_actions(
         wanted = desired.get(key)
         record = records.get(key)
         named = record or wanted
-        entry_name, entry = entries.get(key, (named.name if named else key, _Entry("missing")))
+        entry_name, entry = entries.get(
+            key,
+            (named.name if named else key, _Entry("missing")),
+        )
         action = (
-            _plan_recorded(target_dir, record, wanted, entry, allow_retarget=allow_retarget)
+            _plan_recorded(
+                target_dir,
+                record,
+                wanted,
+                entry,
+                allow_retarget=allow_retarget,
+            )
             if record
             else _plan_unrecorded(
                 target_dir,
@@ -487,7 +540,11 @@ def _unique_path(parent: Path, prefix: str) -> Path:
     raise OSError(f"could not allocate temporary skill-link path under {parent}")
 
 
-def _replace_link_windows(link: Path, desired: Path, diagnostics: list[str]) -> None:
+def _replace_link_windows(
+    link: Path,
+    desired: Path,
+    diagnostics: list[str],
+) -> None:
     temporary = _unique_path(link.parent, _TEMP_PREFIX)
     backup = _unique_path(link.parent, _BACKUP_PREFIX)
     _make_link(temporary, desired)
@@ -504,7 +561,10 @@ def _replace_link_windows(link: Path, desired: Path, diagnostics: list[str]) -> 
 
 
 def _restore_windows_link(
-    link: Path, temporary: Path, backup: Path, diagnostics: list[str]
+    link: Path,
+    temporary: Path,
+    backup: Path,
+    diagnostics: list[str],
 ) -> None:
     try:
         if _occupied(link):
@@ -551,7 +611,12 @@ def _apply_action(
             "rerun `booley bootstrap`"
         )
         event = _event(
-            action.event.name, "conflict", action.event.entry_path.parent, None, current, detail
+            action.event.name,
+            "conflict",
+            action.event.entry_path.parent,
+            None,
+            current,
+            detail,
         )
         return event, None
     try:
@@ -621,9 +686,18 @@ def _preflight(
     *,
     manifest_name: str,
     desired_names: frozenset[str] | None,
-) -> tuple[dict[str, _Desired], dict[str, _Record], dict[str, tuple[str, _Entry]], str | None]:
+    withheld: frozenset[str],
+) -> tuple[
+    dict[str, _Desired],
+    dict[str, _Record],
+    dict[str, tuple[str, _Entry]],
+    str | None,
+]:
     packaged, error = _discover_source(
-        packaged_dir, manifest_name=manifest_name, desired_names=desired_names
+        packaged_dir,
+        manifest_name=manifest_name,
+        desired_names=desired_names,
+        withheld=withheld,
     )
     if error:
         return {}, {}, {}, error
@@ -643,15 +717,21 @@ def reconcile_skill_links(
     manifest_name: str = MANIFEST_FILENAME,
     desired_names: frozenset[str] | None = None,
     adopt_unrecorded: bool = True,
+    withheld: frozenset[str] = frozenset(),
 ) -> SkillLinkReport:
     """Converge one agent skills directory while preserving foreign entries.
 
     ``allow_retarget`` is explicit authority to replace a manifest-owned link or
-    a content-equivalent packaged skill link. A fatal report guarantees that no
+    a content-equivalent packaged skill link. A *withheld* name is not desired, so
+    a manifest-owned link to it is removed. A fatal report guarantees that no
     filesystem mutation occurred.
     """
     desired, records, entries, fatal = _preflight(
-        target_dir, packaged_dir, manifest_name=manifest_name, desired_names=desired_names
+        target_dir,
+        packaged_dir,
+        manifest_name=manifest_name,
+        desired_names=desired_names,
+        withheld=withheld,
     )
     if fatal:
         return SkillLinkReport(fatal=fatal)

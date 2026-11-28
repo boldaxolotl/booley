@@ -40,7 +40,11 @@ _POLL_SECONDS = 0.05
 _PF_KTHREAD = 0x00200000
 _RECOVERY_STAGES = tuple(
     (signum, timeout_s)
-    for signal_name, timeout_s in (("SIGINT", 2.0), ("SIGTERM", 2.0), ("SIGKILL", 5.0))
+    for signal_name, timeout_s in (
+        ("SIGINT", 2.0),
+        ("SIGTERM", 2.0),
+        ("SIGKILL", 5.0),
+    )
     if (signum := getattr(signal, signal_name, None)) is not None
 )
 
@@ -159,7 +163,10 @@ def _publish_recovered_terminal(
 
 
 def _recover_windows_execution(
-    execution_id: ExecutionId, record: dict[str, object] | None, *, booley_dir: Path | None
+    execution_id: ExecutionId,
+    record: dict[str, object] | None,
+    *,
+    booley_dir: Path | None,
 ) -> bool:
     leader = ProcessIdentity.from_payload(record.get("leader") if record is not None else None)
     if leader is not None and observe_process(leader).state in {RUNNING, UNKNOWN}:
@@ -226,7 +233,10 @@ def _running_owned_processes(
 
 
 def _wait_for_owned_tree(
-    owner: ProcessIdentity, known: dict[int, ProcessIdentity], signum: int, timeout_s: float
+    owner: ProcessIdentity,
+    known: dict[int, ProcessIdentity],
+    signum: int,
+    timeout_s: float,
 ) -> bool:
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:

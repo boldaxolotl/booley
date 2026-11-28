@@ -269,6 +269,9 @@ made-up output is provisional at best.
   budget in `tests/timeout_headroom.py` and `tests/conftest.py`.
 - **Register tests of Sandbox-only code** in `tests/sandbox_only.py`; see
   [Sandbox-only tests](../../.github/ci/README.md#sandbox-only-tests).
+- **Register OS-specific tests** in `tests/os_specific.py`: modules whose
+  subject depends on OS behavior; see
+  [OS-specific tests](../../.github/ci/README.md#os-specific-tests).
 - **Keep assertions out of `contextlib.suppress`.** CI runs
   `.github/scripts/check_suppressed_assertions.py`; its docstring and messages
   explain each rule.
@@ -292,7 +295,8 @@ To gate a feature:
 
 1. Register it in `FEATURE_FLAGS` in `src/booley/config/feature_flags.py` with
    a name, a one-line summary, and the tracking issue.
-2. Gate a CLI command in `GATED_COMMANDS` and an MCP tool in `GATED_MCP_TOOLS`.
+2. Gate a CLI command in `GATED_COMMANDS`, an MCP tool in `GATED_MCP_TOOLS`,
+   and a packaged skill in `GATED_SKILLS`.
    For any other surface (a CLI option or a configuration key), call
    `feature_enabled(name)` where the surface is built, in the change that first
    gates it.

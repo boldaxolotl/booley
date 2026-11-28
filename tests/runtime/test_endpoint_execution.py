@@ -94,9 +94,16 @@ class _Endpoint:
         if self.fail:
             self.events.append("normalize-error")
             return EndpointOutcome(exit_code=EXIT_ERROR)
-        return EndpointOutcome(exit_code=EXIT_SUCCESS, report_text="ok")
+        return EndpointOutcome(
+            exit_code=EXIT_SUCCESS,
+            report_text="ok",
+        )
 
-    def finish_execution(self, prepared: object, outcome: EndpointOutcome) -> ExecutionResult:
+    def finish_execution(
+        self,
+        prepared: object,
+        outcome: EndpointOutcome,
+    ) -> ExecutionResult:
         assert prepared == "prepared"
         self.events.append(f"finish:{outcome.exit_code}")
         return ExecutionResult(exit_code=outcome.exit_code, outcome=outcome)
@@ -110,7 +117,12 @@ def test_execute_endpoint_owns_admit_invoke_finish_order() -> None:
     assert isinstance(result, ExecutionResult)
     assert result.exit_code == EXIT_SUCCESS
     assert result.outcome.report_text == "ok"
-    assert endpoint.events == ["admit", "invoke", "finish:0", "release"]
+    assert endpoint.events == [
+        "admit",
+        "invoke",
+        "finish:0",
+        "release",
+    ]
 
 
 def test_execute_endpoint_normalizes_failure_and_releases_admission() -> None:
@@ -120,7 +132,13 @@ def test_execute_endpoint_normalizes_failure_and_releases_admission() -> None:
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.exit_code == EXIT_ERROR
-    assert endpoint.events == ["admit", "invoke", "normalize-error", "finish:2", "release"]
+    assert endpoint.events == [
+        "admit",
+        "invoke",
+        "normalize-error",
+        "finish:2",
+        "release",
+    ]
 
 
 def test_completion_error_message_is_bounded() -> None:
@@ -152,7 +170,10 @@ def test_admission_rejection_finishes_without_invoking_endpoint() -> None:
 
     assert result.exit_code == EXIT_ERROR
     assert result.outcome.report_text == "admission refused"
-    assert endpoint.events == ["admission-rejected", "finish:2"]
+    assert endpoint.events == [
+        "admission-rejected",
+        "finish:2",
+    ]
 
 
 def test_unexpected_adapter_failure_propagates_and_releases_admission() -> None:
@@ -491,7 +512,8 @@ def _run_killed_command_job(
             runs.append(code)
             result = flow._execute_local([sys.executable, "-c", code])
             return EndpointOutcome(
-                exit_code=EXIT_ERROR if result.returncode else EXIT_SUCCESS, report_text="verdict"
+                exit_code=EXIT_ERROR if result.returncode else EXIT_SUCCESS,
+                report_text="verdict",
             )
 
         return attempt
@@ -535,7 +557,13 @@ def test_requeued_job_rejected_at_its_second_admission_names_the_requeue() -> No
 
     result = execute_endpoint(endpoint, "prepared")
 
-    assert endpoint.events == ["admit", "invoke", "begin-requeued-attempt", "release", "finish:2"]
+    assert endpoint.events == [
+        "admit",
+        "invoke",
+        "begin-requeued-attempt",
+        "release",
+        "finish:2",
+    ]
     assert result.outcome.report_text == (
         "admission refused\nRequeued after out-of-memory: the Job did not start again."
     )

@@ -179,7 +179,10 @@ def _complete_invalidations() -> None:
 
 
 def refresh(
-    project_root: Path, images: RuntimeImageOperations, *, verbose: bool = False
+    project_root: Path,
+    images: RuntimeImageOperations,
+    *,
+    verbose: bool = False,
 ) -> RefreshResult:
     """Converge the selected image, then replace the headless Sandbox or keep a current one."""
     project = project_root.resolve(strict=True)

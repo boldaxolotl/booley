@@ -15,7 +15,14 @@ import yaml
 
 MUTATION_ROOT = Path(__file__).resolve().parents[2] / "qa" / "shared" / "mutation"
 PROJECT = MUTATION_ROOT / "project"
-OPERATORS = ("relational", "arithmetic-logical", "condition", "constant", "bit-select", "deletion")
+OPERATORS = (
+    "relational",
+    "arithmetic-logical",
+    "condition",
+    "constant",
+    "bit-select",
+    "deletion",
+)
 # Replacements the user doc names for each operator whose set is closed.
 RELATIONAL_SWAPS = {"<=", "!="}
 ARITHMETIC_SWAPS = {"-", "|", ">>"}

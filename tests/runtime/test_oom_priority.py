@@ -105,7 +105,10 @@ def test_ranking_holds_after_many_jobs_start_and_finish(
 
 
 def test_a_mutation_tool_ranks_at_its_own_claims_level_under_a_coordinator(
-    store: job_slots.SlotStore, world: FakeWorld, proc: FakeProc, monkeypatch: pytest.MonkeyPatch
+    store: job_slots.SlotStore,
+    world: FakeWorld,
+    proc: FakeProc,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr("booley.runtime.oom_priority.PROC", proc)
     # The coordinator's zero companion claim is admitted first, then another Flow.

@@ -92,7 +92,10 @@ def _assert_resources(files: set[str]) -> None:
         if path.startswith("booley/data/docker/pdk/")
         or path in {"booley/data/bin/bwave", "booley/data/bin/bwave.exe"}
     }
-    _require(not forbidden, f"installed artifact contains forbidden payloads: {sorted(forbidden)}")
+    _require(
+        not forbidden,
+        f"installed artifact contains forbidden payloads: {sorted(forbidden)}",
+    )
 
 
 def _entry_point_executable(name: str) -> Path:
@@ -113,7 +116,11 @@ def _assert_entry_points() -> None:
         )
         executable = _entry_point_executable(name)
         result = subprocess.run(
-            [str(executable), "--help"], capture_output=True, text=True, timeout=30, check=False
+            [str(executable), "--help"],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
         )
         _require(
             result.returncode == 0,
@@ -134,7 +141,8 @@ def _assert_wheel_matches_install(wheel: Path, installed_files: set[str]) -> Non
         names = set(archive.namelist())
         metadata_paths = [name for name in names if name.endswith(".dist-info/METADATA")]
         _require(
-            len(metadata_paths) == 1, f"candidate wheel has {len(metadata_paths)} METADATA files"
+            len(metadata_paths) == 1,
+            f"candidate wheel has {len(metadata_paths)} METADATA files",
         )
         wheel_metadata = email.message_from_bytes(archive.read(metadata_paths[0]))
 

@@ -10,7 +10,10 @@ from typing import Any
 
 
 def constraint_recipe_entry(
-    core: str | None, digest: str | None, *, fallback_vlnv: str
+    core: str | None,
+    digest: str | None,
+    *,
+    fallback_vlnv: str,
 ) -> dict[str, Any]:
     """Build path-free provenance for one ordered implementation constraint."""
     return {"core": core or fallback_vlnv, "sha256": digest}
@@ -23,7 +26,8 @@ def recipe_snapshot_fingerprint(snapshot: Mapping[str, Any]) -> str:
 
 
 def recipe_changes(
-    baseline: Mapping[str, Any], current: Mapping[str, Any]
+    baseline: Mapping[str, Any],
+    current: Mapping[str, Any],
 ) -> list[dict[str, Any]]:
     """Return deterministic leaf-level changes between two recipe snapshots."""
     changes: list[dict[str, Any]] = []
@@ -32,7 +36,10 @@ def recipe_changes(
 
 
 def _append_recipe_changes(
-    changes: list[dict[str, Any]], path: str, baseline: Any, current: Any
+    changes: list[dict[str, Any]],
+    path: str,
+    baseline: Any,
+    current: Any,
 ) -> None:
     """Append recursive snapshot changes using stable dotted/indexed paths."""
     if isinstance(baseline, Mapping) and isinstance(current, Mapping):

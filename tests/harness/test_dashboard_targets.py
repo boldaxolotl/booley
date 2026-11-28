@@ -124,7 +124,11 @@ def session(handle: str, work_dir: Path | str, default: Path | str = "") -> Sess
     """A connected session whose handle is *handle* (``S3``); the key is ``codex:03``."""
     number = int(handle[1:])
     attribution = Attribution(
-        f"codex:{number:02}", "thread", str(work_dir), f"wk{number}", default_work_dir=str(default)
+        f"codex:{number:02}",
+        "thread",
+        str(work_dir),
+        f"wk{number}",
+        default_work_dir=str(default),
     )
     return SessionRow(attribution, STAMP, STAMP, (RecentCall(STAMP, "sim", "completed"),))
 
@@ -636,7 +640,7 @@ async def test_targets_navigation_uses_arrows_enter_and_escape_only(repo):
 @pytest.mark.parametrize(
     "layout",
     [
-        {".booley/booley.toml": "[flows.sim]\nbackend = 'x'\n"},
+        {".booley/booley.toml": "[flows.elab]\n"},
         {".booley/booley.toml": "", ".booley_project/booley.toml": ""},
     ],
     ids=["retired-key", "two-booley-directories"],

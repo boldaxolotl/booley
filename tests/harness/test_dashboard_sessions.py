@@ -353,7 +353,9 @@ def test_long_values_end_in_ellipsis_and_paths_keep_their_tail():
     assert sessions.cut("short", 12) == "short"
 
     long_row = facts(
-        1, branch="feature/very-long-branch-name-here", work_dir="/home/user/projects/work/fifo"
+        1,
+        branch="feature/very-long-branch-name-here",
+        work_dir="/home/user/projects/work/fifo",
     )
     # 72 cells leave 5 spare cells after the minimum widths: Branch gets 13, Work dir stays 10.
     line = sessions.build([long_row], [], NOW, 72).rows[1].plain

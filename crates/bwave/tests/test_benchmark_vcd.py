@@ -79,7 +79,13 @@ def _run(
     ]
     if extra:
         command.extend(extra)
-    return subprocess.run(command, capture_output=True, text=True, check=False, timeout=30)
+    return subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=30,
+    )
 
 
 @pytest.mark.skipif(os.name == "nt", reason="executable test stubs use POSIX shebangs")

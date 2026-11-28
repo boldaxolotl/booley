@@ -9,7 +9,12 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
 from booley.core.boundary import as_float, as_int
-from booley.core.exit_codes import EXIT_CANCELLED, EXIT_ERROR, EXIT_FAILURE, EXIT_SUCCESS
+from booley.core.exit_codes import (
+    EXIT_CANCELLED,
+    EXIT_ERROR,
+    EXIT_FAILURE,
+    EXIT_SUCCESS,
+)
 
 _ROW_LIMIT = 24
 _ITEM_LIMIT = 5
@@ -514,7 +519,10 @@ def _mutation(detail: Mapping[str, object]) -> tuple[str, list[ResultLine]]:
     headline = (
         f"Mutation: {_value(detail.get('detected'))}/{_value(detail.get('total_valid'))} detected"
     )
-    rows = _fields(detail, {"not_detected": "Not detected", "min_detected": "Minimum detected"})
+    rows = _fields(
+        detail,
+        {"not_detected": "Not detected", "min_detected": "Minimum detected"},
+    )
     survivors = _sequence(detail.get("survivors"))
     classified = [_mapping(item) for item in _sequence(detail.get("classified"))]
     for item in [row for row in classified if row.get("status") == "not_detected"][:_ITEM_LIMIT]:

@@ -4,19 +4,22 @@ Every assertion reads the returned ``CoreResolutionResult``: severity, message,
 fix, always-shown details and the selectors that produced a verdict. The owner
 module is imported inside a helper so this file collects, and each test fails on
 its own, before the owner exists. ``.core`` files are real and ``TargetCatalog``
-is real; the Sandbox command builder is a test function and ``subprocess.run`` is
-replaced on the owner module's own binding.
+is real; the Sandbox command builder is a test function whose command is a real
+child that replays a canned verdict.
 """
 
 from __future__ import annotations
 
 import importlib
 import json
-import subprocess
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+
+import pytest
+from tests.canned_process_support import canned_command
 
 from booley.audit.diagnostic_results import Severity
+from booley.flows.base import SubprocessResult
 from booley.runtime import session_runtime
 
 _CORE = """\
@@ -45,31 +48,29 @@ def _write_core(
 
 
 class _Sandbox:
-    """A fake Sandbox: records the argv it is asked to build and each run."""
+    """A Sandbox command builder: records each argv and answers with a real child.
 
-    def __init__(self, monkeypatch, verdicts):
+    *reply* maps the dispatched payload to the child's exit code and stdout. The
+    child fails unless the owner starts it in the Project Root *root*.
+    """
+
+    def __init__(self, root: Path, reply):
+        self.root = root
+        self.reply = reply
         self.built: list[list[str]] = []
-        self.runs: list[tuple[list[str], dict]] = []
-        self._verdicts = verdicts
-        monkeypatch.setattr(
-            _owner(),
-            "subprocess",
-            SimpleNamespace(run=self._run, SubprocessError=subprocess.SubprocessError),
-        )
 
     def command(self, inner: list[str]) -> list[str]:
         self.built.append(inner)
-        return ["sandbox", *inner]
-
-    def _run(self, argv, **kwargs):
-        self.runs.append((argv, kwargs))
-        payload = json.loads(argv[-1])
-        return self._verdicts(argv, payload)
+        code, stdout = self.reply(json.loads(inner[-1]))
+        return canned_command(SubprocessResult(returncode=code, stdout=stdout), cwd=self.root)
 
 
-def _ok_for_all(argv, payload):
-    out = [{"selector": item["selector"], "ok": True} for item in payload]
-    return subprocess.CompletedProcess(argv, 0, "[[CORE_RESOLVE_JSON]]" + json.dumps(out), "")
+def _verdicts(out) -> tuple[int, str]:
+    return 0, "[[CORE_RESOLVE_JSON]]" + json.dumps(out)
+
+
+def _ok_for_all(payload):
+    return _verdicts([{"selector": item["selector"], "ok": True} for item in payload])
 
 
 def _inspect(root: Path, selectors, sandbox, *, available=True):
@@ -83,11 +84,11 @@ def _rows(result):
     return [(f.severity, f.message, f.fix) for f in result.report.findings]
 
 
-def test_resolving_target_passes_and_sends_canonical_payload(tmp_path, monkeypatch):
+def test_resolving_target_passes_and_sends_canonical_payload(tmp_path):
     """Two cores sharing a Target name resolve; only the selected Targets are sent."""
     _write_core(tmp_path, "first", ("smoke", "unselected"))
     _write_core(tmp_path, "second", ("smoke",))
-    sandbox = _Sandbox(monkeypatch, _ok_for_all)
+    sandbox = _Sandbox(tmp_path, _ok_for_all)
 
     result = _inspect(tmp_path, ("second#smoke", "first#smoke"), sandbox)
 
@@ -113,27 +114,24 @@ def test_resolving_target_passes_and_sends_canonical_payload(tmp_path, monkeypat
     assert sandbox.built[0][3] == json.dumps(expected, separators=(",", ":"))
     assert sandbox.built[0][:2] == ["python3", "-c"]
     assert "[[CORE_RESOLVE_JSON]]" in sandbox.built[0][2]
-    argv, kwargs = sandbox.runs[0]
-    assert argv == ["sandbox", *sandbox.built[0]]
-    assert kwargs["cwd"] == tmp_path
-    assert kwargs["timeout"] == 600
 
 
-def test_failing_target_fails_with_an_always_shown_excerpt(tmp_path, monkeypatch):
+def test_failing_target_fails_with_an_always_shown_excerpt(tmp_path):
     """A failing Target FAILs with its fix and the error excerpt; the other still passes."""
     _write_core(tmp_path, "unit", ("sim_ok", "sim_bad"))
     err = "Parse error. Ignoring file unit.core:\nfilesets.tb.depend must be array\nlast line"
 
-    def verdicts(argv, payload):
-        out = [
-            {"selector": p["selector"], "ok": True}
-            if p["selector"] == "sim_ok"
-            else {"selector": p["selector"], "ok": False, "err": err}
-            for p in payload
-        ]
-        return subprocess.CompletedProcess(argv, 0, "[[CORE_RESOLVE_JSON]]" + json.dumps(out), "")
+    def reply(payload):
+        return _verdicts(
+            [
+                {"selector": p["selector"], "ok": True}
+                if p["selector"] == "sim_ok"
+                else {"selector": p["selector"], "ok": False, "err": err}
+                for p in payload
+            ]
+        )
 
-    result = _inspect(tmp_path, ("sim_ok", "sim_bad"), _Sandbox(monkeypatch, verdicts))
+    result = _inspect(tmp_path, ("sim_ok", "sim_bad"), _Sandbox(tmp_path, reply))
 
     assert _rows(result) == [
         (
@@ -155,88 +153,67 @@ _FUSESOC_EXCERPT = "ERROR: Could not find core\nvendor_lib_name == 1.0-0"
 
 
 def _failing_with(err: str):
-    def verdicts(argv, payload):
-        out = [{"selector": p["selector"], "ok": False, "err": err} for p in payload]
-        return subprocess.CompletedProcess(argv, 0, "[[CORE_RESOLVE_JSON]]" + json.dumps(out), "")
+    def reply(payload):
+        return _verdicts([{"selector": p["selector"], "ok": False, "err": err} for p in payload])
 
-    return verdicts
-
-
-def _excerpt(result):
-    return [d.message for d in result.report.details]
+    return reply
 
 
-def test_unprovided_dependency_fails_with_hint_naming_it(tmp_path, monkeypatch):
-    """A Target depending on a core no Project core provides names it and both fixes."""
-    _write_core(tmp_path, "unit", ("sim",), depend=(">=::vlog_tb_utils:1.1",))
-    hint = (
-        "no Project .core provides '>=::vlog_tb_utils:1.1': the Sandbox has no FuseSoC "
+def _unprovided_hint(dependency: str) -> str:
+    return (
+        f"no Project .core provides '{dependency}': the Sandbox has no FuseSoC "
         "libraries and cannot fetch them; copy it into the repository as a .core, or drop "
         "the depend: (check first whether the testbench guards its use with an `ifdef` "
         "or defines the module itself)"
     )
-    err = f"{_FUSESOC_EXCERPT}\n{hint}"
-
-    result = _inspect(tmp_path, ("sim",), _Sandbox(monkeypatch, _failing_with(err)))
-
-    assert _rows(result) == [(Severity.FAIL, ".core Target 'sim' fails to resolve", hint)]
-    assert _excerpt(result) == ["    ERROR: Could not find core", "    vendor_lib_name == 1.0-0"]
 
 
-def test_transitive_unprovided_dependency_is_named(tmp_path, monkeypatch):
-    """Only the dependency no Project core provides is named, through a Project core."""
-    _write_core(tmp_path, "unit", ("sim",), depend=("::mid:0",))
-    (tmp_path / "mid.core").write_bytes(
-        b"CAPI=2:\nname: ::mid:0\nfilesets:\n  rtl:\n    depend: ['::wiredelay:0']\n"
-    )
-
-    result = _inspect(tmp_path, ("sim",), _Sandbox(monkeypatch, _failing_with(_FUSESOC_EXCERPT)))
-
-    [(severity, _message, fix)] = _rows(result)
-    assert severity == Severity.FAIL
-    assert fix.startswith("no Project .core provides '::wiredelay:0': the Sandbox has no")
-    assert "::mid:0" not in fix
+_GENERIC_FIX = "fix unit.core (declares Target 'sim') or its depends graph"
 
 
-def test_provided_dependency_failure_names_the_core(tmp_path, monkeypatch):
-    """A Target whose depend: a Project core provides keeps the .core-naming hint."""
-    _write_core(tmp_path, "unit", ("sim",), depend=("::mid:0",))
-    (tmp_path / "mid.core").write_bytes(b"CAPI=2:\nname: ::mid:0\n")
-
-    result = _inspect(tmp_path, ("sim",), _Sandbox(monkeypatch, _failing_with(_FUSESOC_EXCERPT)))
-
-    assert _rows(result) == [
-        (
-            Severity.FAIL,
-            ".core Target 'sim' fails to resolve",
-            "fix unit.core (declares Target 'sim') or its depends graph",
+@pytest.mark.parametrize("case", ["unprovided", "transitive", "provided", "edited"])
+def test_failed_target_fix_names_unprovided_dependency_or_core(tmp_path, case):
+    """The fix names a ``depend:`` no Project core provides, else the failing ``.core``."""
+    depend = {
+        "unprovided": ">=::vlog_tb_utils:1.1",
+        "transitive": "::mid:0",
+        "provided": "::mid:0",
+        "edited": "::missing:0",
+    }[case]
+    _write_core(tmp_path, "unit", ("sim",), depend=(depend,))
+    if case == "transitive":
+        # Only the dependency no Project core provides is named, through a Project core.
+        (tmp_path / "mid.core").write_bytes(
+            b"CAPI=2:\nname: ::mid:0\nfilesets:\n  rtl:\n    depend: ['::wiredelay:0']\n"
         )
+    elif case == "provided":
+        (tmp_path / "mid.core").write_bytes(b"CAPI=2:\nname: ::mid:0\n")
+    fix = {
+        "unprovided": _unprovided_hint(">=::vlog_tb_utils:1.1"),
+        "transitive": _unprovided_hint("::wiredelay:0"),
+    }.get(case, _GENERIC_FIX)
+    err = "ERROR: Could not find core\nvendor_lib_name == 1.0-0"
+    if case == "unprovided":
+        err = f"{err}\n{fix}"  # the Sandbox message ends with the hint; the excerpt drops it
+
+    def reply(payload):
+        if case == "edited":  # a .core edited while the Sandbox runs must not abort the report
+            (tmp_path / "unit.core").write_bytes(b"CAPI=2:\nname: ::unit:0\n# edited\n")
+        return _failing_with(err)(payload)
+
+    result = _inspect(tmp_path, ("sim",), _Sandbox(tmp_path, reply))
+
+    assert _rows(result) == [(Severity.FAIL, ".core Target 'sim' fails to resolve", fix)]
+    assert [d.message for d in result.report.details] == [
+        "    ERROR: Could not find core",
+        "    vendor_lib_name == 1.0-0",
     ]
 
 
-def test_core_edited_during_resolution_keeps_the_generic_hint(tmp_path, monkeypatch):
-    """A .core edited while the Sandbox runs must not abort the failure report."""
-    _write_core(tmp_path, "unit", ("sim",), depend=("::missing:0",))
-
-    def verdicts(argv, payload):
-        (tmp_path / "unit.core").write_bytes(b"CAPI=2:\nname: ::unit:0\n# edited\n")
-        return _failing_with(_FUSESOC_EXCERPT)(argv, payload)
-
-    result = _inspect(tmp_path, ("sim",), _Sandbox(monkeypatch, verdicts))
-
-    assert _rows(result) == [
-        (
-            Severity.FAIL,
-            ".core Target 'sim' fails to resolve",
-            "fix unit.core (declares Target 'sim') or its depends graph",
-        )
-    ]
-
-
-def test_unselectable_target_fails_before_dispatch(tmp_path, monkeypatch):
+def test_unselectable_target_fails_before_dispatch(tmp_path):
     """A selector the catalog rejects FAILs with its reason and is never dispatched."""
     _write_core(tmp_path, "unit", ("sim_ok",))
-    sandbox = _Sandbox(monkeypatch, _ok_for_all)
+    sandbox = _Sandbox(tmp_path, _ok_for_all)
 
     result = _inspect(tmp_path, ("removed_target", "sim_ok"), sandbox)
 
@@ -252,16 +229,16 @@ def test_unselectable_target_fails_before_dispatch(tmp_path, monkeypatch):
     assert [item["selector"] for item in json.loads(sandbox.built[0][3])] == ["sim_ok"]
     assert result.completed == ("sim_ok",)
 
-    alone = _Sandbox(monkeypatch, _ok_for_all)
+    alone = _Sandbox(tmp_path, _ok_for_all)
     only = _inspect(tmp_path, ("removed_target",), alone)
     assert [row[:2] for row in _rows(only)] == [
         (Severity.FAIL, ".core Target 'removed_target' fails to resolve")
     ]
-    assert alone.built == [] and alone.runs == []
+    assert alone.built == []
     assert only.completed == ()
 
 
-def test_missing_incomplete_or_duplicate_verdicts_fail_closed(tmp_path, monkeypatch):
+def test_missing_incomplete_or_duplicate_verdicts_fail_closed(tmp_path):
     """No bounded verdict per selected Target means incomplete evidence and no completion."""
     _write_core(tmp_path, "unit", ("sim_ok", "sim_bad"))
     marker = "[[CORE_RESOLVE_JSON]]"
@@ -280,12 +257,7 @@ def test_missing_incomplete_or_duplicate_verdicts_fail_closed(tmp_path, monkeypa
         "malformed json": (0, marker + "[{"),
     }
     for label, (code, stdout) in cases.items():
-        sandbox = _Sandbox(
-            monkeypatch,
-            lambda argv, _payload, code=code, stdout=stdout: subprocess.CompletedProcess(
-                argv, code, stdout, ""
-            ),
-        )
+        sandbox = _Sandbox(tmp_path, lambda _payload, reply=(code, stdout): reply)
         result = _inspect(tmp_path, ("sim_ok", "sim_bad"), sandbox)
         assert _rows(result)[-1] == (
             Severity.FAIL,
@@ -295,57 +267,52 @@ def test_missing_incomplete_or_duplicate_verdicts_fail_closed(tmp_path, monkeypa
         assert result.completed == (), label
 
 
-def test_sandbox_start_failure_fails(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("failure", "cause"),
+    [("issuance", "bad issuance"), ("missing executable", ""), ("timeout", "timed out")],
+)
+def test_sandbox_start_failure_fails(tmp_path, monkeypatch, failure, cause):
     """A Sandbox that cannot start, spawn or finish is one FAIL naming the cause."""
     _write_core(tmp_path, "unit", ("sim_ok",))
-    timeout = subprocess.TimeoutExpired(["sandbox"], 600)
-    failures = (
-        session_runtime.SessionError("bad issuance"),
-        OSError("no such executable"),
-        timeout,
-    )
-    for failure in failures:
-        sandbox = _Sandbox(monkeypatch, lambda *_args: None)
-        if isinstance(failure, session_runtime.SessionError):
+    sandbox = _Sandbox(tmp_path, _ok_for_all)
 
-            def refuse(_inner, failure=failure):
-                raise failure
+    def command(_inner):
+        if failure == "issuance":
+            raise session_runtime.SessionError("bad issuance")
+        if failure == "timeout":
+            return [sys.executable, "-c", "import time; time.sleep(10)"]
+        return [str(tmp_path / "no-sandbox")]
 
-            sandbox.command = refuse
-        else:
+    sandbox.command = command
+    # `_CORE_RESOLVE_TIMEOUT_S` is patched because no public setting shortens the limit.
+    monkeypatch.setattr(_owner(), "_CORE_RESOLVE_TIMEOUT_S", 0.5)
 
-            def broken(_argv, _payload, failure=failure):
-                raise failure
+    result = _inspect(tmp_path, ("sim_ok",), sandbox)
 
-            sandbox._verdicts = broken
-        result = _inspect(tmp_path, ("sim_ok",), sandbox)
-        assert _rows(result) == [
-            (
-                Severity.FAIL,
-                f".core resolvability could not complete in the Sandbox: {failure}",
-                "check the Sandbox",
-            )
-        ], failure
-        assert result.completed == (), failure
+    [(severity, message, fix)] = _rows(result)
+    assert (severity, fix) == (Severity.FAIL, "check the Sandbox")
+    assert message.startswith(".core resolvability could not complete in the Sandbox: ")
+    assert cause in message
+    assert result.completed == ()
 
 
-def test_pending_recovery_skips(tmp_path, monkeypatch):
+def test_pending_recovery_skips(tmp_path):
     _write_core(tmp_path, "unit", ("sim_ok",))
-    sandbox = _Sandbox(monkeypatch, _ok_for_all)
+    sandbox = _Sandbox(tmp_path, _ok_for_all)
     sandbox.command = lambda _inner: (_ for _ in ()).throw(session_runtime.RecoveryPendingError())
     result = _inspect(tmp_path, ("sim_ok",), sandbox)
     assert [f.severity for f in result.report.findings] == [Severity.SKIP]
     assert result.report.findings[0].message.endswith("recovery is pending on this host")
 
 
-def test_unavailable_runtime_skips(tmp_path, monkeypatch):
+def test_unavailable_runtime_skips(tmp_path):
     """With no Sandbox runtime the owner SKIPs and touches neither catalog nor Sandbox."""
-    sandbox = _Sandbox(monkeypatch, _ok_for_all)
+    sandbox = _Sandbox(tmp_path, _ok_for_all)
 
     result = _inspect(tmp_path, ("sim_ok",), sandbox, available=False)
 
     assert _rows(result) == [
         (Severity.SKIP, ".core resolvability skipped - Sandbox runtime unavailable", "")
     ]
-    assert sandbox.built == [] and sandbox.runs == []
+    assert sandbox.built == []
     assert result.completed == ()

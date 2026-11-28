@@ -1,16 +1,21 @@
 """Tests for the Sandbox Image init step: staleness, release refresh, pull and local build.
 
-The step runs against the shared fake of its two command boundaries, the Docker CLI
-and the wheel build (``tests/harness/sandbox_image_docker_fake.py``), so the real
-fingerprints, labels, capacity plan, runtime-base acquisition and build runner execute.
+The step runs against the shared fakes of its two command boundaries, the Docker CLI
+and the wheel build (``tests/fake_docker_executable.py``, ``tests/wheel_build_fake.py``),
+so the real fingerprints, labels, capacity plan, runtime-base acquisition and build runner
+execute.
 """
 
 from __future__ import annotations
 
+import functools
 import re
+import secrets
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -25,15 +30,12 @@ from booley.runtime.build_stamp import (
     resolve_wheel_source_fingerprint,
 )
 from booley.runtime.docker_build import DockerBuildResult
+from booley.runtime.docker_capacity import SKIP_PREFLIGHT_ENV
 from booley.runtime.packaged_docs import SHIPPED_DOCS
+from tests.fake_docker_executable import FakeDocker, install_fake_docker
 from tests.git_support import git, repository
-from tests.harness.sandbox_image_docker_fake import (
-    Build,
-    Reply,
-    SandboxImageDocker,
-    serve_sandbox_image_docker,
-)
 from tests.subprocess_budget import run_bounded_child
+from tests.wheel_build_fake import WheelBuild, install_wheel_build
 
 VERSION = "0.2.6"
 SANDBOX = init_docker_image.DOCKER_IMAGE
@@ -51,6 +53,7 @@ CURRENT_WHEEL = "<current-wheel>"
 _CHECKOUT_FILES = (
     ".dockerignore",
     "VERSION",
+    "CHANGELOG.md",
     "pyproject.toml",
     "src/booley/data/docker",
     "src/booley/data/edalize/verible.py",
@@ -65,8 +68,24 @@ _CHECKOUT_FILES = (
 
 
 @pytest.fixture
-def docker(monkeypatch: pytest.MonkeyPatch) -> SandboxImageDocker:
-    return serve_sandbox_image_docker(monkeypatch)
+def wheel(tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch) -> WheelBuild:
+    return install_wheel_build(tmp_path_factory.mktemp("wheel"), monkeypatch)
+
+
+@pytest.fixture
+def docker(
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch, wheel: WheelBuild
+) -> FakeDocker:
+    # The disk preflight is the build runner's subject (tests/runtime/test_docker_build.py).
+    monkeypatch.setenv(SKIP_PREFLIGHT_ENV, "1")
+    return install_fake_docker(tmp_path_factory.mktemp("docker"), monkeypatch, {}, images={})
+
+
+def _hang_tag(docker: FakeDocker, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(  # boundary: the tag deadline (clock); no setting shortens the 30 s
+        init_docker_image, "DEFAULT_IMAGE_TAG_TIMEOUT_S", 1
+    )
+    docker.pause_after("tag")
 
 
 @pytest.fixture(scope="session")
@@ -121,13 +140,14 @@ def _run_step(
     *,
     check_only: bool = False,
     force: bool = False,
+    verbose: bool = False,
     version: str = VERSION,
     **step_kwargs: bool,
 ) -> InitContext:
     """Run the Docker image step for the Booley tree at *root* (empty: a release install)."""
     monkeypatch.setattr(booley, "__version__", version)
     _point_at(monkeypatch, root)
-    ctx = InitContext(project_root=root, check_only=check_only, force=force)
+    ctx = InitContext(project_root=root, check_only=check_only, force=force, verbose=verbose)
     # private: no public function reaches the step with a Docker client to fake. Its only
     # caller, ``image_lifecycle``, runs it inside a plan of the whole Project image chain.
     init_docker_image._step_docker_image(ctx, **step_kwargs)
@@ -138,21 +158,26 @@ def _verdict(ctx: InitContext) -> tuple[str, str]:
     return ctx.results[-1].status, ctx.results[-1].detail
 
 
-def _add_image(docker: SandboxImageDocker, name: str, root: Path, labels: dict[str, str]) -> None:
+def _put_image(docker: FakeDocker, name: str, labels: dict[str, str]) -> None:
+    """Put an image under *name* with a fresh Id."""
+    docker.images[name] = {"Id": f"sha256:{secrets.token_hex(32)}", "Labels": labels}
+
+
+def _add_image(docker: FakeDocker, name: str, root: Path, labels: dict[str, str]) -> None:
     """Add an image whose ``CURRENT`` and ``CURRENT_WHEEL`` labels name *root*'s fingerprints."""
     current = {
         CURRENT: resolve_payload_fingerprint(root),
         CURRENT_WHEEL: resolve_wheel_source_fingerprint(root),
     }
-    docker.add(name, {key: current.get(value, value) or "" for key, value in labels.items()})
+    _put_image(docker, name, {k: current.get(v, v) or "" for k, v in labels.items()})
 
 
-def _build_tags(docker: SandboxImageDocker, since: int = 0) -> list[str]:
-    return [
-        call[call.index("-t") + 1]
-        for call in docker.calls[since:]
-        if call[:2] == ["docker", "build"]
-    ]
+def _count(docker: FakeDocker, *prefix: str) -> int:
+    return sum(call[: len(prefix)] == list(prefix) for call in docker.calls)
+
+
+def _build_tags(docker: FakeDocker, since: int = 0) -> list[str]:
+    return [call[call.index("-t") + 1] for call in docker.calls[since:] if call[0] == "build"]
 
 
 @pytest.mark.parametrize(
@@ -253,8 +278,8 @@ def test_checkout_image_is_rebuilt_only_when_stale(
     ctx = _run_step(monkeypatch, tmp_path, check_only=True, force=force, version="0.1.0")
 
     assert _verdict(ctx) == expected
-    assert docker.count("pull") == 0
-    assert docker.count("system", "df") == df
+    assert _count(docker, "pull") == 0
+    assert _count(docker, "system", "df") == df
 
 
 @pytest.mark.parametrize(
@@ -289,11 +314,11 @@ def test_source_fingerprint_mismatch_verdicts(
 
 
 @pytest.mark.parametrize(
-    ("labels", "options", "check_only", "expected", "present", "absent", "pulls"),
+    ("labels", "prepare", "check_only", "expected", "present", "absent", "pulls"),
     [
         pytest.param(
             {FINGERPRINT: "pulled:0.2.3"},
-            {},
+            None,
             False,
             ("ok", "pulled"),
             (),
@@ -303,13 +328,14 @@ def test_source_fingerprint_mismatch_verdicts(
         ),
         pytest.param(
             {FINGERPRINT: "pulled:0.2.3"},
-            {"pull": Reply(1, stderr="not found")},
+            lambda docker, patch: docker.answer("pull", code=1, stderr="not found"),
             False,
             ("warn", "compatible image pull failed"),
             (
                 "v0.2.3",
                 f"Booley v{VERSION} requires sandbox image v{VERSION}",
                 "may be incompatible",
+                "docker exited 1",
             ),
             (),
             1,
@@ -317,7 +343,7 @@ def test_source_fingerprint_mismatch_verdicts(
         ),
         pytest.param(
             {FINGERPRINT: f"pulled:{VERSION}"},
-            {},
+            None,
             False,
             ("current", "already present"),
             (),
@@ -327,7 +353,7 @@ def test_source_fingerprint_mismatch_verdicts(
         ),
         pytest.param(
             {FINGERPRINT: "abc123", OCI_VERSION: "0.2.3"},
-            {},
+            None,
             False,
             ("ok", "pulled"),
             (),
@@ -337,7 +363,7 @@ def test_source_fingerprint_mismatch_verdicts(
         ),
         pytest.param(
             {},
-            {},
+            None,
             True,
             ("warn", "would pull compatible image"),
             ("unknown version", f"would pull the Booley v{VERSION} image"),
@@ -347,10 +373,10 @@ def test_source_fingerprint_mismatch_verdicts(
         ),
         pytest.param(
             {FINGERPRINT: "pulled:0.2.3"},
-            {"tag": Reply(raises=subprocess.TimeoutExpired(["docker", "tag"], 30))},
+            _hang_tag,
             False,
             ("warn", "compatible image pull failed"),
-            ("docker tag timed out after 30 seconds",),
+            ("docker tag timed out after 1 seconds",),
             ("pull timed out",),
             1,
             id="tag-times-out",
@@ -363,7 +389,7 @@ def test_release_install_refreshes_image_to_its_version(
     capsys,
     docker,
     labels,
-    options,
+    prepare,
     check_only,
     expected,
     present,
@@ -371,73 +397,61 @@ def test_release_install_refreshes_image_to_its_version(
     pulls,
 ) -> None:
     # An empty tree is a pip install: no checkout fingerprint, but the release pins the image.
-    docker.add(SANDBOX, labels)
-    for name, reply in options.items():
-        setattr(docker, name, reply)
+    _put_image(docker, SANDBOX, labels)
+    if prepare is not None:
+        prepare(docker, monkeypatch)
 
     ctx = _run_step(monkeypatch, tmp_path, check_only=check_only)
+    docker.resume()  # releases a held call; Windows leaves its child waiting otherwise
 
     output = capsys.readouterr().out
     assert _verdict(ctx) == expected
     assert all(fragment in output for fragment in present)
     assert not any(fragment in output for fragment in absent)
-    assert docker.count("pull") == pulls
+    assert _count(docker, "pull") == pulls
     if pulls:
-        assert ["docker", "pull", RELEASE_TAG] in docker.calls
+        assert ["pull", RELEASE_TAG] in docker.calls
     if expected == ("ok", "pulled"):
         # The pulled image, not the stale one, is what the managed name now resolves to.
-        assert docker.images[SANDBOX]["Id"] == docker.images[RELEASE_TAG]["Id"]
+        assert docker.images[SANDBOX] == docker.images[RELEASE_TAG]
 
 
 @pytest.mark.parametrize(
-    ("override", "pull", "timeout", "fragment"),
+    ("override", "warning"),
     [
-        pytest.param(
-            None,
-            Reply(1),
-            init_docker_image.DEFAULT_IMAGE_PULL_TIMEOUT_S,
-            "docker exited 1",
-            id="default",
-        ),
-        pytest.param(
-            "900",
-            Reply(raises=subprocess.TimeoutExpired(["docker", "pull"], 900)),
-            900,
-            "BOOLEY_IMAGE_PULL_TIMEOUT",
-            id="override",
-        ),
-        pytest.param(
-            "never",
-            Reply(1),
-            init_docker_image.DEFAULT_IMAGE_PULL_TIMEOUT_S,
-            "invalid BOOLEY_IMAGE_PULL_TIMEOUT='never'",
-            id="invalid",
-        ),
+        pytest.param(None, "", id="default"),
+        pytest.param("1", "", id="override"),
+        pytest.param("never", "invalid BOOLEY_IMAGE_PULL_TIMEOUT='never'", id="invalid"),
     ],
 )
-def test_registry_pull_timeout(
-    tmp_path, monkeypatch, capsys, docker, override, pull, timeout, fragment
-) -> None:
+def test_registry_pull_timeout(tmp_path, monkeypatch, capsys, docker, override, warning) -> None:
     monkeypatch.delenv("BOOLEY_IMAGE_PULL_TIMEOUT", raising=False)
     if override is not None:
         monkeypatch.setenv("BOOLEY_IMAGE_PULL_TIMEOUT", override)
-    docker.pull = pull
+    if override != "1":  # the override case keeps the real default, so ignoring it hangs
+        monkeypatch.setattr(  # boundary: the pull deadline; a 7200 s wait is out of reach
+            init_docker_image, "DEFAULT_IMAGE_PULL_TIMEOUT_S", 1
+        )
+    docker.pause_after("pull")
 
     _run_step(monkeypatch, tmp_path)
+    docker.resume()
 
-    assert [sent["timeout"] for sent in docker.sent("pull")] == [timeout]
-    assert fragment in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "pull timed out after 1 seconds" in output
+    assert "override with BOOLEY_IMAGE_PULL_TIMEOUT" in output
+    assert warning in output
 
 
 def test_checkout_builds_locally_when_pull_is_unavailable(
     tmp_path, monkeypatch, capsys, docker
 ) -> None:
     _seed_source(tmp_path)
-    docker.pull = Reply(1)
+    docker.answer("pull", code=1)
 
     ctx = _run_step(monkeypatch, tmp_path)
 
-    assert docker.count("pull") == 1
+    assert _count(docker, "pull") == 1
     assert (
         "pre-built image unavailable, rebuilding the Sandbox Image locally"
         in capsys.readouterr().out
@@ -451,8 +465,8 @@ def test_staged_pull_leaves_canonical_adoption_to_lifecycle(docker) -> None:
     # full plan of the Project image chain.
     assert init_docker_image._try_pull_image("0.2.0", adopt=False) is True
 
-    assert docker.count("pull") == 1
-    assert docker.count("tag") == 0
+    assert _count(docker, "pull") == 1
+    assert _count(docker, "tag") == 0
 
 
 @pytest.mark.parametrize(
@@ -494,7 +508,7 @@ def test_current_image_reports_build_cache(
 ) -> None:
     _seed_source(tmp_path)
     _add_image(docker, SANDBOX, tmp_path, {FINGERPRINT: CURRENT, OCI_VERSION: VERSION})
-    docker.system_df = Reply(stdout=df) if df is not None else Reply(1)
+    docker.answer("system", "df", code=int(df is None), stdout=df or "")
 
     ctx = _run_step(monkeypatch, tmp_path)
 
@@ -509,14 +523,41 @@ def _local_build(monkeypatch, root: Path, **kwargs: bool) -> InitContext:
     return _run_step(monkeypatch, root, allow_pull=False, rebuild_runtime_base=False, **kwargs)
 
 
+def _new_id(docker: FakeDocker) -> None:
+    _put_image(docker, BASE, docker.images[BASE]["Labels"])
+
+
+def _unreadable(docker: FakeDocker, *template: str) -> None:
+    docker.answer("image", "inspect", BASE, *template, code=1, stderr="daemon down")
+
+
+_ID = ("--format", "{{json .Id}}")
+
+
+_Hold = tuple[tuple[str, ...], Callable]  # the words of the held call, the edit
+
+
+def _edit_during(docker: FakeDocker, hold: _Hold, step: Callable) -> InitContext:
+    """Run *step* in a worker and apply the edit while the call holding the words is held."""
+    words, edit = hold
+    docker.pause_after(*words)
+    with ThreadPoolExecutor(1) as pool:
+        running = pool.submit(step)
+        docker.wait_until_paused()
+        edit(docker)
+        docker.resume()
+        return running.result()
+
+
 @pytest.mark.parametrize(
-    ("runs", "prepare", "status", "detail", "builds"),
+    ("runs", "held", "edit", "status", "detail", "builds"),
     [
-        pytest.param(1, None, "ok", "built", [BASE, SANDBOX], id="base-absent"),
-        pytest.param(2, None, "ok", "built", [SANDBOX], id="base-reused"),
+        pytest.param(1, None, None, "ok", "built", [BASE, SANDBOX], id="base-absent"),
+        pytest.param(2, None, None, "ok", "built", [SANDBOX], id="base-reused"),
         pytest.param(
             1,
-            lambda docker: docker.failing.add(BASE),
+            None,
+            _unreadable,
             "err",
             "Sandbox Image capacity check failed: cannot inspect",
             [],
@@ -524,7 +565,10 @@ def _local_build(monkeypatch, root: Path, **kwargs: bool) -> InitContext:
         ),
         pytest.param(
             1,
-            lambda docker: docker.after.update(wheel=lambda: docker.retag(BASE)),
+            ("build", BASE),
+            lambda docker: docker.answer(
+                "image", "inspect", BASE, *_ID, stdout='"sha256:' + "f" * 64 + '"'
+            ),
             "err",
             "runtime-base identity changed",
             [BASE],
@@ -532,7 +576,8 @@ def _local_build(monkeypatch, root: Path, **kwargs: bool) -> InitContext:
         ),
         pytest.param(
             1,
-            lambda docker: docker.after.update({SANDBOX: lambda: docker.retag(BASE)}),
+            ("build", SANDBOX),
+            _new_id,
             "err",
             "runtime-base identity changed",
             [BASE, SANDBOX],
@@ -540,7 +585,8 @@ def _local_build(monkeypatch, root: Path, **kwargs: bool) -> InitContext:
         ),
         pytest.param(
             1,
-            lambda docker: docker.after.update(wheel=lambda: docker.failing.add(BASE)),
+            ("build", BASE),
+            lambda docker: _unreadable(docker, *_ID),
             "err",
             "cannot inspect Docker image",
             [BASE],
@@ -548,7 +594,8 @@ def _local_build(monkeypatch, root: Path, **kwargs: bool) -> InitContext:
         ),
         pytest.param(
             1,
-            lambda docker: docker.after.update({SANDBOX: lambda: docker.failing.add(BASE)}),
+            ("build", SANDBOX),
+            _unreadable,
             "err",
             "daemon down",
             [BASE, SANDBOX],
@@ -557,27 +604,29 @@ def _local_build(monkeypatch, root: Path, **kwargs: bool) -> InitContext:
     ],
 )
 def test_local_build_guards_the_runtime_base(
-    source_checkout, monkeypatch, docker, runs, prepare, status, detail, builds
+    source_checkout, monkeypatch, docker, runs, held, edit, status, detail, builds
 ) -> None:
-    if prepare is not None:
-        prepare(docker)
+    if edit is not None and held is None:
+        edit(docker)
+    step = functools.partial(_local_build, monkeypatch, source_checkout)
     for _ in range(runs):
         docker.images.pop(SANDBOX, None)
         start = len(docker.calls)
-        ctx = _local_build(monkeypatch, source_checkout)
+        ctx = step() if held is None else _edit_during(docker, (held, edit), step)
 
     assert _build_tags(docker, start) == builds
     assert ctx.results[-1].status == status
     assert detail in ctx.results[-1].detail
     if status == "ok":
         base_id = docker.images[BASE]["Id"]
-        candidate = next(
-            c for c in docker.calls[start:] if c[:2] == ["docker", "build"] and SANDBOX in c
-        )
+        candidate = next(c for c in docker.calls[start:] if c[0] == "build" and SANDBOX in c)
         pairs = [candidate[i : i + 2] for i in range(len(candidate) - 1)]
         assert ["--build-context", f"booley-runtime-base=docker-image://{BASE}"] in pairs
         assert ["--build-arg", f"BOOLEY_RUNTIME_BASE_IMAGE={base_id}"] in pairs
-        assert ["--label", f"{init_docker_image.LABEL_PARENT_ARTIFACT}={base_id}"] in pairs
+        assert [
+            "--label",
+            f"{init_docker_image.LABEL_PARENT_ARTIFACT}={base_id}",
+        ] in pairs
         assert [
             "--label",
             f"{init_docker_image.LABEL_PARENT_ARTIFACT_KIND}={init_docker_image.PARENT_ARTIFACT_LOCAL_IMAGE_ID}",
@@ -591,24 +640,26 @@ _PYVER = f"{sys.version_info.major}.{sys.version_info.minor}"
     ("prepare", "detail", "present", "absent"),
     [
         pytest.param(
-            lambda docker, root: docker.builds.update(
-                {BASE: Build(raises=FileNotFoundError("no docker"))}
+            # The CLI vanishes after the last Docker call before the runtime-base build.
+            lambda docker, wheel, root: (
+                _ID,
+                lambda held: setattr(held, "remove_after", f"image inspect {BASE}"),
             ),
-            "no docker",
-            ("docker build failed: no docker",),
+            "No such file or directory",
+            ("docker build failed:",),
             (),
             id="docker-cli-missing",
         ),
         pytest.param(
-            lambda docker, root: docker.builds.update({BASE: Build(1, b"boom\n")}),
+            lambda docker, wheel, root: docker.answer("build", BASE, code=1, stdout="boom\n"),
             "runtime-base build failed",
             ("stable runtime-base build failed", "boom"),
             (),
             id="runtime-base-exits-1",
         ),
         pytest.param(
-            lambda docker, root: docker.builds.update(
-                {SANDBOX: Build(1, b"ERROR: checksum mismatch\n")}
+            lambda docker, wheel, root: docker.answer(
+                "build", SANDBOX, code=1, stdout="ERROR: checksum mismatch\n"
             ),
             "build failed",
             ("docker build failed", "ERROR: checksum mismatch"),
@@ -616,10 +667,8 @@ _PYVER = f"{sys.version_info.major}.{sys.version_info.minor}"
             id="candidate-exits-1",
         ),
         pytest.param(
-            lambda docker, root: setattr(
-                docker,
-                "wheel",
-                Reply(1, stdout="* Creating isolated environment\nboom: real cause"),
+            lambda docker, wheel, root: wheel.answer(
+                1, stdout="* Creating isolated environment\nboom: real cause"
             ),
             "wheel build failed",
             ("boom: real cause",),
@@ -627,24 +676,18 @@ _PYVER = f"{sys.version_info.major}.{sys.version_info.minor}"
             id="wheel-reports-on-stdout",
         ),
         pytest.param(
-            lambda docker, root: setattr(
-                docker, "wheel", Reply(1, stderr="stderr side of the story")
-            ),
+            lambda docker, wheel, root: wheel.answer(1, stderr="stderr side of the story"),
             "wheel build failed",
             ("stderr side of the story",),
             (),
             id="wheel-reports-on-stderr",
         ),
         pytest.param(
-            lambda docker, root: setattr(
-                docker,
-                "wheel",
-                Reply(
-                    1,
-                    stdout="* Creating isolated environment: venv+pip...\n"
-                    "The virtual environment was not created successfully because "
-                    "ensurepip is not available.",
-                ),
+            lambda docker, wheel, root: wheel.answer(
+                1,
+                stdout="* Creating isolated environment: venv+pip...\n"
+                "The virtual environment was not created successfully because "
+                "ensurepip is not available.",
             ),
             "wheel build failed",
             (f"apt install python{_PYVER}-venv", "--no-isolation"),
@@ -652,16 +695,14 @@ _PYVER = f"{sys.version_info.major}.{sys.version_info.minor}"
             id="wheel-ensurepip-missing",
         ),
         pytest.param(
-            lambda docker, root: setattr(
-                docker, "wheel", Reply(1, stdout="No module named build")
-            ),
+            lambda docker, wheel, root: wheel.answer(1, stdout="No module named build"),
             "wheel build failed",
             ("pip install build",),
             (),
             id="wheel-build-module-missing",
         ),
         pytest.param(
-            lambda docker, root: (root / SHIPPED_DOCS[0]).unlink(),
+            lambda docker, wheel, root: (root / SHIPPED_DOCS[0]).unlink(),
             "wheel build failed",
             (SHIPPED_DOCS[0],),
             ("pip install build",),
@@ -670,11 +711,12 @@ _PYVER = f"{sys.version_info.major}.{sys.version_info.minor}"
     ],
 )
 def test_local_build_reports_build_failures(
-    source_checkout, monkeypatch, capsys, docker, prepare, detail, present, absent
+    source_checkout, monkeypatch, capsys, docker, wheel, prepare, detail, present, absent
 ) -> None:
-    prepare(docker, source_checkout)
+    held = prepare(docker, wheel, source_checkout)
+    step = functools.partial(_local_build, monkeypatch, source_checkout)
 
-    ctx = _local_build(monkeypatch, source_checkout)
+    ctx = step() if held is None else _edit_during(docker, held, step)
 
     output = capsys.readouterr().out
     assert (ctx.results[-1].name, ctx.results[-1].status) == ("docker_image", "err")
@@ -685,30 +727,31 @@ def test_local_build_reports_build_failures(
 
 
 @pytest.mark.parametrize(
-    ("output", "force"),
+    ("output", "shown", "force"),
     [
-        pytest.param(b">>> Building \x81 from source\n", False, id="byte-outside-cp1252"),
-        pytest.param(b">>> ok\n", True, id="forced-keeps-layer-cache"),
+        # A raw 0x81 is neither UTF-8 nor cp1252; the locale codec once killed a long rebuild.
+        pytest.param(
+            ">>> Building \u2713 \udc81 from source\n",
+            ">>> Building \u2713 \ufffd from source",
+            False,
+            id="byte-outside-cp1252",
+        ),
+        pytest.param(">>> ok\n", ">>> ok", True, id="forced-keeps-layer-cache"),
     ],
 )
 def test_local_build_streams_docker_output_as_utf8(
-    source_checkout, monkeypatch, docker, output, force
+    source_checkout, monkeypatch, capsys, docker, output, shown, force
 ) -> None:
-    docker.builds[SANDBOX] = Build(0, output)
+    # An unclosed output pipe fails the test too: ``filterwarnings`` makes it an error.
+    docker.answer("build", SANDBOX, stdout=output)
 
-    ctx = _local_build(monkeypatch, source_checkout, force=force)
+    ctx = _local_build(monkeypatch, source_checkout, force=force, verbose=True)
 
     assert _verdict(ctx) == ("ok", "built")
-    builds = docker.sent("build")
+    assert shown in capsys.readouterr().out
+    builds = [call for call in docker.calls if call[0] == "build"]
     assert len(builds) == 2
-    # Decoding the pipe with the locale codec (cp1252 on Windows) once killed a long rebuild.
-    assert all(sent["encoding"] == "utf-8" and sent["errors"] == "replace" for sent in builds)
-    # An open pipe leaks a handle (a ResourceWarning, an error under CI) after every build.
-    assert len(docker.children) == 2
-    assert all(child.stdout.closed for child in docker.children)
-    assert not any(
-        "--no-cache" in call for call in docker.calls if call[:2] == ["docker", "build"]
-    )
+    assert not any("--no-cache" in call for call in builds)
 
 
 def test_runtime_base_build_timeout_keeps_docker_image_records(
@@ -755,7 +798,10 @@ def test_build_sh_probe_uses_dash_p_isolation() -> None:
     """The candidate-Python probe must use `-P`, matching the wheel invocation."""
     text = _BUILD_SH.read_text(encoding="utf-8")
     # The probe line runs each candidate against `import build` inside the loop.
-    probe = next((l for l in text.splitlines() if "import build" in l and '"$cand"' in l), None)
+    probe = next(
+        (l for l in text.splitlines() if "import build" in l and '"$cand"' in l),
+        None,
+    )
     assert probe is not None, "guard probe line not found in build.sh"
     assert re.search(r'"\$cand"\s+-P\s+-c', probe), (
         f"probe must isolate with -P so the repo-root build/ dir cannot shadow "
@@ -838,20 +884,26 @@ esac
     )
     fake_python.chmod(0o755)
     fake_docker = fake_bin / "docker"
-    fake_docker.write_text(f"#!/bin/bash\ntouch {build_marker}\nexit 0\n", encoding="utf-8")
+    fake_docker.write_text(
+        f"#!/bin/bash\ntouch {build_marker}\nexit 0\n",
+        encoding="utf-8",
+    )
     fake_docker.chmod(0o755)
     return fake_bin
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell-script execution")
 def test_riscv_script_refuses_five_image_plan_before_first_docker_build(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     docker_dir = _seed_riscv_script_tree(tmp_path)
     build_marker = tmp_path / "docker-build-ran"
     plan_marker = tmp_path / "plan-count"
     fake_bin = _fake_riscv_build_tools(
-        tmp_path, build_marker=build_marker, plan_marker=plan_marker
+        tmp_path,
+        build_marker=build_marker,
+        plan_marker=plan_marker,
     )
     fake_python = fake_bin / "python"
     monkeypatch.setenv("PYTHON", str(fake_python))
@@ -859,7 +911,10 @@ def test_riscv_script_refuses_five_image_plan_before_first_docker_build(
     monkeypatch.setenv("PATH", f"{fake_bin}:/usr/bin:/bin")
 
     result = subprocess.run(
-        [str(docker_dir / "build-riscv.sh")], capture_output=True, text=True, check=False
+        [str(docker_dir / "build-riscv.sh")],
+        capture_output=True,
+        text=True,
+        check=False,
     )
 
     assert result.returncode == 9
@@ -875,7 +930,11 @@ def test_riscv_script_refuses_five_image_plan_before_first_docker_build(
 # stale the moment a step is added, skipped, or retired. Steps are named by
 # their record key instead.
 
-_INIT_MODULES = ("init_cmd.py", "setup/docker_image.py", "setup/git_hooks.py")
+_INIT_MODULES = (
+    "init_cmd.py",
+    "setup/docker_image.py",
+    "setup/git_hooks.py",
+)
 
 
 def test_init_sources_carry_no_hardcoded_step_numbers() -> None:

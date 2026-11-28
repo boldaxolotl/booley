@@ -23,15 +23,22 @@ import pytest
 
 from booley.flows.sim.coverage_analysis_input import CoverageAnalysisError, read_coverage_record
 from booley.flows.sim.execution.contract import SimulationTestOutcome
-from booley.flows.sim.record.codec import canonical_json_bytes, raise_if_retired
+from booley.flows.sim.record.codec import (
+    canonical_json_bytes,
+    raise_if_retired,
+)
 from booley.flows.sim.record.projection import decode_simulation_projection
-from tests.flows.sim.simulation_record_test_support import coverage_invocation
+from tests.flows.sim.simulation_record_test_support import (
+    coverage_invocation,
+)
 from tests.flows.sim.test_simulation_record_cocotb_coverage_items import _run_cocotb
 from tests.flows.sim.test_simulation_record_unsupported_formats import (
     _assert_refused,
     _assert_unsupported_type,
 )
-from tests.flows.sim.test_simulation_record_unsupported_formats import reports as _reports_fixture
+from tests.flows.sim.test_simulation_record_unsupported_formats import (
+    reports as _reports_fixture,
+)
 
 # The report-root fixture of the Part 1 tests, collected here under the same name.
 reports = _reports_fixture

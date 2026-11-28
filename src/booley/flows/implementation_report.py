@@ -254,7 +254,9 @@ def _metric_delta(current: Any, baseline: Any) -> dict[str, Any]:
 
 
 def _comparison_errors(
-    current: ImplementationRun, baseline: ImplementationRun, policy: MetricPolicy
+    current: ImplementationRun,
+    baseline: ImplementationRun,
+    policy: MetricPolicy,
 ) -> list[str]:
     errors = (
         [f"baseline infrastructure error: {baseline.infra_error}"] if baseline.infra_error else []
@@ -343,7 +345,9 @@ def build_implementation_report(
 
 
 def build_implementation_aggregate(
-    reports: Mapping[str, ImplementationReport], *, baseline_ref: str | None = None
+    reports: Mapping[str, ImplementationReport],
+    *,
+    baseline_ref: str | None = None,
 ) -> ImplementationAggregate:
     """Build a cross-Flow run summary from policy-resolved target reports."""
     ordered = {target: reports[target].mcp_entry() for target in reports}

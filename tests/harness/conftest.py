@@ -1,4 +1,7 @@
-"""Test fixtures for booley tests."""
+"""Test fixtures for booley tests.
+
+It stubs the Claude Agent SDK package when it is not yet imported.
+"""
 
 from __future__ import annotations
 
@@ -13,14 +16,22 @@ if "claude_agent_sdk" not in sys.modules:
     _sdk = ModuleType("claude_agent_sdk")
     _sdk.AssistantMessage = type("AssistantMessage", (), {})
     _sdk.ClaudeAgentOptions = type(
-        "ClaudeAgentOptions", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)}
+        "ClaudeAgentOptions",
+        (),
+        {
+            "__init__": lambda self, **kw: self.__dict__.update(kw),
+        },
     )
     _sdk.ClaudeSDKError = type("ClaudeSDKError", (Exception,), {})
     _sdk.ProcessError = type("ProcessError", (_sdk.ClaudeSDKError,), {})
     _sdk.ResultError = type("ResultError", (_sdk.ProcessError,), {})
     _sdk.RateLimitEvent = type("RateLimitEvent", (), {})
     _sdk.ResultMessage = type(
-        "ResultMessage", (), {"__init__": lambda self, **kw: self.__dict__.update(kw)}
+        "ResultMessage",
+        (),
+        {
+            "__init__": lambda self, **kw: self.__dict__.update(kw),
+        },
     )
     _sdk.UserMessage = type("UserMessage", (), {})
     _sdk.query = AsyncMock()

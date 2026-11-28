@@ -76,7 +76,13 @@ class _LegacyBuildAdapter:
         self.refresh_runtime_base = refresh_runtime_base
         self.capacity_plan = capacity_plan
 
-    def build(self, node: ImageNode, *, force: bool, source: ArtifactSource) -> str | None:
+    def build(
+        self,
+        node: ImageNode,
+        *,
+        force: bool,
+        source: ArtifactSource,
+    ) -> str | None:
         if node.reference != BASE_IMAGE:
             raise ImageLifecycleError("legacy builder is restricted to Host Bootstrap")
         if source is ArtifactSource.VERIFIED_RELEASE_PULL:
@@ -167,7 +173,10 @@ def _capacity_request(node: ImageNode, *, output_tag: str | None = None) -> Dock
         labels.append((runtime_lifecycle.LABEL_RUNTIME_BASE_CONTRACT, node.runtime_base_contract))
     if node.standard_substrate_contract is not None:
         labels.append(
-            (runtime_lifecycle.LABEL_STANDARD_SUBSTRATE_CONTRACT, node.standard_substrate_contract)
+            (
+                runtime_lifecycle.LABEL_STANDARD_SUBSTRATE_CONTRACT,
+                node.standard_substrate_contract,
+            )
         )
     return DockerBuildRequest(
         node.reference,
@@ -211,7 +220,11 @@ class _IncrementalBuildAdapter:
         self.source_root = booley.version_attribution.source_root
 
     def prepare(
-        self, node: ImageNode, *, candidate_reference: str, parent_reference: str | None
+        self,
+        node: ImageNode,
+        *,
+        candidate_reference: str,
+        parent_reference: str | None,
     ) -> str:
         if node.role is ImageRole.RUNTIME_BASE:
             raise ImageLifecycleError(
@@ -476,7 +489,10 @@ class _IncrementalBuildAdapter:
             labels.append((project_image.LABEL_LAYOUT_REFERENCE, node.reference))
         if node.wheel_source_fingerprint is not None:
             labels.append(
-                (runtime_lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT, node.wheel_source_fingerprint)
+                (
+                    runtime_lifecycle.LABEL_WHEEL_SOURCE_FINGERPRINT,
+                    node.wheel_source_fingerprint,
+                )
             )
             labels.append(
                 (runtime_lifecycle.LABEL_WHEEL_SHA256, self._inherited_wheel_sha(node, parent_id))
@@ -502,7 +518,11 @@ class _IncrementalBuildAdapter:
         return labels
 
     def _role_build_inputs(
-        self, context, node: ImageNode, root: Path | None, parent_reference: str | None
+        self,
+        context,
+        node: ImageNode,
+        root: Path | None,
+        parent_reference: str | None,
     ) -> tuple[Path, tuple[tuple[str, str], ...], tuple[str, ...]] | None:
         from booley.harness.setup import docker_image
 
@@ -544,7 +564,9 @@ class _IncrementalBuildAdapter:
 
     @staticmethod
     def _source_role_build_inputs(
-        node: ImageNode, root: Path | None, parent: str
+        node: ImageNode,
+        root: Path | None,
+        parent: str,
     ) -> tuple[Path, tuple[tuple[str, str], ...], tuple[str, ...]] | None:
 
         if node.role is ImageRole.RUNTIME_BASE:
@@ -625,7 +647,10 @@ def _uses_managed_project_overlay(project_root: Path) -> bool:
 
 
 def reconcile(
-    intent: Intent, *, verbose: bool = False, capacity_plan: DockerBuildPlan | None = None
+    intent: Intent,
+    *,
+    verbose: bool = False,
+    capacity_plan: DockerBuildPlan | None = None,
 ) -> LifecycleResult:
     """Reconcile the host base image with Project Initialization build adapters.
 
@@ -649,7 +674,11 @@ def reconcile(
         )
     )
     return runtime_lifecycle.reconcile(
-        intent, verbose=verbose, docker=docker, builder=builder, artifact_policy=_artifact_policy()
+        intent,
+        verbose=verbose,
+        docker=docker,
+        builder=builder,
+        artifact_policy=_artifact_policy(),
     )
 
 
@@ -657,7 +686,10 @@ def plan(scope: ProjectImageScope, *, intent: Intent = Intent.ENSURE) -> Lifecyc
     """Plan source/release convergence using the installed artifact policy."""
     docker = _docker_adapter()
     return runtime_lifecycle.plan(
-        scope, docker=docker, artifact_policy=_artifact_policy(scope.project_root), intent=intent
+        scope,
+        docker=docker,
+        artifact_policy=_artifact_policy(scope.project_root),
+        intent=intent,
     )
 
 
@@ -667,7 +699,11 @@ def host_capacity_requests(intent: Intent) -> tuple[DockerBuildRequest, ...]:
     policy = _artifact_policy()
     if policy is ArtifactPolicy.VERIFIED_RELEASE_ONLY:
         return ()
-    checked = runtime_lifecycle.reconcile(Intent.CHECK, docker=docker, artifact_policy=policy)
+    checked = runtime_lifecycle.reconcile(
+        Intent.CHECK,
+        docker=docker,
+        artifact_policy=policy,
+    )
     if intent is not Intent.REFRESH and checked.status is Status.CURRENT:
         return ()
     import booley
@@ -760,7 +796,10 @@ def prepare(
             needs_source and booley.version_attribution.origin is VersionOrigin.DISTRIBUTION
         )
         return runtime_lifecycle.prepare(
-            lifecycle_plan, docker=docker, builder=builder, verbose=verbose
+            lifecycle_plan,
+            docker=docker,
+            builder=builder,
+            verbose=verbose,
         )
 
 
@@ -775,7 +814,10 @@ def abort(prepared: PreparedConvergence) -> None:
 
 
 def reconcile_planned(
-    scope: ProjectImageScope, intent: Intent, *, verbose: bool = False
+    scope: ProjectImageScope,
+    intent: Intent,
+    *,
+    verbose: bool = False,
 ) -> LifecycleResult:
     """Plan, preflight, prepare, and atomically adopt one Project image graph."""
     observed = plan(scope, intent=intent)

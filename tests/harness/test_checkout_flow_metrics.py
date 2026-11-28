@@ -12,18 +12,16 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from unittest.mock import patch
 
 import pytest
 
 from booley.flows.base import SubprocessResult
-from booley.flows.lint.flow import LintFlow
-from booley.flows.lint.request import LintRequest
 from booley.flows.sim.backends.cocotb_results import find_import_failure
 from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.request import SimRequest
 from booley.runtime import job_records
-from tests.flows.conftest import _flow_project_root, _set_booley_dir, _set_flow_project_root
+from tests.flows.conftest import _set_flow_project_root
+from tests.flows.lint import linter_run_fake
 from tests.flows.lint.linter_run_fake import stub_resolved
 from tests.flows.lint.test_flow import _REAL_CATALOG_BUILD, _target_handle
 from tests.flows.sim.conftest import (
@@ -51,8 +49,6 @@ if TYPE_CHECKING:
 
 # The conftest fixtures the Flow tests rely on are imported so they apply here too.
 __all__ = [
-    "_flow_project_root",
-    "_set_booley_dir",
     "_set_flow_project_root",
     "bare_identity_for_targets_without_a_core",
     "declared_trace_files_convert_after_the_run",
@@ -117,32 +113,30 @@ def lint_result(
     prepare_error: Exception | None = None,
 ) -> CheckoutFlowResult:
     """Run the ``lint`` Flow for Target ``lite`` with a faked linter and return the runner's view."""
-    monkeypatch.setenv("BOOLEY_CONTAINER", "1")  # a Flow runs only inside the Sandbox
     monkeypatch.setenv("BOOLEY_RUN_ID", RUN_ID)
     outer = tmp_path / "out"
     work = tmp_path / "work"
     work.mkdir(parents=True)
-    prepared = (
-        {"side_effect": prepare_error}
-        if prepare_error is not None
-        else {"return_value": (["verilator", "--lint-only"], stub_resolved())}
-    )
+
+    def resolved(handle: Any, build_root: Path) -> object:
+        if prepare_error is not None:
+            raise prepare_error
+        return stub_resolved(build_root=build_root)
+
     with monkeypatch.context() as scoped:
         install_lenient_target_catalog(
             scoped,
             real_catalog_build=_REAL_CATALOG_BUILD,
             fallback_handle=lambda root, token: _target_handle(token, project_root=root),
         )
-        # private: this helper predates tests/flows/lint/linter_run_fake.py; moving it onto
-        # that fake is the follow-up #4692's review recorded (the two-tuple shim goes with it).
-        with (
-            patch.object(LintFlow, "_prepare_lint_command", **prepared),
-            patch.object(LintFlow, "_execute", return_value=execution),
-        ):
-            outcome = LintFlow().execute(
-                LintRequest(target="lite", work_dir=work, report_dir=outer / "flow-reports")
-            )
-    return checkout_result(outer, "lint", outcome.exit_code)
+        run = linter_run_fake.install(tmp_path, scoped)
+        result, _commands = run(
+            *([execution] if execution is not None else []),
+            args=("--report-dir", str(outer / "flow-reports")),
+            work_dir=work,
+            resolved=resolved,
+        )
+    return checkout_result(outer, "lint", result.exit_code)
 
 
 def linter_output(
@@ -297,7 +291,10 @@ def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
     detail = find_import_failure(noise)
     stdout = noise + _cocotb_output([], state="missing", detail=detail, passed=False)
     _run_cocotb(
-        import_failure, monkeypatch, stdout, report_dir=import_failure / "out" / "flow-reports"
+        import_failure,
+        monkeypatch,
+        stdout,
+        report_dir=import_failure / "out" / "flow-reports",
     )
     cocotb = checkout_result(import_failure / "out", "sim", 1)
 
@@ -308,7 +305,10 @@ def test_missing_tool_and_cocotb_import_failure_return_no_values_and_an_excerpt(
         (Bound("tests_total_min", "tests_total", "min", 1, None, None, None),),
         (),
     )
-    for result, expected in ((missing, ("missing tool: verilator",)), (cocotb, fragments)):
+    for result, expected in (
+        (missing, ("missing tool: verilator",)),
+        (cocotb, fragments),
+    ):
         assert result.metrics == {}
         assert result.excerpt is not None
         assert all(fragment in result.excerpt for fragment in expected), result.excerpt

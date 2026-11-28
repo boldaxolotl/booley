@@ -39,7 +39,13 @@ def _context(**overrides):
     return AdmissionContext(**values)
 
 
-@pytest.mark.parametrize("overrides", [{"mode": "invalid"}, {"mode": "managed"}])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"mode": "invalid"},
+        {"mode": "managed"},
+    ],
+)
 def test_admission_context_rejects_incoherent_claims(overrides) -> None:
     with pytest.raises(ValueError):
         _context(**overrides)

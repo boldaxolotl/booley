@@ -189,6 +189,7 @@ select = [
     "PL",   # pylint subset
     "RUF",  # ruff-specific
     "BLE",  # flake8-blind-except — broad `except` must be deliberate (use `# noqa: BLE001 — reason`)
+    "ARG",  # flake8-unused-arguments
 ]
 ignore = [
     "PLC0415",  # import not at top-level — deliberate lazy-import pattern
@@ -245,6 +246,11 @@ known-first-party = ["booley"]
 #             node written in upstream Edalize idiom (mutable TOOL_OPTIONS
 #             class attr, one linear setup(), list concatenation) so the
 #             upstream PR ships the file byte-identical (ADR 0033).
+#   ARG (test code) — pytest fixtures requested for their side effects and stub
+#             signatures that mirror a replaced interface; unused arguments in
+#             tests are out of scope (#5837).
+"tests/**" = ["ARG"]
+"crates/bwave/tests/**" = ["ARG"]
 "src/booley/flows/sim/trace_session.py" = ["PLR0915"]
 "src/booley/data/edalize/verible.py" = ["RUF012", "PLR0912", "RUF005"]
 "src/booley/mcp/base.py" = ["B027"]
@@ -279,6 +285,8 @@ markers = [
     "native_bwave: tests that execute the compiled native B-Wave binary",
     "slow: marks slow-running tests (deselect with '-m \"not slow\"')",
     "sandbox_only: exercises only code that runs in the Sandbox; skipped on Windows (see .github/ci/README.md#sandbox-only-tests)",
+    "os_specific: the result can differ by OS; listed in tests/os_specific.py (see .github/ci/README.md#os-specific-tests)",
+    "docker_cli: the test may start the Docker CLI; opts out of the Docker CLI guard (see .github/ci/README.md#docker-cli-guard)",
 ]
 filterwarnings = [
     "error",
@@ -293,7 +301,8 @@ filterwarnings = [
     # an all-green coverage shard at shutdown. Booley never imports sqlite3
     # (tests/test_pytest_configuration.py enforces that), so only tool-owned
     # connections match. The "." stands for the ":" the filter syntax reserves.
-    "ignore:Exception ignored in. <sqlite3.Connection object:pytest.PytestUnraisableExceptionWarning",
+    # CPython 3.14 words it "while finalizing database connection".
+    "ignore:Exception ignored (in.|while finalizing database connection) <sqlite3.Connection object:pytest.PytestUnraisableExceptionWarning",
 ]
 
 # ---------------------------------------------------------------------------

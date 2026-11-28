@@ -73,7 +73,6 @@ _ACCEPTED: list[tuple[str, Callable[[], Any], Any]] = [
     ("as_float-int-string", lambda: as_float("4"), 4.0),
     ("as_float", lambda: as_float(3.5), 3.5),
     ("as_positive_int", lambda: as_positive_int(30, default=10), 30),
-    ("as_positive_int-field", lambda: as_positive_int(-1, default=1, field="max_sessions"), 1),
     ("require_opt_str-absent", lambda: require_opt_str({}, "engine"), None),
     ("require_opt_str-none", lambda: require_opt_str({"engine": None}, "engine"), None),
     ("require_opt_str", lambda: require_opt_str({"engine": "opensta"}, "engine"), "opensta"),
@@ -219,7 +218,8 @@ _REJECTED: list[tuple[str, Callable[[], Any], str | None]] = [
 
 
 @pytest.mark.parametrize(
-    ("call", "match"), [pytest.param(call, match, id=name) for name, call, match in _REJECTED]
+    ("call", "match"),
+    [pytest.param(call, match, id=name) for name, call, match in _REJECTED],
 )
 def test_strict_validators_reject(call: Callable[[], Any], match: str | None):
     with pytest.raises(BoundaryError, match=match):

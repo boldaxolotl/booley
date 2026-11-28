@@ -92,10 +92,17 @@ _HEARTBEAT_READ_SCRIPT = (
 
 
 def select_reap(
-    containers: list[SessionContainer], *, now: float, idle_timeout: float
+    containers: list[SessionContainer],
+    *,
+    now: float,
+    idle_timeout: float,
 ) -> list[str]:
     """Return IDs of containers idle beyond the configured timeout."""
-    reasons = _reap_reasons(containers, now=now, idle_timeout=idle_timeout)
+    reasons = _reap_reasons(
+        containers,
+        now=now,
+        idle_timeout=idle_timeout,
+    )
     return _ordered_reap_ids(containers, reasons)
 
 
@@ -109,7 +116,10 @@ def _ordered_reap_ids(
 
 
 def _reap_reasons(
-    containers: list[SessionContainer], *, now: float, idle_timeout: float
+    containers: list[SessionContainer],
+    *,
+    now: float,
+    idle_timeout: float,
 ) -> dict[str, frozenset[str]]:
     idle = {
         c.id for c in containers if c.attachments == 0 and now - c.last_activity > idle_timeout
@@ -422,7 +432,9 @@ def license_ownership(  # noqa: PLR0911 - fail-closed external-label validation 
 
 
 def cleanup_licensed_session(
-    cid: str, project_id: str, run: Callable[..., subprocess.CompletedProcess] = _run
+    cid: str,
+    project_id: str,
+    run: Callable[..., subprocess.CompletedProcess] = _run,
 ) -> tuple[str, ...]:
     """Remove one stopped licensed Session and its deterministic owned topology."""
     result = run(["rm", "-f", cid], timeout=60)
@@ -431,13 +443,16 @@ def cleanup_licensed_session(
     residual.extend(cleanup_license_topology(project_id, run))
     if residual:
         logger.error(
-            "licensed session %s was stopped but cleanup left: %s", cid, ", ".join(residual)
+            "licensed session %s was stopped but cleanup left: %s",
+            cid,
+            ", ".join(residual),
         )
     return tuple(residual)
 
 
 def cleanup_license_topology(
-    project_id: str, run: Callable[..., subprocess.CompletedProcess] = _run
+    project_id: str,
+    run: Callable[..., subprocess.CompletedProcess] = _run,
 ) -> tuple[str, ...]:
     """Remove deterministic relay objects for one validated Project identity."""
     session_id = project_id[:16]
@@ -502,7 +517,11 @@ def reap_once(
 ) -> list[str]:
     """One reap pass: collect, select, stop. Returns the stopped IDs."""
     containers = collect(run, exec_inspector=exec_inspector)
-    reasons = _reap_reasons(containers, now=now, idle_timeout=idle_timeout)
+    reasons = _reap_reasons(
+        containers,
+        now=now,
+        idle_timeout=idle_timeout,
+    )
     by_id = {container.id: container for container in containers}
     to_reap = _ordered_reap_ids(containers, reasons)
     stopped = []
@@ -512,7 +531,11 @@ def reap_once(
             logger.warning("not stopping %s until its license ownership can be inspected", cid)
             continue
         if not _idle_after_revalidation(
-            by_id[cid], now=now, idle_timeout=idle_timeout, run=run, exec_inspector=exec_inspector
+            by_id[cid],
+            now=now,
+            idle_timeout=idle_timeout,
+            run=run,
+            exec_inspector=exec_inspector,
         ):
             continue
         if not stop_container(cid, run):
@@ -544,7 +567,11 @@ def _env_int(name: str, default: int) -> int:
 def main() -> None:
     idle_timeout = _env_int("BOOLEY_IDLE_TIMEOUT_SECONDS", DEFAULT_IDLE_TIMEOUT_S)
     interval = _env_int("BOOLEY_REAP_INTERVAL_SECONDS", DEFAULT_INTERVAL_S)
-    logger.info("starting: idle_timeout=%ds interval=%ds", idle_timeout, interval)
+    logger.info(
+        "starting: idle_timeout=%ds interval=%ds",
+        idle_timeout,
+        interval,
+    )
     prev_wall = time.time()
     prev_mono = time.monotonic()
     while True:

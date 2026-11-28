@@ -50,7 +50,9 @@ def _fallback_prompt_path(label: str | None) -> Path | None:
 
 
 def resolve_agent_artifacts(
-    transcript_path: Path | None, *, label: str | None = None
+    transcript_path: Path | None,
+    *,
+    label: str | None = None,
 ) -> AgentArtifactPaths:
     """Resolve canonical machine and human log destinations for one attempt."""
     prompt_source = transcript_path or _fallback_prompt_path(label)
@@ -69,4 +71,7 @@ def resolve_agent_artifacts(
 
 def configure_agent_call(params: AgentCallParams) -> AgentCallParams:
     """Bind Booley execution policy without mutating a shared backend instance."""
-    return replace(params, artifact_paths=partial(resolve_agent_artifacts, label=params.label))
+    return replace(
+        params,
+        artifact_paths=partial(resolve_agent_artifacts, label=params.label),
+    )

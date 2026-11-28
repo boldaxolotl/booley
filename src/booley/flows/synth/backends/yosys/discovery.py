@@ -16,7 +16,10 @@ from booley.flows.synth.pdk import DEFAULT_LIB_DIR
 
 DEFAULT_LIBERTY = DEFAULT_LIB_DIR / "cell" / "lib" / "NangateOpenCellLibrary_typical_ccs.lib"
 _NANGATE_LIBERTY_BASENAMES = frozenset(
-    {"NangateOpenCellLibrary_typical_ccs.lib", "NangateOpenCellLibrary_typical.lib"}
+    {
+        "NangateOpenCellLibrary_typical_ccs.lib",
+        "NangateOpenCellLibrary_typical.lib",
+    }
 )
 _NANGATE_ABC_DONT_USE = ("FA_X1", "HA_X1")
 

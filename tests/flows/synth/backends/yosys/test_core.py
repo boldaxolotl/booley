@@ -117,7 +117,10 @@ class TestResolveLiberty:
 class TestNangateAbcPolicy:
     @pytest.mark.parametrize(
         "basename",
-        ["NangateOpenCellLibrary_typical_ccs.lib", "NangateOpenCellLibrary_typical.lib"],
+        [
+            "NangateOpenCellLibrary_typical_ccs.lib",
+            "NangateOpenCellLibrary_typical.lib",
+        ],
     )
     def test_supported_nangate_libraries_exclude_multi_output_cells(self, tmp_path, basename):
         script = _script(tmp_path, liberty=Path("/pdk") / basename)
@@ -1028,7 +1031,10 @@ class TestSynthTimingConfigModes:
 
     @pytest.mark.parametrize(
         ("table", "utilization", "repair"),
-        [("", 40.0, True), ("utilization_pct = 55\nrepair_timing = false", 55.0, False)],
+        [
+            ("", 40.0, True),
+            ("utilization_pct = 55\nrepair_timing = false", 55.0, False),
+        ],
     )
     def test_omitted_ppa_matches_all_none_call(self, tmp_path, table, utilization, repair):
         if table:

@@ -224,14 +224,11 @@ def test_doctor_grades_an_exported_key_under_the_policy(
 ):
     """Under subscription the key never reaches the agents, so it cannot count as the
     rotation-free credential (an accepted NOTE, no WARN); the visitor mode accepts it."""
-    from booley.runtime import runtime_context
 
     for name, value in env.items():
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
     pin_venue(monkeypatch, inside=inside)
-    # Pin the venue: a Sandbox without a seed sidecar reports a different NOTE.
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: inside)
     install_agent_clis(Path.home())
 
     findings = credential_findings(
@@ -254,7 +251,9 @@ def test_unconfigured_policy_is_subscription(clean_env, monkeypatch):
 
     # private: no Doctor entry point passes a missing Project; tests/runtime/test_agent_app_auto.py
     # also pins this fallback.
-    assert doctor._configured_auth_policy(None) == "subscription"
+    assert doctor._agent_audit(None, None).policy("claude") == "subscription"
+    monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "api_key")
+    assert doctor._agent_audit(None, None).policy("claude") == "api_key"
 
 
 def _give_credentials(app, key, stored, login, monkeypatch):

@@ -47,7 +47,10 @@ def as_str_list(value: Any, default: list[str]) -> list[str]:
     return boundary.as_str_list(value, default=default)
 
 
-def _core_source_files(work_dir: Path, target: str | None) -> tuple[list[str], list[str]] | None:
+def _core_source_files(
+    work_dir: Path,
+    target: str | None,
+) -> tuple[list[str], list[str]] | None:
     """Exact RTL/TB source files (project-relative POSIX) from ``.core`` files.
 
     ``None`` when no ``.core`` is authored under *work_dir* (caller falls back to
@@ -128,7 +131,10 @@ def _declared_program_files(root: Path) -> list[str]:
         return []
     with config_path.open("rb") as stream:
         config = tomllib.load(stream)
-    paths = project_config_program_paths(config, project_root=root)
+    paths = project_config_program_paths(
+        config,
+        project_root=root,
+    )
     return [path.relative_to(root).as_posix() for path in paths]
 
 
@@ -181,7 +187,11 @@ def _hash_file_entries(entries: list[tuple[str, Path]]) -> dict[str, Any]:
     return {"digest": digest.hexdigest(), "files": sorted(unique)}
 
 
-def compute_source_fingerprint(work_dir: Path, *, target: str | None = None) -> dict[str, Any]:
+def compute_source_fingerprint(
+    work_dir: Path,
+    *,
+    target: str | None = None,
+) -> dict[str, Any]:
     """Return a conservative fingerprint of the ``.core``-declared RTL and TB sources.
 
     When *target* is provided, the fingerprint covers only that Target's

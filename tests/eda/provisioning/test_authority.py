@@ -67,7 +67,9 @@ def test_authority_lock_contention_has_controlled_error(
 ) -> None:
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.setattr(
-        private_store, "acquire_file_lock", lambda _lock: (_ for _ in ()).throw(BlockingIOError())
+        private_store,
+        "acquire_file_lock",
+        lambda _lock: (_ for _ in ()).throw(BlockingIOError()),
     )
     times = iter((0.0, 11.0))
     monkeypatch.setattr(private_store, "monotonic", lambda: next(times))
@@ -109,7 +111,8 @@ def test_issuance_resolves_the_installation_selected_only_by_the_grant(
 
 
 def test_inspection_without_grant_does_not_create_authority_state(
-    tmp_path: Path, private_state: Path
+    tmp_path: Path,
+    private_state: Path,
 ) -> None:
     del private_state
     project = tmp_path / "project"
@@ -275,7 +278,8 @@ def test_revoke_missing_relative_root_points_to_project_inventory(
     monkeypatch.chdir(tmp_path)
 
     with pytest.raises(
-        authority.AuthorityError, match=r"absolute canonical path.*`booley projects`"
+        authority.AuthorityError,
+        match=r"absolute canonical path.*`booley projects`",
     ):
         eda_grant_support.revoke_grant(Path("project"), "vivado")
 
@@ -295,7 +299,12 @@ def test_revoke_missing_relative_root_points_to_project_inventory(
     ],
 )
 def test_license_profile_rejects_unsupported_topologies(
-    tmp_path: Path, private_state: Path, address: str, hostid: str, first: int, second: int
+    tmp_path: Path,
+    private_state: Path,
+    address: str,
+    hostid: str,
+    first: int,
+    second: int,
 ) -> None:
     with pytest.raises(authority.AuthorityError):
         authority.register_license(
@@ -347,7 +356,11 @@ def test_corrupt_and_duplicate_grants_fail_closed(tmp_path: Path, private_state:
     ],
 )
 def test_corrupt_record_field_types_fail_closed(
-    tmp_path: Path, private_state: Path, section: str, field: str, value: object
+    tmp_path: Path,
+    private_state: Path,
+    section: str,
+    field: str,
+    value: object,
 ) -> None:
     _registered(tmp_path)
     eda_grant_support.register_license("site")

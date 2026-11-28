@@ -8,11 +8,14 @@ import json
 import os
 import re
 import shutil
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
 
+from booley.core import docker_cli
+from booley.core.atomic_files import atomic_replace_bytes, fsync_directory
 from booley.core.booley_layout import (
     BOOLEY_DIR_NAME,
     RETIRED_DIR_NAME,
@@ -26,7 +29,6 @@ from booley.core.booley_layout import (
 )
 from booley.core.checkout_role import require_project_checkout
 from booley.core.project_identity import matches_project_label
-from booley.runtime.atomic_files import atomic_replace_bytes, fsync_directory
 from booley.runtime.directory_migration_git import (
     edit,
     mapped,
@@ -221,7 +223,7 @@ def inspect_migration(
     journal = metadata_root(root) / _JOURNAL
     if journal.is_file():
         document = _read_journal(journal, root)
-        observe(_record_directory(root, document))
+        observe(_record_directory(document))
         _require_host_migration()
         _refuse_live_sandboxes(root, document["moves"], document["registrations"])
         return Migration(root, journal, document, observe, integrations)
@@ -235,7 +237,7 @@ def inspect_migration(
     return Migration(root, journal, _capture(root, observe, integrations), observe, integrations)
 
 
-def _record_directory(root: Path, document: dict[str, Any]) -> Path:
+def _record_directory(document: dict[str, Any]) -> Path:
     first = document["moves"][0]
     old, new = Path(first["source"]), Path(first["destination"])
     return old if old.is_dir() else new
@@ -491,27 +493,29 @@ def _running_sandboxes() -> list[dict[str, Any]]:
         raise BooleyLayoutError(
             "cannot inventory live Sandboxes; install/restore Docker before migration"
         )
-    result = run_captured_bounded(["docker", "ps", "-q"], timeout=30)
+    result = _docker(["ps", "-q"], 30)
     if result.returncode:
         raise BooleyLayoutError(
             "cannot inventory live Sandboxes; stop consumers and restore Docker before migration"
         )
-    documents = []
-    for container in result.stdout.split():
-        inspected = run_captured_bounded(["docker", "inspect", container], timeout=30)
-        if inspected.returncode:
-            raise BooleyLayoutError(f"cannot inspect live Sandbox {container}")
-        try:
-            values = json.loads(inspected.stdout)
-            if not isinstance(values, list) or len(values) != 1 or not isinstance(values[0], dict):
-                raise ValueError("expected one container object")
-            _validate_container_inventory(values[0])
-            documents.append(values[0])
-        except (ValueError, TypeError, IndexError) as exc:
-            raise BooleyLayoutError(
-                f"cannot inspect live Sandbox {container}: invalid inventory"
-            ) from exc
-    return documents
+    return [_sandbox_inventory(container) for container in result.stdout.split()]
+
+
+def _docker(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return run_captured_bounded(["docker", *args], timeout=timeout)
+
+
+def _sandbox_inventory(container: str) -> dict[str, Any]:
+    invalid = f"cannot inspect live Sandbox {container}: invalid inventory"
+    try:
+        document = docker_cli.inspect(_docker, "container", container, timeout=30)
+        _validate_container_inventory(document)
+    except docker_cli.InspectError as exc:
+        message = invalid if exc.result is None else f"cannot inspect live Sandbox {container}"
+        raise BooleyLayoutError(message) from exc
+    except (ValueError, TypeError) as exc:
+        raise BooleyLayoutError(invalid) from exc
+    return document
 
 
 def _validate_container_inventory(document: dict[str, Any]) -> None:
@@ -562,7 +566,8 @@ def _refuse_live_sandboxes(
     for document in _running_sandboxes():
         labels = document.get("Config", {}).get("Labels", {}) or {}
         if any(
-            matches_project_label(labels.get("booley.project-id"), str(path)) for path in roots
+            matches_project_label(labels.get(docker_cli.PROJECT_ID_LABEL), str(path))
+            for path in roots
         ):
             raise BooleyLayoutError("stop live Sandbox before running `booley init`")
         for mount in document.get("Mounts", []):

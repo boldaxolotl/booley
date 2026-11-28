@@ -15,7 +15,6 @@ from booley.harness.setup import readiness
 from booley.harness.setup.common import InitContext, StepResult
 from booley.runtime import auth_token
 from booley.runtime.booley_dir import init_booley_dir_scope, reset_cache
-from tests.docker_cli_guard import assert_docker_cli_unused, forbid_docker_cli
 from tests.harness.git_support import git_stdout as _git
 from tests.subprocess_budget import run_bounded_child
 
@@ -41,8 +40,7 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     (root / ".booley" / "booley.toml").write_text("[stealth]\nenabled = true\n", encoding="utf-8")
     (root / ".booley" / "cores" / "cpu.core").write_text(CORE_TEXT, encoding="utf-8")
     monkeypatch.delenv("BOOLEY_DIR", raising=False)
-    # No docker CLI, and every host-private location points at a path that does not exist.
-    forbid_docker_cli(monkeypatch)
+    # Every host-private location points at a path that does not exist.
     monkeypatch.setattr(init_cmd.shutil, "which", lambda _name: None)
     for name in HOST_PRIVATE_ENVIRONMENT:
         monkeypatch.setenv(name, str(tmp_path / "absent" / name))
@@ -50,7 +48,6 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
         monkeypatch.delenv(name, raising=False)
     reset_cache()
     yield root
-    assert_docker_cli_unused()
 
 
 def _initialize(
@@ -78,7 +75,8 @@ def _repository_state(root: Path) -> dict[str, object]:
     }
     configs = {
         repository: run_bounded_child(
-            ["git", "-C", str(root / repository), "config", "--local", "--list"], check=True
+            ["git", "-C", str(root / repository), "config", "--local", "--list"],
+            check=True,
         ).stdout
         for repository in (".", ".booley")
         if (root / repository / ".git").exists()
@@ -110,7 +108,7 @@ def test_project_initialization_runs_without_docker_or_host_private_state(
     project: Path, tmp_path: Path
 ) -> None:
     audit = readiness.ProjectAudit(
-        project, project / ".booley", {"stealth": {"enabled": True}}, {}, ""
+        project, project / ".booley", {"stealth": {"enabled": True}}, ""
     )
 
     def readiness_findings(*, ignore_exclude: bool) -> list[tuple[str | None, str]]:
@@ -162,7 +160,11 @@ def _outer_branch(root: Path, branch: str, monkeypatch: pytest.MonkeyPatch) -> N
     ids=["main", "release-next", "existing", "partial"],
 )
 def test_stealth_booley_dir_repository_follows_the_outer_branch(
-    project: Path, monkeypatch: pytest.MonkeyPatch, branch: str, prior: str | None, expected: str
+    project: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    branch: str,
+    prior: str | None,
+    expected: str,
 ) -> None:
     _outer_branch(project, branch, monkeypatch)
     inner = project / ".booley"

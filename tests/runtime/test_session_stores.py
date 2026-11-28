@@ -16,7 +16,11 @@ from typing import TYPE_CHECKING
 import pytest
 
 from booley.core import host_shell, private_store
-from booley.runtime import issuance_invalidation, session_admission, session_issuance
+from booley.runtime import (
+    issuance_invalidation,
+    session_admission,
+    session_issuance,
+)
 from booley.runtime.private_store import session_store_repair
 
 if TYPE_CHECKING:

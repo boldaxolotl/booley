@@ -28,8 +28,10 @@ import pytest
 from booley.bwave import vaporview_bridge as bwave_bridge
 from booley.core.host_shell import quote_arg
 from booley.runtime import vaporview
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.bwave.session_store_support import isolate_temporary_store
 from tests.conftest import MINIMAL_FST_BYTES
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import scaled
 
@@ -112,7 +114,11 @@ def _probe_finds(monkeypatch, present: set[str]) -> None:
     from booley.bwave import cli as bwave
     from booley.runtime.vaporview import ExtensionState
 
-    monkeypatch.setattr(bwave.shutil, "which", lambda name: name if name in present else None)
+    monkeypatch.setattr(
+        bwave.shutil,
+        "which",
+        lambda name: name if name in present else None,
+    )
     monkeypatch.setattr(bwave, "_extension_missing", lambda cli: False)
     monkeypatch.setattr(bwave, "_viewer_extension_state", lambda: ExtensionState.INSTALLED)
 
@@ -121,7 +127,14 @@ def test_gui_parser_accepts_repeatable_named_groups():
     from booley.bwave import cli as bwave
 
     args = bwave._build_parser().parse_args(
-        ["gui", "@dut", "--group", "Request=tb.dut.req_*", "-g", "Response=tb.dut.resp_*"]
+        [
+            "gui",
+            "@dut",
+            "--group",
+            "Request=tb.dut.req_*",
+            "-g",
+            "Response=tb.dut.resp_*",
+        ]
     )
 
     assert args.groups == ["Request=tb.dut.req_*", "Response=tb.dut.resp_*"]
@@ -147,7 +160,9 @@ def launched(monkeypatch):
     _probe_finds(monkeypatch, {"code"})
     calls: list[list[str]] = []
     monkeypatch.setattr(
-        bwave, "_launch_viewer", lambda cli, trace: calls.append([cli, trace]) or 0
+        bwave,
+        "_launch_viewer",
+        lambda cli, trace: calls.append([cli, trace]) or 0,
     )
     return calls
 
@@ -423,7 +438,10 @@ def test_extension_missing_true_when_absent(monkeypatch):
 def test_extension_missing_false_when_listed_any_case(monkeypatch):
     from booley.bwave import cli as bwave
 
-    _fake_list_extensions(monkeypatch, stdout="ms-python.python\nLramseyer.VaporView\n")
+    _fake_list_extensions(
+        monkeypatch,
+        stdout="ms-python.python\nLramseyer.VaporView\n",
+    )
 
     assert bwave._extension_missing("code") is False
 
@@ -448,7 +466,11 @@ def test_missing_extension_prints_hint_and_skips_launch(tmp_path, monkeypatch):
     from booley.bwave import cli as bwave
 
     trace = _seed_default(tmp_path)
-    monkeypatch.setattr(bwave.shutil, "which", lambda name: name if name == "code" else None)
+    monkeypatch.setattr(
+        bwave.shutil,
+        "which",
+        lambda name: name if name == "code" else None,
+    )
     monkeypatch.setattr(bwave, "_extension_missing", lambda cli: True)
     calls = []
     monkeypatch.setattr(bwave, "_launch_viewer", lambda c, t: calls.append([c, t]) or 0)
@@ -467,7 +489,11 @@ def test_missing_extension_hint_names_the_probed_cli(tmp_path, monkeypatch):
     from booley.bwave import cli as bwave
 
     _seed_default(tmp_path)
-    monkeypatch.setattr(bwave.shutil, "which", lambda name: name if name == "cursor" else None)
+    monkeypatch.setattr(
+        bwave.shutil,
+        "which",
+        lambda name: name if name == "cursor" else None,
+    )
     monkeypatch.setattr(bwave, "_extension_missing", lambda cli: True)
 
     with pytest.raises(SystemExit) as exc:
@@ -1009,7 +1035,11 @@ def test_replacing_a_grouped_view_clears_it_first(tmp_path, monkeypatch, fake_ru
     # loading an empty view first avoids it, so no row is reported as dropped.
     trace = _seed_default(tmp_path)
     fake_rust["signals"] = [("tb.dut.fifo.full", 1), ("tb.dut.fifo.empty", 1)]
-    group = {"dataType": "signal-group", "groupName": "G", "children": [_row("tb.dut.fifo.full")]}
+    group = {
+        "dataType": "signal-group",
+        "groupName": "G",
+        "children": [_row("tb.dut.fifo.full")],
+    }
     viewer = _viewer_for(trace, monkeypatch, rows=[_row("tb.clk"), group])
     # Like the live viewer: right after the load, state still reads the
     # cleared view, which must not pass for "every row was dropped".
@@ -1867,7 +1897,11 @@ def test_signal_cap_counts_flat_and_grouped_selections_together(
     fake_rust["signals"] = [f"tb.dut.bus.bit{i}" for i in range(10)]
 
     with pytest.raises(SystemExit) as exc:
-        _gui(signals=["tb.dut.bus.bit0"], groups=["Bus=tb.dut.bus.bit[1-9]"], max_signals=9)
+        _gui(
+            signals=["tb.dut.bus.bit0"],
+            groups=["Bus=tb.dut.bus.bit[1-9]"],
+            max_signals=9,
+        )
 
     assert exc.value.code == 2
     msg = capsys.readouterr().err
@@ -2134,7 +2168,7 @@ def test_open_is_gone_and_says_so(monkeypatch, capsys):
     """`open` must not fall through to the query translator and die about globs."""
     from booley.bwave import cli as bwave
 
-    monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     monkeypatch.setattr(sys, "argv", ["bwave", "open", "@dut", "-s", "tb.dut.fifo.*"])
 
     with pytest.raises(SystemExit) as exc:
@@ -2154,7 +2188,7 @@ def test_gui_is_container_only(monkeypatch, capsys):
     """Shared guard, but `open` is the most human-facing verb — pin it."""
     from booley.bwave import cli as bwave
 
-    monkeypatch.setattr("booley.runtime.runtime_context.inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(sys, "argv", ["bwave", "gui"])
 
     with pytest.raises(SystemExit) as exc:
@@ -2210,7 +2244,10 @@ def test_gui_subprocess_smoke(tmp_path):
     env["BOOLEY_CONTAINER"] = "1"
     env["HOME"] = str(tmp_path / "home")  # no bridge sockets: editor-CLI fallback
 
-    r = run_bounded_child([sys.executable, "-m", "booley.bwave.cli", "gui", "@dut"], env=env)
+    r = run_bounded_child(
+        [sys.executable, "-m", "booley.bwave.cli", "gui", "@dut"],
+        env=env,
+    )
 
     assert r.returncode == 0, f"stderr: {r.stderr}"
     assert r.stderr.strip() == ""
@@ -2230,7 +2267,11 @@ def test_trigger_arguments_forward_unchanged(command, trigger):
         args += ["-s", "bus"]
     if command == "distance":
         args += ["--to", "bus", trigger]
-    assert bwave._passthrough_subcommand(args, "trace.fst") == [command, "trace.fst", *args[1:]]
+    assert bwave._passthrough_subcommand(args, "trace.fst") == [
+        command,
+        "trace.fst",
+        *args[1:],
+    ]
 
 
 @pytest.mark.parametrize(
@@ -2412,7 +2453,11 @@ def test_issue_1108_invalid_legacy_modes_fail_before_dispatch(
 def test_clock_grid_options_forward_to_registered_store(args):
     from booley.bwave import cli as bwave
 
-    assert bwave._translate_to_subcommand(args, "trace.fst") == [args[0], "trace.fst", *args[1:]]
+    assert bwave._translate_to_subcommand(args, "trace.fst") == [
+        args[0],
+        "trace.fst",
+        *args[1:],
+    ]
 
 
 def test_list_envelope_refuses_native_usage_error(monkeypatch, capsys):

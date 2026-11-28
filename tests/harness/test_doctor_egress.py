@@ -7,8 +7,8 @@ import socket
 import pytest
 
 from booley.audit.diagnostic_results import Severity
-from tests.harness.doctor_run_support import enter_sandbox, run_doctor
-from tests.harness.test_doctor import _patch_environment, _write_project
+from tests.harness.doctor_environment_support import patch_doctor_environment
+from tests.harness.doctor_run_support import enter_sandbox, run_doctor, write_project
 
 
 def _resolves(host, *_args):
@@ -22,7 +22,7 @@ def _unresolvable(host, *_args):
 @pytest.fixture
 def sandbox_doctor(monkeypatch, tmp_path):
     """A Project whose Doctor runs inside the Sandbox, with no ambient egress or proxy."""
-    _patch_environment(monkeypatch, tmp_path, _write_project(tmp_path))
+    patch_doctor_environment(monkeypatch, tmp_path, write_project(tmp_path))
     for var in ("BOOLEY_EGRESS", "CLAUDECODE", "HTTP_PROXY", "HTTPS_PROXY", "http_proxy"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.delenv("https_proxy", raising=False)

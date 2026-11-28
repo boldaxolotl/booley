@@ -21,7 +21,7 @@ sys.path.insert(0, str(_ROOT / ".github/scripts"))
 
 from ci_changes import build_test_matrix
 
-_FLAGS = r"junitxml|record|evidence|json|markdown|ci-shard-manifest|ci-timing-output"
+_FLAGS = r"junitxml|record|evidence|json|markdown|ci-shard-manifest|ci-timing-output|flaky-copy"
 _DIAGNOSTIC_ENV = ("BOOLEY_PYTEST_TIMING_FILE", "BOOLEY_PYTEST_EVIDENCE_DIR")
 _OUTPUT_HELPERS = ("ci_run_metrics.py",)
 _EXPORT_PROBES = {"verify_openroad_runtime.sh": "/evidence/openroad-gui.log"}
@@ -247,7 +247,10 @@ def test_smoke_evidence_is_uploaded_after_container_cleanup() -> None:
         for index, step in enumerate(steps)
         if step.get("name") == "Clean up image validation containers"
     )
-    for name in ("Upload coverage release test timing", "Upload OpenROAD runtime evidence"):
+    for name in (
+        "Upload coverage release test timing",
+        "Upload OpenROAD runtime evidence",
+    ):
         index = next(index for index, step in enumerate(steps) if step.get("name") == name)
         assert index > cleanup
 

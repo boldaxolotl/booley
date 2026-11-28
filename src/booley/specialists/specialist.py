@@ -41,7 +41,11 @@ from booley.runtime.nested_mcp_capabilities import nested_mcp_tools_for
 from booley.runtime.owned_scratch import sweep_stale_scratch
 from booley.runtime.process_tree import descendant_pids as _descendant_pids
 
-from .specialist_workspace import WorkspaceAccess, isolated_agent_workspace, restore_result_paths
+from .specialist_workspace import (
+    WorkspaceAccess,
+    isolated_agent_workspace,
+    restore_result_paths,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +70,9 @@ class Specialist(McpTool):
     JOB_CLASS = job_slots.CLASS_MEMORY
 
     def _memory_admission_plan(
-        self, project: Path | None, requests: Sequence[JobRequest] | None
+        self,
+        project: Path | None,
+        requests: Sequence[JobRequest] | None,  # noqa: ARG002 — overrides EndpointState._memory_admission_plan
     ) -> MemoryAdmissionPlan:
         return measure_specialist_claim(project, self.name)
 
@@ -191,7 +197,10 @@ class Specialist(McpTool):
         """Build the common successful, non-acceptance dry-run result."""
         payload = {"mode": "dry_run", **detail}
         return McpToolResult(
-            exit_code=EXIT_SUCCESS, report_text=summary, display_lines=[summary], detail=payload
+            exit_code=EXIT_SUCCESS,
+            report_text=summary,
+            display_lines=[summary],
+            detail=payload,
         )
 
     def _resolve_model(self) -> str:
@@ -274,7 +283,11 @@ class Specialist(McpTool):
     def _interpret_output(self, output: str, structured: dict | None) -> McpToolResult:
         """Interpret agent output into a McpToolResult. Implemented by subclasses."""
 
-    def _invoke_agent(self, params: AgentCallParams, on_event: Any = None) -> Any:
+    def _invoke_agent(
+        self,
+        params: AgentCallParams,
+        on_event: Any = None,
+    ) -> Any:
         """Call an isolated agent on the model this Specialist's ``[models]`` value selects.
 
         A string pin (or none) calls once with *params* untouched, so a provider refusal
@@ -297,7 +310,10 @@ class Specialist(McpTool):
             if not is_list:
                 return self._invoke_agent_once(params, on_event)
             call_params = dataclasses.replace(
-                params, model=model, agent_cli=cli, reasoning_effort=self._reasoning_effort(cli)
+                params,
+                model=model,
+                agent_cli=cli,
+                reasoning_effort=self._reasoning_effort(cli),
             )
             if (model, cli) != session_pair:
                 # A session never transfers across models or Agent CLIs.
@@ -318,7 +334,11 @@ class Specialist(McpTool):
         """The model the calling thread's latest ``_invoke_agent`` ran on."""
         return getattr(self._thread_model_run, "value", None)
 
-    def _invoke_agent_once(self, params: AgentCallParams, on_event: Any = None) -> Any:
+    def _invoke_agent_once(
+        self,
+        params: AgentCallParams,
+        on_event: Any = None,
+    ) -> Any:
         """One isolated agent call with *params*, accumulating token/cost usage.
 
         Missing per-Specialist nested MCP-tool allowlists come from
@@ -329,7 +349,10 @@ class Specialist(McpTool):
         if params.agent_cli is None:
             params = dataclasses.replace(params, agent_cli=self._resolve_cli())
         if params.nested_mcp_tools is None:
-            params = dataclasses.replace(params, nested_mcp_tools=nested_mcp_tools_for(self.name))
+            params = dataclasses.replace(
+                params,
+                nested_mcp_tools=nested_mcp_tools_for(self.name),
+            )
         # Reclaim scratch left by runs that were killed before they could clean up.
         sweep_stale_scratch()
         with isolated_agent_workspace(
@@ -342,7 +365,10 @@ class Specialist(McpTool):
                 if getattr(self.args, "report_dir", None)
                 else ()
             ),
-        ) as (call_params, snapshot):
+        ) as (
+            call_params,
+            snapshot,
+        ):
             with (
                 parent_death_watchdog(self.name),
                 job_resources.measure_agent_call(self._agent_calls),
@@ -578,7 +604,10 @@ def _abort_orphaned_run(label: str, initial_ppid: int) -> None:
 
 
 @contextlib.contextmanager
-def parent_death_watchdog(label: str, interval: float = _PARENT_WATCHDOG_INTERVAL_S) -> Any:
+def parent_death_watchdog(
+    label: str,
+    interval: float = _PARENT_WATCHDOG_INTERVAL_S,
+) -> Any:
     """Abort the run if the process that launched it disappears.
 
     No-op when disabled by env, on Windows (no reparenting to observe), or
@@ -613,7 +642,10 @@ def parent_death_watchdog(label: str, interval: float = _PARENT_WATCHDOG_INTERVA
         stop.set()
 
 
-def _call_agent_sync(params: AgentCallParams, on_event: Any = None) -> Any:
+def _call_agent_sync(
+    params: AgentCallParams,
+    on_event: Any = None,
+) -> Any:
     """Synchronous wrapper around runtime.agent.call_agent().
 
     Runs the async call_agent in an event loop. Returns AgentResult.

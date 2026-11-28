@@ -15,7 +15,11 @@ from booley.flows.target_test_suite import NoRunnableTestsError
 
 def _resolved(tests: list[str], skips: list[str] | None = None, scope: str = "rtl/dut.sv"):
     return resolve_target_campaign(
-        "sim", scope, identity="sim", test_names={"sim": tests}, test_skips={"sim": skips or []}
+        "sim",
+        scope,
+        identity="sim",
+        test_names={"sim": tests},
+        test_skips={"sim": skips or []},
     )
 
 

@@ -28,7 +28,10 @@ class CodexLiveUsage:
     """Convert cumulative Codex snapshots into Console usage deltas."""
 
     def __init__(
-        self, model: str, on_event: Callable[[dict], None] | None, session_root: Path | None
+        self,
+        model: str,
+        on_event: Callable[[dict], None] | None,
+        session_root: Path | None,
     ) -> None:
         self._model = model
         self._on_event = on_event

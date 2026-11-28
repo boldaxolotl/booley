@@ -42,7 +42,8 @@ _DONT_USE = "CLKBUF_* AOI211_X1 OAI211_X1"
 _GP_PAD_SITES = 1
 
 _AREA_RE = re.compile(
-    r"Design\s+area\s+([\d.]+)\s*um?\^2\s+([\d.]+)\s*%\s*utilization", re.IGNORECASE
+    r"Design\s+area\s+([\d.]+)\s*um?\^2\s+([\d.]+)\s*%\s*utilization",
+    re.IGNORECASE,
 )
 
 

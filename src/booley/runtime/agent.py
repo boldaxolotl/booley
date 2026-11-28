@@ -60,7 +60,11 @@ def _once_start_notice(params: AgentCallParams) -> Callable[[], None]:
     return notify
 
 
-async def call_agent(params: AgentCallParams, *, on_event: Any = None) -> AgentResult:
+async def call_agent(
+    params: AgentCallParams,
+    *,
+    on_event: Any = None,
+) -> AgentResult:
     """Call an agent via the configured backend.
 
     Routes through BackendConfig: uses the backend of the call's Agent CLI (the

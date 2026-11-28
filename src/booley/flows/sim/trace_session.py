@@ -184,18 +184,28 @@ class TraceSession:
         self._status["updated_at"] = _utc_now()
         self._status["paths"] = self._manifest_paths()
         tmp = self.manifest_path.with_name(
-            f".trace_status.{os.getpid()}.{time.monotonic_ns()}.tmp"
+            f".trace_status.{os.getpid()}.{time.monotonic_ns()}.tmp",
         )
         tmp.write_text(
-            json.dumps(self._status, indent=2, sort_keys=False) + "\n", encoding="utf-8"
+            json.dumps(self._status, indent=2, sort_keys=False) + "\n",
+            encoding="utf-8",
         )
         tmp.replace(self.manifest_path)
 
     def record_attempt(
-        self, kind: str, status: str, *, detail: str = "", return_code: int | None = None
+        self,
+        kind: str,
+        status: str,
+        *,
+        detail: str = "",
+        return_code: int | None = None,
     ) -> None:
         """Append a trace attempt record to the canonical manifest."""
-        attempt: dict[str, object] = {"kind": kind, "status": status, "timestamp": _utc_now()}
+        attempt: dict[str, object] = {
+            "kind": kind,
+            "status": status,
+            "timestamp": _utc_now(),
+        }
         if detail:
             attempt["detail"] = detail
         if return_code is not None:
@@ -210,7 +220,10 @@ class TraceSession:
 
     def record_event(self, kind: str, detail: str = "") -> None:
         """Append a trace lifecycle event to the canonical manifest."""
-        event: dict[str, object] = {"kind": kind, "timestamp": _utc_now()}
+        event: dict[str, object] = {
+            "kind": kind,
+            "timestamp": _utc_now(),
+        }
         if detail:
             event["detail"] = detail
         events = self._status.setdefault("events", [])
@@ -386,7 +399,8 @@ class TraceSession:
             "total_ticks": artifact.total_ticks,
         }
         self.record_event(
-            "validated", f"{artifact.signal_count} signals under {artifact.top_scope}"
+            "validated",
+            f"{artifact.signal_count} signals under {artifact.top_scope}",
         )
         return TraceInspection(artifact)
 
@@ -560,7 +574,6 @@ class TraceSession:
             stall_count += 1
             stalled_for = stall_timeout * stall_count
             self._log_stall_window(
-                bwave_proc.store_path,
                 size,
                 stalled_for,
                 stall_count,
@@ -581,7 +594,13 @@ class TraceSession:
             bwave_proc.discard_input()
 
     def _log_stall_window(
-        self, bpath, sz, stalled_for, stall_count, kill_after_stalls, sim_proc, bwave_proc
+        self,
+        sz,
+        stalled_for,
+        stall_count,
+        kill_after_stalls,
+        sim_proc,
+        bwave_proc,
     ) -> None:
         """Warn about one stall window and echo any bwave stderr tail."""
         import logging
@@ -604,7 +623,13 @@ class TraceSession:
         if txt:
             log.warning("[bwave monitor] stderr: %s", txt)
 
-    def _kill_stalled_pipeline(self, sz, stalled_for, sim_proc, bwave_proc) -> None:
+    def _kill_stalled_pipeline(
+        self,
+        sz,
+        stalled_for,
+        sim_proc,
+        bwave_proc,
+    ) -> None:
         """Record the stall incident and tree-kill sim + bwave processes."""
         import logging
 
@@ -616,7 +641,11 @@ class TraceSession:
         stall_message = (
             f"bwave trace pipeline stalled (no growth for {stalled_for:.0f}s at {sz} bytes)"
         )
-        self.write_incident(stall_message, sim_proc=sim_proc, bwave_proc=bwave_proc)
+        self.write_incident(
+            stall_message,
+            sim_proc=sim_proc,
+            bwave_proc=bwave_proc,
+        )
         if sim_proc.poll() is not None:
             return
         self._stall_killed = True

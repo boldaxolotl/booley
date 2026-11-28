@@ -13,8 +13,16 @@ from booley.flows.sim.flow import SimulateFlow
 from booley.flows.sim.verilator_identity import PINNED_VERILATOR
 from booley.flows.synth.flow import AsicSynthesizeFlow
 from booley.mcp.flow_adapter import flow_schema
+from booley.runtime.runtime_context import RuntimeLocation
 from tests.flows.invocation_doubles import replace_run
 from tests.flows.report_headline import assert_paired_headline
+from tests.flows.run_root_removal_support import (
+    NEEDS_PROC,
+    RemovalRun,
+    in_process_child,
+    watchdog_alive,
+)
+from tests.sandbox_venue_fake import place
 from tests.time_budget import hang_guard_s
 
 FLOWS = (LintFlow, SimulateFlow, AsicSynthesizeFlow, FpgaImplFlow)
@@ -50,12 +58,15 @@ def test_complete_builtin_schema_is_compatible():
 @pytest.fixture
 def runtime(monkeypatch, tmp_path):
     from booley.flows import endpoint_admission
-    from booley.runtime import runtime_context
 
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: True)
+    place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX)
     # Seat Caps are covered by the admission tests; these tests are about transport.
     monkeypatch.setattr(endpoint_admission, "required_seats", lambda _tools, _config: ())
-    for name in ("BOOLEY_TICKET_FILE", "BOOLEY_LOGS_DIR", "BOOLEY_RUNTIME_DIR"):
+    for name in (
+        "BOOLEY_TICKET_FILE",
+        "BOOLEY_LOGS_DIR",
+        "BOOLEY_RUNTIME_DIR",
+    ):
         monkeypatch.delenv(name, raising=False)
     return tmp_path
 
@@ -71,8 +82,16 @@ def test_typed_request_executes_without_constructing_a_parser(flow_type, runtime
     monkeypatch.setattr(
         argparse, "ArgumentParser", lambda **kwargs: pytest.fail("parser constructed")
     )
-    replace_run(monkeypatch, flow, lambda: EndpointOutcome(detail={"evidence": "same"}))
+    watched: list[bool] = []
+
+    def run() -> EndpointOutcome:
+        watched.append(watchdog_alive())
+        return EndpointOutcome(detail={"evidence": "same"})
+
+    replace_run(monkeypatch, flow, run)
     result = flow.execute(request)
+    assert watched == [True], "no watchdog thread during the run"
+    assert not watchdog_alive()
     assert result.exit_code == 0
     assert result.outcome.detail["evidence"] == "same"
     assert request.report_dir is None
@@ -198,6 +217,88 @@ def test_report_outside_a_removed_checkout_is_still_written(runtime, monkeypatch
     assert not checkout.exists()
 
 
+@NEEDS_PROC
+def test_removed_checkout_fails_a_standalone_job(runtime, monkeypatch, capsys):
+    from booley.core.booley_dir import reset_cache
+    from booley.flows.cli_selection import INVOCATION_ORIGIN_ENV
+    from booley.harness.standalone_job import StandaloneJob, standalone_jobs_dir
+    from booley.runtime import job_records
+
+    checkout, common = runtime / "checkout", runtime / "main" / ".booley"
+    checkout.mkdir()
+    common.mkdir(parents=True)
+    monkeypatch.setenv("BOOLEY_DIR", str(common))
+    for name in ("BOOLEY_RUN_ID", INVOCATION_ORIGIN_ENV):
+        monkeypatch.delenv(name, raising=False)
+    reset_cache()
+    flow, removal = LintFlow(), RemovalRun(checkout, runtime, recreate=True)
+    replace_run(monkeypatch, flow, removal)
+    argv = ["--target", "demo", "--work-dir", str(checkout)]
+    job = StandaloneJob.prepare(checkout, "lint", argv, report_root=None)
+    assert job is not None
+    try:
+        code = job.run(lambda: flow.main(argv))
+        removal.assert_stopped()
+    finally:
+        job.discard()
+        removal.close()
+
+    expected = f"lint failed: checkout {checkout} was removed during the run"
+    record = job_records.read_record(job.run_id, standalone_jobs_dir(common))
+    assert code == 2
+    assert record is not None
+    assert (record.status, record.exit_code) == ("failed", 2)
+    assert expected in capsys.readouterr().err
+    (log,) = common.rglob("job.log")
+    assert expected in log.read_text(encoding="utf-8")
+    assert list(checkout.iterdir()) == []
+    assert not watchdog_alive()
+
+
+@NEEDS_PROC
+def test_removed_checkout_fails_an_mcp_job_and_booley_poll_names_it(runtime, monkeypatch):
+    import asyncio
+
+    from booley.mcp import server
+    from booley.mcp.call_context import resolve_call_context
+    from booley.runtime import job_records
+    from tests import mcp_runner_fake
+
+    checkout = runtime / "checkout"
+    checkout.mkdir()
+    server_runtime = runtime / "common" / ".runtime"
+    monkeypatch.setenv("BOOLEY_LOGS_DIR", str(server_runtime.parent))
+    monkeypatch.setenv("BOOLEY_RUNTIME_DIR", str(server_runtime))
+    flow, removal = LintFlow(), RemovalRun(checkout, runtime)
+    replace_run(monkeypatch, flow, removal)
+    argv = ["--target", "demo", "--work-dir", str(checkout)]
+
+    mcp_runner_fake.install(monkeypatch, in_process_child(monkeypatch, flow, argv))
+
+    async def scenario():
+        jobs = server._JobManager()
+        context = resolve_call_context({"work_dir": str(checkout)})
+        run_id = jobs.submit("lint", ["lint", *argv], hang_guard_s(), context=context)
+        await jobs.poll(run_id, hang_guard_s())
+        content = await server._dispatch_poll({"run_id": run_id}, jobs)
+        return run_id, str(content)
+
+    try:
+        run_id, text = asyncio.run(scenario())
+        removal.assert_stopped()
+    finally:
+        removal.close()
+
+    record = job_records.read_record(run_id, server_runtime / "jobs")
+    assert record is not None
+    assert (record.status, record.exit_code) == ("failed", 2)
+    assert "EXIT_CODE: 2" in text
+    assert f"checkout {checkout} was removed during the run" in text
+    assert not checkout.exists()
+    (report,) = server_runtime.glob("flow-reports/lint.json")
+    assert "was removed during the run" in json.loads(report.read_text())["report_text"]
+
+
 def test_flow_report_root_precedence(runtime, monkeypatch):
     from booley.runtime.endpoint_execution import EndpointOutcome
 
@@ -255,7 +356,9 @@ def test_uninitialized_flow_fails_before_execution(runtime, monkeypatch):
 
 
 def _assert_distinct_artifact_invocations(
-    runtime: Path, cli_artifacts: dict[str, str], mcp_artifacts: dict[str, str]
+    runtime: Path,
+    cli_artifacts: dict[str, str],
+    mcp_artifacts: dict[str, str],
 ) -> None:
     assert mcp_artifacts.keys() == cli_artifacts.keys()
     for name, cli_path in cli_artifacts.items():
@@ -325,7 +428,9 @@ def test_real_lint_child_through_mcp_matches_cli(runtime, monkeypatch):
     for key in ("flow", "target", "passed", "eda_tool"):
         assert report[key] == cli_report[key]
     _assert_distinct_artifact_invocations(
-        runtime, cli_report["detail"]["artifacts"], report["detail"]["artifacts"]
+        runtime,
+        cli_report["detail"]["artifacts"],
+        report["detail"]["artifacts"],
     )
 
 
@@ -377,7 +482,10 @@ class ProjectEndpoint(BASE):
     assert "timeout_ms" not in schema["properties"]
     result = endpoint.execute_cli(["--target", "demo", "--timeout", "long"])
     assert result.exit_code == 0
-    expected = {"configured": "initialized by the argument hook", "timeout": "long"}
+    expected = {
+        "configured": "initialized by the argument hook",
+        "timeout": "long",
+    }
     if base == "BooleyFlow":
         expected["report_dir"] = str(runtime / "flow-reports")
     else:
@@ -452,7 +560,10 @@ def test_mutation_flow_and_specialist_reports_carry_no_criterion(runtime, monkey
     from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 
     _report_targets(runtime)
-    classes = {"mutation": MutationFlow, "coverage_analyst": CoverageAnalystSpecialist}
+    classes = {
+        "mutation": MutationFlow,
+        "coverage_analyst": CoverageAnalystSpecialist,
+    }
     endpoint_type = classes[name]
     extras = {
         "mutation": ["--target", "first", "--scope", "rtl"],

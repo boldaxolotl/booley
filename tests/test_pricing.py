@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from booley.config.pricing import MODEL_PRICING, context_limit, estimate_cost, resolve
+from booley.config.pricing import (
+    MODEL_PRICING,
+    context_limit,
+    estimate_cost,
+    resolve,
+)
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.sandbox_venue_fake import place
 
 
 @pytest.mark.parametrize(
@@ -104,9 +111,7 @@ def test_every_builtin_model_has_its_own_row(tmp_path, monkeypatch):
 
     for var in ("BOOLEY_PRIMARY_PROVIDER", "BOOLEY_PRIMARY_AUTH", "BOOLEY_DIR"):
         monkeypatch.delenv(var, raising=False)
-    # private: the host-or-Sandbox probe, the boundary that picks the defaults; no
-    # public argument selects it, and a CI runner may itself be a container.
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     # private: load_agent_settings installs process-wide settings; patching the
     # cache lets teardown restore whatever an earlier test installed.
     monkeypatch.setattr(agent_config, "_agent_settings", None)

@@ -73,7 +73,11 @@ def inspect_cocotb_targets(request: CocotbTargetRequest) -> DiagnosticReport:
     return findings.report()
 
 
-def _inspect_target(target: TargetHandle, sections: Mapping[str, Any], findings: Findings) -> None:
+def _inspect_target(
+    target: TargetHandle,
+    sections: Mapping[str, Any],
+    findings: Findings,
+) -> None:
     """Record one cocotb Target's findings."""
     name = target.name
     module = target.cocotb_module or ""
@@ -217,7 +221,11 @@ def _source_names(tree: ast.Module) -> tuple[set[str], set[str], bool]:
 
 
 def _check_test_names(
-    source: Path, module: str, target: str, declared: list[str], findings: Findings
+    source: Path,
+    module: str,
+    target: str,
+    declared: list[str],
+    findings: Findings,
 ) -> None:
     """Report only the name claims static source can support."""
     try:

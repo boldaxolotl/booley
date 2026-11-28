@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from booley.flows.mutation.snippet import SNIPPET_MAX_CHARS, detection_snippet, tail, tail_snippet
+from booley.flows.mutation.snippet import (
+    SNIPPET_MAX_CHARS,
+    detection_snippet,
+    tail,
+    tail_snippet,
+)
 
 
 def test_failure_words_ignore_paths_flags_and_identifiers() -> None:

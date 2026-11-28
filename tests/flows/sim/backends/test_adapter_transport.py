@@ -25,7 +25,11 @@ from booley.flows.sim.adapter_transport import (
     write_adapter_result,
 )
 from booley.flows.sim.backends import cocotb
-from booley.flows.sim.backends.cocotb_results import STATE_OK, CocotbResults, CocotbTest
+from booley.flows.sim.backends.cocotb_results import (
+    STATE_OK,
+    CocotbResults,
+    CocotbTest,
+)
 from booley.flows.sim.backends.shared import RunTermination
 from booley.flows.sim.execution.attempt import AdapterAttemptRequest, execute_adapter_attempt
 
@@ -49,7 +53,11 @@ def test_adapter_result_round_trips_with_expected_identity(tmp_path) -> None:
         tests=("reset",),
         test_results=(AdapterTestResult("reset", "pass"),),
         trace=AdapterTraceResult(
-            "ok", path="build/wave.fst", top_scope="tb", signal_count=2, total_ticks=3
+            "ok",
+            path="build/wave.fst",
+            top_scope="tb",
+            signal_count=2,
+            total_ticks=3,
         ),
     )
 
@@ -152,7 +160,10 @@ def _mutate_valid_result(tmp_path, mutate) -> AdapterTransportIdentity:
         ),
         (
             lambda payload: payload["test_results"][0].update(
-                verdict="timeout", termination="timeout", failure_kind="timeout", detail="deadline"
+                verdict="timeout",
+                termination="timeout",
+                failure_kind="timeout",
+                detail="deadline",
             ),
             "completed adapter result",
         ),
@@ -251,7 +262,10 @@ def test_native_timeout_without_selected_tests_is_timeout_not_design(tmp_path) -
     identity = replace(_identity(tmp_path), selected_tests=())
 
     publish_native_adapter_result(
-        identity, "", -15, termination=RunTermination("timeout", "deadline expired", "timeout")
+        identity,
+        "",
+        -15,
+        termination=RunTermination("timeout", "deadline expired", "timeout"),
     )
 
     result = read_adapter_result(identity)
@@ -281,7 +295,11 @@ def test_native_timeout_without_selected_tests_is_timeout_not_design(tmp_path) -
         ({"trace": {"status": "ok", "path": "wave.fst", "signal_count": "bad"}}, "signal_count"),
     ],
 )
-def test_adapter_result_rejects_invalid_authenticated_fields(tmp_path, override, message) -> None:
+def test_adapter_result_rejects_invalid_authenticated_fields(
+    tmp_path,
+    override,
+    message,
+) -> None:
     identity = _identity(tmp_path)
     write_adapter_result(
         identity,
@@ -540,7 +558,10 @@ def test_attempt_failed_promotion_preserves_only_durable_partial(tmp_path, monke
 
 @pytest.mark.parametrize(
     ("count", "label"),
-    [(1, "1 assertion/fatal error message"), (2, "2 assertion/fatal error messages")],
+    [
+        (1, "1 assertion/fatal error message"),
+        (2, "2 assertion/fatal error messages"),
+    ],
 )
 def test_native_fatal_only_failure_names_assertion_fatal_messages(count: int, label: str):
     """A testbench ``$fatal`` failure is not an SVA failure and the text must not say so (#2807)."""

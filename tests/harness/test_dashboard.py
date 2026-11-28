@@ -209,7 +209,9 @@ def test_disconnected_session_detail_keeps_its_last_seen_calls():
     calls = (RecentCall(STAMP, "sim", "completed"), RecentCall(STAMP, "lint", "failed"))
     connected = snapshot(1)
     connected = replace(
-        connected, sessions=(replace(connected.sessions[0], calls=calls),), jobs=JobSnapshot(())
+        connected,
+        sessions=(replace(connected.sessions[0], calls=calls),),
+        jobs=JobSnapshot(()),
     )
     app = DashboardApp(lambda: connected)
     app.snapshot = connected
@@ -230,7 +232,9 @@ async def test_session_without_activity_shows_empty_state():
     expected_keys = ["group:no-booley-activity"]
     current = snapshot(1)
     current = replace(
-        current, sessions=(replace(current.sessions[0], calls=()),), jobs=JobSnapshot(())
+        current,
+        sessions=(replace(current.sessions[0], calls=()),),
+        jobs=JobSnapshot(()),
     )
     app = DashboardApp(lambda: current)
     app.snapshot = current
@@ -540,7 +544,12 @@ async def test_pilot_wide_aside_narrow_detail_and_terminal_selection():
 
 def test_reported_activity_is_shown_per_session_and_unknown_is_never_guessed():
     from booley.harness.dashboard.app import activity_label
-    from booley.runtime.session_activity import WAITING_TOOL, WAITING_USER, WORKING, Activity
+    from booley.runtime.session_activity import (
+        WAITING_TOOL,
+        WAITING_USER,
+        WORKING,
+        Activity,
+    )
 
     now = 1791454200  # 10:10:00Z, ten minutes after STAMP.
     assert activity_label(Activity(), now) == "activity unknown (no report yet)"
@@ -620,8 +629,16 @@ def test_unknown_activity_without_client_signals():
 _HEALTH_ROWS = [
     ({"counts": {"fail": 0, "warn": 0}}, None, ("Doctor: OK",)),
     ({"counts": {"fail": 0, "warn": 0}}, "expired", ("Doctor: OK · recheck due",)),
-    ({"counts": {"fail": 0, "warn": 1}}, "inputs changed", ("Doctor: 1 WARN · recheck due",)),
-    ({"counts": {"fail": 1, "warn": 0}}, "inputs changed", ("Doctor: 1 FAIL · recheck due",)),
+    (
+        {"counts": {"fail": 0, "warn": 1}},
+        "inputs changed",
+        ("Doctor: 1 WARN · recheck due",),
+    ),
+    (
+        {"counts": {"fail": 1, "warn": 0}},
+        "inputs changed",
+        ("Doctor: 1 FAIL · recheck due",),
+    ),
     (None, None, ("Doctor: unavailable: no readable automatic result",)),
 ]
 
@@ -765,7 +782,8 @@ def test_session_without_work_dir_shows_its_default_checkout_and_branch():
 
     # A detached default checkout has no branch to show.
     app.snapshot = replace(
-        app.snapshot, sessions=(SessionRow(replace(bare.attribution, branch=""), STAMP, STAMP),)
+        app.snapshot,
+        sessions=(SessionRow(replace(bare.attribution, branch=""), STAMP, STAMP),),
     )
     detached = app._session_facts(app.snapshot.sessions[0])
     assert (detached.work_dir, detached.branch) == ("/work (default)", "")

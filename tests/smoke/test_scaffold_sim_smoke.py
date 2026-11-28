@@ -138,7 +138,8 @@ def _assert_trace(tmp_path, reports, scaffold_native_binary):
     assert stores, "current invocation must retain a queryable Trace Artifact"
     for store in stores:
         query = run_bounded_child(
-            [str(scaffold_native_binary), "list", str(store), "--format", "json"], check=True
+            [str(scaffold_native_binary), "list", str(store), "--format", "json"],
+            check=True,
         )
         assert json.loads(query.stdout)["data"]["signal_count"] > 0
 

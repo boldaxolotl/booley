@@ -60,6 +60,14 @@ Reach for the `booley.core.boundary` helpers (`src/booley/core/boundary.py`) —
 rejects NaN/inf and the `isinstance(True, int)` bool trap (in Python, `bool`
 subclasses `int`, so a naive `isinstance(x, int)` wrongly accepts `True`/`False`).
 
+Docker CLI output is external input too. Read `docker inspect` output (an
+object, one value or a list), a registry image's `docker buildx imagetools
+inspect` output, and Booley's labels, through `booley.core.docker_cli`
+(`src/booley/core/docker_cli.py`): its `Runner`, `inspect`, `inspect_value`,
+`inspect_registry_image`, `inspect_label`, `inspect_labels`, `exists`, `labels`,
+`failure_detail`, and label-name constants, instead of another runner type or
+JSON guard.
+
 ### 6. Fail fast, fail loud
 
 Raise exceptions on unexpected state. Don't return `None` and hope the
@@ -93,6 +101,13 @@ For persisted or external state, define what happens when execution stops after
 each step. Validate before mutation, publish complete state atomically, and make
 retries idempotent where the caller can repeat an operation. Never expose a
 partially written state as successful.
+
+Publish a file through `booley.core.atomic_files`
+(`src/booley/core/atomic_files.py`): `atomic_replace_bytes` or
+`atomic_write_text` (choose mode and durability), `atomic_write_once` (mode
+only), or `atomic_write_json` (owner-only, durable). Do not hand-roll a staged
+write and rename; `tests/architecture/test_atomic_write_ratchet.py` caps those
+that write and rename in one scope.
 
 ## Analyzability
 
@@ -205,15 +220,33 @@ code. When a test needs something replaced:
   a file under `tmp_path`.
 - **Patch a Booley name only where it is the boundary**: the one function that
   runs the command, reads the clock (principle 16), or tells the host from the
-  Sandbox. Any other patch carries a comment that says why no public entry
-  point reaches the behavior.
+  Sandbox. Mark a patch of such a boundary with `# boundary: <reason>` on any
+  line of the patch call, the reason non-empty and naming the boundary. Any
+  other patch of a Booley name carries a comment that says why no public entry
+  point reaches the behavior; it still counts toward the patch check below.
 - **One shared fake per boundary.** The fake lives in a support module under
   `tests/`, not in a `test_*.py` file, and every test of that boundary uses
   it. A test does not patch `subprocess` or a command runner itself: copies
-  of a stand-in drift apart, and away from the tool they imitate.
+  of a stand-in drift apart, and away from the tool they imitate. The
+  [test fakes catalog](TEST_FAKES.md) names the fake for each boundary: extend
+  it rather than add another. A new fake module, named with `fake` or
+  `double`, needs a catalog row for a boundary no fake covers yet.
 - **Cross a boundary in one place.** New code that runs a command or reads
   the clock does it through one function (principle 9), so a test has one
   name to replace.
+
+The `test-ratio` job in the `Tests` workflow, part of `ci-required`, counts
+patches in the `.py` files under `tests/` that a pull request adds, changes or
+deletes, test modules and support modules alike
+([exact definitions](../../.github/scripts/ci_patch_count.py)). It fails when
+the pull request raises the patches of Booley names (public plus private) or,
+separately, the patches of commands (`subprocess` or its `run`, `Popen`,
+`check_output`, `check_call` or `call`; `os.exec*`, `os.fork`,
+`os.posix_spawn*`, `os.system`, `shutil.which`, `run_captured_bounded`), and
+names each added patch. Moving a patch between files does not raise the total.
+A patch marked as above does not count; reviewers judge the reason. A
+maintainer exempts a pull request with the `patch-count-exempt` label; the job
+reads the label each time it is re-run.
 
 To check a new test, break the code it covers: flip a condition, swap `min`
 for `max`, drop a call. If the test still passes, it catches nothing.
@@ -243,16 +276,25 @@ Tests that touch time, processes, sockets, or the filesystem also:
   named base budget passed to `scaled`, or `hang_guard_s()` for a wait that only
   stops a hang (see
   [Test time budgets](../../.github/ci/README.md#test-time-budgets)).
-  Windows CI fails any test that uses more than 80% of its timeout (see
+  Windows CI reports a passing test that uses more than 50% of its timeout and
+  does not fail it; the per-test timeout is the hard limit (see
   [`tests/timeout_headroom.py`](../../tests/timeout_headroom.py)).
 - Bind port 0 and read back the assigned port.
 - Pass on Windows or skip there with the reason: guard POSIX-only signals
   (`SIGKILL`, `SIGHUP`), file modes, and symlinks, and close handles before
   deleting or renaming files.
+- Register every test module whose subject depends on OS behavior in
+  `tests/os_specific.py`; a guard enforces the platform-branch cases (see
+  [OS-specific tests](../../.github/ci/README.md#os-specific-tests)).
 - **Leave nothing running.** A test ends with every thread, subprocess, and
   detached job it started stopped, including work that tools start on their
   own, such as Git auto-maintenance. Code that starts a background thread
   stops and joins it on every way its owner exits.
+- **No Docker CLI by accident.** A test outside `tests/docker/` and
+  `tests/smoke/` fails when it starts `docker`. Use a shared Docker CLI fake
+  from the [test fakes catalog](TEST_FAKES.md); a test that must run the real
+  CLI or its own `docker` stub carries the `docker_cli` marker
+  ([Docker CLI guard](../../.github/ci/README.md#docker-cli-guard)).
 - **Patch time narrowly.** Inject a clock, or patch a name the module under
   test owns. Never replace `time.monotonic` or `time.time` on the shared
   `time` module, whether directly, through a module's `time` alias, or by a
@@ -282,6 +324,9 @@ Tests that touch time, processes, sockets, or the filesystem also:
 Write the smallest change that fully solves the stated problem. Every line
 traces to an acceptance criterion or a demonstrated failure; "it might happen"
 is not a reason. Before adding code, delete or reuse what exists.
+Hash one file by path with `booley.core.file_hash` (`file_sha256`,
+`file_sha256_or_none`, `file_sha256_and_size`); a ratchet test catches the
+common forms of a new file-hash function.
 
 These are bloat. Do not write them:
 
@@ -333,7 +378,7 @@ unless it removes more test lines than it adds. Test lines are `.py` and `.rs`
 files under test directories and inline `#[cfg(test)]` items in Rust; data
 files under test directories (`.vcd`, `.json`) do not count. A maintainer
 exempts a pull request with the `test-ratio-exempt` label; the job reads the
-label each time it is re-run.
+label each time it is re-run. The same job runs principle 14's patch count.
 
 A PR that removes more lines than it adds counts only its additions. The caps
 exist to keep new code reviewable; deleting duplicated or obsolete code shrinks

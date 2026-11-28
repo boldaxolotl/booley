@@ -15,20 +15,55 @@ from booley.feedback.render import (
     FEEDBACK_REPORT_NAME,
     SETUP_REPORT_NAME,
     Environment,
+    collect_environment,
     export_booley_report,
     render_booley_report,
     render_user_report,
     write_user_reports,
 )
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.sandbox_venue_fake import place, point_mounts
 
 
 @pytest.mark.parametrize(
-    ("value", "rendered"), [(True, "yes"), (False, "no"), (None, "not recorded")]
+    ("value", "rendered"),
+    [(True, "yes"), (False, "no"), (None, "not recorded")],
 )
 def test_environment_renders_resolved_doctor_observation(value, rendered):
     environment = Environment(doctor_deep_clean=value)
 
     assert ("doctor --deep clean", rendered) in environment.as_rows()
+
+
+def _container_host(monkeypatch):
+    place(monkeypatch, RuntimeLocation.HOST, container_host=True)
+
+
+def _unmarked_sandbox(monkeypatch):
+    """A Sandbox its spec declares, in an image that left no marker file."""
+    place(monkeypatch, RuntimeLocation.HOST)
+    point_mounts(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
+    monkeypatch.setenv("BOOLEY_CONTAINER", "1")
+
+
+def _podman_sandbox(monkeypatch):
+    """Only the container runtime's marker file tells; ``BOOLEY_CONTAINER`` is unset."""
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
+    monkeypatch.delenv("BOOLEY_CONTAINER")
+
+
+@pytest.mark.parametrize(
+    ("venue", "rendered"),
+    [
+        pytest.param(_container_host, "host CLI", id="container-host"),
+        pytest.param(_unmarked_sandbox, "Sandbox", id="no-marker"),
+        pytest.param(_podman_sandbox, "Sandbox", id="podman"),
+    ],
+)
+def test_environment_location_follows_the_sandbox_classification(monkeypatch, venue, rendered):
+    venue(monkeypatch)
+
+    assert ("Location", rendered) in collect_environment().as_rows()
 
 
 @pytest.fixture
@@ -275,7 +310,7 @@ class TestWriteUserReports:
         with path.open("a", encoding="utf-8", newline="\n") as handle:
             handle.write("\n## Delivered Flow results\n\nsim passed\n")
         before = path.read_bytes()
-        later_env = Environment(booley_version="2.0", in_container=True)
+        later_env = Environment(booley_version="2.0", in_sandbox=True)
         written, _ = write_user_reports(project, booley_dir, env=later_env)
         assert [w.changed for w in written] == [False]
         assert path.read_bytes() == before

@@ -36,7 +36,7 @@ def library(tmp_path_factory):
             str(target),
             str(ROOT / "boundary.c"),
             "-ldl",
-        ]
+        ],
     )
     assert result.returncode == 0, result.stderr
     return target

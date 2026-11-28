@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from tests.fake_docker_executable import install_fake_docker
 from tests.subprocess_budget import run_bounded_child
 
 from booley.runtime import docker_base_contract
@@ -61,7 +62,8 @@ def _remote_runner(documents: dict):
 
 def _fingerprint(repo: Path) -> str:
     result = run_bounded_child(
-        [sys.executable, str(_SCRIPT), "--repo", str(repo), "--manifest", "inputs.txt"], check=True
+        [sys.executable, str(_SCRIPT), "--repo", str(repo), "--manifest", "inputs.txt"],
+        check=True,
     )
     return result.stdout.strip()
 
@@ -81,7 +83,14 @@ def test_contract_changes_with_content_but_not_mtime(tmp_path: Path) -> None:
 def test_contract_rejects_missing_or_unsafe_inputs(tmp_path: Path) -> None:
     (tmp_path / "inputs.txt").write_text("../outside\n", encoding="utf-8")
     result = run_bounded_child(
-        [sys.executable, str(_SCRIPT), "--repo", str(tmp_path), "--manifest", "inputs.txt"],
+        [
+            sys.executable,
+            str(_SCRIPT),
+            "--repo",
+            str(tmp_path),
+            "--manifest",
+            "inputs.txt",
+        ],
         check=False,
     )
 
@@ -102,7 +111,14 @@ def test_contract_rejects_symlink_escape(tmp_path: Path) -> None:
     (tmp_path / "linked.txt").symlink_to(outside)
 
     result = run_bounded_child(
-        [sys.executable, str(_SCRIPT), "--repo", str(tmp_path), "--manifest", "inputs.txt"],
+        [
+            sys.executable,
+            str(_SCRIPT),
+            "--repo",
+            str(tmp_path),
+            "--manifest",
+            "inputs.txt",
+        ],
         check=False,
     )
 
@@ -144,7 +160,7 @@ def test_image_resolution_selects_repository_digest_and_verifies_contract(monkey
                 f'["ghcr.io/acme/base@sha256:{digest}", "mirror/base@sha256:{"b" * 64}"]\n',
                 "",
             )
-        return subprocess.CompletedProcess(command, 0, "contract-value\n", "")
+        return subprocess.CompletedProcess(command, 0, '"contract-value"\n', "")
 
     monkeypatch.setattr(docker_base_contract.subprocess, "run", fake_run)
 
@@ -459,7 +475,7 @@ def test_image_resolution_shadow_rejects_remote_pull_disagreement(monkeypatch) -
         if "{{ json .RepoDigests }}" in command:
             payload = f'["ghcr.io/acme/base@{pulled_digest}"]\n'
             return subprocess.CompletedProcess(command, 0, payload, "")
-        return subprocess.CompletedProcess(command, 0, "contract-value\n", "")
+        return subprocess.CompletedProcess(command, 0, '"contract-value"\n', "")
 
     monkeypatch.setattr(docker_base_contract.subprocess, "run", fake_run)
 
@@ -481,7 +497,7 @@ def test_image_resolution_shadow_returns_matching_immutable_digest(monkeypatch) 
         if "{{ json .RepoDigests }}" in command:
             payload = f'["ghcr.io/acme/base@{index_digest}"]\n'
             return subprocess.CompletedProcess(command, 0, payload, "")
-        return subprocess.CompletedProcess(command, 0, "contract-value\n", "")
+        return subprocess.CompletedProcess(command, 0, '"contract-value"\n', "")
 
     monkeypatch.setattr(docker_base_contract.subprocess, "run", fake_run)
 
@@ -541,6 +557,25 @@ def test_cli_selects_requested_image_resolver(
     assert docker_base_contract.main() == 0
     assert calls == [(resolver_name, "ghcr.io/acme/base:main", "contract")]
     assert capsys.readouterr().out.strip() == expected_image
+
+
+def test_remote_registry_failure_keeps_the_docker_error(tmp_path: Path, monkeypatch) -> None:
+    detail = "ERROR: ghcr.io/acme/base:main: not found"
+    install_fake_docker(tmp_path, monkeypatch, {"imagetools inspect": (1, detail)})
+
+    with pytest.raises(subprocess.CalledProcessError) as caught:
+        docker_base_contract.resolve_labeled_image_remote("ghcr.io/acme/base:main", {"k": "v"})
+
+    assert (caught.value.returncode, caught.value.stderr.strip()) == (1, detail)
+
+
+def test_image_resolution_names_a_missing_contract_label(tmp_path: Path, monkeypatch) -> None:
+    digests = f'["ghcr.io/acme/base@sha256:{"a" * 64}"]'
+    replies = {"pull": (0, ""), "image inspect": (0, "null"), "inspect .RepoDigests": (0, digests)}
+    install_fake_docker(tmp_path, monkeypatch, replies)
+
+    with pytest.raises(ValueError, match="image has <none>"):
+        docker_base_contract.resolve_image_pull("ghcr.io/acme/base:main", "contract")
 
 
 def test_image_resolution_rejects_malformed_digest_inventory(monkeypatch) -> None:

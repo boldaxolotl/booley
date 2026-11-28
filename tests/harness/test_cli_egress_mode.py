@@ -51,7 +51,10 @@ def test_unproxied_command_and_agents_inherit_no_proxy(sandbox_cli, monkeypatch)
     monkeypatch.setattr(sys, "argv", ["booley", "targets"])
     assert cli.main() == 0
     assert sandbox_cli == [
-        {"process": dict.fromkeys(_PROXY_VARS), "nested_mcp": dict.fromkeys(_PROXY_VARS)}
+        {
+            "process": dict.fromkeys(_PROXY_VARS),
+            "nested_mcp": dict.fromkeys(_PROXY_VARS),
+        }
     ]
 
 

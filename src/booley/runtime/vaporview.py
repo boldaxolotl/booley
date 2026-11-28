@@ -13,7 +13,12 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
-from booley.audit.diagnostic_results import DiagnosticFinding, DiagnosticReport, Findings, Severity
+from booley.audit.diagnostic_results import (
+    DiagnosticFinding,
+    DiagnosticReport,
+    Findings,
+    Severity,
+)
 from booley.core.boundary import (
     BoundaryError,
     as_dict,
@@ -273,7 +278,9 @@ def _manifest_matches(path: Path) -> bool | None:
 
 
 def probe_editor(
-    editor: str, *, run: Callable[..., subprocess.CompletedProcess[str]] | None = None
+    editor: str,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]] | None = None,
 ) -> ExtensionState:
     """Ask one editor CLI for its extensions; failed queries remain unknown."""
     runner = run or subprocess.run

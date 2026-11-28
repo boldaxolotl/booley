@@ -135,10 +135,52 @@ ask the maintainer to decide.
    [live setting](#live-github-settings) is unreadable or requires an
    up-to-date branch, update the branch first.
 4. Apply a [priority label](#priority) if one fits.
-5. Post `@mergifyio queue` as in
+5. If the PR changes a stable-base input, time it as in
+   [Schedule stable-base input merges](#schedule-stable-base-input-merges).
+6. Post `@mergifyio queue` as in
    [Post a queue or dequeue command](#post-a-queue-or-dequeue-command).
-6. Confirm that the `Mergify Merge Queue` check or the `queued` label shows
+7. Confirm that the `Mergify Merge Queue` check or the `queued` label shows
    the PR queued, then start one queue-mode watcher.
+
+## Schedule stable-base input merges
+
+The `bwave-smoke` and `riscv-image` CI jobs build on the stable runtime base,
+the published `ghcr.io/boldaxolotl/booley-sandbox-base:main` image that holds
+the EDA tools. The files in
+[stable-base-inputs.txt](../../../src/booley/data/docker/stable-base-inputs.txt)
+define it; of `pyproject.toml`, only `[project].dependencies` counts. A PR
+that changes one of those files, or the entries of that list, is a base-input
+PR.
+
+When a base-input PR merges,
+[docker-base-publish.yml](../../../.github/workflows/docker-base-publish.yml)
+rebuilds the base and moves the `:main` tag to it, usually in 35–50 minutes.
+Until then, in the publish window, the published base does not match `main`, so
+every `bwave-smoke` and `riscv-image` job that runs on a tree containing the
+merge, including other PRs' runs and queue candidates, builds the base itself
+and takes about 30–45 minutes longer. Only the publish workflow on `main` may
+write the shared base, so CI never reuses a PR's or a candidate's build. A
+merge that touches any file the workflow watches while a publish runs, even a
+`pyproject.toml` edit outside its dependencies, cancels that publish and starts
+it over, which stretches the window.
+
+Keep these windows few and short:
+
+- Queue base-input PRs together, so they merge close together and share one
+  window.
+- Prefer a quiet queue: each of those jobs that runs during the window pays
+  the extra time.
+- Do not queue a base-input PR while a publish runs. Read the newest publish
+  run; a `status` other than `completed` means one is running:
+
+    ```bash
+    gh run list --workflow docker-base-publish.yml --limit 1 \
+      --json status,createdAt,url
+    ```
+
+The slow runs are expected and skip the jobs' duration budget. They are no
+reason to dequeue, retry, or report a PR; give its watcher a deadline that
+covers the extra time.
 
 ## Watch a PR
 
@@ -191,6 +233,11 @@ every 60 seconds and queue state every ten minutes. While it waits:
   [Recover missing required checks](#recover-missing-required-checks).
 - Ignore a failing predecessor or batchmate: Mergify advances the queue while
   that PR's owner handles recovery.
+- A `bwave-smoke` or `riscv-image` job that runs the step
+  `Build changed stable runtime base locally` is slow by design: in a
+  base-input PR's own runs, in a queue candidate that contains a base-input
+  PR, and after a base-input merge (see
+  [Schedule stable-base input merges](#schedule-stable-base-input-merges)).
 
 To stop the watcher, send SIGINT or SIGTERM: it ends its child read and
 reports `cancelled`.
@@ -340,11 +387,33 @@ Read the Mergify check and the underlying Actions failure, then:
       and `bwave-smoke`, so `main` evidence for every other job, including
       `package-artifacts` and the test jobs, comes from the nightly
       scheduled `Tests` run.
-    - Match a crashed worker or a duration-budget overrun by job and error
-      signature instead of a test ID.
-    - When no issue exists, first file a `bug`, `ci`, `needs-triage` issue
-      with the run link, test ID or job, and error, scanned as `AGENTS.md`
-      requires.
+    - Match by test ID whenever the failure names one: a failed test or a
+      crashed worker (JUnit records it as "crashed while running" that test).
+      Match by job and error signature only when the failure names no test ID,
+      such as a step or job that hit its `timeout-minutes`.
+    - When every failed test of a step passes on its rerun, the job stays
+      green, so those failures never dequeue the PR and need no issue from
+      the PR's owner; see
+      [Rerun of failed tests](../../../.github/ci/README.md#rerun-of-failed-tests).
+      The [flake ledger](../../../.github/ci/README.md#flake-ledger) counts
+      them, and the external issue pipeline files or comments on the `flaky`
+      issue for a test ID that reaches the ledger's threshold. A test that
+      failed on its rerun too and is not quarantined, or a failure the step
+      summary says was not rerun, follows the rules here.
+    - A [quarantined](../../../.github/ci/README.md#quarantine-of-flaky-tests)
+      test that fails again in a job that reruns leaves that job green with a
+      warning naming its owner issue, so it does not dequeue the PR. Comment
+      nothing on that issue: the flake ledger counts the hit. The test stays
+      visible until the issue is fixed. A test qualifies for quarantine with at
+      least 3 ledger hits within 7 days, or a new hit after its `flaky` issue
+      was opened.
+    - When no open issue covers the failure, first file one, scanned as
+      `AGENTS.md` requires, with the run link and error: for a test ID, a
+      `bug`, `ci`, `flaky`, `needs-triage` issue titled with that test ID;
+      for a failure with no test ID, a `bug`, `ci`, `needs-triage` issue
+      naming the job. When an open issue already covers the test ID, comment
+      the run link and error there instead. One issue per test ID, as in
+      [Flaky-test issues](issue-tracker.md#flaky-test-issues).
     - When `main`'s latest run of that job (the latest nightly run, for jobs
       a `main` push skips) fails the same way, `main` has regressed: report
       it instead of requeueing.

@@ -10,10 +10,10 @@ from booley.config import agent as agent_config
 from booley.config.agent import load_agent_settings, set_agent_settings
 from booley.config.gateway import GatewayConfigError
 from booley.harness import developer_probe
-from booley.runtime import agent as agent_mod
 from booley.runtime.agent_config import set_backend_config
 from booley.specialists.coverage_analyst import CoverageAnalystSpecialist
 from booley.specialists.reviewer import ReviewerSpecialist
+from tests.agent_call_fake import install_agent
 from tests.harness.agent_auth_support import credential_findings, install_agent_clis, pin_venue
 
 _PIN = "gw-model"
@@ -76,7 +76,10 @@ def test_gateway_model_pins_codex_specialists_only(project, monkeypatch):
     for settings in (_loaded(project), _lazy()):
         assert {
             name: settings.model_for_specialist(name) for name in agent_config.SPECIALISTS
-        } == {"reviewer": "claude-opus-5-5", "coverage_analyst": _PIN}
+        } == {
+            "reviewer": "claude-opus-5-5",
+            "coverage_analyst": _PIN,
+        }
         assert settings.internal_model() == _PIN
         assert settings.model_settings() == {
             "claude-opus-5-5": ("[models] reviewer",),
@@ -97,13 +100,7 @@ def test_developer_probe_uses_gateway_model(project, monkeypatch):
     pin = "claude-served-by-gateway"
     monkeypatch.setenv("BOOLEY_GATEWAY_MODEL", pin)
     monkeypatch.setenv("BOOLEY_GATEWAY_EFFORT", "low")
-    seen = []
-
-    async def fake_call_agent(params):
-        seen.append(params)
-        raise RuntimeError("probe stops here")
-
-    monkeypatch.setattr(agent_mod, "call_agent", fake_call_agent)
+    agent = install_agent(monkeypatch, RuntimeError("probe stops here"))
     monkeypatch.setattr(developer_probe, "configure_agent_call", lambda params: params)
 
     with pytest.raises(developer_probe.ProbeError):
@@ -111,7 +108,8 @@ def test_developer_probe_uses_gateway_model(project, monkeypatch):
             project, getrusage=lambda _who: SimpleNamespace(ru_maxrss=1)
         )
 
-    assert (seen[0].model, seen[0].reasoning_effort, seen[0].agent_cli) == (pin, "low", "codex")
+    call = agent.calls[0]
+    assert (call.model, call.reasoning_effort, call.agent_cli) == (pin, "low", "codex")
 
 
 def test_gateway_effort_overrides_codex_effort(project, monkeypatch):

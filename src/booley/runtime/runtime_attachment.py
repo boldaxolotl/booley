@@ -35,6 +35,17 @@ _RECOVERY_LIMIT_SECONDS = 12.0
 _STARTUP_LIMIT_SECONDS = 2.0
 _POLL_SECONDS = 0.05
 
+# Causes that need no extra line: the command's own exit, the user's host signal, and a
+# spawn failure the supervisor has already printed.
+_QUIET_CAUSES = frozenset({"exited", "cancelled", "spawn_error"})
+_LOSS_PHRASES = {
+    "attachment_missing": "the Sandbox found no host attachment when the command started",
+    "attachment_expired": "the host attachment stopped renewing, so the Sandbox stopped the command",
+    "context_mismatch": "the command's execution context did not match this run",
+    "transport_lost": "the `docker exec` connection to the Sandbox ended",
+    "orphan_recovered": "its supervisor died and Booley stopped its remaining processes",
+}
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,9 +62,19 @@ class ExecutionResult:
 class SupervisedExecutionDriver:
     """Drive one preallocated execution ID through bounded terminal proof."""
 
-    def __init__(self, project_data: Path, *, project_root: Path, cwd: str | None = None) -> None:
+    def __init__(
+        self,
+        project_data: Path,
+        *,
+        project_root: Path,
+        container: str,
+        sandbox_name: str,
+        cwd: str | None = None,
+    ) -> None:
         self._project_data = project_data
         self._project_root = project_root
+        self._container = container
+        self._sandbox_name = sandbox_name
         self._cwd = cwd
 
     def run(self, execution_id: ExecutionId, transport_argv: list[str]) -> ExecutionResult:
@@ -64,21 +85,27 @@ class SupervisedExecutionDriver:
             process = subprocess.Popen(transport_argv)
             try:
                 result = _drive_execution(process, paths, pending)
-                if self._cwd is not None and result.terminal_cause in {
-                    "protocol_unavailable",
-                    "protocol_mismatch",
-                }:
-                    # A vanished directory and a broken image look the same here.
-                    logger.error(
-                        "Sandbox startup failed with selected directory %r; "
-                        "directory and protocol startup could not be distinguished",
-                        self._cwd,
-                    )
-                else:
-                    _report_protocol_failure(result, self._project_root)
-                return result
             finally:
                 _stop_transport(process)
+        # Outside the signal capture: inspecting a hung Docker must stay interruptible.
+        self._report(result)
+        return result
+
+    def _report(self, result: ExecutionResult) -> None:
+        if self._cwd is not None and result.terminal_cause in {
+            "protocol_unavailable",
+            "protocol_mismatch",
+        }:
+            # A vanished directory and a broken image look the same here.
+            logger.error(
+                "Sandbox startup failed with selected directory %r; "
+                "directory and protocol startup could not be distinguished",
+                self._cwd,
+            )
+        else:
+            _report_execution_failure(
+                result, self._project_root, self._container, self._sandbox_name
+            )
 
 
 @dataclass
@@ -160,11 +187,19 @@ def _stop_transport(process: subprocess.Popen) -> None:
 
 
 def _request_protocol_shutdown(paths: ExecutionPaths) -> None:
-    request_cancellation(paths, force=True, signum=signal.SIGTERM, reason="protocol_mismatch")
+    request_cancellation(
+        paths,
+        force=True,
+        signum=signal.SIGTERM,
+        reason="protocol_mismatch",
+    )
 
 
 def _force_recovery_if_due(
-    paths: ExecutionPaths, pending: _PendingSignals, recovery_started: float | None, now: float
+    paths: ExecutionPaths,
+    pending: _PendingSignals,
+    recovery_started: float | None,
+    now: float,
 ) -> None:
     if recovery_started is None or now - recovery_started < _RECOVERY_FORCE_SECONDS:
         return
@@ -177,7 +212,9 @@ def _force_recovery_if_due(
 
 
 def _drive_execution(
-    process: subprocess.Popen, paths: ExecutionPaths, pending: _PendingSignals
+    process: subprocess.Popen,
+    paths: ExecutionPaths,
+    pending: _PendingSignals,
 ) -> ExecutionResult:
     generation = 1
     started_at = time.monotonic()
@@ -194,7 +231,11 @@ def _drive_execution(
             write_attachment_heartbeat(paths, generation=generation)
             next_heartbeat = now + _HEARTBEAT_INTERVAL_SECONDS
         if pending.signum is not None:
-            request_cancellation(paths, force=pending.count > 1, signum=pending.signum)
+            request_cancellation(
+                paths,
+                force=pending.count > 1,
+                signum=pending.signum,
+            )
             recovery_started = recovery_started or now
         record_readable = True
         try:
@@ -230,29 +271,73 @@ def _drive_execution(
     return protocol_failure or ExecutionResult(125, "unrecoverable", False, "recovery_timeout")
 
 
-def _report_protocol_failure(result: ExecutionResult, project_root: Path) -> None:
-    if result.terminal_cause not in {"protocol_mismatch", "protocol_unavailable"}:
+def _report_execution_failure(
+    result: ExecutionResult, project_root: Path, container: str, sandbox_name: str
+) -> None:
+    """Log why the execution was lost; the exit code stays the caller's."""
+    cause = result.terminal_cause
+    if cause in _QUIET_CAUSES:
         return
+    if cause in {"protocol_mismatch", "protocol_unavailable"}:
+        from booley.runtime import session_runtime
+
+        remedy = session_runtime.sandbox_remedy(project_root)
+        logger.error("Sandbox execution protocol is unavailable or incompatible; %s", remedy)
+    elif cause == "recovery_timeout":
+        logger.error("%s", _lost_sandbox_message(project_root, container, sandbox_name))
+    else:
+        phrase = _LOSS_PHRASES.get(cause, f"cause {cause}")
+        logger.error("Sandbox %r lost the command: %s", sandbox_name, phrase)
+
+
+def _lost_sandbox_message(project_root: Path, container: str, sandbox_name: str) -> str:
+    """Describe a recovery timeout from the Project's running Sandbox as it is now."""
     from booley.runtime import session_runtime
 
-    remedy = session_runtime.sandbox_remedy(project_root)
-    logger.error("Sandbox execution protocol is unavailable or incompatible; %s", remedy)
+    try:
+        running = session_runtime.resolve_running_sandbox(project_root)
+    except session_runtime.SessionError as exc:
+        return (
+            f"lost the command in Sandbox {sandbox_name!r} (recovery timeout); "
+            f"cannot inspect the Sandbox: {exc}"
+        )
+    if running is None:
+        return (
+            f"Sandbox {sandbox_name!r} stopped while the command ran, so the command was lost; "
+            "start it again with `booley session up` on the host, then rerun the command"
+        )
+    if running.container_id != container:
+        return (
+            f"Sandbox {sandbox_name!r} was replaced while the command ran, "
+            "so the command was lost; rerun it in the new Sandbox"
+        )
+    return (
+        f"Sandbox {sandbox_name!r} is still running, but the command's execution supervisor "
+        f"stopped reporting for {_RECOVERY_LIMIT_SECONDS:g} s (recovery timeout), "
+        "so the command was lost"
+    )
 
 
 def run_command(
     project_root: Path,
-    container_name: str,
+    container_id: str,
     command: list[str],
     *,
     tty: bool,
     env: Mapping[str, str] | None = None,
     cwd: str | None = None,
+    sandbox_name: str | None = None,
 ) -> ExecutionResult:
-    """Run one explicit command and own it through complete scoped cleanup."""
+    """Run one explicit command and own it through complete scoped cleanup.
+
+    *container_id* is the Sandbox container's immutable ID; a lost command is reported
+    as "replaced" when the Project's running Sandbox has another one. *sandbox_name*
+    names the Sandbox in failure messages and defaults to the ID.
+    """
     from booley.runtime.session_runtime import _probe_command_cwd, exec_argv
 
     if cwd is not None:
-        _probe_command_cwd(container_name, cwd)
+        _probe_command_cwd(container_id, cwd)
 
     execution_id = ExecutionId(uuid.uuid4().hex)
     from booley.core.booley_dir import resolve_authoritative_booley_dir
@@ -265,12 +350,17 @@ def run_command(
     gc_terminal_executions(project_data)
     supervisor = _supervisor_command(execution_id, command, tty=tty)
     docker_argv = exec_argv(
-        container_name,
+        container_id,
         supervisor,
         tty=tty,
         env={**(env or {}), RUNTIME_EXECUTION_ENV: execution_id},
         cwd=cwd,
     )
-    return SupervisedExecutionDriver(project_data, project_root=project_root, cwd=cwd).run(
-        execution_id, docker_argv
+    driver = SupervisedExecutionDriver(
+        project_data,
+        project_root=project_root,
+        container=container_id,
+        sandbox_name=sandbox_name or container_id,
+        cwd=cwd,
     )
+    return driver.run(execution_id, docker_argv)

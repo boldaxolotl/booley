@@ -13,7 +13,10 @@ from pathlib import Path
 import pytest
 
 from booley.harness.setup import project_git_hook_bundle as bundle_module
-from booley.harness.setup.project_git_hook_bundle import BUNDLE_NAME, build_project_git_hook_bundle
+from booley.harness.setup.project_git_hook_bundle import (
+    BUNDLE_NAME,
+    build_project_git_hook_bundle,
+)
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s
 

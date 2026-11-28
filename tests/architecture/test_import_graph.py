@@ -35,7 +35,13 @@ def test_normalizes_absolute_relative_aliased_and_package_imports() -> None:
     assert tuple(map(_edge, dependencies)) == (
         ("booley", "booley.exported", "__init__.py", 1, 0),
         ("booley.absolute_allowed", "booley.domain.model", "absolute_allowed.py", 1, 0),
-        ("booley.absolute_forbidden", "booley.presentation.view", "absolute_forbidden.py", 1, 0),
+        (
+            "booley.absolute_forbidden",
+            "booley.presentation.view",
+            "absolute_forbidden.py",
+            1,
+            0,
+        ),
         (
             "booley.nested.deeper.consumer",
             "booley.nested.pkg.sibling",
@@ -50,9 +56,21 @@ def test_normalizes_absolute_relative_aliased_and_package_imports() -> None:
             2,
             0,
         ),
-        ("booley.nested.pkg.consumer", "booley.nested.shared", "nested/pkg/consumer.py", 1, 0),
+        (
+            "booley.nested.pkg.consumer",
+            "booley.nested.shared",
+            "nested/pkg/consumer.py",
+            1,
+            0,
+        ),
         ("booley.nested_imports", "booley.domain.model", "nested_imports.py", 4, 4),
-        ("booley.nested_imports", "booley.presentation.view", "nested_imports.py", 10, 4),
+        (
+            "booley.nested_imports",
+            "booley.presentation.view",
+            "nested_imports.py",
+            10,
+            4,
+        ),
     )
 
 
@@ -99,7 +117,8 @@ def test_module_file_and_package_name_collision_fails(tmp_path: Path) -> None:
     (duplicate_package / "__init__.py").write_text("", encoding="utf-8")
 
     with pytest.raises(
-        ValueError, match=r"multiple source files resolve to module booley\.duplicate"
+        ValueError,
+        match=r"multiple source files resolve to module booley\.duplicate",
     ):
         analyze_imports(source_root)
 
@@ -159,7 +178,7 @@ def test_fan_out_counts_unique_targets_deterministically(tmp_path: Path) -> None
     fan_out = file_fan_out(analyze_imports(package))
 
     assert [(item.source, item.count, item.targets) for item in fan_out] == [
-        ("booley.alpha.edge", 2, ("booley.beta.edge", "booley.gamma.edge"))
+        ("booley.alpha.edge", 2, ("booley.beta.edge", "booley.gamma.edge")),
     ]
 
 
@@ -183,7 +202,11 @@ def test_graph_diff_uses_unique_edges_not_locations_or_fact_counts(tmp_path: Pat
 def test_graph_diff_reveals_mutual_pair_inside_unchanged_scc(tmp_path: Path) -> None:
     before = tmp_path / "before" / "booley"
     after = tmp_path / "after" / "booley"
-    edges = {"alpha": ("booley.beta",), "beta": ("booley.gamma",), "gamma": ("booley.alpha",)}
+    edges = {
+        "alpha": ("booley.beta",),
+        "beta": ("booley.gamma",),
+        "gamma": ("booley.alpha",),
+    }
     _write_package(before, edges)
     _write_package(after, {**edges, "beta": ("booley.gamma", "booley.alpha")})
 
@@ -200,9 +223,21 @@ def test_graph_diff_reports_scc_split_per_package(tmp_path: Path) -> None:
     before = tmp_path / "before" / "booley"
     after = tmp_path / "after" / "booley"
     _write_package(
-        before, {"alpha": ("booley.beta",), "beta": ("booley.gamma",), "gamma": ("booley.alpha",)}
+        before,
+        {
+            "alpha": ("booley.beta",),
+            "beta": ("booley.gamma",),
+            "gamma": ("booley.alpha",),
+        },
     )
-    _write_package(after, {"alpha": ("booley.beta",), "beta": ("booley.alpha",), "gamma": ()})
+    _write_package(
+        after,
+        {
+            "alpha": ("booley.beta",),
+            "beta": ("booley.alpha",),
+            "gamma": (),
+        },
+    )
 
     diff = compare_dependency_graphs(
         dependency_graph_snapshot(before, named_hotspots=()),
@@ -220,16 +255,29 @@ def test_graph_diff_reports_scc_split_per_package(tmp_path: Path) -> None:
             ("booley.alpha", "booley.beta", "booley.gamma"),
             ("booley.alpha", "booley.beta"),
         ),
-        ("booley.gamma", ("booley.alpha", "booley.beta", "booley.gamma"), ("booley.gamma",)),
+        (
+            "booley.gamma",
+            ("booley.alpha", "booley.beta", "booley.gamma"),
+            ("booley.gamma",),
+        ),
     ]
 
 
 def test_graph_diff_reports_only_changed_named_hotspots(tmp_path: Path) -> None:
     before = tmp_path / "before" / "booley"
     after = tmp_path / "after" / "booley"
-    _write_package(before, {"alpha": ("booley.beta", "booley.gamma"), "beta": (), "gamma": ()})
     _write_package(
-        after, {"alpha": ("booley.beta",), "beta": (), "gamma": (), "new": ("booley.beta",)}
+        before,
+        {"alpha": ("booley.beta", "booley.gamma"), "beta": (), "gamma": ()},
+    )
+    _write_package(
+        after,
+        {
+            "alpha": ("booley.beta",),
+            "beta": (),
+            "gamma": (),
+            "new": ("booley.beta",),
+        },
     )
     hotspots = ("booley.alpha.edge", "booley.beta.edge", "booley.new.edge")
 
@@ -240,7 +288,10 @@ def test_graph_diff_reports_only_changed_named_hotspots(tmp_path: Path) -> None:
 
     assert [
         (item.source, item.before, item.after, item.delta) for item in diff.fan_out_transitions
-    ] == [("booley.alpha.edge", 2, 1, -1), ("booley.new.edge", 0, 1, 1)]
+    ] == [
+        ("booley.alpha.edge", 2, 1, -1),
+        ("booley.new.edge", 0, 1, 1),
+    ]
 
 
 def _write_package(package: Path, edges: dict[str, tuple[str, ...]]) -> None:

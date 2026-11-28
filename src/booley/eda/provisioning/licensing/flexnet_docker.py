@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 import subprocess
 import time
-from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
+from booley.core import docker_cli
+from booley.core.boundary import as_positive_int
 from booley.core.differences import format_differences
 from booley.core.project_identity import project_label_id
 from booley.core.resources import package_data_dir
@@ -33,10 +35,10 @@ from .flexnet_relay import (
 
 RELAY_IMAGE = "booley-flexnet-relay:1"
 RELAY_ALIAS = "booley-license-xilinx"
-ROLE_LABEL = "booley.role=license-relay"
+ROLE_LABEL = f"{docker_cli.ROLE_LABEL}=license-relay"
 SESSION_LABEL = "booley.session-id"
-PRIVATE_NETWORK_LABEL = "booley.role=license-private-network"
-OUTBOUND_NETWORK_LABEL = "booley.role=license-outbound-network"
+PRIVATE_NETWORK_LABEL = f"{docker_cli.ROLE_LABEL}=license-private-network"
+OUTBOUND_NETWORK_LABEL = f"{docker_cli.ROLE_LABEL}=license-outbound-network"
 DOCKER_TIMEOUT = 30
 BUILD_TIMEOUT = 600
 # Dockerfile.flexnet-relay's HEALTHCHECK may take up to 2 s start period plus
@@ -53,7 +55,6 @@ _HEALTH_STATE_FORMAT = (
 GATEWAY_MODE_OPTION = "com.docker.network.bridge.gateway_mode_ipv4"
 GATEWAY_MODE_ISOLATED = "isolated"
 
-Runner = Callable[[list[str], int], subprocess.CompletedProcess[str]]
 _IMAGE_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _RELAY_ENV_NAMES = frozenset(
     {
@@ -71,7 +72,10 @@ _RELAY_ENV_NAMES = frozenset(
 def _label_differences(expected: set[str], actual: set[str]) -> str:
     expected_values = dict(item.split("=", 1) for item in expected)
     actual_values = dict(item.split("=", 1) for item in actual if "=" in item)
-    expected_safe: dict[str, object] = {**expected_values, "unexpected_label_keys": []}
+    expected_safe: dict[str, object] = {
+        **expected_values,
+        "unexpected_label_keys": [],
+    }
     actual_safe: dict[str, object] = {
         **{key: actual_values[key] for key in expected_values if key in actual_values},
         "unexpected_label_keys": sorted(set(actual_values) - set(expected_values)),
@@ -112,6 +116,77 @@ class RelayResources:
     relay_container: str
 
 
+@dataclass(frozen=True)
+class RelayContainerSpec:
+    """Hardened FlexNet License Relay container values, typed once for run and inspect."""
+
+    user: str
+    tmpfs: tuple[str, str]  # (mount point, mount options)
+    cap_drop: str
+    security_opt: str
+    pids_limit: int
+    memory_mib: int  # also memory-plus-swap: the relay never swaps
+    cpus: str  # Docker's decimal CPUs; inspect reports nano-CPUs
+    ulimit: tuple[str, int]  # (name, soft and hard limit)
+    restart: str
+    log_driver: str
+    log_options: tuple[tuple[str, str], ...]
+
+    def run_options(self) -> list[str]:
+        """Render the spec as ``docker container run`` options."""
+        path, mount_options = self.tmpfs
+        name, limit = self.ulimit
+        memory = f"{self.memory_mib}m"
+        options = [
+            "--read-only",
+            "--tmpfs",
+            f"{path}:{mount_options}",
+            "--user",
+            self.user,
+            "--cap-drop",
+            self.cap_drop,
+            "--security-opt",
+            self.security_opt,
+            "--pids-limit",
+            str(self.pids_limit),
+            "--memory",
+            memory,
+            "--memory-swap",
+            memory,
+            "--cpus",
+            self.cpus,
+            "--ulimit",
+            f"{name}={limit}:{limit}",
+            "--restart",
+            self.restart,
+            "--log-driver",
+            self.log_driver,
+        ]
+        for key, value in self.log_options:
+            options += ["--log-opt", f"{key}={value}"]
+        return options
+
+    def check(self, config: dict, host: dict, mounts: object) -> None:
+        """Raise ``RelayDockerError`` when inspect output drifts from the spec."""
+        _validate_isolation(self, config, host, mounts)
+        _validate_host_policy(self, host)
+
+
+RELAY_CONTAINER = RelayContainerSpec(
+    user="65532:65532",
+    tmpfs=("/tmp", "rw,noexec,nosuid,nodev,size=1m"),
+    cap_drop="ALL",
+    security_opt="no-new-privileges",
+    pids_limit=64,
+    memory_mib=64,
+    cpus="0.50",
+    ulimit=("nofile", 256),
+    restart="no",
+    log_driver="json-file",
+    log_options=(("max-size", "1m"), ("max-file", "2")),
+)
+
+
 def resources_for_session(session_identity: str) -> RelayResources:
     """Derive non-sensitive deterministic object names from exact Session identity."""
     if not isinstance(session_identity, str) or not session_identity:
@@ -136,15 +211,15 @@ def relay_image_build_argv(*, image: str = RELAY_IMAGE) -> list[str]:
     return ["image", "build", "--tag", image, "--file", str(dockerfile), str(context)]
 
 
-def build_relay_image(*, image: str = RELAY_IMAGE, runner: Runner) -> None:
+def build_relay_image(*, image: str = RELAY_IMAGE, runner: docker_cli.Runner) -> None:
     """Build the pinned minimal relay image or raise with Docker's diagnostic."""
     result = runner(relay_image_build_argv(image=image), BUILD_TIMEOUT)
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "Docker returned no detail"
+        detail = docker_cli.failure_detail(result, "Docker returned no detail")
         raise RelayDockerError(f"could not build FlexNet relay image: {detail}")
 
 
-def relay_image_exists(*, image: str = RELAY_IMAGE, runner: Runner) -> bool:
+def relay_image_exists(*, image: str = RELAY_IMAGE, runner: docker_cli.Runner) -> bool:
     """Return whether Docker can resolve the exact production relay image."""
     try:
         return runner(["image", "inspect", image], DOCKER_TIMEOUT).returncode == 0
@@ -152,7 +227,9 @@ def relay_image_exists(*, image: str = RELAY_IMAGE, runner: Runner) -> bool:
         return False
 
 
-def ensure_relay_image(*, image: str = RELAY_IMAGE, force: bool = False, runner: Runner) -> bool:
+def ensure_relay_image(
+    *, image: str = RELAY_IMAGE, force: bool = False, runner: docker_cli.Runner
+) -> bool:
     """Build the relay image when absent or forced; return whether it was built."""
     if not force and relay_image_exists(image=image, runner=runner):
         return False
@@ -160,7 +237,7 @@ def ensure_relay_image(*, image: str = RELAY_IMAGE, force: bool = False, runner:
     return True
 
 
-def resolve_relay_image_id(*, image: str = RELAY_IMAGE, runner: Runner) -> str:
+def resolve_relay_image_id(*, image: str = RELAY_IMAGE, runner: docker_cli.Runner) -> str:
     """Resolve one relay tag/digest to the immutable local Docker image ID."""
     image_id = _inspect_value(runner, "image", image, "{{.Id}}")
     if _IMAGE_ID_RE.fullmatch(image_id) is None:
@@ -211,10 +288,6 @@ def outbound_network_create_argv(
     )
 
 
-# The relay never swaps: its memory and its memory-plus-swap are the same 64 MiB.
-_RELAY_MEMORY_FLAGS = ("--memory", "64m", "--memory-swap", "64m")
-
-
 def relay_run_argv(
     resources: RelayResources,
     profile: RelayProfile,
@@ -233,30 +306,7 @@ def relay_run_argv(
         resources.relay_container,
         "--network",
         resources.outbound_network,
-        "--read-only",
-        "--tmpfs",
-        "/tmp:rw,noexec,nosuid,nodev,size=1m",
-        "--user",
-        "65532:65532",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--pids-limit",
-        "64",
-        *_RELAY_MEMORY_FLAGS,
-        "--cpus",
-        "0.50",
-        "--ulimit",
-        "nofile=256:256",
-        "--restart",
-        "no",
-        "--log-driver",
-        "json-file",
-        "--log-opt",
-        "max-size=1m",
-        "--log-opt",
-        "max-file=2",
+        *RELAY_CONTAINER.run_options(),
         "--label",
         ROLE_LABEL,
         "--label",
@@ -310,7 +360,7 @@ def provision_relay(
     session_identity: str,
     *,
     image: str = RELAY_IMAGE,
-    runner: Runner,
+    runner: docker_cli.Runner,
     health_attempts: int = DEFAULT_HEALTH_ATTEMPTS,
     poll_interval: float = DEFAULT_HEALTH_POLL_INTERVAL,
     issuance_labels: tuple[str, ...] = (),
@@ -336,7 +386,12 @@ def provision_relay(
         created.append(("network", resources.outbound_network))
         _checked(
             runner,
-            relay_run_argv(resources, profile, image=image_id, issuance_labels=issuance_labels),
+            relay_run_argv(
+                resources,
+                profile,
+                image=image_id,
+                issuance_labels=issuance_labels,
+            ),
             "create license relay",
         )
         created.append(("container", resources.relay_container))
@@ -349,7 +404,7 @@ def provision_relay(
         raise RelayDockerError(f"license relay startup failed: {exc}{suffix}") from exc
 
 
-def remove_relay(resources: RelayResources, *, runner: Runner) -> None:
+def remove_relay(resources: RelayResources, *, runner: docker_cli.Runner) -> None:
     """Remove one Session relay and both networks, reporting every residual."""
     objects = [
         ("network", resources.private_network),
@@ -366,7 +421,7 @@ def recreate_relay(
     session_identity: str,
     *,
     image: str = RELAY_IMAGE,
-    runner: Runner,
+    runner: docker_cli.Runner,
     health_attempts: int = DEFAULT_HEALTH_ATTEMPTS,
     poll_interval: float = DEFAULT_HEALTH_POLL_INTERVAL,
     issuance_labels: tuple[str, ...] = (),
@@ -385,7 +440,12 @@ def recreate_relay(
     )
 
 
-def connect_session(resources: RelayResources, session_container: str, *, runner: Runner) -> None:
+def connect_session(
+    resources: RelayResources,
+    session_container: str,
+    *,
+    runner: docker_cli.Runner,
+) -> None:
     """Attach the Session only to the private license network."""
     _checked(
         runner,
@@ -395,10 +455,16 @@ def connect_session(resources: RelayResources, session_container: str, *, runner
 
 
 def _validate_relay_labels_and_health(
-    run: Runner, resources: RelayResources, issuance_labels: tuple[str, ...]
+    run: docker_cli.Runner,
+    resources: RelayResources,
+    issuance_labels: tuple[str, ...],
 ) -> None:
-    expected = {ROLE_LABEL, f"{SESSION_LABEL}={resources.session_id}", *issuance_labels}
-    actual = _inspect_labels(run, "container", resources.relay_container)
+    expected = {
+        ROLE_LABEL,
+        f"{SESSION_LABEL}={resources.session_id}",
+        *issuance_labels,
+    }
+    actual = _label_set(run, "container", resources.relay_container)
     if actual != expected:
         raise RelayDockerError(
             "license relay labels differ from host issuance: "
@@ -412,10 +478,12 @@ def _validate_relay_labels_and_health(
 
 
 def _validate_relay_membership(
-    run: Runner, resources: RelayResources, session_container: str | None
+    run: docker_cli.Runner,
+    resources: RelayResources,
+    session_container: str | None,
 ) -> None:
     expected_networks = {resources.private_network, resources.outbound_network}
-    relay_networks = _inspect_networks(run, resources.relay_container)
+    relay_networks = _attached_networks(run, resources.relay_container)
     if relay_networks != expected_networks:
         raise RelayDockerError(
             "license relay network topology has drifted: "
@@ -423,7 +491,7 @@ def _validate_relay_membership(
         )
     if session_container is None:
         return
-    session_networks = _inspect_networks(run, session_container)
+    session_networks = _attached_networks(run, session_container)
     expected = {"private_network_present": True, "outbound_network_present": False}
     actual = {
         "private_network_present": resources.private_network in session_networks,
@@ -455,7 +523,7 @@ def validate_relay(
     *,
     issuance_labels: tuple[str, ...],
     image: str = RELAY_IMAGE,
-    runner: Runner,
+    runner: docker_cli.Runner,
 ) -> None:
     """Fail closed unless the complete relay security contract matches issuance."""
     image_id = resolve_relay_image_id(image=image, runner=runner)
@@ -475,7 +543,13 @@ def validate_relay(
         resources.session_id,
         issuance_labels,
     )
-    _validate_network_endpoints(runner, resources, profile, session_container, issuance_labels)
+    _validate_network_endpoints(
+        runner,
+        resources,
+        profile,
+        session_container,
+        issuance_labels,
+    )
     _validate_network(
         runner,
         resources.outbound_network,
@@ -488,16 +562,16 @@ def validate_relay(
 
 def project_resource_filter(project_root: str) -> str:
     """The Docker label filter that selects every resource of a persisted Project identity."""
-    return f"label=booley.project-id={project_label_id(project_root)}"
+    return f"label={docker_cli.PROJECT_ID_LABEL}={project_label_id(project_root)}"
 
 
-def cleanup_project_resources(project_root: Path, *, runner: Runner) -> tuple[str, ...]:
+def cleanup_project_resources(project_root: Path, *, runner: docker_cli.Runner) -> tuple[str, ...]:
     """Remove exact Project-labeled containers before networks and report residue."""
     return cleanup_project_resources_for_identity(str(project_root.resolve()), runner=runner)
 
 
 def cleanup_project_resources_for_identity(
-    project_root: str, *, runner: Runner
+    project_root: str, *, runner: docker_cli.Runner
 ) -> tuple[str, ...]:
     """Remove resources for an already-canonical persisted Project identity."""
     label = project_resource_filter(project_root)
@@ -530,14 +604,14 @@ def cleanup_project_resources_for_identity(
     return tuple(residual)
 
 
-def _checked(run: Runner, args: list[str], action: str) -> None:
+def _checked(run: docker_cli.Runner, args: list[str], action: str) -> None:
     result = run(args, DOCKER_TIMEOUT)
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "Docker returned no detail"
+        detail = docker_cli.failure_detail(result, "Docker returned no detail")
         raise RelayDockerError(f"could not {action}: {detail}")
 
 
-def _wait_healthy(run: Runner, container: str, attempts: int, interval: float) -> None:
+def _wait_healthy(run: docker_cli.Runner, container: str, attempts: int, interval: float) -> None:
     """Poll until Docker reports the relay healthy; stop early once it never will."""
     command = ["container", "inspect", container, "--format", _HEALTH_STATE_FORMAT]
     state, health = "unknown", "unknown"
@@ -560,11 +634,12 @@ def _wait_healthy(run: Runner, container: str, attempts: int, interval: float) -
     )
 
 
-def _relay_log_tail(run: Runner, container: str) -> str:
+def _relay_log_tail(run: docker_cli.Runner, container: str) -> str:
     """Return a bounded relay-log excerpt for a startup failure, or nothing."""
     try:
         result = run(
-            ["container", "logs", "--tail", str(HEALTH_LOG_TAIL_LINES), container], DOCKER_TIMEOUT
+            ["container", "logs", "--tail", str(HEALTH_LOG_TAIL_LINES), container],
+            DOCKER_TIMEOUT,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
@@ -578,7 +653,11 @@ def _relay_log_tail(run: Runner, container: str) -> str:
 
 
 def _validate_container_contract(
-    run: Runner, name: str, *, image_id: str, expected_env: set[str]
+    run: docker_cli.Runner,
+    name: str,
+    *,
+    image_id: str,
+    expected_env: set[str],
 ) -> None:
     state = _inspect_object(run, "container", name)
     config = state.get("Config")
@@ -586,40 +665,43 @@ def _validate_container_contract(
     mounts = state.get("Mounts")
     if not isinstance(config, dict) or not isinstance(host, dict):
         raise RelayDockerError("Docker returned invalid relay container state")
-    _validate_container_identity(state, config, host, mounts, image_id)
-    if not _security_options_match(host.get("SecurityOpt")):
+    _validate_container_identity(state, config, image_id)
+    RELAY_CONTAINER.check(config, host, mounts)
+    _validate_relay_env(config.get("Env"), expected_env)
+
+
+def _validate_host_policy(spec: RelayContainerSpec, host: dict) -> None:
+    if not _security_options_match(host.get("SecurityOpt"), spec.security_opt):
         raise RelayDockerError("license relay security options have drifted")
-    if host.get("Tmpfs") != {"/tmp": "rw,noexec,nosuid,nodev,size=1m"}:
+    expected_tmpfs = dict([spec.tmpfs])
+    if host.get("Tmpfs") != expected_tmpfs:
         raise RelayDockerError(
             "license relay tmpfs policy has drifted: "
-            + format_differences(
-                {"tmpfs": {"/tmp": "rw,noexec,nosuid,nodev,size=1m"}}, {"tmpfs": host.get("Tmpfs")}
-            )
+            + format_differences({"tmpfs": expected_tmpfs}, {"tmpfs": host.get("Tmpfs")})
         )
-    if not _limits_match(host):
+    if not _limits_match(host, spec):
         raise RelayDockerError("license relay resource limits have drifted")
-    if host.get("RestartPolicy") != {"Name": "no", "MaximumRetryCount": 0}:
+    expected_restart = {"Name": spec.restart, "MaximumRetryCount": 0}
+    if host.get("RestartPolicy") != expected_restart:
         raise RelayDockerError(
             "license relay restart policy has drifted: "
             + format_differences(
-                {"restart_policy": {"Name": "no", "MaximumRetryCount": 0}},
+                {"restart_policy": expected_restart},
                 {"restart_policy": host.get("RestartPolicy")},
             )
         )
-    expected_logging = {"Type": "json-file", "Config": {"max-file": "2", "max-size": "1m"}}
+    expected_logging = {"Type": spec.log_driver, "Config": dict(spec.log_options)}
     if host.get("LogConfig") != expected_logging:
         raise RelayDockerError(
             "license relay logging policy has drifted: "
             + format_differences(
-                {"logging_policy": expected_logging}, {"logging_policy": host.get("LogConfig")}
+                {"logging_policy": expected_logging},
+                {"logging_policy": host.get("LogConfig")},
             )
         )
-    _validate_relay_env(config.get("Env"), expected_env)
 
 
-def _validate_container_identity(
-    state: dict, config: dict, host: dict, mounts: object, image_id: str
-) -> None:
+def _validate_container_identity(state: dict, config: dict, image_id: str) -> None:
     runtime_state = state.get("State")
     if not isinstance(runtime_state, dict) or runtime_state.get("Running") is not True:
         raise RelayDockerError("license relay is not running")
@@ -631,7 +713,12 @@ def _validate_container_identity(
                 {"state_image": state.get("Image"), "config_image": config.get("Image")},
             )
         )
-    if config.get("User") != "65532:65532":
+
+
+def _validate_isolation(
+    spec: RelayContainerSpec, config: dict, host: dict, mounts: object
+) -> None:
+    if config.get("User") != spec.user:
         raise RelayDockerError("license relay user has drifted")
     if mounts != [] or host.get("Binds") not in (None, []):
         raise RelayDockerError("license relay mounts have drifted")
@@ -639,11 +726,12 @@ def _validate_container_identity(
         raise RelayDockerError("license relay port publication has drifted")
     if host.get("ReadonlyRootfs") is not True:
         raise RelayDockerError("license relay root filesystem is writable")
-    if host.get("CapAdd") not in (None, []) or host.get("CapDrop") != ["ALL"]:
+    expected_cap_drop = [spec.cap_drop]
+    if host.get("CapAdd") not in (None, []) or host.get("CapDrop") != expected_cap_drop:
         raise RelayDockerError(
             "license relay capability policy has drifted: "
             + format_differences(
-                {"cap_add": [], "cap_drop": ["ALL"]},
+                {"cap_add": [], "cap_drop": expected_cap_drop},
                 {"cap_add": host.get("CapAdd") or [], "cap_drop": host.get("CapDrop")},
             )
         )
@@ -672,18 +760,19 @@ def _ports_are_private(config: dict, host: dict) -> bool:
     return exposed in (None, {})
 
 
-def _security_options_match(raw: object) -> bool:
+def _security_options_match(raw: object, option: str) -> bool:
     if not isinstance(raw, list) or len(raw) != 1 or not isinstance(raw[0], str):
         return False
-    return raw[0] in {"no-new-privileges", "no-new-privileges:true"}
+    return raw[0] in {option, f"{option}:true"}
 
 
-def _limits_match(host: dict) -> bool:
+def _limits_match(host: dict, spec: RelayContainerSpec) -> bool:
+    name, limit = spec.ulimit
     return (
-        host.get("PidsLimit") == 64
-        and host.get("Memory") == 64 * 1024 * 1024
-        and host.get("NanoCpus") == 500_000_000
-        and host.get("Ulimits") == [{"Name": "nofile", "Hard": 256, "Soft": 256}]
+        host.get("PidsLimit") == spec.pids_limit
+        and host.get("Memory") == spec.memory_mib * 1024 * 1024
+        and host.get("NanoCpus") == int(Decimal(spec.cpus) * 1_000_000_000)
+        and host.get("Ulimits") == [{"Name": name, "Hard": limit, "Soft": limit}]
     )
 
 
@@ -698,29 +787,39 @@ def _validate_relay_env(raw: object, expected: set[str]) -> None:
         )
 
 
-def _inspect_object(run: Runner, kind: str, name: str) -> dict:
-    result = run([kind, "inspect", name], DOCKER_TIMEOUT)
-    if result.returncode != 0:
-        detail = result.stderr.strip() or "Docker inspect failed"
-        raise RelayDockerError(f"cannot inspect {kind} {name}: {detail}")
+def _inspect_object(
+    run: docker_cli.Runner,
+    kind: str,
+    name: str,
+    *,
+    template: str = "{{json .}}",
+    malformed: str | None = None,
+) -> dict[str, Any]:
     try:
-        decoded = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        raise RelayDockerError(f"Docker returned invalid state for {kind} {name}") from exc
-    if not isinstance(decoded, list) or len(decoded) != 1 or not isinstance(decoded[0], dict):
-        raise RelayDockerError(f"Docker returned invalid state for {kind} {name}")
-    return decoded[0]
+        return docker_cli.inspect(run, kind, name, timeout=DOCKER_TIMEOUT, template=template)
+    except docker_cli.InspectError as exc:
+        message = malformed or f"Docker returned invalid state for {kind} {name}"
+        raise _relay_inspect_error(exc, kind, name, message) from exc
+
+
+def _relay_inspect_error(
+    error: docker_cli.InspectError, kind: str, name: str, malformed: str
+) -> RelayDockerError:
+    if error.result is None:
+        return RelayDockerError(malformed)
+    detail = docker_cli.failure_detail(error.result, "Docker inspect failed")
+    return RelayDockerError(f"cannot inspect {kind} {name}: {detail}")
 
 
 def _validate_network(
-    run: Runner,
+    run: docker_cli.Runner,
     name: str,
     internal: bool,
     role_label: str,
     session_id: str,
     issuance_labels: tuple[str, ...],
 ) -> None:
-    labels = _inspect_labels(run, "network", name)
+    labels = _label_set(run, "network", name)
     expected = {role_label, f"{SESSION_LABEL}={session_id}", *issuance_labels}
     if labels != expected:
         raise RelayDockerError(
@@ -730,23 +829,26 @@ def _validate_network(
     observed = _inspect_value(run, "network", name, "{{.Internal}}").lower()
     if observed != str(internal).lower():
         raise RelayDockerError(f"license network {name} routing policy has drifted")
-    options_output = _inspect_value(run, "network", name, "{{json .Options}}")
-    try:
-        options = json.loads(options_output)
-    except json.JSONDecodeError as exc:
-        raise RelayDockerError(f"Docker returned invalid options for network {name}") from exc
+    options = _inspect_object(
+        run,
+        "network",
+        name,
+        template="{{json .Options}}",
+        malformed=f"Docker returned invalid options for network {name}",
+    )
     expected_options = {GATEWAY_MODE_OPTION: GATEWAY_MODE_ISOLATED} if internal else {}
     if options != expected_options:
         raise RelayDockerError(
             f"license network {name} gateway policy has drifted: "
             + format_differences(
-                {"network_options": expected_options}, {"network_options": options}
+                {"network_options": expected_options},
+                {"network_options": options},
             )
         )
 
 
 def _validate_network_endpoints(
-    run: Runner,
+    run: docker_cli.Runner,
     resources: RelayResources,
     profile: RelayProfile,
     session_container: str | None,
@@ -765,8 +867,9 @@ def _validate_network_endpoints(
             raise RelayDockerError("license private network has unauthorized endpoints")
     else:
         for client in clients:
-            labels = _inspect_labels(run, "container", client)
-            expected = {"booley.role=interactive", *issuance_labels}
+            # A client carries its image's labels, which may have empty values.
+            labels = _label_set(run, "container", client, allow_empty=True)
+            expected = {f"{docker_cli.ROLE_LABEL}=interactive", *issuance_labels}
             if not expected.issubset(labels):
                 raise RelayDockerError("license private network has unauthorized endpoints")
     networks = _inspect_object(run, "container", resources.relay_container).get(
@@ -775,13 +878,14 @@ def _validate_network_endpoints(
     attached = networks.get("Networks", {}) if isinstance(networks, dict) else {}
     private_state = attached.get(resources.private_network) if isinstance(attached, dict) else None
     aliases = private_state.get("Aliases") if isinstance(private_state, dict) else None
-    if not isinstance(aliases, list) or not {RELAY_ALIAS, profile.server_hostid}.issubset(
-        set(aliases)
-    ):
+    if not isinstance(aliases, list) or not {
+        RELAY_ALIAS,
+        profile.server_hostid,
+    }.issubset(set(aliases)):
         raise RelayDockerError("license relay private aliases have drifted")
 
 
-def _network_endpoint_names(run: Runner, network: str) -> set[str]:
+def _network_endpoint_names(run: docker_cli.Runner, network: str) -> set[str]:
     state = _inspect_object(run, "network", network)
     containers = state.get("Containers")
     if not isinstance(containers, dict):
@@ -794,41 +898,39 @@ def _network_endpoint_names(run: Runner, network: str) -> set[str]:
     return names
 
 
-def _inspect_labels(run: Runner, kind: str, name: str) -> set[str]:
-    output = _inspect_value(
-        run, kind, name, "{{json .Labels}}" if kind == "network" else "{{json .Config.Labels}}"
-    )
+def _label_set(
+    run: docker_cli.Runner, kind: str, name: str, *, allow_empty: bool = False
+) -> set[str]:
     try:
-        labels = json.loads(output)
-    except json.JSONDecodeError as exc:
-        raise RelayDockerError(f"Docker returned invalid labels for {kind} {name}") from exc
-    if not isinstance(labels, dict) or any(
-        not isinstance(key, str) or not isinstance(value, str) for key, value in labels.items()
-    ):
-        raise RelayDockerError(f"Docker returned invalid labels for {kind} {name}")
+        labels = docker_cli.inspect_labels(
+            run, kind, name, timeout=DOCKER_TIMEOUT, allow_empty=allow_empty
+        )
+    except docker_cli.InspectError as exc:
+        message = f"Docker returned invalid labels for {kind} {name}"
+        raise _relay_inspect_error(exc, kind, name, message) from exc
     return {f"{key}={value}" for key, value in labels.items()}
 
 
-def _inspect_networks(run: Runner, container: str) -> set[str]:
-    output = _inspect_value(run, "container", container, "{{json .NetworkSettings.Networks}}")
-    try:
-        decoded = json.loads(output)
-    except json.JSONDecodeError as exc:
-        raise RelayDockerError(f"Docker returned invalid network state for {container}") from exc
-    if not isinstance(decoded, dict):
-        raise RelayDockerError(f"Docker returned invalid network state for {container}")
-    return set(decoded)
+def _attached_networks(run: docker_cli.Runner, container: str) -> set[str]:
+    networks = _inspect_object(
+        run,
+        "container",
+        container,
+        template="{{json .NetworkSettings.Networks}}",
+        malformed=f"Docker returned invalid network state for {container}",
+    )
+    return set(networks)
 
 
-def _inspect_value(run: Runner, kind: str, name: str, template: str) -> str:
+def _inspect_value(run: docker_cli.Runner, kind: str, name: str, template: str) -> str:
     result = run([kind, "inspect", name, "--format", template], DOCKER_TIMEOUT)
     if result.returncode != 0:
-        detail = result.stderr.strip() or "Docker inspect failed"
+        detail = docker_cli.failure_detail(result, "Docker inspect failed")
         raise RelayDockerError(f"cannot inspect {kind} {name}: {detail}")
     return result.stdout.strip()
 
 
-def _rollback(run: Runner, created: list[tuple[str, str]]) -> tuple[str, ...]:
+def _rollback(run: docker_cli.Runner, created: list[tuple[str, str]]) -> tuple[str, ...]:
     residual: list[str] = []
     for kind, name in reversed(created):
         args = ["container", "rm", "-f", name] if kind == "container" else ["network", "rm", name]
@@ -848,7 +950,7 @@ def _is_missing(detail: str) -> bool:
 
 
 def _valid_port(value: object) -> bool:
-    return isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 65535
+    return 1 <= as_positive_int(value, 0) <= 65535
 
 
 def _append_labels(argv: list[str], labels: tuple[str, ...], final: str) -> list[str]:

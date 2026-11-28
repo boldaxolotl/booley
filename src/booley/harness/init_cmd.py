@@ -609,7 +609,12 @@ def _read_agent_selection(path: Path) -> tuple[DeclaredAgent, object]:
     return parse_agent_section(agent, keep_retired_auth=True), data.get("models")
 
 
-def _prompt_agent_choice(label: str, choices: tuple[str, ...], *, default: str) -> str | None:
+def _prompt_agent_choice(
+    label: str,
+    choices: tuple[str, ...],
+    *,
+    default: str,
+) -> str | None:
     """Prompt for one choice; an empty answer takes the documented default."""
     options = "/".join(choice.replace("_", "-") for choice in choices)
     for _attempt in range(3):
@@ -751,7 +756,9 @@ def _resolve_auth(
 
 
 def _resolve_agent_selection(
-    ctx: InitContext, args: argparse.Namespace, config_path: Path
+    ctx: InitContext,
+    args: argparse.Namespace,
+    config_path: Path,
 ) -> AgentSelection | None:
     """Resolve flags, config, prompts, detected credentials, and documented defaults.
 
@@ -896,7 +903,10 @@ def _check_provider_creds(provider: str, auth_mode: str, policy: str) -> None:
 
 
 def _step_auth(
-    ctx: InitContext, selection: AgentSelection, *, skip_credentials: bool = False
+    ctx: InitContext,
+    selection: AgentSelection,
+    *,
+    skip_credentials: bool = False,
 ) -> None:
     ctx.step_banner("agent authentication")
     info(f"configured agent: {selection.provider}/{selection.auth}")
@@ -1448,7 +1458,10 @@ def _current_sandbox_spec_sources(project_root: Path, image_id: str | None) -> _
     """
     root = nangate_pdk.cache_root() if nangate_pdk.is_ready() else _NANGATE_PDK_NOT_REQUESTED
     return _sandbox_spec_sources(
-        InitContext(project_root=project_root, force=False, verbose=False), root, None, image_id
+        InitContext(project_root=project_root, force=False, verbose=False),
+        root,
+        None,
+        image_id,
     )
 
 
@@ -1525,7 +1538,8 @@ def _sandbox_precondition_failed(
         ctx.record("interactive", "err", "tracked .devcontainer")
         return True
     if _init_owned_booley_dir_missing(
-        ctx, init_will_create_booley_dir=init_will_create_booley_dir
+        ctx,
+        init_will_create_booley_dir=init_will_create_booley_dir,
     ):
         warn("would seed the Sandbox after creating the private Booley Directory")
         ctx.record("interactive", "warn", "Booley Directory would be created first")
@@ -1537,7 +1551,11 @@ def _sandbox_precondition_failed(
     return False
 
 
-def _init_owned_booley_dir_missing(ctx: InitContext, *, init_will_create_booley_dir: bool) -> bool:
+def _init_owned_booley_dir_missing(
+    ctx: InitContext,
+    *,
+    init_will_create_booley_dir: bool,
+) -> bool:
     """Return whether full init owns the one unavailable Booley Directory source."""
     if not ctx.check_only or not init_will_create_booley_dir:
         return False
@@ -1556,7 +1574,8 @@ def _init_owned_booley_dir_missing(ctx: InitContext, *, init_will_create_booley_
 
 
 def _inspect_sandbox_plan(
-    ctx: InitContext, request: interactive_init.InteractiveInitRequest
+    ctx: InitContext,
+    request: interactive_init.InteractiveInitRequest,
 ) -> interactive_init.InteractiveInitPlan | None:
     from booley.eda.provisioning.licensing.flexnet_docker import RelayDockerError
     from booley.runtime import session_issuance, session_runtime
@@ -1574,7 +1593,8 @@ def _inspect_sandbox_plan(
 
 
 def _apply_sandbox_plan(
-    ctx: InitContext, plan: interactive_init.InteractiveInitPlan
+    ctx: InitContext,
+    plan: interactive_init.InteractiveInitPlan,
 ) -> interactive_init.InteractiveInitChanges | None:
     from booley.runtime import session_issuance, session_runtime
 
@@ -1601,7 +1621,9 @@ def _step_sandbox(
     """Seed the untracked devcontainer spec + long-lived Docker objects (ADR 0018)."""
     ctx.step_banner("Sandbox (Reopen in Container)")
     if _sandbox_precondition_failed(
-        ctx, nangate_pdk_root, init_will_create_booley_dir=init_will_create_booley_dir
+        ctx,
+        nangate_pdk_root,
+        init_will_create_booley_dir=init_will_create_booley_dir,
     ):
         return
 
@@ -1683,7 +1705,10 @@ def _build_setup_step_lines() -> tuple[tuple[str, str], ...]:
         "project": "records project name, sources, configs",
         "agents": "writes the project's AGENTS.md guide",
     }
-    heads = {"project": "Step 2 (project config)", "agents": "Step 3 (AGENTS.md)"}
+    heads = {
+        "project": "Step 2 (project config)",
+        "agents": "Step 3 (AGENTS.md)",
+    }
     for flow in SETUP_WIRED_FLOWS:
         heads[flow] = f"Step 2 ({flow.replace('_', ' ')})"
         what[flow] = f"configure [flows.{flow}] and its .core Target metadata"
@@ -2525,7 +2550,9 @@ def _step_agent_unset(ctx: InitContext) -> bool:
 
 
 def _initialize_project_configuration(
-    ctx: InitContext, selection: AgentSelection | None, agent_config_path: Path
+    ctx: InitContext,
+    selection: AgentSelection | None,
+    agent_config_path: Path,
 ) -> bool:
     """Prepare the Directory before allowing agent configuration writes."""
     _step_booley_dir(ctx)
@@ -2680,7 +2707,8 @@ def _run_project_init_steps(
 
 
 def _reconcile_init_bootstrap(
-    ctx: InitContext, args: argparse.Namespace
+    ctx: InitContext,
+    args: argparse.Namespace,
 ) -> BootstrapResult | None:
     """Reconcile Host Bootstrap and report whether Project init may continue."""
     del args
@@ -2804,7 +2832,10 @@ def _write_pin_with_consent(
     return True
 
 
-def _run_init_unlocked(args: argparse.Namespace, project_root: Path) -> int:
+def _run_init_unlocked(
+    args: argparse.Namespace,
+    project_root: Path,
+) -> int:
     """Run the project initialization wizard."""
     configure_progress_output()
     ctx = _init_context(args, project_root)
@@ -2831,7 +2862,13 @@ def _run_init_unlocked(args: argparse.Namespace, project_root: Path) -> int:
         return _print_summary(ctx)
     project_scope = nullcontext() if seed else init_booley_dir_scope(ctx.project_root)
     with project_scope:
-        return _run_project_init_steps(ctx, args, selection, agent_config_path, guidance_plan)
+        return _run_project_init_steps(
+            ctx,
+            args,
+            selection,
+            agent_config_path,
+            guidance_plan,
+        )
 
 
 def _check_init_layout(args: argparse.Namespace, project_root: Path):
@@ -3088,7 +3125,11 @@ def _auth_reseed_dependencies(project_root: Path) -> bool:
             err(finding.detail)
             return False
     plan = image_lifecycle.plan(ProjectImageScope(project_root), intent=ImageLifecycleIntent.CHECK)
-    host_roles = {ImageRole.RUNTIME_BASE, ImageRole.STANDARD_SUBSTRATE, ImageRole.RISCV_SUBSTRATE}
+    host_roles = {
+        ImageRole.RUNTIME_BASE,
+        ImageRole.STANDARD_SUBSTRATE,
+        ImageRole.RISCV_SUBSTRATE,
+    }
     host_stale = any(
         step.role in host_roles and step.action is not PlanAction.REUSE for step in plan.steps
     )

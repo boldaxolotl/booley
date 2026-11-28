@@ -27,7 +27,10 @@ from booley.flows.sim.coverage_record import (
     encode_coverage_point,
     encode_coverage_record,
 )
-from booley.flows.sim.coverage_record_store import COVERAGE_RECORD_SCHEMA, CoverageRecordSummary
+from booley.flows.sim.coverage_record_store import (
+    COVERAGE_RECORD_SCHEMA,
+    CoverageRecordSummary,
+)
 from booley.flows.sim.coverage_waivers import waivable_point_problem
 
 
@@ -144,7 +147,9 @@ class CoverageAnalyzer:
 
 
 def _analysis_prompt(
-    envelope: _AnalysisEnvelope, sources: CoverageSourceClosure | None, instruction: str
+    envelope: _AnalysisEnvelope,
+    sources: CoverageSourceClosure | None,
+    instruction: str,
 ) -> str:
     return json.dumps(
         coverage_mapping_document(
@@ -327,7 +332,10 @@ def _resolve_references(
 
 
 def _resolve_reference(
-    value: object, references: Mapping[str, str], points: set[str], delivered: set[str] | None
+    value: object,
+    references: Mapping[str, str],
+    points: set[str],
+    delivered: set[str] | None,
 ) -> tuple[str | None, str | None]:
     point_id = None
     category = None
@@ -490,4 +498,7 @@ def _candidate_screen(item, point, rtl, sources) -> tuple[str, str]:
         # ADR 0066: a human review proof is written at approval, so a model
         # proof reference is optional; observed hits still contradict the claim.
         return "investigate", "Unreachability is contradicted by observed hits"
-    return ("ready_for_human_review", "A human must accept or reject this candidate")
+    return (
+        "ready_for_human_review",
+        "A human must accept or reject this candidate",
+    )

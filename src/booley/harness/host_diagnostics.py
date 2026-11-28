@@ -60,7 +60,10 @@ def inspect_host(project_root: Path) -> HostDiagnosticResult:
     if runtime_context.inside_session_runtime():
         report.skip("Host Bootstrap check skipped inside the Sandbox")
         runtime = host_environment.probe_container_runtime(
-            "docker", inside_session_runtime=True, which=shutil.which, run=run_captured_bounded
+            "docker",
+            inside_session_runtime=True,
+            which=shutil.which,
+            run=run_captured_bounded,
         )
         _add_environment(runtime.finding, report)
         docker_exe = runtime.executable
@@ -253,6 +256,10 @@ def _add_bootstrap(result: bootstrap.BootstrapResult, report: Findings) -> None:
                 subject=finding.resource,
             )
         elif finding.state is bootstrap.BootstrapState.WARNING:
-            report.warn(message, check_id="host.bootstrap-warning", subject=finding.resource)
+            report.warn(
+                message,
+                check_id="host.bootstrap-warning",
+                subject=finding.resource,
+            )
         else:
             report.pass_(message)

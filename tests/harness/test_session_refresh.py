@@ -22,7 +22,6 @@ from booley.harness import session_refresh as harness_refresh
 from booley.runtime import devcontainer as dc
 from booley.runtime import (
     issuance_invalidation,
-    runtime_context,
     session_admission,
     session_refresh,
 )
@@ -35,13 +34,19 @@ from booley.runtime.image_lifecycle import (
     ProjectImageScope,
     Status,
 )
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import Attachment
 from tests.fake_docker_executable import install_fake_docker
 from tests.git_support import repository
 from tests.harness import test_session_runtime as resolution_fixtures
 from tests.harness.session_docker_fake import SandboxDocker, serve_sandbox_docker
 from tests.runtime import test_session_issuance as issuance_fixtures
-from tests.runtime.test_sandbox_remedy_workflows import EXTERNAL, HEADLESS_RESEED, VSCODE_SEED
+from tests.runtime.test_sandbox_remedy_workflows import (
+    EXTERNAL,
+    HEADLESS_RESEED,
+    VSCODE_SEED,
+)
+from tests.sandbox_venue_fake import place
 
 project_sandbox_resolution = resolution_fixtures.project_sandbox_resolution
 workspace = resolution_fixtures.workspace
@@ -599,7 +604,7 @@ def test_refresh_refuses_external_image_with_owner_steps(
     monkeypatch.setattr(init_cmd.image_lifecycle, "plan", lambda *_args: plan)
     monkeypatch.setattr(sr, "image_is_managed", lambda _root: False)
     monkeypatch.setattr(sr, "sandbox_attachment", lambda _root: owner)
-    monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+    place(monkeypatch, RuntimeLocation.HOST)
     monkeypatch.setattr(runtime_spec, "load_issued_snapshot", lambda _root: object())
 
     with pytest.raises(RuntimeError) as caught:

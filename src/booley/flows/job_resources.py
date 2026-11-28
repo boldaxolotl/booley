@@ -198,7 +198,11 @@ def judged_commands_failing_on_error(*, joinable: bool = False) -> Iterator[Judg
 
 
 def label_commands(
-    target: str, phase: str, *, tests: tuple[str, ...] = (), source_bytes: int | None = None
+    target: str,
+    phase: str,
+    *,
+    tests: tuple[str, ...] = (),
+    source_bytes: int | None = None,
 ) -> None:
     """Label the following commands in this context (one lifecycle stage)."""
     _label.set(ResourceLabel(target, phase, tuple(tests), source_bytes=source_bytes))
@@ -917,7 +921,10 @@ def _run_fields(
 
 
 def _measured_columns(
-    usage: Usage, cpu: tuple[float, float] | None, wall: float | None, solo: bool | None
+    usage: Usage,
+    cpu: tuple[float, float] | None,
+    wall: float | None,
+    solo: bool | None,
 ) -> dict[str, Any]:
     """The measured columns of one record; a value never measured is ``None``."""
     return {

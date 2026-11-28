@@ -16,7 +16,10 @@ def _distinct(values: Iterable[str]) -> tuple[str, ...]:
 
 
 def format_flow_display_label(
-    targets: Iterable[str], *, tests: Iterable[str] | None = (), mode: str | None = None
+    targets: Iterable[str],
+    *,
+    tests: Iterable[str] | None = (),
+    mode: str | None = None,
 ) -> str | None:
     """Summarize one Flow invocation for a compact endpoint-box heading.
 

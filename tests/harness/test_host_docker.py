@@ -50,8 +50,8 @@ def test_image_lookups_read_the_stored_image(docker: SandboxDocker) -> None:
     assert metadata is not None
     assert (metadata.layers, metadata.labels) == (("sha256:l",), {"large": large})
     assert docker.calls == [
-        ["docker", "image", "inspect", "keeper", "--format", "{{.Id}}"],
-        ["docker", "image", "inspect", "keeper"],
+        ["docker", "image", "inspect", "keeper", "--format", "{{json .Id}}"],
+        ["docker", "image", "inspect", "keeper", "--format", "{{json .}}"],
     ]
     assert idk.image_id("gone") is None
     docker.script(("image", "inspect"), completed(1, stderr="Error: no such object: gone"))
@@ -73,8 +73,8 @@ _LOOKUP_FAILURES = {
     ),
     "not-json": (completed(0, stdout="not json"), "invalid metadata", "inspect_image_metadata"),
     "no-rootfs": (
-        completed(0, stdout=json.dumps([{"Id": "sha256:x", "RootFS": None}])),
-        "invalid metadata",
+        completed(0, stdout=json.dumps({"Id": "sha256:x", "RootFS": None})),
+        "invalid metadata: RootFS",
         "inspect_image_metadata",
     ),
 }
@@ -136,14 +136,18 @@ def _daemon_failure(operation: str) -> tuple[Any, str, str]:
 
 
 _INVENTORY_FAILURES = {
-    "empty-image-id": (_container_listing(""), "invalid immutable", "container_image_ids_strict"),
+    "empty-image-id": (
+        _container_listing('""'),
+        "invalid immutable",
+        "container_image_ids_strict",
+    ),
     "short-image-id": (
-        _container_listing("short"),
+        _container_listing('"short"'),
         "invalid immutable",
         "container_image_ids_strict",
     ),
     "uppercase-image-id": (
-        _container_listing("sha256:" + "A" * 64),
+        _container_listing('"sha256:' + "A" * 64 + '"'),
         "invalid immutable",
         "container_image_ids_strict",
     ),
@@ -156,6 +160,19 @@ _INVENTORY_FAILURES = {
     ),
     "containers-timeout": (
         [((), subprocess.TimeoutExpired("docker", 30))],
+        "cannot observe",
+        "container_image_ids_strict",
+    ),
+    "non-string-image-id": (
+        _container_listing("7"),
+        "invalid inspection .*must be",
+        "container_image_ids_strict",
+    ),
+    "inspect-timeout": (
+        [
+            (("container", "ls"), completed(stdout="c" * 64)),
+            (("container", "inspect"), subprocess.TimeoutExpired("docker", 30)),
+        ],
         "cannot observe",
         "container_image_ids_strict",
     ),
@@ -194,6 +211,15 @@ def test_ensure_unproxied_network_refuses_an_internal_network(docker: SandboxDoc
         idk.ensure_unproxied_network()
 
     assert not any(call[1:3] == ["network", "create"] for call in docker.calls)
+
+
+def test_ensure_unproxied_network_names_a_reason_docker_printed_on_stdout(
+    docker: SandboxDocker,
+) -> None:
+    docker.script(("network", "create"), completed(1, stdout="address pools exhausted"))
+
+    with pytest.raises(RuntimeError, match=r"booley-.*: address pools exhausted"):
+        idk.ensure_unproxied_network()
 
 
 @pytest.mark.parametrize(
@@ -282,8 +308,16 @@ def test_run_docker_timeout_stops_or_abandons_the_tree(
             idk._run_docker(args, timeout=_DEADLINE_S, executable=python)
 
         assert not paths["done"].exists()
-        if mode == "live":
+        if mode != "escape":
             assert wait_until_heartbeat_stops(paths["heartbeat"]), "grandchild outlived the kill"
+
+
+def test_run_docker_decodes_utf8_output_whatever_the_locale() -> None:
+    """Admission reads child output as UTF-8, so non-ASCII Sandbox labels survive on Windows."""
+    text = "Zo\u00eb \u0141"
+    script = f"import sys; sys.stdout.buffer.write({text.encode()!r})"
+    result = idk._run_docker(["-c", script], timeout=hang_guard_s(), executable=sys.executable)
+    assert result.stdout == text
 
 
 def test_run_docker_returns_output_and_raises_for_a_missing_cli(tmp_path: Path) -> None:

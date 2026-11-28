@@ -81,7 +81,10 @@ def _eda(monkeypatch, capsys, state, *argv: str) -> str:
         pytest.param("installation", _STATE, _INSTALLATION_TABLE, id="installation"),
         pytest.param("license", _STATE, _LICENSE_TABLE, id="license"),
         pytest.param(
-            "installation", _EMPTY, ["No EDA installations registered."], id="installation-empty"
+            "installation",
+            _EMPTY,
+            ["No EDA installations registered."],
+            id="installation-empty",
         ),
         pytest.param("license", _EMPTY, ["No License Profiles registered."], id="license-empty"),
     ],

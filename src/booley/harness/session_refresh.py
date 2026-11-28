@@ -92,7 +92,11 @@ def _initialize_refreshed_project(
         raise SessionError(f"{prefix}: {'; '.join(failed)}; run `booley init` on the host")
 
 
-def refresh(project_root: Path, *, verbose: bool = False) -> runtime_refresh.RefreshResult:
+def refresh(
+    project_root: Path,
+    *,
+    verbose: bool = False,
+) -> runtime_refresh.RefreshResult:
     """Refresh the selected image and replace its Sandbox, then re-apply Project files."""
     result = runtime_refresh.refresh(project_root, _RuntimeImages(), verbose=verbose)
     _initialize_refreshed_project(project_root, result)

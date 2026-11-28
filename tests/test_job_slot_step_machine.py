@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import logging
 import os
 import tempfile
 from collections.abc import Callable
@@ -43,19 +44,22 @@ from hypothesis.stateful import (
     run_state_machine_as_test,
 )
 
-from booley.core.sharing_retry import read_file_bytes
+from booley.core.sharing_retry import read_file_bytes, write_file_text
 from booley.runtime import job_slots
 from booley.runtime.job_slots import MemoryClaim, SlotToken
 from booley.runtime.pid import ProcessIdentity
 from tests.job_slot_steps import (
     FIRST_ACTOR_PID,
     LOCK_WAIT_KINDS,
+    PROMOTION_GATE,
     READ_KINDS,
     Actor,
     ActorKilled,
     FakeProcessWorld,
     StepScheduler,
     Worker,
+    held_gate,
+    lease_gate,
     stepped_root,
 )
 
@@ -116,7 +120,13 @@ def _trace(line: str) -> None:
 class JobSlotStepMachine(RuleBasedStateMachine):
     """Three processes over one slots directory, interleaved one filesystem step at a time."""
 
-    def __init__(self, parent: Path, *, recovery: job_slots.SlotRecovery | None = None) -> None:
+    def __init__(
+        self,
+        parent: Path,
+        *,
+        recovery: job_slots.SlotRecovery | None = None,
+        renews: bool = False,
+    ) -> None:
         super().__init__()
         parent.mkdir(parents=True, exist_ok=True)
         self._temporary = tempfile.TemporaryDirectory(dir=parent)
@@ -126,7 +136,15 @@ class JobSlotStepMachine(RuleBasedStateMachine):
         self.scheduler = StepScheduler(self.world, trace=_trace)
         root = stepped_root(base, self.scheduler)
         self.actors = [
-            Actor(i, self.world, self.scheduler, root, self._recover, recovery=recovery)
+            Actor(
+                i,
+                self.world,
+                self.scheduler,
+                root,
+                self._recover,
+                recovery=recovery,
+                renews=renews,
+            )
             for i in range(_ACTORS)
         ]
         self.renewals: list[tuple[Worker, SlotToken, Actor]] = []
@@ -417,7 +435,11 @@ class JobSlotStepMachine(RuleBasedStateMachine):
         ):
             return True
         running = owner.operation
-        return running is not None and running.state != "done" and running.label == "submit"
+        return (
+            running is not None
+            and running.state != "done"
+            and running.label in ("submit", "acquire")
+        )
 
     def _check_renewals(self) -> None:
         pending: list[tuple[Worker, SlotToken, Actor]] = []
@@ -498,8 +520,8 @@ def build_machine(tmp_path: Path) -> Any:
     """Builds the machine inside the test body and tears it down, with its threads, afterwards."""
     built: list[JobSlotStepMachine] = []
 
-    def build() -> JobSlotStepMachine:
-        built.append(JobSlotStepMachine(tmp_path))
+    def build(*, renews: bool = False) -> JobSlotStepMachine:
+        built.append(JobSlotStepMachine(tmp_path, renews=renews))
         return built[-1]
 
     yield build
@@ -553,34 +575,64 @@ def test_actors_interleave_between_filesystem_steps(
     assert _entry_names(machine) == names
 
 
+@pytest.mark.parametrize(
+    ("op", "kind", "prefix", "faults"),
+    [
+        ("cancel", "unlink", "w-", 3),
+        ("submit", "write_text", ".w-", 1),
+        ("submit", "hardlink_to", "w-", 1),
+        ("submit", "unlink", ".w-", 1),
+        ("renew", "write_text", ".h-", 1),
+        ("refresh", "write_text", "..promotion.lock", 1),
+    ],
+)
 def test_injected_sharing_violation_is_retried_like_windows(
     build_machine: Callable[[], JobSlotStepMachine],
+    op: str,
+    kind: str,
+    prefix: str,
+    faults: int,
 ) -> None:
     machine = build_machine()
-    owner, canceller = machine.actors[:2]
+    owner, other = machine.actors[:2]
     machine.scheduler.finish(
         machine.start_operation(owner, "submit", job_slots.ROLE_INTERACTIVE, 0)
     )
-    cancel = machine.start_operation(canceller, "cancel", job_slots.ROLE_INTERACTIVE, owner.index)
-    for expected in (1, 2, 3):
-        _step_until(machine, cancel, "unlink", "w-")
-        machine.scheduler.grant(cancel, fail=True)
-        assert cancel.faults == expected
-        assert len(_entry_names(machine)) == 1  # the unlink was not performed
-    # A thread past its allowance performs the call instead of failing it.
-    _step_until(machine, cancel, "unlink", "w-")
-    machine.scheduler.grant(cancel, fail=True)
-    assert cancel.faults == 3
-    assert _entry_names(machine) == []
-    machine.scheduler.finish(cancel)
-    assert cancel.result is True
+    (token,) = owner.tokens
+    if op == "renew":
+        machine.scheduler.finish(
+            machine.start_operation(owner, "refresh", job_slots.ROLE_INTERACTIVE, 0)
+        )
+    actor = other if op in ("cancel", "submit") else owner
+    worker = machine.start_operation(actor, op, job_slots.ROLE_INTERACTIVE, owner.index)
+    for expected in range(1, faults + 1):
+        _step_until(machine, worker, kind, prefix)
+        machine.scheduler.grant(worker, fail=True)
+        assert worker.faults == expected
+    if op == "cancel":
+        assert len(_entry_names(machine)) == 1  # no unlink was performed
+        # A thread past its allowance performs the call instead of failing it.
+        _step_until(machine, worker, kind, prefix)
+        machine.scheduler.grant(worker, fail=True)
+        assert worker.faults == faults
+        assert _entry_names(machine) == []
+    machine.scheduler.finish(worker)
+    assert worker.oserror is None
+    assert [p.name for p in machine.memory_dir.iterdir() if p.name.endswith(".tmp")] == []
+    if op == "submit":
+        (added,) = other.tokens
+        assert _entry_names(machine) == sorted([token.path.name, added.path.name])
+    elif op == "refresh":
+        assert token.is_holder
+    else:
+        assert worker.result is True
 
 
 def _plant_third_holder(machine: JobSlotStepMachine) -> None:
     machine.memory_dir.mkdir(parents=True, exist_ok=True)
     for seq in range(1, 4):
         name = f"h-p0-s{seq:010d}-{machine.actors[0].pid:010d}-0001.json"
-        (machine.memory_dir / name).write_bytes(b"{}")
+        write_file_text(machine.memory_dir / name, "{}")
 
 
 def _plant_entry_without_token(machine: JobSlotStepMachine) -> None:
@@ -590,7 +642,10 @@ def _plant_entry_without_token(machine: JobSlotStepMachine) -> None:
 
 
 def test_checks_run_after_every_step(build_machine: Callable[[], JobSlotStepMachine]) -> None:
-    for invariant_name, plant in (("I1", _plant_third_holder), ("I4", _plant_entry_without_token)):
+    for invariant_name, plant in (
+        ("I1", _plant_third_holder),
+        ("I4", _plant_entry_without_token),
+    ):
         machine = build_machine()
         reaper = machine.start_operation(machine.actors[1], "reap", job_slots.ROLE_INTERACTIVE, 0)
         plant(machine)
@@ -614,6 +669,192 @@ def test_checks_notice_an_entry_that_comes_back(
     entry.write_bytes(content)
     with pytest.raises(AssertionError, match="I2"):
         machine.scheduler.grant(reaper)
+
+
+def _finished(machine: JobSlotStepMachine, actor: Actor, op: str) -> None:
+    """Run one store operation of *actor* to its end."""
+    machine.scheduler.finish(machine.start_operation(actor, op, job_slots.ROLE_INTERACTIVE, 0))
+
+
+def _to_next_renewal(machine: JobSlotStepMachine, renewal: Worker) -> None:
+    """Grant the renewal thread steps from one interval wait to the next."""
+    for _ in range(500):
+        machine.scheduler.grant(renewal)
+        if renewal.state != "parked" or renewal.pending == ("sleep", "renewal"):
+            return
+    raise AssertionError("the renewal never reached its next interval wait")
+
+
+def test_renewal_thread_survives_a_missed_lease_gate(
+    build_machine: Callable[..., JobSlotStepMachine],
+) -> None:
+    machine = build_machine(renews=True)
+    owner, other = machine.actors[:2]
+
+    def acquire() -> None:
+        owner.tokens.append(
+            owner.store.acquire(job_slots.CLASS_MEMORY, pid=owner.pid, memory=_CLAIM)
+        )
+
+    machine.scheduler.finish(machine.scheduler.start(owner, "acquire", acquire))
+    (token,) = owner.tokens
+    (renewal,) = machine.scheduler.parked()
+    _to_next_renewal(machine, renewal)
+    holder = owner.store.snapshot(job_slots.CLASS_MEMORY)[0][0]
+    assert (token.lease_generation, holder.lease_generation) == (1, 1)
+    assert holder.lease_state == job_slots.LEASE_ACTIVE
+    with held_gate(lease_gate(token), other.pid, machine.world.capture_identity(other.pid)):
+        _to_next_renewal(machine, renewal)  # a whole refused renewal
+        assert token.lease_generation == 1
+        assert not token.lease_health.lost.is_set()
+    _to_next_renewal(machine, renewal)
+    assert token.lease_generation == 2
+    assert not token.lease_health.lost.is_set()
+    machine.scheduler.kill_and_wait(owner)  # a renewing actor never drains
+
+
+@pytest.mark.parametrize("gate_frees", [True, False], ids=["frees", "never-frees"])
+def test_release_waits_out_a_held_lease_gate(
+    build_machine: Callable[[], JobSlotStepMachine],
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    gate_frees: bool,
+) -> None:
+    machine = build_machine()
+    owner, other = machine.actors[:2]
+    _finished(machine, owner, "submit")
+    _finished(machine, owner, "refresh")
+    (token,) = owner.tokens
+    assert token.is_holder
+    caplog.set_level(logging.WARNING, logger="booley.runtime.job_slots")
+    if not gate_frees:
+        # private: no public input shortens the background retry (about 12,000 machine steps)
+        monkeypatch.setattr(job_slots, "_RELEASE_RETRY_ATTEMPTS", 2)
+        machine.scheduler.checks.remove(machine._check_entry_owners)  # the leak is the outcome
+    with held_gate(lease_gate(token), other.pid, machine.world.capture_identity(other.pid)):
+        _finished(machine, owner, "release")
+        (retry,) = machine.scheduler.parked()
+        assert token.path.exists()
+        if not gate_frees:
+            machine.scheduler.finish(retry)
+    machine.scheduler.drain()
+    assert retry.state == "done"
+    assert token.path.exists() is not gate_frees
+    wanted = "deferred" if gate_frees else "Could not release Memory Reservation"
+    assert any(
+        wanted in r.getMessage() and token.path.name in r.getMessage()
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+    )
+
+
+def test_cancel_after_a_finished_promotion_spares_the_holder(
+    build_machine: Callable[[], JobSlotStepMachine],
+) -> None:
+    machine = build_machine()
+    owner, canceller = machine.actors[:2]
+    _finished(machine, owner, "submit")
+    (token,) = owner.tokens
+    cancel = machine.scheduler.start(
+        canceller, "cancel", lambda: canceller.store.cancel_waiter_token(token)
+    )
+    _step_until(machine, cancel, "write_text", ".")  # about to take the lease gate
+    promotion = machine.scheduler.start(owner, "refresh", lambda: owner.store.refresh(token))
+    machine.scheduler.finish(promotion)
+    assert promotion.result.state == job_slots.HOLDING
+    machine.scheduler.finish(cancel)
+    assert cancel.result is False
+    assert token.path.exists()
+    assert token.is_holder
+    assert owner.store.renew(token) is True
+
+
+@pytest.mark.parametrize("pause", ["judging", "removing"])
+@pytest.mark.parametrize("gate_kind", ["promotion", "lease"])
+def test_one_breaker_holds_a_stale_gate(
+    build_machine: Callable[[], JobSlotStepMachine], gate_kind: str, pause: str
+) -> None:
+    # private: the race needs one breaker to keep the gate while the other resumes; every
+    # public call releases its gate before it returns.
+    machine = build_machine()
+    first, second, third = machine.actors
+    for actor in (first, second) if gate_kind == "promotion" else (third,):
+        _finished(machine, actor, "submit")
+    if gate_kind == "promotion":
+        gate = machine.memory_dir / PROMOTION_GATE
+        # A dead owner's record, judged at the read (the PID is above the kernel limit).
+        write_file_text(gate, json.dumps({"pid": 4_194_305, "owner_identity": None}))
+        judge, remove = "read_bytes", "unlink"
+    else:
+        _finished(machine, third, "refresh")
+        gate = lease_gate(third.tokens[0])
+        gate.mkdir()  # as a dead process left it before gates named their owner
+        old = machine.world.clock - 3600
+        os.utime(gate, (old, old))
+        judge, remove = "stat", "rmdir"
+    taken: dict[str, bool] = {}
+
+    def hold(actor: Actor) -> Worker:
+        def operation() -> None:
+            store = actor.store
+            entered = (
+                store._promotion_gate(actor.tokens[0])
+                if gate_kind == "promotion"
+                else store._lease_gate(third.tokens[0])
+            )
+            with entered as acquired:
+                taken[actor.name] = acquired
+                machine.scheduler.await_command()
+
+        return machine.scheduler.start(actor, "hold", operation)
+
+    paused = hold(first)
+    _step_until(machine, paused, judge if pause == "judging" else remove, gate.name)
+    if pause == "judging":
+        machine.scheduler.grant(paused)  # the first judgement is made
+    other = hold(second)
+    machine.scheduler.finish(other)
+    machine.scheduler.finish(paused)
+    assert sorted(taken) == sorted([first.name, second.name])  # both breakers ran
+    assert list(taken.values()).count(True) == 1
+    for worker in (paused, other):
+        machine.scheduler.command(worker, "release")
+        machine.scheduler.finish(worker)
+
+
+def test_a_run_alone_claim_never_has_two_holders(
+    build_machine: Callable[[], JobSlotStepMachine],
+) -> None:
+    machine = build_machine()
+    first, later = machine.actors[0], machine.actors[2]
+    claim = MemoryClaim(budget_mb=2, run_alone=True)
+
+    def one_holder() -> None:
+        holders = [name for name in machine.read_entries() if name.startswith("h-")]
+        assert len(holders) <= 1, f"two run-alone holders: {holders}"
+
+    machine.scheduler.checks.append(one_holder)
+
+    def start(actor: Actor, role: str) -> Worker:
+        def operation() -> None:
+            token = actor.store.acquire(
+                job_slots.CLASS_MEMORY, pid=actor.pid, role=role, memory=claim
+            )
+            machine.scheduler.await_command()  # holds the slot
+            actor.store.release(token)
+
+        return machine.scheduler.start(actor, "acquire", operation)
+
+    behind = start(first, job_slots.ROLE_BACKGROUND)
+    _step_until(machine, behind, "rename", "h-")  # ranked, and about to become the holder
+    ahead = start(later, job_slots.ROLE_INTERACTIVE)  # ranks before the first claim
+    machine.scheduler.finish(ahead)
+    for worker in (behind, ahead):
+        machine.scheduler.finish(worker)
+        machine.scheduler.command(worker, "release")
+        machine.scheduler.finish(worker)
+    assert [(w.state, w.oserror) for w in (behind, ahead)] == [("done", None)] * 2
+    assert _entry_names(machine) == []
 
 
 def test_interleaved_job_slot_schedules(tmp_path: Path) -> None:

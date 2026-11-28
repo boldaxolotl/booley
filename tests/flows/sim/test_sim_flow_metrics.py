@@ -93,7 +93,9 @@ def test_failing_test_runs_keep_their_names_and_first_failure_line(tmp_path: Pat
     assert simulation_report_metric_values(json.loads(json.dumps(stored)))["sim_0"] == values
 
 
-def test_inconclusive_test_counts_as_failed_and_its_cycles_are_not_a_value(tmp_path: Path) -> None:
+def test_inconclusive_test_counts_as_failed_and_its_cycles_are_not_a_value(
+    tmp_path: Path,
+) -> None:
     from booley.flows.sim.metrics import simulation_flow_metrics
 
     outcome = _simulation_outcome(
@@ -170,7 +172,9 @@ def test_infrastructure_failure_produces_no_metrics(tmp_path: Path) -> None:
     assert "(build crashed)" in str(raised.value)  # the first errored Test Run's reason
 
 
-def test_cocotb_import_failure_produces_no_metrics_and_names_the_module(tmp_path: Path) -> None:
+def test_cocotb_import_failure_produces_no_metrics_and_names_the_module(
+    tmp_path: Path,
+) -> None:
     from booley.flows.metric_declarations import MetricsUnavailableError
     from booley.flows.sim.backends.cocotb_results import IMPORT_FAILURE_PREFIX
     from booley.flows.sim.metrics import simulation_flow_metrics

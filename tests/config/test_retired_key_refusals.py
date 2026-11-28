@@ -26,7 +26,6 @@ from tests.source_checkout_support import source_checkout_files
 from booley.audit import agent_schema, flow_schema, project_schema
 from booley.audit.config_common import ConfigTableAudit
 from booley.config import agent as agent_config
-from booley.config.eda import parse_eda_config
 from booley.config.flow_enablement import flow_enabled_from_config
 from booley.config.host_config import (
     load_host_policy,
@@ -297,8 +296,7 @@ _HOST = "src/booley/config/host_config.py"
 _LAYOUT = "src/booley/core/booley_layout.py"
 _YOSYS = "src/booley/flows/synth/backends/yosys/core.py"
 _RECIPE = "src/booley/flows/synth/recipe_migrations.py"
-_RETIRED_FLOW = f"{_FLOW_ENABLEMENT}::retired_config_error"
-_RETIRED_FLOW_KEY = f"{_FLOW_ENABLEMENT}::_retired_flow_key_error"
+_RETIRED_FLOW = f"{_FLOW_ENABLEMENT}::retired_config_errors"
 _RETIRED_FLOW_KEYS = f"{_FLOW_SCHEMA}::_retired_flow_key_findings"
 _RETIRED_FLOWS = f"{_FLOW_SCHEMA}::_retired_flow_findings"
 _SANDBOX_PARSE = f"{_AGENT}::_parse_sandbox_config"
@@ -374,14 +372,10 @@ def _flow_cases() -> Iterator[Refusal]:
         "keep-build-dir": ("sim", {"keep_build_dir": True}, None),
         "sim-output-dir": ("sim", {"output_dir": "x"}, None),
         "target": ("lint", {"target": "x"}, None),
-        "standalone-frontend-doctor": ("sim", {"standalone_frontend": "auto"}, None),
     }
     for name, (flow, section, fix) in flow_keys.items():
         key = next(iter(section))
-        site = _RETIRED_FLOW_KEYS
-        if key == "standalone_frontend":
-            site = f"{_FLOW_SCHEMA}::_flow_shape_findings"
-        yield Refusal(f"flow-{name}", (site,), key, fix, _flow_audit(flow, section))
+        yield Refusal(f"flow-{name}", (_RETIRED_FLOW_KEYS,), key, fix, _flow_audit(flow, section))
 
 
 CASES: list[Refusal] = [
@@ -393,27 +387,6 @@ CASES: list[Refusal] = [
         _flow({"flows": {"elab": {}}}),
     ),
     Refusal(
-        "flows-venue",
-        (_RETIRED_FLOW, _RETIRED_FLOW_KEY),
-        "venue",
-        None,
-        _flow({"flows": {"venue": "x"}}),
-    ),
-    Refusal(
-        "flows-sim-backend",
-        (_RETIRED_FLOW, _RETIRED_FLOW_KEY),
-        "backend",
-        None,
-        _flow({"flows": {"sim": {"backend": "docker"}}}),
-    ),
-    Refusal(
-        "flows-sim-backend-none",
-        (_RETIRED_FLOW_KEY,),
-        "backend",
-        "enabled = false",
-        _flow({"flows": {"sim": {"backend": "none"}}}),
-    ),
-    Refusal(
         "flows-sim-standalone-frontend",
         (_RETIRED_FLOW,),
         "standalone_frontend",
@@ -421,18 +394,11 @@ CASES: list[Refusal] = [
         _flow({"flows": {"sim": {"standalone_frontend": "auto"}}}),
     ),
     Refusal(
-        "sandbox-passthrough-env",
-        (_RETIRED_FLOW,),
-        "passthrough_env",
-        "License Profile",
-        _flow({"sandbox": {"passthrough_env": []}}),
-    ),
-    Refusal(
         "audit-eda-retired",
         (f"{_PROJECT_SCHEMA}::audit_eda_config",),
-        "venue",
+        "[flows.elab]",
         None,
-        lambda _env: _audit(project_schema.audit_eda_config({"flows": {"venue": "x"}})),
+        lambda _env: _audit(project_schema.audit_eda_config({"flows": {"elab": {}}})),
     ),
     Refusal(
         "agent-auth-auto",
@@ -461,13 +427,6 @@ CASES: list[Refusal] = [
         "memory_tiers",
         "memory =",
         _sandbox_warning("[sandbox]\nmemory_tiers = {}\n"),
-    ),
-    Refusal(
-        "eda-installation",
-        ("src/booley/config/eda.py::_parse_kind",),
-        "installation",
-        "booley eda grant add --installation",
-        lambda _env: _raised(lambda: parse_eda_config({"vivado": {"installation": "x"}})),
     ),
     Refusal(
         "jobs-doctor",
@@ -586,13 +545,6 @@ CASES: list[Refusal] = [
     ),
     Refusal("flows-builtin", (_RETIRED_FLOWS,), "builtin", None, _flows_audit({"builtin": []})),
     Refusal(
-        "flows-elab-doctor",
-        (_RETIRED_FLOWS,),
-        "[flows.elab]",
-        "--mode elab-only",
-        _flows_audit({"elab": {}}),
-    ),
-    Refusal(
         "synth-timing-engine",
         (_RETIRED_OPTION,),
         "timing_engine",
@@ -698,22 +650,25 @@ NOT_A_KEY: dict[str, str] = {
         "conflicting values, not a retired key"
     ),
     "src/booley/eda/cli.py::run": "a deprecated CLI command, not configuration",
+    "src/booley/harness/setup/readiness.py::_check_project_setup": (
+        "warns that a leftover configs.toml file is ignored; it names a file, not a key"
+    ),
     "src/booley/flows/endpoint_session.py::finish_execution": "reports a removed checkout",
     "src/booley/flows/mutation/flow.py::<module>": (
         "a report note that duplicate Mutants are removed, not configuration"
     ),
-    "src/booley/runtime/filesystem_utils.py::RemovedDirectoryError.__init__": (
+    "src/booley/core/directories.py::RemovedDirectoryError.__init__": (
         "refuses to recreate a removed checkout, not configuration"
     ),
     "src/booley/flows/cli_selection.py::warn_alias": "a deprecated CLI option alias",
+    "src/booley/flows/sim/cli.py::SimArguments.add_args#removed in the next minor release": (
+        "help for a deprecated CLI flag, not configuration"
+    ),
     "src/booley/flows/sim/cli.py::SimArguments.normalize": "deprecated CLI flags",
     "src/booley/flows/synth/warnings.py::<module>": "a pattern for OpenROAD's own warning text",
     "src/booley/harness/auth_cmd.py::_clear": "reports a removed credential",
     "src/booley/harness/auth_cmd.py::_host_policy": (
         "an environment hand-off outside a Sandbox, not a retired key"
-    ),
-    "src/booley/harness/booley.py::_RetiredEdaToolOptionAction.__call__": (
-        "a retired CLI option, not configuration"
     ),
     "src/booley/harness/doctor.py::_check_goal_leftovers": (
         "leftover Goal record files, not configuration"

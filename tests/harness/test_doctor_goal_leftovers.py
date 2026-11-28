@@ -7,7 +7,8 @@ from pathlib import Path
 
 from booley.harness import doctor
 from booley.presentation import colors
-from tests.harness.test_doctor import _patch_environment, _write_project
+from tests.harness.doctor_environment_support import patch_doctor_environment
+from tests.harness.doctor_run_support import write_project
 
 
 def _tree(root: Path) -> dict[str, bytes | None]:
@@ -21,8 +22,8 @@ def _tree(root: Path) -> dict[str, bytes | None]:
 def test_doctor_warns_about_leftover_goal_directories_and_keeps_them(
     tmp_path, monkeypatch, capsys
 ):
-    booley_dir = _write_project(tmp_path)
-    _patch_environment(monkeypatch, tmp_path, booley_dir)
+    booley_dir = write_project(tmp_path)
+    patch_doctor_environment(monkeypatch, tmp_path, booley_dir)
     main_dir = tmp_path / "main-booley"
     (main_dir / "goals" / "g1").mkdir(parents=True)
     (main_dir / "goals" / "g1" / "record.json").write_bytes(b'{"goal": "old"}\n')

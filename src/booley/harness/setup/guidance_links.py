@@ -22,6 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from booley.core.sandbox_layout import WORK_DIR
 from booley.runtime.booley_dir import BooleyDirOutsideCheckoutError, own_booley_dir_relative
 from booley.runtime.devcontainer import devcontainer_path
 from booley.runtime.git import add_git_excludes
@@ -36,7 +37,6 @@ from booley.runtime.init_plan import (
     plan_init_filesystem,
 )
 from booley.runtime.mount_history import MountHistoryError, recorded_former_mounts
-from booley.runtime.sandbox_layout import WORK_DIR
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +50,10 @@ _EXCLUDE_HEADER = "# Booley guidance links (generated; canonical file in project
 
 
 def ensure_guidance_links(
-    project_root: Path, booley_dir: Path, *, plan: InitPlan | None = None
+    project_root: Path,
+    booley_dir: Path,
+    *,
+    plan: InitPlan | None = None,
 ) -> list[Path]:
     """Point ``<project_root>/{AGENTS,CLAUDE}.md`` at ``<booley_dir>/AGENTS.md``.
 
@@ -118,7 +121,8 @@ def plan_guidance_links(project_root: Path, booley_dir: Path) -> InitPlan:
             )
         )
     return plan_init_filesystem(
-        InitFilesystemRequest(root=project_root, targets=tuple(targets)), _GuidanceHostProbe()
+        InitFilesystemRequest(root=project_root, targets=tuple(targets)),
+        _GuidanceHostProbe(),
     )
 
 

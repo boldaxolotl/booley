@@ -18,11 +18,13 @@ import pytest
 from booley.core.host_shell import quote_arg
 from booley.harness import auth_cmd
 from booley.harness import booley as tlr
-from booley.runtime import auth_token, issuance_invalidation, runtime_context, session_runtime
+from booley.runtime import auth_token, issuance_invalidation, session_runtime
 from booley.runtime import devcontainer as dc
 from booley.runtime.platform_paths import docker_mount_path
+from booley.runtime.runtime_context import RuntimeLocation
 from booley.runtime.sandbox_apply import UNKNOWN_SANDBOX_STEPS
 from tests.devcontainer_spec_support import build_spec
+from tests.sandbox_venue_fake import place
 from tests.subprocess_budget import run_bounded_child
 
 _TOKEN = "sk-ant-oat01-abcdef123456"  # claude: one-year setup-token
@@ -187,14 +189,13 @@ class TestAuthStatusReport:
         assert "can revoke a running container" in lines[row + 1]
 
     def test_api_key_runs_and_overridden_login_is_a_hint(self, isolated_home, monkeypatch, capsys):
-        from booley.config import agent as agent_config
 
         creds = isolated_home / ".claude" / ".credentials.json"
         creds.parent.mkdir(parents=True)
         creds.write_text("{}", encoding="utf-8")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-x")
-        # The visitor mode needs a hand-written Sandbox: /.dockerenv, which a test cannot create.
-        monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
+        # The visitor mode needs a hand-written Sandbox.
+        place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
         monkeypatch.setenv("BOOLEY_PRIMARY_AUTH", "auto")
 
         _rc, lines = self._status(monkeypatch, capsys)
@@ -288,7 +289,7 @@ class TestRotationRiskVenue:
     ):
         from booley.harness import doctor
 
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: in_sandbox)
+        place(monkeypatch, RuntimeLocation.ISSUED_SANDBOX if in_sandbox else RuntimeLocation.HOST)
         monkeypatch.setattr(
             doctor.host_environment,
             "inspect_agent_installation",
@@ -305,7 +306,12 @@ class TestRotationRiskVenue:
         reporter = doctor._Reporter.create()
 
         doctor._check_oauth_token(
-            app, reporter.pass_, reporter.warn_, reporter.skip_, policy, _note=reporter.note_
+            app,
+            reporter.pass_,
+            reporter.warn_,
+            reporter.skip_,
+            policy,
+            _note=reporter.note_,
         )
 
         warns = [f for f in reporter.findings if f.check_id == "agent.rotation-risk"]
@@ -334,7 +340,7 @@ class TestDoctorCheck:
         from booley.harness import doctor
 
         # Host venue, pinned: in a Sandbox the rotation WARN depends on the seed sidecar.
-        monkeypatch.setattr(runtime_context, "inside_session_runtime", lambda: False)
+        place(monkeypatch, RuntimeLocation.HOST)
         monkeypatch.setattr(
             doctor.host_environment,
             "inspect_agent_installation",
@@ -422,6 +428,7 @@ class TestDoctorCheck:
         (None, "codex", {"provider": "claude"}, "claude", "claude"),  # toml beats it
         ("claude", "claude", {"provider": "codex"}, "claude", "codex"),
         (None, None, {"provider": "bogus"}, "claude", None),  # invalid [agent] degrades softly
+        (None, None, {"clis": ["codex"], "default": "claude"}, "claude", "claude"),  # outside clis
     ],
 )
 def test_doctor_provider_answers(
@@ -437,13 +444,12 @@ def test_doctor_provider_answers(
             monkeypatch.setenv(name, value)
         else:
             monkeypatch.delenv(name, raising=False)
-    audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": section}, {}, "")
+    audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": section}, "")
 
     # run_doctor_result reaches these only through its Docker and image phases.
-    assert (doctor._configured_provider(audit), doctor._declared_provider(audit)) == (
-        configured,
-        declared,
-    )
+    resolved = doctor._agent_audit(audit, None)
+    assert (resolved.default_cli, doctor._declared_provider(audit)) == (configured, declared)
+    assert resolved.allowed == (configured,)  # a refused [agent] audits the default alone
 
 
 class TestUnusedProviderIsSilent:
@@ -461,9 +467,9 @@ class TestUnusedProviderIsSilent:
             lambda _provider: doctor.host_environment.AgentInstallation(True, None),
         )  # Both providers have installation state, but only the selected one is audited.
         auth_token.store_token(_TOKEN, auth_token.APP_CLAUDE)
-        audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": {}}, {}, "")
+        audit = doctor.ProjectAudit(tmp_path, tmp_path / ".booley", {"agent": {}}, "")
         # run_doctor_result reaches these only through its Docker and image phases.
-        provider = doctor._configured_provider(audit)
+        provider = doctor._agent_audit(audit, None).default_cli
 
         warns: list[str] = []
         for check in (doctor._check_agent_auth_token, doctor._check_oauth_token):
@@ -532,7 +538,10 @@ class TestClaudeMintLocation:
             Mock(side_effect=session_runtime.SessionError("Sandbox start refused: at cap")),
         )
         args = SimpleNamespace(
-            status=False, clear=False, app=auth_token.APP_CLAUDE, token_stdin=False
+            status=False,
+            clear=False,
+            app=auth_token.APP_CLAUDE,
+            token_stdin=False,
         )
 
         assert auth_cmd.run_auth(args, auth_project) == 2
@@ -542,7 +551,10 @@ class TestClaudeMintLocation:
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX mode validation")
     def test_run_auth_reports_unsafe_private_store(
-        self, home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+        self,
+        home: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         project = home / "rtl"
         project.mkdir()
@@ -551,7 +563,10 @@ class TestClaudeMintLocation:
         booley_config = home / "config" / "booley"
         booley_config.chmod(0o755)
         args = SimpleNamespace(
-            status=False, clear=False, app=auth_token.APP_CLAUDE, token_stdin=False
+            status=False,
+            clear=False,
+            app=auth_token.APP_CLAUDE,
+            token_stdin=False,
         )
 
         assert auth_cmd.run_auth(args, project) == 2

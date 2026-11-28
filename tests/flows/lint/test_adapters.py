@@ -16,7 +16,8 @@ from tests.python_command_support import python_path_entry
 
 @pytest.mark.asyncio
 async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Unknown-Target diagnostic parity with an explicit Project-directory stub."""
     project = tmp_path / ".booley"
@@ -28,7 +29,8 @@ async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
     monkeypatch.setenv("BOOLEY_CONTAINER", "1")
     monkeypatch.setenv("BOOLEY_LOGS_DIR", str(tmp_path / "logs"))
     monkeypatch.setenv(
-        "PATH", os.pathsep.join((python_path_entry(tmp_path / "python-shim"), os.environ["PATH"]))
+        "PATH",
+        os.pathsep.join((python_path_entry(tmp_path / "python-shim"), os.environ["PATH"])),
     )
     monkeypatch.setenv("PYTHONPATH", str(Path(__file__).parents[3] / "src"))
     monkeypatch.delenv("BOOLEY_STATE_FILE", raising=False)
@@ -48,7 +50,9 @@ async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
         "description": "Run lint",
         "schema": {
             "type": "object",
-            "properties": {"target": {"type": "string"}},
+            "properties": {
+                "target": {"type": "string"},
+            },
             "required": ["target"],
             "additionalProperties": False,
         },
@@ -61,7 +65,9 @@ async def test_cli_and_mcp_adapters_return_equivalent_structured_outcomes(
     # No public function builds the MCP application without starting the stdio
     # server, so this reaches the same in-process application `main()` serves.
     application = mcp_server._build_mcp_application(
-        [definition], [], mcp_server._McpLifetime(None, None)
+        [definition],
+        [],
+        mcp_server._McpLifetime(None, None),
     )
     mcp_result = await application.call_tool("lint", {"target": "missing"})
 

@@ -55,7 +55,11 @@ def _owned_project(tmp_path: Path, fixture: Path) -> Path:
     return project
 
 
-def _instrument_compiler(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, compiler: str) -> Path:
+def _instrument_compiler(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    compiler: str,
+) -> Path:
     executable = shutil.which(compiler)
     assert executable is not None
     wrappers = tmp_path / "compiler-wrappers"
@@ -103,7 +107,11 @@ def _run_owned_simulation_record(
 
 
 def _assert_shared_simulation_record(
-    simulation_record: Path, compiler_log: Path, *, compiler: str, tests: tuple[str, ...]
+    simulation_record: Path,
+    compiler_log: Path,
+    *,
+    compiler: str,
+    tests: tuple[str, ...],
 ) -> None:
     assert compiler_log.read_text(encoding="utf-8").splitlines() == [compiler]
     manifest_path = simulation_record / "manifest.json"
@@ -174,10 +182,18 @@ def test_fixture_runs_real_simulation_record_with_one_shared_build(
     _require_tools(*tools)
     _require_python_modules("fusesoc", "edalize")
     simulation_record, compiler_log = _run_owned_simulation_record(
-        tmp_path, monkeypatch, fixture=fixture, target=target, tests=tests, compiler=compiler
+        tmp_path,
+        monkeypatch,
+        fixture=fixture,
+        target=target,
+        tests=tests,
+        compiler=compiler,
     )
     _assert_shared_simulation_record(
-        simulation_record, compiler_log, compiler=compiler, tests=tests
+        simulation_record,
+        compiler_log,
+        compiler=compiler,
+        tests=tests,
     )
 
 
@@ -189,7 +205,10 @@ def test_owned_targets_and_policy_fragments_are_explicit() -> None:
         {"campaign_main.cpp": {"file_type": "cppSource"}},
     ]
     assert taxi_target["default_tool"] == "verilator"
-    assert taxi_target["flow_options"] == {"tool": "verilator", "verilator_options": ["--timing"]}
+    assert taxi_target["flow_options"] == {
+        "tool": "verilator",
+        "verilator_options": ["--timing"],
+    }
     assert taxi_target["toplevel"] == "campaign_tb"
     assert (
         "[sim_campaign_verilator]\n"
@@ -266,7 +285,12 @@ def test_uart_validator_covers_isolation_immutable_and_legacy(tmp_path: Path) ->
 def _write_isolated_attempts(manifest, attempts, results) -> None:
     _write_json(
         manifest,
-        {"workload": {"run_cwd": {"kind": "templated"}, "pre_sim_build_access": "immutable"}},
+        {
+            "workload": {
+                "run_cwd": {"kind": "templated"},
+                "pre_sim_build_access": "immutable",
+            }
+        },
     )
     for index, (attempt, result) in enumerate(zip(attempts, results, strict=True)):
         attempt_id = f"attempt-{index}"

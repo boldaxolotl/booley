@@ -14,12 +14,14 @@ from pathlib import Path
 from typing import Protocol
 from uuid import uuid4
 
+from booley.core import docker_cli
 from booley.core.boundary import (
     BoundaryError,
     is_str_list,
     require_dict,
     require_opt_str,
     require_str,
+    require_str_value,
 )
 from booley.core.differences import format_differences
 from booley.core.private_store import PrivateStore
@@ -358,14 +360,24 @@ class DockerPort(Protocol):
 class BuildPort(Protocol):
     """Acquire a node and optionally return a staged reference for validation."""
 
-    def build(self, node: ImageNode, *, force: bool, source: ArtifactSource) -> str | None: ...
+    def build(
+        self,
+        node: ImageNode,
+        *,
+        force: bool,
+        source: ArtifactSource,
+    ) -> str | None: ...
 
 
 class TransactionBuildPort(Protocol):
     """Role-aware builder which never writes a managed image tag directly."""
 
     def prepare(
-        self, node: ImageNode, *, candidate_reference: str, parent_reference: str | None
+        self,
+        node: ImageNode,
+        *,
+        candidate_reference: str,
+        parent_reference: str | None,
     ) -> str: ...
 
 
@@ -497,14 +509,22 @@ def sweep_absent_owned_images(
             record.record({})
 
 
-def _build_adapter(_project_root: Path, _docker: DockerPort, *, verbose: bool) -> BuildPort:
+def _build_adapter(
+    _project_root: Path,
+    _docker: DockerPort,
+    *,
+    verbose: bool,
+) -> BuildPort:
     """Require an orchestration layer to provide image-building policy."""
     del verbose
     raise TypeError("mutating image reconciliation requires a build adapter")
 
 
 def _transaction_build_adapter(
-    _project_root: Path, _docker: DockerPort, *, verbose: bool
+    _project_root: Path,
+    _docker: DockerPort,
+    *,
+    verbose: bool,
 ) -> TransactionBuildPort:
     del verbose
     raise TypeError("incremental convergence requires a transaction build adapter")
@@ -701,7 +721,10 @@ def _base_node(payload: PayloadProvenance) -> ImageNode:
 
 
 def _project_recipe_fingerprint(
-    project_root: Path, requirements_body: str | None, *, parent_image: str = BASE_IMAGE
+    project_root: Path,
+    requirements_body: str | None,
+    *,
+    parent_image: str = BASE_IMAGE,
 ) -> str:
     docker_dir = _direct_booley_dir(project_root) / "docker"
     dockerfile = docker_dir / "Dockerfile"
@@ -712,7 +735,8 @@ def _project_recipe_fingerprint(
         return hashlib.sha256(b"<no-managed-project-image>").hexdigest()
     if requirements_body is not None and managed_recipe:
         dockerfile_body, requirements_content = project_image.managed_project_image_files(
-            requirements_body, parent_image=parent_image
+            requirements_body,
+            parent_image=parent_image,
         )
         overrides = {"Dockerfile": dockerfile_body.encode()}
         if project_image.is_managed_generated_file(requirements):
@@ -776,12 +800,19 @@ def _graph_node(
     recipe_fingerprint: str | None = None,
     image_build_contracts: ImageBuildContracts | None = None,
 ) -> ImageNode:
-    payload = PayloadProvenance(PROVENANCE_SCHEMA, _expected_version(), None)
+    payload = PayloadProvenance(
+        PROVENANCE_SCHEMA,
+        _expected_version(),
+        None,
+    )
     return ImageNode(
         reference=reference,
         recipe=recipe,
         payload=payload,
-        build=BuildProvenance(recipe_fingerprint or resolve_recipe_fingerprint((recipe,)), None),
+        build=BuildProvenance(
+            recipe_fingerprint or resolve_recipe_fingerprint((recipe,)),
+            None,
+        ),
         parent=parent.reference if parent else None,
         role=role,
         effective_inputs=effective_inputs,
@@ -865,7 +896,10 @@ def _manual_overlay(project_root, selected, parent, observed):
     )
 
 
-def _stamp_logical_selection(selected: str, nodes: tuple[ImageNode, ...]) -> tuple[ImageNode, ...]:
+def _stamp_logical_selection(
+    selected: str,
+    nodes: tuple[ImageNode, ...],
+) -> tuple[ImageNode, ...]:
     projection = tuple(
         (
             node.role.value if node.role else "",
@@ -877,7 +911,9 @@ def _stamp_logical_selection(selected: str, nodes: tuple[ImageNode, ...]) -> tup
         for node in nodes
     )
     fingerprint = logical_selection_fingerprint_for_chain(
-        selected, projection, initial_parent_key=nodes[0].logical_selection_fingerprint or ""
+        selected,
+        projection,
+        initial_parent_key=nodes[0].logical_selection_fingerprint or "",
     )
     return (*nodes[:-1], replace(nodes[-1], logical_selection_fingerprint=fingerprint))
 
@@ -927,12 +963,16 @@ def _source_graph_project(project_root: Path, selected: str, substrate: ImageNod
         role=ImageRole.PROJECT_SUBSTRATE,
         recipe=dockerfile,
         effective_inputs=resolve_build_context_fingerprint(
-            dockerfile.parent, {name: body.encode() for name, body in files}
+            dockerfile.parent,
+            {name: body.encode() for name, body in files},
         ),
         parent=substrate,
         recipe_fingerprint=hashlib.sha256(generated_recipe.encode()).hexdigest(),
     )
-    return replace(node, generated_files=files)
+    return replace(
+        node,
+        generated_files=files,
+    )
 
 
 def _published_release_node(selected: str, contracts: ImageBuildContracts) -> ImageNode:
@@ -968,7 +1008,10 @@ def _release_only(shipped_sources: tuple[ArtifactSource, ...]) -> bool:
     return ArtifactSource.LOCAL_BUILD not in shipped_sources
 
 
-def _release_selection_fingerprint(selected: str, contracts: ImageBuildContracts) -> str:
+def _release_selection_fingerprint(
+    selected: str,
+    contracts: ImageBuildContracts,
+) -> str:
     """Logical-selection fingerprint of the shipped chain, from the source-graph nodes."""
     docker_dir = docker_data_dir()
     runtime, standard = _source_graph_base(contracts, docker_dir)
@@ -1001,7 +1044,9 @@ def _release_project_overlay(project_root: Path, selected: str, parent: ImageNod
         role=ImageRole.PROJECT_OVERLAY,
         recipe=recipe,
         effective_inputs=_project_recipe_fingerprint(
-            project_root, requirements_body, parent_image=project_image.MANAGED_PROJECT_PARENT
+            project_root,
+            requirements_body,
+            parent_image=project_image.MANAGED_PROJECT_PARENT,
         ),
         parent=parent,
         wheel_source_fingerprint=parent.wheel_source_fingerprint,
@@ -1018,7 +1063,9 @@ def _release_project_overlay(project_root: Path, selected: str, parent: ImageNod
 
 
 def _hybrid_release_graph(
-    project_root: Path, selected: str, contracts: ImageBuildContracts
+    project_root: Path,
+    selected: str,
+    contracts: ImageBuildContracts,
 ) -> tuple[ImageNode, ...]:
     configured = _configured_image(project_root)
     published_parent = configured if configured in FLAVOR_RECIPES else BASE_IMAGE
@@ -1053,7 +1100,10 @@ def _snapshot(nodes: tuple[ImageNode, ...]) -> InputSnapshot:
 
 
 def _planned_reason(
-    node: ImageNode, docker: DockerPort, *, parent_invalid: bool
+    node: ImageNode,
+    docker: DockerPort,
+    *,
+    parent_invalid: bool,
 ) -> Diagnostic | None:
     metadata = docker.inspect(node.reference)
     if metadata is None:
@@ -1310,7 +1360,10 @@ def _candidate_reference(transaction_id: str, node: ImageNode) -> str:
 
 
 def _verify_prepared_image(
-    node: ImageNode, reference: str, parent_artifact: str | None, docker: DockerPort
+    node: ImageNode,
+    reference: str,
+    parent_artifact: str | None,
+    docker: DockerPort,
 ) -> PreparedImage:
     metadata = docker.inspect(reference)
     if metadata is None:
@@ -1412,7 +1465,9 @@ def prepare(
     resolved_docker = docker or _docker_adapter()
     _discard_orphaned_candidates(resolved_docker, lifecycle_plan.project_root)
     resolved_builder = builder or _transaction_build_adapter(
-        lifecycle_plan.project_root, resolved_docker, verbose=verbose
+        lifecycle_plan.project_root,
+        resolved_docker,
+        verbose=verbose,
     )
     transaction = uuid4().hex
     owned = OwnedImages(lifecycle_plan.project_root)
@@ -1434,7 +1489,13 @@ def _prepare_upstream(lifecycle_plan, transaction_id, resolved_docker, resolved_
             if node.role is ImageRole.PROJECT_DATA_LAYOUT:
                 continue
             acquired, candidates = _prepare_node(
-                node, step, transaction_id, realized, resolved_docker, resolved_builder, owned
+                node,
+                step,
+                transaction_id,
+                realized,
+                resolved_docker,
+                resolved_builder,
+                owned,
             )
             prepared.append(acquired)
             realized[node.reference] = acquired
@@ -1539,7 +1600,11 @@ def _prepare_node(
         raise
 
 
-def validate(prepared: PreparedConvergence, *, docker: DockerPort | None = None) -> None:
+def validate(
+    prepared: PreparedConvergence,
+    *,
+    docker: DockerPort | None = None,
+) -> None:
     """Revalidate inputs and candidate identities before external downtime."""
     resolved_docker = docker or _docker_adapter()
     root = prepared.plan.project_root
@@ -1572,7 +1637,11 @@ def validate(prepared: PreparedConvergence, *, docker: DockerPort | None = None)
             )
 
 
-def abort(prepared: PreparedConvergence, *, docker: DockerPort | None = None) -> None:
+def abort(
+    prepared: PreparedConvergence,
+    *,
+    docker: DockerPort | None = None,
+) -> None:
     """Discard transaction references without disturbing managed tags."""
     resolved_docker = docker or _docker_adapter()
     expected = {
@@ -1585,7 +1654,11 @@ def abort(prepared: PreparedConvergence, *, docker: DockerPort | None = None) ->
     cleanup_owned_images(prepared.plan.project_root, docker=resolved_docker)
 
 
-def commit(prepared: PreparedConvergence, *, docker: DockerPort | None = None) -> LifecycleResult:
+def commit(
+    prepared: PreparedConvergence,
+    *,
+    docker: DockerPort | None = None,
+) -> LifecycleResult:
     """Revalidate inputs and atomically adopt verified candidates in graph order."""
     resolved_docker = docker or _docker_adapter()
     try:
@@ -1676,7 +1749,8 @@ def _node_current_from(
 
 
 def _sources_for_node(
-    node: ImageNode, shipped_sources: tuple[ArtifactSource, ...]
+    node: ImageNode,
+    shipped_sources: tuple[ArtifactSource, ...],
 ) -> tuple[ArtifactSource, ...]:
     if node.reference == BASE_IMAGE or node.reference in FLAVOR_RECIPES:
         return shipped_sources
@@ -1684,7 +1758,9 @@ def _sources_for_node(
 
 
 def _schema_two_parent_current(
-    node: ImageNode, metadata: ImageMetadata, docker: DockerPort
+    node: ImageNode,
+    metadata: ImageMetadata,
+    docker: DockerPort,
 ) -> bool:
     """Validate typed schema-two parent provenance."""
     origin = metadata.label(LABEL_BUILD_ORIGIN)
@@ -1853,7 +1929,10 @@ def _build_node(
 
 
 def _adopt_current_candidate(
-    node: ImageNode, candidate: str, source: ArtifactSource, docker: DockerPort
+    node: ImageNode,
+    candidate: str,
+    source: ArtifactSource,
+    docker: DockerPort,
 ) -> bool:
     sources = (source,)
     metadata = docker.inspect(candidate)
@@ -1870,7 +1949,9 @@ def _adopt_current_candidate(
 
 
 def _inspect_nodes(
-    nodes: tuple[ImageNode, ...], docker: DockerPort, shipped_sources: tuple[ArtifactSource, ...]
+    nodes: tuple[ImageNode, ...],
+    docker: DockerPort,
+    shipped_sources: tuple[ArtifactSource, ...],
 ) -> tuple[tuple[str, ...], str | None]:
     """Stale references and the last node's ID, from one read per node."""
     observed = [(node, docker.inspect(node.reference)) for node in nodes]
@@ -1933,7 +2014,8 @@ def _release_tag(reference: str, managed_reference: str) -> str | None:
 
 
 def _release_cleanup_candidates(
-    managed_reference: str, inventory: tuple[ImageReference, ...]
+    managed_reference: str,
+    inventory: tuple[ImageReference, ...],
 ) -> tuple[ImageReference, ...]:
     """Return disposable official acquisition tags, including the current version."""
     candidates = (
@@ -1943,7 +2025,9 @@ def _release_cleanup_candidates(
 
 
 def _reconcile_release_tag_cleanup(
-    managed_reference: str, intent: Intent, docker: DockerPort
+    managed_reference: str,
+    intent: Intent,
+    docker: DockerPort,
 ) -> ImageCleanup:
     inventory = docker.image_references()
     candidates = _release_cleanup_candidates(managed_reference, inventory)
@@ -2026,7 +2110,9 @@ def _reconcile_host(
     shipped_sources: tuple[ArtifactSource, ...],
 ) -> LifecycleResult:
     payload = PayloadProvenance(
-        PROVENANCE_SCHEMA, _expected_version(), _expected_payload_fingerprint()
+        PROVENANCE_SCHEMA,
+        _expected_version(),
+        _expected_payload_fingerprint(),
     )
     nodes = (
         (_published_release_node(BASE_IMAGE, _expected_image_build_contracts()),)
@@ -2035,13 +2121,32 @@ def _reconcile_host(
     )
     stale, selected_id = _inspect_nodes(nodes, docker, shipped_sources)
     if intent is Intent.CHECK:
-        result = _check_result(BASE_IMAGE, selected_id, nodes, stale, shipped_sources)
+        result = _check_result(
+            BASE_IMAGE,
+            selected_id,
+            nodes,
+            stale,
+            shipped_sources,
+        )
         cleanup = _reconcile_release_tag_cleanup(BASE_IMAGE, intent, docker)
         return _with_cleanup(result, cleanup)
     if builder is None:
         raise TypeError("mutating image reconciliation requires a build adapter")
-    changed = _mutate("host", nodes, intent, docker, builder, shipped_sources=shipped_sources)
-    result = _verified_result(BASE_IMAGE, nodes[-1], changed, docker, shipped_sources)
+    changed = _mutate(
+        "host",
+        nodes,
+        intent,
+        docker,
+        builder,
+        shipped_sources=shipped_sources,
+    )
+    result = _verified_result(
+        BASE_IMAGE,
+        nodes[-1],
+        changed,
+        docker,
+        shipped_sources,
+    )
     cleanup = _reconcile_release_tag_cleanup(BASE_IMAGE, intent, docker)
     return _with_cleanup(result, cleanup)
 
@@ -2085,29 +2190,27 @@ class _DockerCli:
     def repo_digests(self, image: str) -> tuple[str, ...]:
         """Return normalized registry identities attached to a local image."""
         try:
-            result = run_captured_bounded(
-                ["docker", "image", "inspect", "-f", "{{json .RepoDigests}}", image], timeout=15
+            values = docker_cli.inspect_value(
+                _docker,
+                "image",
+                image,
+                timeout=15,
+                template="{{json .RepoDigests}}",
+                require=_repo_digest_values,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"could not inspect Docker RepoDigests: {exc}") from exc
-        if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
+        except docker_cli.InspectError as exc:
+            if exc.result is None:
+                raise ImageLifecycleError(
+                    f"Docker returned invalid RepoDigests for {image!r}: {exc.__cause__}"
+                ) from exc
+            detail = _failure_detail(exc.result)
             if "no such image" in detail.lower():
                 return ()
             raise ImageLifecycleError(
-                f"could not inspect Docker RepoDigests on {image!r}: "
-                f"{detail or f'Docker exited {result.returncode}'}"
-            )
-        try:
-            values = json.loads(result.stdout)
-        except json.JSONDecodeError as exc:
-            raise ImageLifecycleError(
-                f"Docker returned invalid RepoDigests JSON for {image!r}"
+                f"could not inspect Docker RepoDigests on {image!r}: {detail}"
             ) from exc
-        if values is None or values == []:
-            return ()
-        if not is_str_list(values):
-            raise ImageLifecycleError(f"Docker returned invalid RepoDigests for {image!r}")
         normalized = tuple(normalize_registry_digest(value) for value in values)
         if any(value is None for value in normalized):
             raise ImageLifecycleError(f"Docker returned malformed RepoDigests for {image!r}")
@@ -2135,10 +2238,8 @@ class _DockerCli:
                 f"could not inventory Docker image references: {exc}"
             ) from exc
         if result.returncode:
-            detail = (result.stderr or result.stdout).strip()
             raise ImageLifecycleError(
-                "could not inventory Docker image references: "
-                f"{detail or f'Docker exited {result.returncode}'}"
+                f"could not inventory Docker image references: {_failure_detail(result)}"
             )
         return _parse_image_references(result.stdout)
 
@@ -2150,10 +2251,8 @@ class _DockerCli:
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"could not inventory Docker containers: {exc}") from exc
         if result.returncode:
-            detail = (result.stderr or result.stdout).strip()
             raise ImageLifecycleError(
-                f"could not inventory Docker containers: "
-                f"{detail or f'Docker exited {result.returncode}'}"
+                f"could not inventory Docker containers: {_failure_detail(result)}"
             )
         return _inspect_container_image_ids(result.stdout.splitlines())
 
@@ -2165,7 +2264,9 @@ class _DockerCli:
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"could not retain image {source}: {exc}") from exc
         if result.returncode != 0:
-            raise ImageLifecycleError(f"could not retain image {source}: {result.stderr.strip()}")
+            raise ImageLifecycleError(
+                f"could not retain image {source}: {_failure_detail(result)}"
+            )
 
     def remove_tag(self, image: str) -> None:
         try:
@@ -2178,11 +2279,32 @@ class _DockerCli:
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(f"could not remove retained tag {image}: {exc}") from exc
         if result.returncode != 0:
-            detail = (result.stderr or result.stdout).strip()
             raise ImageLifecycleError(
-                f"could not remove retained tag {image}: "
-                f"{detail or f'Docker exited {result.returncode}'}"
+                f"could not remove retained tag {image}: {_failure_detail(result)}"
             )
+
+
+def _docker(args: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+    return run_captured_bounded(["docker", *args], timeout=timeout)
+
+
+def _failure_detail(result: subprocess.CompletedProcess[str]) -> str:
+    return docker_cli.failure_detail(result, f"Docker exited {result.returncode}")
+
+
+def _repo_digest_values(value: object, *, field: str) -> list[str]:
+    if value is None:  # Docker prints null for an image with no registry identity
+        return []
+    if not is_str_list(value):
+        raise BoundaryError(f"{field} must be a list of strings, got {value!r}")
+    return value
+
+
+def _local_image_id(value: object, *, field: str) -> str:
+    image_id = require_str_value(value, field=field)
+    if not is_local_image_id(image_id):
+        raise BoundaryError(f"{field} must be a local image ID, got {image_id!r}")
+    return image_id
 
 
 def _parse_image_references(output: str) -> tuple[ImageReference, ...]:
@@ -2220,21 +2342,23 @@ def _inspect_container_image_ids(container_ids: list[str]) -> frozenset[str]:
     image_ids = set()
     for container_id in container_ids:
         try:
-            result = run_captured_bounded(
-                ["docker", "container", "inspect", "--format", "{{.Image}}", container_id],
+            image_id = docker_cli.inspect_value(
+                _docker,
+                "container",
+                container_id,
                 timeout=15,
+                template="{{json .Image}}",
+                require=_local_image_id,
             )
         except (OSError, subprocess.SubprocessError) as exc:
             raise ImageLifecycleError(
                 f"could not inspect Docker container {container_id}: {exc}"
             ) from exc
-        image_id = result.stdout.strip()
-        if result.returncode or not is_local_image_id(image_id):
-            detail = (result.stderr or result.stdout).strip()
+        except docker_cli.InspectError as exc:
+            detail = exc.__cause__ if exc.result is None else _failure_detail(exc.result)
             raise ImageLifecycleError(
-                f"could not inspect Docker container {container_id}: "
-                f"{detail or f'Docker exited {result.returncode}'}"
-            )
+                f"could not inspect Docker container {container_id}: {detail}"
+            ) from exc
         image_ids.add(image_id)
     return frozenset(image_ids)
 

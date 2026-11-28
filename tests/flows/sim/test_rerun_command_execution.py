@@ -83,7 +83,13 @@ def _invoke(
         return SubprocessResult(returncode=1, stdout=stdout, duration_s=0.1)
 
     run = run_simulation_record_sim(
-        root, monkeypatch, catalog, fail, files=files, build=build, **_request_fields(argv)
+        root,
+        monkeypatch,
+        catalog,
+        fail,
+        files=files,
+        build=build,
+        **_request_fields(argv),
     )
     assert run.result.exit_code == exit_code, run.result.outcome.report_text
     (report_path,) = (root / "reports/sim/1/targets").glob("*/simulation.json")
@@ -263,7 +269,10 @@ _DISCOVERED = [("found_a", "pass", ""), ("found_b", "fail", "boom"), ("found_c",
 
 @pytest.mark.parametrize(
     ("argv", "seed"),
-    [pytest.param(["--seed", "9"], 9, id="seeded"), pytest.param([], 1, id="default-seed")],
+    [
+        pytest.param(["--seed", "9"], 9, id="seeded"),
+        pytest.param([], 1, id="default-seed"),
+    ],
 )
 def test_executing_the_batch_rerun_command_of_failed_discovered_tests_reruns_the_batch(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, argv: list[str], seed: int

@@ -105,7 +105,9 @@ def _distribution_attribution(package_file: Path) -> VersionAttribution | None:
             if not version:
                 raise RuntimeError(f"owning {name} distribution has no version metadata")
             return VersionAttribution(
-                version=version, origin=VersionOrigin.DISTRIBUTION, distribution_name=name
+                version=version,
+                origin=VersionOrigin.DISTRIBUTION,
+                distribution_name=name,
             )
     return None
 
@@ -115,8 +117,11 @@ def resolve_version_attribution(package_file: Path) -> VersionAttribution:
     root = _source_root(package_file)
     if root is not None:
         return VersionAttribution(
-            version=_read_source_version(root), origin=VersionOrigin.SOURCE, source_root=root
+            version=_read_source_version(root),
+            origin=VersionOrigin.SOURCE,
+            source_root=root,
         )
     return _distribution_attribution(package_file) or VersionAttribution(
-        version="0.0.0-dev", origin=VersionOrigin.FALLBACK
+        version="0.0.0-dev",
+        origin=VersionOrigin.FALLBACK,
     )

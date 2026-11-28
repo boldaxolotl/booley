@@ -15,7 +15,7 @@ _TEXTS = {
         "rate limit will reset at 8pm (UTC)": False,  # transient, not a usage cap
     },
     is_context_exhausted: {
-        "turn/start input_too_large: max_chars=1048576, actual_chars=57231875": True
+        "turn/start input_too_large: max_chars=1048576, actual_chars=57231875": True,
     },
     is_model_refusal: {
         '{"status":400,"error":{"message":"The model does not exist","code":"model_not_found"}}': True,

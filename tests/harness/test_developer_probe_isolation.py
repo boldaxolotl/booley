@@ -13,9 +13,11 @@ from booley.config import agent as agent_config
 from booley.core.models import AgentResult
 from booley.harness import developer_probe
 from booley.runtime import _claude_backend, _codex_backend
-from booley.runtime import agent as agent_mod
 from booley.runtime import agent_config as backend_config
 from booley.runtime.booley_dir import reset_cache
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.agent_call_fake import install_agent
+from tests.sandbox_venue_fake import place
 
 
 @pytest.fixture
@@ -33,9 +35,7 @@ def sandbox(tmp_path, monkeypatch):
     monkeypatch.setenv("BOOLEY_DIR", str(tmp_path / "project" / ".booley"))
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "tmp"))
     (tmp_path / "tmp").mkdir()
-    # Private: the one function in each module that tells the host from the Sandbox.
-    monkeypatch.setattr(agent_config, "_inside_container", lambda: True)
-    monkeypatch.setattr(_codex_backend, "_inside_container", lambda: True)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX)
     # Private: a process-wide cache of nested Codex homes; an earlier test's home must not leak in.
     monkeypatch.setattr(_codex_backend, "_NESTED_HOMES", {})
     agent_config.set_agent_settings(None)
@@ -62,8 +62,7 @@ def test_probe_call_has_no_booley_mcp_server_or_tools(sandbox, monkeypatch, flav
         monkeypatch.setenv("BOOLEY_GATEWAY_TOKEN", "SYNTHETIC_GATEWAY_TOKEN")
     seen = {}
 
-    async def fake_call_agent(params):
-        seen["params"] = params
+    async def answer(params):
         seen["cwd_existed"] = Path(params.cwd).is_dir()
         # Private: the SDK options and the Codex argv cross to the external agent, and
         # `measure_developer_rss` returns neither, so they are captured at that last step.
@@ -86,12 +85,12 @@ def test_probe_call_has_no_booley_mcp_server_or_tools(sandbox, monkeypatch, flav
             await _codex_backend._codex_spawn(["codex", "exec", "-"], params, auth_mode)
         return AgentResult(output="OK")
 
-    monkeypatch.setattr(agent_mod, "call_agent", fake_call_agent)
+    agent = install_agent(monkeypatch, answer)
     developer_probe.measure_developer_rss(
         sandbox, getrusage=lambda _who: SimpleNamespace(ru_maxrss=1)
     )
 
-    params = seen["params"]
+    params = agent.calls[0]
     assert params.nested_mcp_tools is None
     assert seen["cwd_existed"]
     assert sandbox not in Path(params.cwd).parents and not Path(params.cwd).exists()

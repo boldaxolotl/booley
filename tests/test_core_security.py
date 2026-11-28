@@ -14,7 +14,11 @@ from typing import Any
 import pytest
 import yaml
 
-from booley.fusesoc.core_security import CoreViolation, validate_core, validate_project_cores
+from booley.fusesoc.core_security import (
+    CoreViolation,
+    validate_core,
+    validate_project_cores,
+)
 from booley.targets.catalog import TargetCatalog
 from tests.conftest import symlink_or_skip
 
@@ -70,7 +74,10 @@ def test_clean_core_passes_with_scope_too(tmp_path: Path):
     # Provenance check is a no-op when there are no imperative sections.
     assert (
         validate_core(
-            _doc(_CLEAN), core_file=tmp_path / "d.core", project_root=tmp_path, scope=["rtl/*.sv"]
+            _doc(_CLEAN),
+            core_file=tmp_path / "d.core",
+            project_root=tmp_path,
+            scope=["rtl/*.sv"],
         )
         == []
     )

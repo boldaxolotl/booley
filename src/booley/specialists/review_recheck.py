@@ -204,7 +204,10 @@ def _finding_block(row: dict[str, Any], proposals: Mapping[str, str]) -> str:
 
 
 def recheck_prompt(
-    recheck: RecheckInput, spec_section: str, work_dir: Path, proposals: Mapping[str, str]
+    recheck: RecheckInput,
+    spec_section: str,
+    work_dir: Path,
+    proposals: Mapping[str, str],
 ) -> str:
     """The user prompt: scope, specification, the open findings and the output schema."""
     present, removed = existing_scope(recheck, work_dir)
@@ -312,7 +315,9 @@ def judge_verdicts(
 
 
 def rechecked_records(
-    recheck: RecheckInput, verdicts: dict[str, Verdict], proposals: Mapping[str, str]
+    recheck: RecheckInput,
+    verdicts: dict[str, Verdict],
+    proposals: Mapping[str, str],
 ) -> list[dict[str, Any]]:
     """Every input record in input order; an open one takes its verdict, the rest are unchanged.
 
@@ -340,7 +345,11 @@ def refused_waivers(
 ) -> list[dict[str, str]]:
     """The proposals whose finding did not end ``waived``, with the Reviewer's ruling if any."""
     return [
-        {"finding_id": finding_id, "justification": reason, "ruling": verdicts[finding_id].ruling}
+        {
+            "finding_id": finding_id,
+            "justification": reason,
+            "ruling": verdicts[finding_id].ruling,
+        }
         for finding_id, reason in proposals.items()
         if verdicts[finding_id].status != STATUS_WAIVED
     ]

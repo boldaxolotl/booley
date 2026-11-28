@@ -15,7 +15,10 @@ from pathlib import Path
 import pytest
 
 if sys.platform != "linux":
-    pytest.skip("Sandbox Attachment execution supervision requires Linux", allow_module_level=True)
+    pytest.skip(
+        "Sandbox Attachment execution supervision requires Linux",
+        allow_module_level=True,
+    )
 
 import pty
 
@@ -27,11 +30,11 @@ from tests.execution_test_support import (
 from tests.subprocess_budget import run_bounded_child
 from tests.time_budget import hang_guard_s, scaled
 
+from booley.core.atomic_files import atomic_write_json
 from booley.runtime.execution_records import (
     PROTOCOL_VERSION,
     ExecutionId,
     ExecutionPaths,
-    atomic_write_json,
     execution_paths,
     force_cancellation_requested,
     read_json,
@@ -69,6 +72,7 @@ def _start_supervisor_with_test_heartbeat(
     bootstrap = (
         "from pathlib import Path\n"
         "import booley.runtime.execution_supervisor as supervisor\n"
+        "import booley.runtime.heartbeat as reaper\n"
         f"heartbeat_path = Path({str(heartbeat_path)!r})\n"
         "generation = 0\n"
         "def touch():\n"
@@ -76,7 +80,8 @@ def _start_supervisor_with_test_heartbeat(
         "    generation += 1\n"
         "    with heartbeat_path.open('a', encoding='ascii') as stream:\n"
         "        stream.write(f'{generation}\\n')\n"
-        "supervisor.touch_reaper_heartbeat = touch\n"
+        # boundary: the Sandbox activity heartbeat file the idle reaper reads
+        "reaper.touch_reaper_heartbeat = touch\n"
         "supervisor._EXECUTION_HEARTBEAT_SECONDS = 0.03\n"
         "raise SystemExit(supervisor.main())\n"
     )
@@ -219,7 +224,10 @@ def test_boolean_protocol_signal_does_not_become_signal_one(tmp_path: Path) -> N
     execution_id = _unique_execution_id()
     paths = execution_paths(execution_id, booley_dir=booley_dir)
     write_attachment_heartbeat(paths, generation=1)
-    atomic_write_json(paths.cancel, {"force": False, "reason": "cancelled", "signum": True})
+    atomic_write_json(
+        paths.cancel,
+        {"force": False, "reason": "cancelled", "signum": True},
+    )
 
     result = subprocess.run(
         [
@@ -351,7 +359,10 @@ def test_supervisor_refreshes_reaper_heartbeat_during_cancellation(tmp_path: Pat
         f"Path({str(child_ready)!r}).touch(); time.sleep(10)",
     ]
     supervisor = _start_supervisor_with_test_heartbeat(
-        booley_dir, execution_id, heartbeat_path, command
+        booley_dir,
+        execution_id,
+        heartbeat_path,
+        command,
     )
     try:
         wait_for(
@@ -539,7 +550,9 @@ def test_orphan_reaping_leaves_uncollected_direct_child(tmp_path: Path) -> None:
     )
 
     result = run_bounded_child(
-        [sys.executable, "-c", bootstrap], env=runtime_env(tmp_path), timeout=2 * hang_guard_s()
+        [sys.executable, "-c", bootstrap],
+        env=runtime_env(tmp_path),
+        timeout=2 * hang_guard_s(),
     )
 
     assert result.returncode == 0, result.stderr

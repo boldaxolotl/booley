@@ -8,7 +8,6 @@ import json
 import os
 import shlex
 import stat
-import tempfile
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -17,8 +16,9 @@ from pathlib import Path
 from time import monotonic
 from typing import IO, cast
 
+from booley.core import atomic_files
 from booley.core.file_lock import acquire_file_lock, release_file_lock
-from booley.core.sharing_retry import open_with_sharing_retry, replace_file
+from booley.core.sharing_retry import open_with_sharing_retry
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,19 +90,7 @@ class PrivateStore:
 
     def atomic_write_text(self, filename: str, content: str) -> None:
         """Atomically replace one mode-600 file and persist its directory entry."""
-        path = self.root / filename
-        descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=self.root)
-        temp_path = Path(temporary)
-        try:
-            self._set_descriptor_mode(descriptor, 0o600)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-                handle.write(content)
-                handle.flush()
-                os.fsync(handle.fileno())
-            replace_file(temp_path, path)
-            self._fsync_directory()
-        finally:
-            temp_path.unlink(missing_ok=True)
+        atomic_files.atomic_write_text(self.root / filename, content)
 
     def _private_directories(self) -> tuple[Path, ...]:
         try:
@@ -184,15 +172,6 @@ class PrivateStore:
                 if monotonic() >= deadline:
                     self._raise(busy_message, cause=exc)
                 time.sleep(0.1)
-
-    def _fsync_directory(self) -> None:
-        if os.name == "nt":
-            return
-        descriptor = os.open(self.root, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
 
     @staticmethod
     def _read_flags() -> int:

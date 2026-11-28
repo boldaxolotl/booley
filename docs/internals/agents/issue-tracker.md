@@ -131,3 +131,31 @@ A code change that also updates docs is `bug` or `enhancement` and may carry
 pipeline uses the strongest: `bug`, then `enhancement`, then `documentation`.
 The category decides which models work the ticket: `documentation` tickets
 get Claude only and never a GUI check.
+
+### Flaky-test issues
+
+`flaky` marks an issue about one test that fails only sometimes. Each such
+issue covers exactly one test ID (the pytest node ID), and its title names
+that ID, so every failure of the test collects in one place. Before filing,
+search the open issues, with or without the label, for the test ID. When one
+already reports that test failing, add the new failure (run link and error) to
+it as a comment instead of opening another issue. A failure that names no test
+ID, such as a job that ran out of time, is tracked by its job instead, without
+`flaky`; see the known-flake rule in
+[Recover a dequeued PR](merge-queue.md#recover-a-dequeued-pr). Issues filed
+from the [flake ledger](../../../.github/ci/README.md#flake-ledger) follow the
+same rule. A `flaky` issue may own a
+[quarantine entry](../../../.github/ci/README.md#quarantine-of-flaky-tests):
+closing it fails the `lint` check until the entry is removed, so the fix PR
+removes the entry.
+
+An issue or PR whose only fix for a flaky test is a larger time budget or
+timeout closes as a duplicate of
+[#4384](https://github.com/boldaxolotl/booley/issues/4384), with a closing
+comment that links
+[Test time budgets](../../../.github/ci/README.md#test-time-budgets). That
+shared policy already scales test waits for slow runners, so raising one
+test's budget hides the slowdown instead of fixing it. This holds even when a
+timeout-headroom message suggests a larger `@pytest.mark.timeout`: make the
+test faster instead. A change to the shared policy itself is not a duplicate.
+Close such an issue with `gh issue close <n> --duplicate-of 4384`.

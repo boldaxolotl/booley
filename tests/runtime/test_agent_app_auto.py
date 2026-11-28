@@ -17,6 +17,7 @@ from types import SimpleNamespace
 
 import pytest
 from tests.devcontainer_spec_support import build_spec
+from tests.sandbox_venue_fake import place
 
 from booley.config import agent as config_agent
 from booley.config import agent_app
@@ -28,6 +29,7 @@ from booley.harness import incontainer_register as entry
 from booley.runtime import devcontainer as dc
 from booley.runtime import incontainer_setup as reg
 from booley.runtime import inspection
+from booley.runtime.runtime_context import RuntimeLocation
 
 _GATEWAY_URL = "https://gateway.example/v1"
 _CREDENTIAL_ENV = (
@@ -48,9 +50,7 @@ _CREDENTIAL_ENV = (
 
 
 def _pin_venue(monkeypatch, *, inside: bool) -> None:
-    # private: the container marker is /.dockerenv on the real filesystem; no public
-    # seam points the Sandbox probe at a fixture.
-    monkeypatch.setattr(config_agent, "_inside_container", lambda: inside)
+    place(monkeypatch, RuntimeLocation.HAND_WRITTEN_SANDBOX if inside else RuntimeLocation.HOST)
 
 
 def _use_home(monkeypatch, home: Path) -> Path:
@@ -391,7 +391,7 @@ def test_restart_after_the_choice_changes_leaves_no_breaking_registration(
 
 @pytest.mark.parametrize("kind", ["both", "gateway"])
 def test_doctor_reports_the_auto_choice_and_accepts_an_unpinned_auto_spec(
-    sandbox, monkeypatch, capsys, kind
+    sandbox, monkeypatch, capsys, kind, fake_sandbox_attachment
 ):
     _give(kind, sandbox.home, monkeypatch)
     _start(capsys)
@@ -435,7 +435,9 @@ def _auto_spec_report(sandbox, monkeypatch, *, declared_provider):
     return inspection.inspect_runtime(request).configuration
 
 
-def test_auto_spec_with_a_provider_pin_warns_instead_of_failing(sandbox, monkeypatch):
+def test_auto_spec_with_a_provider_pin_warns_instead_of_failing(
+    sandbox, monkeypatch, fake_sandbox_attachment
+):
     report = _auto_spec_report(sandbox, monkeypatch, declared_provider="codex")
 
     findings = report.findings

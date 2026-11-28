@@ -69,7 +69,8 @@ _FORWARDED_ENV_VARS = (
 
 
 def _codex_server_env(
-    enabled_mcp_tools: list[str] | None, extra_env: dict[str, str] | None
+    enabled_mcp_tools: list[str] | None,
+    extra_env: dict[str, str] | None,
 ) -> dict[str, str]:
     """Build the complete environment for Codex's Booley MCP child."""
     merged_env = dict(_BASELINE_ENV)

@@ -67,7 +67,8 @@ _MISSING_EXE_PATTERNS = (
     ),
     re.compile(r"^(?P<name>[\w.+-]+):\s*command not found", re.MULTILINE),
     re.compile(
-        _LABEL_PREFIX + r"could not invoke\s+(?P<name>[\w.+-]+)\b", re.MULTILINE | re.IGNORECASE
+        _LABEL_PREFIX + r"could not invoke\s+(?P<name>[\w.+-]+)\b",
+        re.MULTILINE | re.IGNORECASE,
     ),
     re.compile(
         _LABEL_PREFIX + r"(?:\[Errno \d+\]\s*)?No such file or directory:\s*'(?P<name>[\w.+-]+)'",
@@ -190,7 +191,10 @@ def _marker_failure(kind: FailureKind, stage: str, subject: str, text: str) -> E
 
 
 def _termination_failure(
-    result: SubprocessResult, stage: str, text: str, boundary_executable: str | None
+    result: SubprocessResult,
+    stage: str,
+    text: str,
+    boundary_executable: str | None,
 ) -> EdaFailure | None:
     """Classify terminal states that preclude any design verdict."""
     if result.timed_out:

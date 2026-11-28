@@ -63,9 +63,13 @@ def test_report_binds_observations_to_candidate_and_stable_check_ids(monkeypatch
     )
 
     payload = image_runtime_resources.report(
-        {"sandbox": "registry/image@sha256:published"}, runs=1, candidate_sha="candidate-sha"
+        {"sandbox": "registry/image@sha256:published"},
+        runs=1,
+        candidate_sha="candidate-sha",
     )
 
     assert payload["candidate_sha"] == "candidate-sha"
-    assert payload["checks"] == [{"id": "runtime-resources.sandbox", "status": "pass"}]
+    assert payload["checks"] == [
+        {"id": "runtime-resources.sandbox", "status": "pass"},
+    ]
     assert payload["images"]["sandbox"]["image_id"] == "sha256:local-image"

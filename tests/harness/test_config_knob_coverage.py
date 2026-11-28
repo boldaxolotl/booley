@@ -34,7 +34,7 @@ SRC_ROOT = REPO_ROOT / "src" / "booley"
 # Documented knobs with no code reader, each with a reviewed justification.
 # Adding to this list requires the same scrutiny as adding a retired table.
 _INERT_BY_DESIGN: dict[tuple[str, str], str] = {
-    ("project", "description"): "free-text metadata for humans; CONFIG.md says so explicitly"
+    ("project", "description"): "free-text metadata for humans; CONFIG.md says so explicitly",
 }
 
 _FENCE_RE = re.compile(r"^```(\w*)\s*$")

@@ -49,14 +49,38 @@ def test_scope_violation_is_reported() -> None:
     """Each rule of the scope guard fails, on its own, for its own violation."""
     cases: list[tuple[dict[str, Any], int, str]] = [
         (_case(include=["src/booley/core"]), 2, "whole package"),
-        (_case(exclude=[f"{_PACKAGE}/b.py", "tools/a.py"]), 2, "one module path"),
-        (_case(exclude=[f"{_PACKAGE}/a.py", f"{_PACKAGE}/flows"]), 2, "one module path"),
-        (_case(exclude=[f"{_PACKAGE}/*.py", f"{_PACKAGE}/a.py"]), 2, "must not be a glob"),
-        (_case(exclude=[f"{_PACKAGE}/a.py", f"{_PACKAGE}/a.py"]), 2, "duplicate"),
-        (_case(exclude=[f"{_PACKAGE}/b.py", f"{_PACKAGE}/a.py"]), 2, "sorted"),
+        (
+            _case(exclude=[f"{_PACKAGE}/b.py", "tools/a.py"]),
+            2,
+            "one module path",
+        ),
+        (
+            _case(exclude=[f"{_PACKAGE}/a.py", f"{_PACKAGE}/flows"]),
+            2,
+            "one module path",
+        ),
+        (
+            _case(exclude=[f"{_PACKAGE}/*.py", f"{_PACKAGE}/a.py"]),
+            2,
+            "must not be a glob",
+        ),
+        (
+            _case(exclude=[f"{_PACKAGE}/a.py", f"{_PACKAGE}/a.py"]),
+            2,
+            "duplicate",
+        ),
+        (
+            _case(exclude=[f"{_PACKAGE}/b.py", f"{_PACKAGE}/a.py"]),
+            2,
+            "sorted",
+        ),
         (_valid_config(), 1, "renamed"),
         (_valid_config(), 3, "lower EXCLUDE_CEILING"),
-        (_case(exclude=[f"{_PACKAGE}/a.py", f"{_PACKAGE}/targets/x.py"]), 2, "strict path"),
+        (
+            _case(exclude=[f"{_PACKAGE}/a.py", f"{_PACKAGE}/targets/x.py"]),
+            2,
+            "strict path",
+        ),
     ]
     for config, ceiling, phrase in cases:
         violations = _violations(config, ceiling)

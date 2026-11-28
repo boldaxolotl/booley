@@ -32,7 +32,14 @@ REQUIRED_TERMS = {
     "Give the Developer Agent a relative target": ("Δ",),
     "Read the Measurement Report": ("amber", "rules loosened", "tests changed"),
     "Base runs": ("booley measure --all",),
-    "Limits": ("Git LFS", "filter", "git", "advisory", "absolute path", "Heavy generated"),
+    "Limits": (
+        "Git LFS",
+        "filter",
+        "git",
+        "advisory",
+        "absolute path",
+        "Heavy generated",
+    ),
 }
 
 

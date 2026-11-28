@@ -343,7 +343,12 @@ def _dry_run_plan(capsys: pytest.CaptureFixture[str]) -> dict[str, Any]:
 
 
 def _author_lint_core(
-    root: Path, filename: str, vlnv: str, *, doctor_selftest: bool, target_name: str = "lint"
+    root: Path,
+    filename: str,
+    vlnv: str,
+    *,
+    doctor_selftest: bool,
+    target_name: str = "lint",
 ) -> None:
     root.joinpath(filename).write_bytes(
         (
@@ -360,7 +365,9 @@ def _author_lint_core(
 
 
 def test_public_lint_rejects_doctor_only_target_before_resolution(
-    run_lint: LintRun, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    run_lint: LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An ordinary Flow invocation cannot cross Doctor's private seam."""
     _author_lint_core(tmp_path, "doctor.core", "acme:ip:doctor:1.0", doctor_selftest=True)
@@ -480,7 +487,8 @@ def test_dedup_same_warning_different_configs() -> None:
     w2 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg", "full")
     w3 = LintWarning("UNUSEDSIGNAL", "mod_a.sv", 42, 5, "msg", "combo")
     result = deduplicate_warnings(
-        [w1, w2, w3], {"lite": "verilator", "full": "verilator", "combo": "verible"}
+        [w1, w2, w3],
+        {"lite": "verilator", "full": "verilator", "combo": "verible"},
     )
     assert len(result) == 1
     assert result[0].target == "lite"  # first occurrence kept
@@ -512,7 +520,8 @@ def test_dedup_rejects_incomplete_eda_tool_provenance() -> None:
     ]
 
     with pytest.raises(
-        AssertionError, match=r"missing EDA-tool provenance for contributing Target.*lint_b"
+        AssertionError,
+        match=r"missing EDA-tool provenance for contributing Target.*lint_b",
     ):
         deduplicate_warnings(warnings, {"lint_a": "verilator"})
 
@@ -758,7 +767,9 @@ def test_dry_run_judges_an_undeclared_toplevel_unless_setup_generates(
 
 
 def test_real_run_rejects_an_undeclared_toplevel_at_planning(
-    run_lint: LintRun, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    run_lint: LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The real run stops on the planning verdict before FuseSoC setup runs."""
     for name, text in _SETUP_PROJECT.items():
@@ -813,7 +824,9 @@ def test_dry_run_defers_to_setup_when_fusesoc_config_filters_sources(
 
 
 def test_dry_run_previews_fusesoc_setup_without_resolving(
-    run_lint: LintRun, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    run_lint: LintRun,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     """The preview comes from a cheap ``.core`` read; a resolver that fails proves no fusesoc run."""
     tmp_path.joinpath("lint.core").write_bytes(
@@ -968,7 +981,10 @@ def test_a_single_eda_tool_failure_decides_a_mixed_run(run_lint: LintRun) -> Non
 
 @pytest.mark.parametrize("published", [True, False], ids=["published", "publish-failed"])
 def test_hard_fail_cites_the_published_log(
-    run_lint: LintRun, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, published: bool
+    run_lint: LintRun,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    published: bool,
 ) -> None:
     """The report cites the numbered run.log, and never a log that was not published."""
     real_publish = flow_artifacts.publish_bytes
@@ -1899,7 +1915,10 @@ def test_lint_error_findings_verilator() -> None:
 
     cases = [
         # Two different errors on one line count twice; a rule-less, location-less one once.
-        ("%Error: a.v:1:1: first\n%Error: a.v:1:1: other\n%Error: Internal Error\n", 3),
+        (
+            "%Error: a.v:1:1: first\n%Error: a.v:1:1: other\n%Error: Internal Error\n",
+            3,
+        ),
         # A repeated line counts once; the same message under another rule counts again.
         (
             "%Error-UNSUPPORTED: a.v:2:1: nope\n%Error-UNSUPPORTED: a.v:2:1: nope\n"
@@ -1907,7 +1926,10 @@ def test_lint_error_findings_verilator() -> None:
             2,
         ),
         # Continuation lines of a multi-line message are not errors.
-        ("%Error: a.v:3:1: bad\n    ... note\n   3 | wire x;\n      | ^\n", 1),
+        (
+            "%Error: a.v:3:1: bad\n    ... note\n   3 | wire x;\n      | ^\n",
+            1,
+        ),
         ("%Error: Exiting due to 1 error(s)\n", 0),
         ("", 0),
     ]

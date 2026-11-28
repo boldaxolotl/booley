@@ -7,6 +7,7 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from booley.config.feature_flags import feature_enabled
 from booley.flows.cli_arguments import BuiltinArguments
 from booley.flows.cli_help import HelpGroup, HelpOption, SurfaceHelp
 from booley.flows.test_runs import MAX_SEED, TestRunNameError, parse_seed_request
@@ -14,6 +15,8 @@ from booley.flows.test_runs import MAX_SEED, TestRunNameError, parse_seed_reques
 from .mode import SimulationMode, parse_simulation_mode
 
 logger = logging.getLogger(__name__)
+# Feature Flag (ADR 0095, #5735); deleting the flag deletes the branch it gates.
+_VERBOSE_REMOVAL = "sim-verbose-removal"
 
 
 def parse_seed_argument(value: str) -> int | str:
@@ -26,17 +29,20 @@ def parse_seed_argument(value: str) -> int | str:
 
 class SimArguments(BuiltinArguments):
     help_groups = (
-        HelpGroup("Output", (HelpOption("verbose", "Default: off."),)),
+        HelpGroup(
+            "Output",
+            (HelpOption("verbose", "Default: off."),),
+        ),
         HelpGroup(
             "Simulation options",
             (
                 HelpOption(
                     "coverage",
-                    "Default: off for new Simulation Records; resume restores the manifest's coverage policy and rejects this flag.",
+                    "Default: off for new Simulation Records; resume rejects this flag, and a coverage Simulation Record never resumes.",
                 ),
                 HelpOption(
                     "no_waivers",
-                    "When omitted, approved waivers apply on new coverage-collecting Simulation Records; resume restores the manifest's raw-coverage/waiver policy and rejects this flag.",
+                    "When omitted, approved waivers apply on new coverage-collecting Simulation Records; resume rejects this flag, and a coverage Simulation Record never resumes.",
                 ),
                 HelpOption(
                     "mode",
@@ -103,7 +109,7 @@ class SimArguments(BuiltinArguments):
         )
 
     @staticmethod
-    def add_args(parser: Any) -> None:
+    def add_args(parser: Any, features: frozenset[str]) -> None:
         # tb_top left the surface (ADR 0021): a sim Target's `toplevel` IS its
         # TB top, so it comes from the resolved Target (tb_top_for_target), not
         # a per-call arg.
@@ -127,11 +133,12 @@ class SimArguments(BuiltinArguments):
             metavar="MANIFEST",
             help="Resume one exact Simulation Record manifest.json",
         )
-        parser.add_argument(
-            "--verbose",
-            action="store_true",
-            help="Include full Simulation Record resume mismatch pointers and values",
-        )
+        if not feature_enabled(_VERBOSE_REMOVAL, features):
+            parser.add_argument(
+                "--verbose",
+                action="store_true",
+                help="Deprecated: has no effect; removed in the next minor release",
+            )
         SimArguments._add_run_control_args(parser)
 
     @staticmethod
@@ -154,7 +161,10 @@ class SimArguments(BuiltinArguments):
             help=argparse.SUPPRESS,
         )
         parser.add_argument(
-            "--standalone", dest="_legacy_standalone", action="store_true", help=argparse.SUPPRESS
+            "--standalone",
+            dest="_legacy_standalone",
+            action="store_true",
+            help=argparse.SUPPRESS,
         )
 
     @staticmethod
@@ -193,4 +203,8 @@ class SimArguments(BuiltinArguments):
         # overlay .core traces the full hierarchy at a fixed depth, so there is no
         # per-call scope knob. Scoping, when a specialist needs it, lives on the
         # specialist's own surface, not the built-in simulate one.
-        parser.add_argument("--no-kill", action="store_true", help="Skip zombie process cleanup")
+        parser.add_argument(
+            "--no-kill",
+            action="store_true",
+            help="Skip zombie process cleanup",
+        )

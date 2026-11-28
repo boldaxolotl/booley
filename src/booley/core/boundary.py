@@ -326,13 +326,12 @@ def require_finite_number_value(value: Any, *, field: str) -> int | float:
     return number
 
 
-def as_positive_int(value: Any, default: int, *, field: str | None = None) -> int:
+def as_positive_int(value: Any, default: int) -> int:
     """Return *value* as a strictly-positive ``int``, else *default* (mirrors ``_coerce_positive_int``).
 
     Rejects ``bool`` and non-int types outright (no string coercion — config
-    knobs are typed in TOML) and rejects ``value <= 0``. When *field* is given,
-    a rejected non-``None`` value is a caller concern, so return the default;
-    callers that want to warn should compare the result to *value*.
+    knobs are typed in TOML) and rejects ``value <= 0``. Callers that want to
+    warn about a rejected value should compare the result to *value*.
     """
     if isinstance(value, bool) or not isinstance(value, int):
         return default

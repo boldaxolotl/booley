@@ -41,7 +41,9 @@ def _call_sim_tool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, arguments: d
         assert name == "sim" and cmd[0] == "python"
         commands.append(cmd)
         child = run_bounded_child(
-            [sys.executable, *cmd[1:]], cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(_SRC)}
+            [sys.executable, *cmd[1:]],
+            cwd=tmp_path,
+            env={**os.environ, "PYTHONPATH": str(_SRC)},
         )
         text = SimpleNamespace(type="text", text=child.stdout + child.stderr)
         return server._dispatch_result([text], is_error=child.returncode != 0)

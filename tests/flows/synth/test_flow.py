@@ -67,14 +67,17 @@ _REAL_CATALOG_BUILD = TargetCatalog.build
 
 class TestEdaFailureClassification:
     @pytest.mark.parametrize(
-        ("stage", "executable"), (("sv2v", "sv2v"), ("yosys", "yosys"), ("openroad", "openroad"))
+        ("stage", "executable"),
+        (("sv2v", "sv2v"), ("yosys", "yosys"), ("openroad", "openroad")),
     )
     def test_missing_executable_is_infrastructure_error(self, stage: str, executable: str) -> None:
         from booley.flows.eda_failures import classify_eda_failure
 
         result = classify_eda_failure(
             SubprocessResult(
-                returncode=2, stdout=f"/bin/sh: 1: {executable}: not found\n", stderr=""
+                returncode=2,
+                stdout=f"/bin/sh: 1: {executable}: not found\n",
+                stderr="",
             ),
             expected_stage=stage,
             expected_executable=executable,
@@ -85,7 +88,11 @@ class TestEdaFailureClassification:
 
     @pytest.mark.parametrize(
         ("stage", "subject"),
-        (("yosys", "read_slang"), ("yosys", "cells.lib"), ("openroad", "Nangate45_tech.lef")),
+        (
+            ("yosys", "read_slang"),
+            ("yosys", "cells.lib"),
+            ("openroad", "Nangate45_tech.lef"),
+        ),
     )
     def test_missing_dependency_is_infrastructure_error(self, stage: str, subject: str) -> None:
         from booley.flows.eda_failures import classify_eda_failure, render_failure_marker
@@ -104,7 +111,11 @@ class TestEdaFailureClassification:
 
 def _layer_target_handle(project_root: Path | str, selector: str) -> TargetHandle:
     return make_target_handle(
-        project_root, selector, flow="generic", eda_tool="yosys", drivable_by=("synth",)
+        project_root,
+        selector,
+        flow="generic",
+        eda_tool="yosys",
+        drivable_by=("synth",),
     )
 
 
@@ -121,7 +132,9 @@ def _adr0039_lenient_selection(monkeypatch):
     """
 
     install_lenient_target_catalog(
-        monkeypatch, real_catalog_build=_REAL_CATALOG_BUILD, fallback_handle=_layer_target_handle
+        monkeypatch,
+        real_catalog_build=_REAL_CATALOG_BUILD,
+        fallback_handle=_layer_target_handle,
     )
 
 
@@ -167,7 +180,10 @@ def _write_execution_config(tmp_path: Path, body: str) -> None:
     """Write a ``[flows.synth]`` booley.toml with *body* lines."""
     booley_dir = tmp_path / ".booley"
     booley_dir.mkdir(exist_ok=True)
-    (booley_dir / "booley.toml").write_text(f"[flows.synth]\n{body}", encoding="utf-8")
+    (booley_dir / "booley.toml").write_text(
+        f"[flows.synth]\n{body}",
+        encoding="utf-8",
+    )
 
 
 # A minimal synth `.core` for the real-fusesoc resolution e2e. The `arch`
@@ -211,7 +227,10 @@ targets:
 
 
 def _fake_synth_resolved(
-    work_dir: Path, *, config: str = "lite", toplevel: str = "dut"
+    work_dir: Path,
+    *,
+    config: str = "lite",
+    toplevel: str = "dut",
 ) -> fusesoc_registry.ResolvedTarget:
     """A ResolvedTarget shaped like a real synth EDAM, under asic_synthesize's work root."""
     build_root = (
@@ -226,7 +245,10 @@ def _fake_synth_resolved(
     )
     staged_sdc = build_root / "src" / "syn_demo_0" / "constraints" / "dut.sdc"
     staged_sdc.parent.mkdir(parents=True, exist_ok=True)
-    staged_sdc.write_text("create_clock -name clk -period 4.0 [get_ports clk]\n", encoding="utf-8")
+    staged_sdc.write_text(
+        "create_clock -name clk -period 4.0 [get_ports clk]\n",
+        encoding="utf-8",
+    )
     files = (
         fusesoc_registry.ResolvedFile(
             name="src/syn_demo_0/rtl/include/defs.svh",
@@ -234,17 +256,24 @@ def _fake_synth_resolved(
             is_include=True,
         ),
         fusesoc_registry.ResolvedFile(
-            name="src/syn_demo_0/rtl/pkg.sv", file_type="systemVerilogSource"
+            name="src/syn_demo_0/rtl/pkg.sv",
+            file_type="systemVerilogSource",
         ),
         fusesoc_registry.ResolvedFile(
-            name="src/syn_demo_0/rtl/dut.sv", file_type="systemVerilogSource"
+            name="src/syn_demo_0/rtl/dut.sv",
+            file_type="systemVerilogSource",
         ),
         # A file_type:SDC fileset is the post-ADR-0029 norm for a synth Target
         # and (ADR 0031) the thing whose absence is now a hard error — so the
         # default fake carries one, exercising the --sta-sdc forwarding path.
-        fusesoc_registry.ResolvedFile(name="src/syn_demo_0/constraints/dut.sdc", file_type="SDC"),
         fusesoc_registry.ResolvedFile(
-            name="src/syn_demo_0/tb/tb_dut.sv", file_type="systemVerilogSource", tags=("tb",)
+            name="src/syn_demo_0/constraints/dut.sdc",
+            file_type="SDC",
+        ),
+        fusesoc_registry.ResolvedFile(
+            name="src/syn_demo_0/tb/tb_dut.sv",
+            file_type="systemVerilogSource",
+            tags=("tb",),
         ),
     )
     params = {
@@ -290,11 +319,13 @@ def _fake_synth_resolved(
 
 
 def _with_synth_mode(
-    resolved: fusesoc_registry.ResolvedTarget, mode: str
+    resolved: fusesoc_registry.ResolvedTarget,
+    mode: str,
 ) -> fusesoc_registry.ResolvedTarget:
     """Return a fake Target with an explicit synthesis mode."""
     return dataclasses.replace(
-        resolved, flow_options={**resolved.flow_options, "synth_mode": mode}
+        resolved,
+        flow_options={**resolved.flow_options, "synth_mode": mode},
     )
 
 
@@ -302,17 +333,26 @@ def _write_syn_demo_project(work_dir: Path) -> None:
     """Materialize the syn_demo fixture on disk: RTL + include + tb + SDC + core."""
     (work_dir / "rtl" / "include").mkdir(parents=True)
     (work_dir / "tb").mkdir(parents=True)
-    (work_dir / "rtl" / "include" / "defs.svh").write_text("`define FOO 1\n", encoding="utf-8")
-    (work_dir / "rtl" / "pkg.sv").write_text("package pkg; endpackage\n", encoding="utf-8")
+    (work_dir / "rtl" / "include" / "defs.svh").write_text(
+        "`define FOO 1\n",
+        encoding="utf-8",
+    )
+    (work_dir / "rtl" / "pkg.sv").write_text(
+        "package pkg; endpackage\n",
+        encoding="utf-8",
+    )
     (work_dir / "rtl" / "dut.sv").write_text(
-        "module dut #(parameter WIDTH=8)(input logic clk); endmodule\n", encoding="utf-8"
+        "module dut #(parameter WIDTH=8)(input logic clk); endmodule\n",
+        encoding="utf-8",
     )
     (work_dir / "tb" / "tb_dut.sv").write_text(
-        "module tb_dut; dut d(.clk(1'b0)); endmodule\n", encoding="utf-8"
+        "module tb_dut; dut d(.clk(1'b0)); endmodule\n",
+        encoding="utf-8",
     )
     (work_dir / "constraints").mkdir()
     (work_dir / "constraints" / "dut.sdc").write_text(
-        "create_clock -name clk -period 4.0 [get_ports clk]\n", encoding="utf-8"
+        "create_clock -name clk -period 4.0 [get_ports clk]\n",
+        encoding="utf-8",
     )
     (work_dir / "syn_demo.core").write_text(_SYN_CORE_TEXT, encoding="utf-8")
 
@@ -367,7 +407,11 @@ def _stub_fusesoc_resolution(tmp_path: Path):
 
 
 def _stub_plan(
-    work_dir: Path, target: str, *, mode: str = "logical", design: str = "dut"
+    work_dir: Path,
+    target: str,
+    *,
+    mode: str = "logical",
+    design: str = "dut",
 ) -> syn_make.SynthPlan:
     """A minimal configured SynthPlan under *target*'s real build dir."""
     build_dir = Path(work_dir) / ".booley" / ".runtime" / "edalize" / "synth" / target / "synth"
@@ -383,7 +427,9 @@ def _stub_plan(
         flatten=True,
         abc_recipe=None,
         frontend="sv2v",
-        timing=StaTimingConfig(mode=mode),
+        timing=StaTimingConfig(
+            mode=mode,
+        ),
     )
     return syn_make.SynthPlan(build_dir=build_dir, spec=spec)
 
@@ -627,7 +673,10 @@ def test_dry_run_records_evidence_for_projected_stealth_core(
 )
 @pytest.mark.parametrize("isolation", ["isolated", "projected"])
 def test_synth_plan_identity_matches_in_booley_worktree(
-    isolation: str, synth_cli: SynthCli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    isolation: str,
+    synth_cli: SynthCli,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The same Target and inputs plan identically in the main and a worktree checkout.
 
@@ -828,8 +877,13 @@ def test_configure_argv_carries_the_recipe(synth_cli: SynthCli) -> None:
         pytest.param(
             'synth_mode = "physical"\n'
             '[flows.synth.advanced_settings_openroad]\nrepair_hold = "yes"\n',
-            "repair_hold",
+            r"advanced_settings_openroad\.repair_hold must be a boolean",
             id="non-bool-repair-hold",
+        ),
+        pytest.param(
+            'synth_mode = "physical"\n[flows.synth.advanced_settings_openroad]\nutilization_pct = 0\n',
+            r"advanced_settings_openroad\.utilization_pct must be greater than zero",
+            id="zero-utilization",
         ),
         pytest.param(
             '[flows.synth.advanced_settings_yosys]\nabc_recipe = "fast"\nabc_script = "+strash"\n',
@@ -932,7 +986,11 @@ def _physical_target_without_usable_sdc(case: str, project: Path):
     ],
 )
 def test_unusable_sdc_fails_physical_planning(
-    case: str, message: str, synth_cli: SynthCli, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    case: str,
+    message: str,
+    synth_cli: SynthCli,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     project = tmp_path / "project"
     project.mkdir()
@@ -1489,7 +1547,9 @@ def test_recipe_identity_ignores_isolated_checkout_path(tmp_path: Path) -> None:
         left,
         files=(
             fusesoc_registry.ResolvedFile(
-                name=str(left_root / constraint), file_type="SDC", core="::syn_demo:0"
+                name=str(left_root / constraint),
+                file_type="SDC",
+                core="::syn_demo:0",
             ),
         ),
     )
@@ -1497,7 +1557,9 @@ def test_recipe_identity_ignores_isolated_checkout_path(tmp_path: Path) -> None:
         right,
         files=(
             fusesoc_registry.ResolvedFile(
-                name=str(right_root / constraint), file_type="SDC", core="::syn_demo:0"
+                name=str(right_root / constraint),
+                file_type="SDC",
+                core="::syn_demo:0",
             ),
         ),
     )
@@ -2812,7 +2874,16 @@ def _report_log(synth_cli: SynthCli, report: dict[str, Any]) -> str:
 
 
 @pytest.mark.parametrize(
-    ("mode", "files", "stale", "returncode", "text_has", "text_lacks", "log_has", "expected"),
+    (
+        "mode",
+        "files",
+        "stale",
+        "returncode",
+        "text_has",
+        "text_lacks",
+        "log_has",
+        "expected",
+    ),
     [
         pytest.param(
             "logical",
@@ -3945,7 +4016,8 @@ def test_unrelated_openroad_failure_preserves_tool_status_and_latch_evidence(
     synth_cli: SynthCli, openroad
 ):
     result, report = _run_latch_case(
-        synth_cli, {"mode": "physical", "openroad": openroad, "process": {"returncode": 2}}
+        synth_cli,
+        {"mode": "physical", "openroad": openroad, "process": {"returncode": 2}},
     )
     assert result.exit_code == EXIT_ERROR
     assert report["returncode"] == 2
@@ -3999,7 +4071,11 @@ def test_incidental_or_stale_ord_cannot_reclassify_unrelated_error(synth_cli: Sy
     ("case", "termination", "reasons"),
     [
         ({"process": {"returncode": 2, "timed_out": True}}, "timeout", ["timeout"]),
-        ({"process": {"returncode": 2, "oom_kill_delta": 1, "oom_killed": True}}, "oom", ["OOM"]),
+        (
+            {"process": {"returncode": 2, "oom_kill_delta": 1, "oom_killed": True}},
+            "oom",
+            ["OOM"],
+        ),
         ({"process": {"returncode": 137}}, "resource_killed", ["resource-killed"]),
         (
             {
@@ -4417,7 +4493,10 @@ def test_captured_comb_loop_cases_reach_verdict(
     # Real Yosys 0.70+ output for a loop that survives optimisation (the run
     # fails) and for a loop that optimisation removes (#1417; the run warns).
     captured = load_capture(fixture)
-    result, report = _run_latch_case(synth_cli, {"cell": "NAND2", "artifacts": captured})
+    result, report = _run_latch_case(
+        synth_cli,
+        {"cell": "NAND2", "artifacts": captured},
+    )
 
     assert result.exit_code == exit_code
     assert report["structural_checks_complete"] is True
@@ -4562,7 +4641,7 @@ class TestSummaryTable:
             target = row.split()[0]
             # Status is the last column; its text starts at PASS/WARN/FAIL/ERROR.
             marker = min(
-                i for word in ("PASS", "WARN", "FAIL", "ERROR") if (i := row.find(word)) >= 0
+                (i for word in ("PASS", "WARN", "FAIL", "ERROR") if (i := row.find(word)) >= 0),
             )
             statuses[target] = row[marker:].rstrip()
         return statuses

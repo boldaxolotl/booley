@@ -134,7 +134,11 @@ class _Observed:
     oom_adj: int | None
 
 
-def _watch(monkeypatch: pytest.MonkeyPatch, managed: _Managed, proc: FakeProc) -> list[_Observed]:
+def _watch(
+    monkeypatch: pytest.MonkeyPatch,
+    managed: _Managed,
+    proc: FakeProc,
+) -> list[_Observed]:
     """Replace the tools' ``subprocess.run`` with one that records the memory class."""
     seen: list[_Observed] = []
 
@@ -379,7 +383,9 @@ def test_an_item_that_ran_alone_over_budget_warns_in_the_campaign_result(
     invocation = endpoint.prepare_endpoint_invocation()
 
     outcome = endpoint.invoke_endpoint(
-        PreparedExecution(False, invocation), admission=context, started=0.0
+        PreparedExecution(False, invocation),
+        admission=context,
+        started=0.0,
     )
 
     assert "exceeds the Memory Budget of 1000 MiB; this Job ran alone." in outcome.report_text

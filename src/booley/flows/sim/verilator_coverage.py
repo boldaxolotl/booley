@@ -91,7 +91,11 @@ class _MergeError(RuntimeError):
     """The native merge could not establish equivalent complete evidence."""
 
     def __init__(
-        self, code: str, message: str, *, artifact: CoverageArtifact | None = None
+        self,
+        code: str,
+        message: str,
+        *,
+        artifact: CoverageArtifact | None = None,
     ) -> None:
         self.code = code
         self.artifact = artifact
@@ -438,7 +442,11 @@ def _parse_native(path: Path) -> tuple[_NativeEntry, ...]:
         attributes = _parse_attributes(identity)
         _validate_record_attributes(attributes)
         records.append(
-            _NativeEntry(identity=identity, attributes=attributes, hits=int(match["hits"]))
+            _NativeEntry(
+                identity=identity,
+                attributes=attributes,
+                hits=int(match["hits"]),
+            )
         )
     return tuple(records)
 
@@ -497,14 +505,19 @@ def _collect_run_result(
 
 
 def _collect_run_evidence(
-    request: CoverageCollectionRequest, context: _RunContext, result: SimulationRunResult
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    result: SimulationRunResult,
 ) -> _CollectedRun:
     hook_artifact, hook_error = _load_hook_evidence(request, context)
     raw_result = _read_raw_artifact(request, context, result.verdict)
     if isinstance(raw_result, _CollectedRun):
         if hook_error is not None and _hook_error_precedes(hook_error, raw_result):
             raw_artifact = raw_result.artifact
-            if raw_artifact is not None and raw_artifact.state in {"incompatible", "unqueryable"}:
+            if raw_artifact is not None and raw_artifact.state in {
+                "incompatible",
+                "unqueryable",
+            }:
                 raw_artifact = replace(raw_artifact, state="write_failed")
             return _hook_failure_run(
                 request,
@@ -519,10 +532,21 @@ def _collect_run_evidence(
     raw_artifact, records = raw_result
     if hook_error is not None:
         return _hook_failure_run(
-            request, context, result.verdict, raw_artifact, records, hook_artifact, hook_error
+            request,
+            context,
+            result.verdict,
+            raw_artifact,
+            records,
+            hook_artifact,
+            hook_error,
         )
     return _finish_run(
-        context, result.verdict, raw_artifact, records, hook_artifact, pre_sim=result.pre_sim
+        context,
+        result.verdict,
+        raw_artifact,
+        records,
+        hook_artifact,
+        pre_sim=result.pre_sim,
     )
 
 
@@ -549,7 +573,9 @@ def _hook_failure_run(
 
 
 def _collected_infrastructure_failure(
-    request: CoverageCollectionRequest, context: _RunContext, result: SimulationRunResult
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    result: SimulationRunResult,
 ) -> _CollectedRun:
     failed = _run_failure(
         request,
@@ -572,11 +598,17 @@ def _collected_infrastructure_failure(
             }
         ),
     )
-    return replace(failed, infrastructure_error=True, infrastructure_detail=result.output)
+    return replace(
+        failed,
+        infrastructure_error=True,
+        infrastructure_detail=result.output,
+    )
 
 
 def _collected_simulation_abort(
-    request: CoverageCollectionRequest, context: _RunContext, result: SimulationRunResult
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    result: SimulationRunResult,
 ) -> _CollectedRun:
     """Retain a design-caused abort without treating it as collector evidence."""
     return _run_failure(
@@ -623,7 +655,9 @@ def _pre_sim_attributes(evidence: PreSimEvidence | None) -> Mapping[str, FrozenJ
 
 
 def _pre_sim_failure(
-    request: CoverageCollectionRequest, context: _RunContext, result: SimulationRunResult
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    result: SimulationRunResult,
 ) -> _CollectedRun:
     evidence = result.pre_sim
     assert evidence is not None
@@ -638,12 +672,16 @@ def _pre_sim_failure(
         attributes=_pre_sim_attributes(evidence),
     )
     return replace(
-        failed, infrastructure_error=result.infrastructure_error, infrastructure_detail=message
+        failed,
+        infrastructure_error=result.infrastructure_error,
+        infrastructure_detail=message,
     )
 
 
 def _prepare_run(
-    request: CoverageCollectionRequest, index: int, selected: SelectedCoverageRun
+    request: CoverageCollectionRequest,
+    index: int,
+    selected: SelectedCoverageRun,
 ) -> _RunContext:
     run_id = _run_id(index, selected)
     stem = _run_stem(index, selected)
@@ -684,11 +722,15 @@ def _run_request(request: CoverageCollectionRequest, context: _RunContext) -> Si
 
 
 def _read_raw_artifact(
-    request: CoverageCollectionRequest, context: _RunContext, verdict: SimulationVerdict
+    request: CoverageCollectionRequest,
+    context: _RunContext,
+    verdict: SimulationVerdict,
 ) -> tuple[CoverageArtifact, tuple[_NativeEntry, ...]] | _CollectedRun:
     try:
         validate_fresh_artifact(
-            context.raw_path, roots=(request.artifact_root,), before=context.raw_before
+            context.raw_path,
+            roots=(request.artifact_root,),
+            before=context.raw_before,
         )
     except ArtifactFreshnessError as exc:
         code, message, state = _raw_failure(context.test.run_name, exc.cause)
@@ -818,13 +860,16 @@ def _hook_error_precedes(hook_error: _HookEvidenceError, raw_failure: _Collected
 
 
 def _load_hook_evidence(
-    request: CoverageCollectionRequest, context: _RunContext
+    request: CoverageCollectionRequest,
+    context: _RunContext,
 ) -> tuple[CoverageArtifact | None, _HookEvidenceError | None]:
     if context.hook_path is None:
         return None, None
     try:
         validate_fresh_artifact(
-            context.hook_path, roots=(request.artifact_root,), before=context.hook_before
+            context.hook_path,
+            roots=(request.artifact_root,),
+            before=context.hook_before,
         )
     except ArtifactValidationError:
         # No hook wrote evidence, so the first required hook is the one that did not run.
@@ -857,16 +902,19 @@ def _read_hook_document(path: Path, run_id: str) -> dict[str, object]:
         document = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError, UnicodeError) as exc:
         raise _HookEvidenceError(
-            "COV_WINDOW_HOOK_INVALID", "Coverage hook evidence was not valid JSON."
+            "COV_WINDOW_HOOK_INVALID",
+            "Coverage hook evidence was not valid JSON.",
         ) from exc
     if not isinstance(document, dict) or document.get("$schema") != "booley.coverage-hook/v1":
         raise _HookEvidenceError(
-            "COV_WINDOW_HOOK_INVALID", "Coverage hook evidence has an invalid schema."
+            "COV_WINDOW_HOOK_INVALID",
+            "Coverage hook evidence has an invalid schema.",
         )
     events = document.get("events")
     if document.get("run_id") != run_id or not isinstance(events, list):
         raise _HookEvidenceError(
-            "COV_WINDOW_HOOK_INVALID", "Coverage hook evidence does not identify its run."
+            "COV_WINDOW_HOOK_INVALID",
+            "Coverage hook evidence does not identify its run.",
         )
     return document
 
@@ -883,7 +931,10 @@ def _validate_hook_events(events: object, require_start: bool, require_write: bo
         and starts[0].get("success") is True
         and writes[0].get("success") is True
     ):
-        _require_hook_order(_valid_hook_sequence(starts[0]), _valid_hook_sequence(writes[0]))
+        _require_hook_order(
+            _valid_hook_sequence(starts[0]),
+            _valid_hook_sequence(writes[0]),
+        )
     start_sequence = _require_hook(starts, "WINDOW") if require_start else None
     write_sequence = _require_hook(writes, "WRITE") if require_write else None
     _require_hook_order(start_sequence, write_sequence)
@@ -917,7 +968,8 @@ def _require_hook(events: list[dict[str, object]], code_stem: str) -> int:
         )
     if not events:
         raise _HookEvidenceError(
-            f"COV_{code_stem}_HOOK_MISSING", f"Coverage {code_stem.lower()} hook did not run."
+            f"COV_{code_stem}_HOOK_MISSING",
+            f"Coverage {code_stem.lower()} hook did not run.",
         )
     if events[0].get("success") is not True:
         raise _HookEvidenceError(
@@ -927,7 +979,8 @@ def _require_hook(events: list[dict[str, object]], code_stem: str) -> int:
     sequence = as_positive_int(events[0].get("sequence"), 0)
     if not sequence:
         raise _HookEvidenceError(
-            "COV_WINDOW_HOOK_INVALID", "Coverage hook evidence has an invalid event sequence."
+            "COV_WINDOW_HOOK_INVALID",
+            "Coverage hook evidence has an invalid event sequence.",
         )
     return sequence
 
@@ -946,7 +999,9 @@ def _subject(metric: str, attributes: Mapping[str, str]) -> Mapping[str, str]:
 
 
 def _point_for_record(
-    record: _NativeEntry, source: CoverageSource, hits_by_run: Mapping[str, int]
+    record: _NativeEntry,
+    source: CoverageSource,
+    hits_by_run: Mapping[str, int],
 ) -> CoveragePoint:
     record_type = record.attributes.get("t", "")
     metric = _RECORD_METRICS[record_type]
@@ -1010,7 +1065,9 @@ def _normalize_points(
 
 
 def _match_source(
-    sources: Mapping[str, CoverageSource], native_path: str, foreign_paths: Mapping[str, str]
+    sources: Mapping[str, CoverageSource],
+    native_path: str,
+    foreign_paths: Mapping[str, str],
 ) -> CoverageSource:
     """Match Verilator's staged/absolute filename to one resolved Target input."""
     if native_path in sources:
@@ -1103,7 +1160,9 @@ def _merge(
 
 
 def _validate_merged_freshness(
-    request: CoverageCollectionRequest, path: Path, before: ArtifactStamp | None
+    request: CoverageCollectionRequest,
+    path: Path,
+    before: ArtifactStamp | None,
 ) -> None:
     try:
         validate_fresh_artifact(path, roots=(request.artifact_root,), before=before)
@@ -1131,7 +1190,10 @@ def _validate_merged_freshness(
 
 
 def _merged_artifact(
-    request: CoverageCollectionRequest, path: Path, *, state: str = "fresh_queryable"
+    request: CoverageCollectionRequest,
+    path: Path,
+    *,
+    state: str = "fresh_queryable",
 ) -> CoverageArtifact:
     return _artifact(
         path,
@@ -1227,7 +1289,9 @@ def coverage_request_finding(request: CoverageCollectionRequest) -> CoverageFind
 
 
 def _preflight_error_result(
-    request: CoverageCollectionRequest, build: CoverageBuildEvidence, finding: CoverageFinding
+    request: CoverageCollectionRequest,
+    build: CoverageBuildEvidence,
+    finding: CoverageFinding,
 ) -> CoverageCollectionResult:
     return CoverageCollectionResult(
         status="collector_error",
@@ -1245,7 +1309,9 @@ def _preflight_error_result(
 
 
 def _build_error_result(
-    request: CoverageCollectionRequest, build: CoverageBuildEvidence, output: str
+    request: CoverageCollectionRequest,
+    build: CoverageBuildEvidence,
+    output: str,
 ) -> CoverageCollectionResult:
     runs = tuple(
         _coverage_run(index, selected, "elab_error", "collector_error", None, MappingProxyType({}))
@@ -1351,7 +1417,8 @@ def _result(
 
 
 def _build_collection(
-    request: CoverageCollectionRequest, execution: SimulationExecutionPort
+    request: CoverageCollectionRequest,
+    execution: SimulationExecutionPort,
 ) -> tuple[CoverageBuildEvidence, CoverageCollectionResult | None]:
     variant = SimulationBuildVariant(trace=request.trace, coverage=True)
     build = CoverageBuildEvidence(variant, VERILATOR_COVERAGE_INSTRUMENTATION)
@@ -1460,7 +1527,8 @@ def _merge_mismatch_result(
 
 
 def collect(
-    request: CoverageCollectionRequest, execution: SimulationExecutionPort
+    request: CoverageCollectionRequest,
+    execution: SimulationExecutionPort,
 ) -> CoverageCollectionResult:
     """Collect and normalize one Verilator-native database per selected test."""
     build, failure = _build_collection(request, execution)
@@ -1537,7 +1605,12 @@ def _infrastructure_failure(
     observations = tuple(collected)
     capabilities, capability_findings = _capabilities_and_findings(observations)
     findings = tuple(f for item in observations for f in item.findings)
-    finding = CoverageFinding("error", code, "/collection", message)
+    finding = CoverageFinding(
+        "error",
+        code,
+        "/collection",
+        message,
+    )
     result = _result(
         request,
         build,

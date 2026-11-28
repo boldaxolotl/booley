@@ -93,7 +93,9 @@ def test_missing_ccache_builds_uncached_without_storage(project, tmp_path, monke
     policy = resolve_policy(root, {COMPILER_CACHE_ROOT_ENV: str(cache)})
     monkeypatch.setattr("booley.flows.sim.compiler_cache.shutil.which", lambda *a, **kw: None)
     prepared = prepared_build(root, policy, 'test -z "$OBJCACHE"')
-    result = run_bounded_child(["sh", "-c", simulation_build_script(prepared, "b" * 32)])
+    result = run_bounded_child(
+        ["sh", "-c", simulation_build_script(prepared, "b" * 32)],
+    )
     assert result.returncode == 0
     assert not cache.exists()
     assert "ccache is missing from the build PATH" in caplog.text
@@ -172,7 +174,9 @@ def test_build_exports_do_not_leak_to_run(project, tmp_path, monkeypatch):
     )
     script = simulation_build_script(prepared, "a" * 32)
     script += '\ntest -z "$OBJCACHE" && test -z "$CCACHE_MAXSIZE"'
-    result = run_bounded_child(["sh", "-c", script])
+    result = run_bounded_child(
+        ["sh", "-c", script],
+    )
     assert result.returncode == 0, result.stdout + result.stderr
     assert "rc=0" in result.stdout
     assert cache.is_dir()

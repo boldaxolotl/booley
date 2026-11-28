@@ -35,7 +35,10 @@ from tests.harness.test_checkout_flow import (
     make_world,
     use_fusesoc,
 )
-from tests.harness.test_measure_children_flows import declare_stub_metrics, started_targets
+from tests.harness.test_measure_children_flows import (
+    declare_stub_metrics,
+    started_targets,
+)
 from tests.time_budget import hang_guard_s
 
 __all__ = ["make_world"]
@@ -84,7 +87,6 @@ def _stub_tables(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def measure(monkeypatch: pytest.MonkeyPatch, world: World, *arguments: str) -> int:
     """Run ``booley -C <live Project> measure <arguments>`` in a Sandbox."""
-    monkeypatch.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
     monkeypatch.setattr(sys, "argv", ["booley", "-C", str(world.live), "measure", *arguments])
     monkeypatch.setattr(sys, "excepthook", sys.excepthook)  # main() quiets a Ctrl-C's traceback
     return cli.main()
@@ -343,12 +345,14 @@ from booley.harness import booley as cli
 from booley.measurement import metrics_file
 from tests.harness.test_checkout_flow import FLOW, use_fusesoc
 from tests.harness.test_measure_children_flows import declare_stub_metrics
+from booley.runtime.runtime_context import RuntimeLocation
+from tests.sandbox_venue_fake import place_child
 
 patches = pytest.MonkeyPatch()
 use_fusesoc(patches)
 declare_stub_metrics(patches)
 patches.setattr(metrics_file, "TABLE_FLOWS", (*metrics_file.TABLE_FLOWS, FLOW))
-patches.setattr(cli.runtime_context, "inside_session_runtime", lambda: True)
+place_child(RuntimeLocation.HAND_WRITTEN_SANDBOX)
 sys.argv = ["booley", *sys.argv[1:]]
 sys.exit(cli.main())
 """

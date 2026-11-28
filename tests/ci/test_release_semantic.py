@@ -126,7 +126,8 @@ def test_publication_topology_verifies_attestation_in_both_artifact_paths() -> N
         if step.get("name") == "Build and install from the exact source distribution"
     )
     rebuilt["run"] = rebuilt["run"].replace(
-        "assert embedded_official_release() is True", "assert True"
+        "assert embedded_official_release() is True",
+        "assert True",
     )
 
     errors = semantic.validate_publication_topology(publication, _test_workflow())
@@ -143,7 +144,8 @@ def test_publication_topology_verifies_development_context_is_absent() -> None:
         for step in publication["jobs"][job_name]["steps"]:
             if "embedded_development_context_path().exists()" in str(step.get("run", "")):
                 step["run"] = step["run"].replace(
-                    "embedded_development_context_path().exists()", "False"
+                    "embedded_development_context_path().exists()",
+                    "False",
                 )
 
     errors = semantic.validate_publication_topology(publication, _test_workflow())

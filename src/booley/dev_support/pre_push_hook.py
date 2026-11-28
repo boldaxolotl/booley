@@ -224,7 +224,10 @@ def _file_authority_state(path, env):
             raise InspectionError(
                 "file authority must name its exact repository root or Git directory"
             )
-        top = _resolve_repository_path(Path(result.stdout.decode().strip()), strict=True)
+        top = _resolve_repository_path(
+            Path(result.stdout.decode().strip()),
+            strict=True,
+        )
         if path != top:
             raise InspectionError(
                 "file authority must name its exact repository root or Git directory"
@@ -837,7 +840,9 @@ def _inside_project_state(path: Path, booley_dir: Path | None) -> bool:
 
 
 def _inside_checkout_or_runtime_project_state(
-    path: Path, repository_root: Path, booley_dir: Path | None
+    path: Path,
+    repository_root: Path,
+    booley_dir: Path | None,
 ) -> bool:
     """Whether *path* uses either checkout or runtime spelling for state."""
     normalized = Path(os.path.normpath(path.absolute()))

@@ -427,7 +427,10 @@ def derive_status(
 
 
 def is_active(
-    rec: JobRecord, is_pid_alive: Callable[[int], bool], *, now: float | None = None
+    rec: JobRecord,
+    is_pid_alive: Callable[[int], bool],
+    *,
+    now: float | None = None,
 ) -> bool:
     """Return whether a record still represents running or spawning work."""
     if rec.status != STATUS_RUNNING:
