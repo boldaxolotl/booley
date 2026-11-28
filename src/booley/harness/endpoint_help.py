@@ -152,10 +152,12 @@ def _emit(stdout: str, stderr: str) -> None:
     print(stderr, end="", file=sys.stderr)
 
 
-def try_render_help(endpoint: Any, argv: list[str], selected: Path | None) -> None:
+def try_render_help(
+    endpoint: Any, argv: list[str], selected: Path | None, features: frozenset[str] | None = None
+) -> None:
     """Exit only for real help or a terminal parser result; otherwise return."""
     parser = (
-        build_cli_parser(endpoint, CliInvocation(project=selected))
+        build_cli_parser(endpoint, CliInvocation(project=selected, features=features))
         if isinstance(endpoint, BuiltinFlow)
         else human_endpoint_parser(endpoint, project=selected)
     )
