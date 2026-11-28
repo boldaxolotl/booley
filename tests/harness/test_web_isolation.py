@@ -72,6 +72,8 @@ def test_shipped_t3code_policy_locks_worktrees_prepare_and_the_dashboard_button(
         "value": f"{BOOLEY_DIR_TARGET}/t3-worktrees",
         "locked": True,
     }
+    # Fixed by #5907, not ADR 0082: T3 Code's fetch of origin fails under default egress.
+    assert settings["newWorktreesStartFromOrigin"] == {"value": False, "locked": True}
     assert settings["defaultProjectScripts"]["locked"] is True
     scripts = settings["defaultProjectScripts"]["value"]
     assert [

@@ -3,6 +3,7 @@
   "organization": "Booley",
   "settings": {
     "worktreesDirectory": { "value": "/booley/t3-worktrees", "locked": true },
+    "newWorktreesStartFromOrigin": { "value": false, "locked": true },
     "defaultProjectScripts": {
       "value": [
         {
