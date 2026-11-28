@@ -341,6 +341,7 @@ def test_snapshot_lists_only_the_named_worktrees_jobs(
     # Without `work_dir`: an older MCP record (listed under main) and a measure child's (in none).
     _job(world, "run-nowhere", None, target="t_nowhere", ended="2026-10-08T09:00:00Z")
     _job(world, "run-child", None, target="t_child", session=None)
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+02:00")
     worktree = {"wt": world.wt, "main": world.main}.get(name, tmp_path / name)
     if name == "link":
         symlink_or_skip(worktree, world.wt, target_is_directory=True)
@@ -352,7 +353,8 @@ def test_snapshot_lists_only_the_named_worktrees_jobs(
 
     assert _targets(body["results"]["jobs"]) == targets
     if name == "main":
-        assert body["results"]["jobs"][0]["owner"] == "codex \u00b7 9c0d1e2f"
+        owner = body["results"]["jobs"][0]["owner"]
+        assert owner == "codex \u00b7 started 12:00 \u00b7 08 OCT 2026"
     assert body["now"] == []
     assert body["header"]["worktree"] == str(worktree.resolve())
     assert body["header"]["branch"] == branch
@@ -556,7 +558,8 @@ def test_results_are_newest_first_capped_with_counts_and_report_links(world, mon
 
 
 @pytest.mark.parametrize("t3", ["available", "stalled", "unavailable"])
-def test_job_owner_is_the_thread_title_or_client_and_short_id(world, monkeypatch, tmp_path, t3):
+def test_job_owner_is_the_thread_title_or_a_fallback(world, monkeypatch, tmp_path, t3):
+    monkeypatch.setenv("BOOLEY_LOCAL_TIMEZONE", "+02:00")
     for run_id, client, thread, session in (
         ("claude", "claude", "t3-claude-thread-1a2b3c4d", "sess2"),
         ("gone", "claude", "t3-gone-thread-5e6f7a8b", "sess2"),
@@ -592,7 +595,7 @@ def test_job_owner_is_the_thread_title_or_client_and_short_id(world, monkeypatch
         {
             "claude": titled,
             "gone": "claude · 5e6f7a8b",
-            "codex": "codex · 9c0d1e2f",
+            "codex": "codex · started 12:00 · 08 OCT 2026",
             "old": "you",
         }
     ]

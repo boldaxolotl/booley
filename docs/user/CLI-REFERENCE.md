@@ -71,10 +71,10 @@ booley measure --validate         # check .booley/metrics.toml; measures nothing
   a linked worktree with that worktree's Jobs only: the unfinished Jobs, the
   newest 50 finished Jobs with a `report_url` for each report, and the
   Sandbox's CPU, memory, disk and Job admission figures. A Job started from an
-  agent's thread has an `owner` that is the thread's T3 Code title, else the
-  agent and a short thread id; a Standalone Job's is `you`. A missing,
-  relative or unknown `worktree` gets a JSON error (status 400 or 404) and no
-  Jobs.
+  agent's thread has an `owner` that is the thread's T3 Code title, else for
+  Claude the agent and a short thread id, and for Codex the agent and the time
+  the Job started; a Standalone Job's is `you`. A missing, relative or unknown
+  `worktree` gets a JSON error (status 400 or 404) and no Jobs.
 
 Sessions and parallel work are explained in
 [Several agents at once](USAGE.md#several-agents-at-once), and measuring in
